@@ -1,0 +1,11 @@
+pbrun: log capture executable=/usr/bin/tee
+Traceback (most recent call last):
+  File "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/prismabuild_worker.py", line 72, in <module>
+    raise SystemExit(main(worker_launcher_identity=_WORKER_LAUNCHER_IDENTITY))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/src/prismabuild/core.py", line 7051, in main
+    result = run_local_action(
+             ^^^^^^^^^^^^^^^^^
+  File "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/src/prismabuild/core.py", line 6323, in run_local_action
+    raise LocalActionError(
+prismabuild.core.LocalActionError: action argv exited with status 1

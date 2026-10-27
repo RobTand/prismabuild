@@ -1,0 +1,170 @@
+{
+  "observed_at": "2026-10-27T01:48:01.854914+00:00",
+  "terminal": true,
+  "entries": [
+    {
+      "label": "before",
+      "head": "0d7c43c9424b8acd3f36ee74e076a14871e2ab12",
+      "key": "bbab398d7f8f392b6ada2a8429238befa30066ceeb835d5559a67fae6bd1d05a",
+      "status": "executed",
+      "terminal": true,
+      "observed": {
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-receipt/in-process]": "passed",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-receipt/script]": "passed",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-attestation/in-process]": "passed",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-attestation/script]": "passed",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-runtime/in-process]": "passed",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-runtime/script]": "passed"
+      },
+      "logs": {
+        "stdout": {
+          "bytes": 1119602,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/bbab398d7f8f392b6ada2a8429238befa30066ceeb835d5559a67fae6bd1d05a/9d995534b7256bc0d6a683c4e5bcdfdb04a8650426e38d661ca13caeb5412cbd/00000001.stdout.9060c810a766bf985d28d07a18f381962e5d5cf492511ac0ce691f7535012df0.log",
+          "sha256": "9060c810a766bf985d28d07a18f381962e5d5cf492511ac0ce691f7535012df0"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/bbab398d7f8f392b6ada2a8429238befa30066ceeb835d5559a67fae6bd1d05a/9d995534b7256bc0d6a683c4e5bcdfdb04a8650426e38d661ca13caeb5412cbd/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "receipt_sha256": "aabee2518f60f640958027b10b199e4497fd02400ca949797f44a3e37b51d58a",
+      "snapshot": {
+        "bytes": 47382508,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "00e3dda23e4f18d0f80c04e7aa95bfa5e5022f4898fba10e2bfdf71cd1bf9353"
+      },
+      "native_runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_record_compatibility_core.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          12,
+          15
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "aa433cca6b30298072191d855aaec7cf46a276226e94fa9f65612827fdc7ad62",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_record_compatibility_core.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_record_compatibility_core.py": "7e6ac0313499b90c56ea41033ebfca0fd40c71f86a6768c0c43ab44eb907e94d"
+        },
+        "exitstatus": 0
+      },
+      "cleanup_complete": true,
+      "deselected": 67,
+      "golden_failure": false
+    },
+    {
+      "label": "after",
+      "head": "0c78f38b6576dd0bed4f0ae35bed0dea24986a5f",
+      "key": "b724b568b075b5fc6de04162b9f2569741470b57eadb8ae90c34668da2c2e236",
+      "status": "failed",
+      "terminal": true,
+      "observed": {
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-receipt/in-process]": "failed",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-receipt/script]": "failed",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-attestation/in-process]": "failed",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-attestation/script]": "failed",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-runtime/in-process]": "failed",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-runtime/script]": "failed"
+      },
+      "logs": {
+        "stdout": {
+          "bytes": 307242,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/b724b568b075b5fc6de04162b9f2569741470b57eadb8ae90c34668da2c2e236/a297b8dd39c80c30fa6298671de67f0a0cfa60b5207d5643758f00d9952e5dfe/00000001.stdout.5e87f4bf50076e2aff4b5b31717c8849645a1c8da97730eb4fb667280ecab372.log",
+          "sha256": "5e87f4bf50076e2aff4b5b31717c8849645a1c8da97730eb4fb667280ecab372"
+        },
+        "stderr": {
+          "bytes": 931,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/b724b568b075b5fc6de04162b9f2569741470b57eadb8ae90c34668da2c2e236/a297b8dd39c80c30fa6298671de67f0a0cfa60b5207d5643758f00d9952e5dfe/00000001.stderr.89004d1fbfd6c4e45ff1821380c5b438815947585ce215bcd0bdaa42cdda4f6c.log",
+          "sha256": "89004d1fbfd6c4e45ff1821380c5b438815947585ce215bcd0bdaa42cdda4f6c"
+        }
+      },
+      "receipt_sha256": null,
+      "snapshot": {
+        "bytes": 47627624,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "fe6003a1bde05e362e8e38e76d01efdafd09d2e9cac8ec386c11ad48d1acf309"
+      },
+      "native_runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_record_compatibility_core.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          16,
+          17
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "aa433cca6b30298072191d855aaec7cf46a276226e94fa9f65612827fdc7ad62",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_record_compatibility_core.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_record_compatibility_core.py": "7e6ac0313499b90c56ea41033ebfca0fd40c71f86a6768c0c43ab44eb907e94d"
+        },
+        "exitstatus": 1
+      },
+      "cleanup_complete": true,
+      "deselected": 67,
+      "golden_failure": true
+    }
+  ],
+  "main_key": "03d5cc5d729ae1915d88d98144b7b15702e385470ef4db0efcd8b0e1b3efe69f",
+  "main_source_tree_equals_current_main": true,
+  "attributed_to": 2344,
+  "limits": "Six original failed IDs only; original statuses remain. No source fix, runtime operation or renewed approval."
+}

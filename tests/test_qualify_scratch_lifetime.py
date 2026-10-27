@@ -5,6 +5,7 @@ import sys
 import json
 import signal
 import time
+from types import SimpleNamespace
 from argparse import Namespace
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,6 +14,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import qualify_scratch_lifetime as qualification
+
+NATIVE_SLEEP = time.sleep  # pb-timing-ok: never called identity reference; launcher adapter controls delays
+NATIVE_MONOTONIC = time.monotonic
 
 
 def test_unknown_scenario_exits_without_effect():
@@ -146,8 +150,8 @@ def launcher_target(tmp_path, monkeypatch):
     monkeypatch.setattr(qualification, "os", Namespace(
         pidfd_open=target.open_pidfd, close=target.close, kill=target.forbid_numeric_signal))
     monkeypatch.setattr(signal, "pidfd_send_signal", target.send_signal, raising=False)
-    monkeypatch.setattr(time, "sleep", target.delay)
-    monkeypatch.setattr(time, "monotonic", lambda: 0)
+    monkeypatch.setattr(qualification, "time", SimpleNamespace(
+        **{**vars(time), "sleep": target.delay, "monotonic": lambda: 0}))
     yield target
     assert sorted(target.closed) == target.acquired
     assert not target.handles
@@ -170,6 +174,11 @@ def test_launcher_killer_signals_verified_handle(launcher_target):
     assert json.loads((target.directory / "kill-done.json").read_text()) == {
         "victim": target.args.victim_key, "killed": [launcher.pid], "killer": "b" * 64,
     }
+
+
+def test_launcher_fixture_keeps_the_standard_library_clock(launcher_target):
+    assert time.sleep is NATIVE_SLEEP  # pb-timing-ok: never called identity check; launcher adapter controls delays
+    assert time.monotonic is NATIVE_MONOTONIC
 
 
 def test_launcher_killer_pins_all_targets_before_any_signal(launcher_target):

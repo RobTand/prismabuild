@@ -64,13 +64,15 @@ def record_holder(descriptor: int) -> None:
         return
 
 
-def holder_pid(descriptor: int) -> int | None:
+def holder_pid(descriptor: int, *, observer: bool = False) -> int | None:
     """Name a recorded live holder with this file open, or answer unknown.
 
     Read only this file and one recorded process. Verify its boot, PID namespace,
     process start time and exact descriptor's device/inode, then recheck the
     process and record. This is a racing diagnostic, never evidence of freedom
     or authority to signal a process. Unrecorded locks remain unknown.
+    An observer's freshly opened descriptor cannot be the recorded ownership
+    descriptor, even if a released same-process descriptor number was reused.
     """
     try:
         info = os.fstat(descriptor)
@@ -87,6 +89,8 @@ def holder_pid(descriptor: int) -> int | None:
             if type(record[name]) is not int or record[name] < minimum:
                 return None
         pid = record["pid"]
+        if observer and pid == os.getpid() and record["fd"] == descriptor:
+            return None
         wanted = (info.st_dev, info.st_ino)
         if (record["device"], record["inode"]) != wanted:
             return None

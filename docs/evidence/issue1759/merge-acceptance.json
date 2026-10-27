@@ -1,0 +1,239 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "18e3324d3d6f9a113a0b9f5f65e48e918794bc23",
+  "scope": [
+    "INV-01",
+    "PRG-04",
+    "LIVE-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1759",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1759",
+    "source": "6f99362ed1b07a664d6e049a366ad3e020bd6de2",
+    "baseline": "6185a6ee60f",
+    "validated_repairs": [
+      {
+        "id": "INV-01",
+        "actions": [
+          "2eedb35d3ab3cea1e95ef7e9a316eeaaa2397d012da03e9dd06abc01c60e6da8",
+          "43807ca111e4d5ee80a8f8e669b3f5878d0add82d4bce1e9494e2447475b3713",
+          "9af77f2ce05897db9c567957c0032dee97a8d79eb833e27d8eefe2451026c099",
+          "531edbad112bba7f9badd935e20a10a13dd852a5bf0c0ad94f9554e50bec320d",
+          "f98af0d12aa404c7070189607a2c787b502972e7cbf74b3a437081dbb3c4211c",
+          "4bc17055678e26026d5a25598b4d3afa70a6e8279ddd898afa9ed2284c3fb86b",
+          "6c5c3d12dad4b416638ac2a4519e2c60327e2563883ff48c5b6eaf1d1962e3ea"
+        ],
+        "outcome": "63 passed, zero skips on dl380g10. Funded and unfunded declared/streaming cases compare exact pressure and integrated lead publication. Seven executed endings, complete cleanup, log identity, local-result claims, full-manifest CAS attestations and payload digests checked; all eight RED/GREEN snapshot bundles and changed source files compared to their parent commits."
+      },
+      {
+        "id": "PRG-04",
+        "actions": [
+          "2eedb35d3ab3cea1e95ef7e9a316eeaaa2397d012da03e9dd06abc01c60e6da8",
+          "43807ca111e4d5ee80a8f8e669b3f5878d0add82d4bce1e9494e2447475b3713",
+          "9af77f2ce05897db9c567957c0032dee97a8d79eb833e27d8eefe2451026c099",
+          "531edbad112bba7f9badd935e20a10a13dd852a5bf0c0ad94f9554e50bec320d",
+          "f98af0d12aa404c7070189607a2c787b502972e7cbf74b3a437081dbb3c4211c",
+          "4bc17055678e26026d5a25598b4d3afa70a6e8279ddd898afa9ed2284c3fb86b",
+          "6c5c3d12dad4b416638ac2a4519e2c60327e2563883ff48c5b6eaf1d1962e3ea"
+        ],
+        "outcome": "63 passed, zero skips on dl380g10. Funded and unfunded declared/streaming cases compare exact pressure and integrated lead publication. Seven executed endings, complete cleanup, log identity, local-result claims, full-manifest CAS attestations and payload digests checked; all eight RED/GREEN snapshot bundles and changed source files compared to their parent commits."
+      },
+      {
+        "id": "LIVE-01",
+        "actions": [
+          "2eedb35d3ab3cea1e95ef7e9a316eeaaa2397d012da03e9dd06abc01c60e6da8",
+          "43807ca111e4d5ee80a8f8e669b3f5878d0add82d4bce1e9494e2447475b3713",
+          "9af77f2ce05897db9c567957c0032dee97a8d79eb833e27d8eefe2451026c099",
+          "531edbad112bba7f9badd935e20a10a13dd852a5bf0c0ad94f9554e50bec320d",
+          "f98af0d12aa404c7070189607a2c787b502972e7cbf74b3a437081dbb3c4211c",
+          "4bc17055678e26026d5a25598b4d3afa70a6e8279ddd898afa9ed2284c3fb86b",
+          "6c5c3d12dad4b416638ac2a4519e2c60327e2563883ff48c5b6eaf1d1962e3ea"
+        ],
+        "outcome": "63 passed, zero skips on dl380g10. Funded and unfunded declared/streaming cases compare exact pressure and integrated lead publication. Seven executed endings, complete cleanup, log identity, local-result claims, full-manifest CAS attestations and payload digests checked; all eight RED/GREEN snapshot bundles and changed source files compared to their parent commits."
+      }
+    ],
+    "remaining_gaps": [
+      "Scoped READY demand accounting only; no whole-requirement conformance claim.",
+      "No runtime publication or service restart; this repair is not deployed.",
+      "No live both-Spark campaign, staged-reader lease qualification, conditional-liveness proof or power-loss durability proof."
+    ],
+    "note": "The regression fails only for funded streaming on unchanged production source. Unfunded controls and declared funded case pass before the repair. No-futile-relief bounds, live-holder exclusion and funding validation are unchanged."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "regression": {
+    "action_key": "6ba5d38de9ea9cf855bf2430e9a3dbe869b04bd3267ff2e3fc0da7ca3abd969e",
+    "source": "4f73cdef21e422cc8fe95a963c01eca1324a0159",
+    "production_source": "6185a6ee60f",
+    "outcome": "failed: 1 failed, 3 passed, 5 deselected",
+    "failure": "test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]: pressure 10 GiB instead of 11 GiB",
+    "receipt": "absent, as expected for nonzero pytest exit",
+    "terminal_and_log": "verified; cleanup complete"
+  },
+  "fleet_results": [
+    {
+      "action_key": "2eedb35d3ab3cea1e95ef7e9a316eeaaa2397d012da03e9dd06abc01c60e6da8",
+      "outcome": "executed",
+      "summary": "9 passed in 3.34s",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/2e/2eedb35d3ab3cea1e95ef7e9a316eeaaa2397d012da03e9dd06abc01c60e6da8.json",
+      "receipt_sha256": "ae0af507388191019a91afa0585ddccbd7ddcd859ddf6eed837e54661094a3bf",
+      "payload_sha256": "1aa1d5f874101e0262404c1e9aff2b12d46402d4c24c531a800205ac4dfb514e"
+    },
+    {
+      "action_key": "43807ca111e4d5ee80a8f8e669b3f5878d0add82d4bce1e9494e2447475b3713",
+      "outcome": "executed",
+      "summary": "4 passed in 0.55s",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/43/43807ca111e4d5ee80a8f8e669b3f5878d0add82d4bce1e9494e2447475b3713.json",
+      "receipt_sha256": "4ca1b7a7fdf64bd02e8d184df6d53749f9138c234cb07e0a6463b26b0f70f763",
+      "payload_sha256": "8e794569c514675644c3f3a1093f964c1021609f089644b29b027e52aef707be"
+    },
+    {
+      "action_key": "9af77f2ce05897db9c567957c0032dee97a8d79eb833e27d8eefe2451026c099",
+      "outcome": "executed",
+      "summary": "11 passed in 0.99s",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/9a/9af77f2ce05897db9c567957c0032dee97a8d79eb833e27d8eefe2451026c099.json",
+      "receipt_sha256": "343c95c3423ccac8899a857a71a9c475df83f440d52198f3b408c3512c54a0eb",
+      "payload_sha256": "2032cb3688eaddb78f7b61e0980a08da512022295e29fe1570fcab988546eab0"
+    },
+    {
+      "action_key": "531edbad112bba7f9badd935e20a10a13dd852a5bf0c0ad94f9554e50bec320d",
+      "outcome": "executed",
+      "summary": "13 passed in 1.58s",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/53/531edbad112bba7f9badd935e20a10a13dd852a5bf0c0ad94f9554e50bec320d.json",
+      "receipt_sha256": "c09627deb6012327ef65077053c0d5bee233bf3d68e595f2d4f477be3ae28253",
+      "payload_sha256": "3b2729b4a1bddde4ceb6cfc02d45a27cb7aadc46a9ffe90ffcc34e6220b1bc92"
+    },
+    {
+      "action_key": "f98af0d12aa404c7070189607a2c787b502972e7cbf74b3a437081dbb3c4211c",
+      "outcome": "executed",
+      "summary": "16 passed in 1.67s",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/f9/f98af0d12aa404c7070189607a2c787b502972e7cbf74b3a437081dbb3c4211c.json",
+      "receipt_sha256": "079e5a99933c3934dbaa12be5da567d65e7236faa6350a9615a5be369d864c5e",
+      "payload_sha256": "604290cd8b982857afaafe3c48dc66533fb9617ceb75bb3e922de17539807bf1"
+    },
+    {
+      "action_key": "4bc17055678e26026d5a25598b4d3afa70a6e8279ddd898afa9ed2284c3fb86b",
+      "outcome": "executed",
+      "summary": "2 passed in 0.72s",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/4b/4bc17055678e26026d5a25598b4d3afa70a6e8279ddd898afa9ed2284c3fb86b.json",
+      "receipt_sha256": "113b5dd5084a93f010cff726cc99c6aeb6394c876bb7b9e6a2c9d45f169ebb48",
+      "payload_sha256": "66cf5bc0fc9f769e12584d3d34f85f22248bbf713791879c1756dabf52916ce5"
+    },
+    {
+      "action_key": "6c5c3d12dad4b416638ac2a4519e2c60327e2563883ff48c5b6eaf1d1962e3ea",
+      "outcome": "executed",
+      "summary": "8 passed in 0.53s",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/6c/6c5c3d12dad4b416638ac2a4519e2c60327e2563883ff48c5b6eaf1d1962e3ea.json",
+      "receipt_sha256": "64a3853efa3dfe6f82184edf852f813c3c2e3e1f80a888571b5ba6b7e4453c89",
+      "payload_sha256": "9bed125b91892d19d6779f756b24145cf36473cf15b5ecd9eb48c8f247364c57"
+    }
+  ],
+  "requirement_status": [
+    {
+      "id": "SM-02",
+      "target": "Materialization with guard-closed retiring, charge retained to actual delete with last live lease already absent, exactly-once release; transfer moves only logical owner release while object stays published; epoch invalidates readiness only; null expected digest records actual plus change-detection, never claimed as match.",
+      "ledger_axes_at_base": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "no"
+      },
+      "this_repair": {
+        "implementation": "existing protections unchanged",
+        "validation": "not a qualification of this requirement",
+        "deployment": "not deployed",
+        "workload_proof": "not run"
+      }
+    },
+    {
+      "id": "SM-03",
+      "target": "Reader lease acquisition/use/release; abstract mapping onto pins/fragments where present, gaps named.",
+      "ledger_axes_at_base": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "unknown",
+        "workload_proof": "unknown"
+      },
+      "this_repair": {
+        "implementation": "existing protections unchanged",
+        "validation": "not a qualification of this requirement",
+        "deployment": "not deployed",
+        "workload_proof": "not run"
+      }
+    },
+    {
+      "id": "INV-01",
+      "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
+      "ledger_axes_at_base": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "no"
+      },
+      "this_repair": {
+        "implementation": "component implemented",
+        "validation": "63 targeted tests; scoped accounting repair",
+        "deployment": "not deployed",
+        "workload_proof": "not run"
+      }
+    },
+    {
+      "id": "PRG-04",
+      "target": "Formal inequality over competing consumers or deterministic policy guaranteeing one admissible next step; no agent scheduler.",
+      "ledger_axes_at_base": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "no"
+      },
+      "this_repair": {
+        "implementation": "component implemented",
+        "validation": "63 targeted tests; scoped accounting repair",
+        "deployment": "not deployed",
+        "workload_proof": "not run"
+      }
+    },
+    {
+      "id": "LIVE-01",
+      "target": "Conditional liveness on stated fairness/finite-IO premises with NFS limitation honest; queue timeout implies neither withdrawal nor containment.",
+      "ledger_axes_at_base": {
+        "implementation": "no",
+        "validation": "unknown",
+        "deployment": "unknown",
+        "workload_proof": "no"
+      },
+      "this_repair": {
+        "implementation": "component implemented",
+        "validation": "63 targeted tests; scoped accounting repair",
+        "deployment": "not deployed",
+        "workload_proof": "not run"
+      }
+    },
+    {
+      "id": "SAFE-01",
+      "target": "No eviction of a live lease.",
+      "ledger_axes_at_base": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "unknown"
+      },
+      "this_repair": {
+        "implementation": "existing protections unchanged",
+        "validation": "not a qualification of this requirement",
+        "deployment": "not deployed",
+        "workload_proof": "not run"
+      }
+    }
+  ]
+}

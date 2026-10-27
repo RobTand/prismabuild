@@ -184,7 +184,7 @@ def recorded_action(cas, key: str):
     return cas.read_action_request(key)
 
 
-def _bounded_observation_value(q, key: str, cas, generation, *, lane_root=None):
+def _bounded_observation_value(q, key: str, cas, generation, *, lane_root=None, bounded_archives=False):
     """Read every non-mutating fact one ``pbwait`` pass needs in its child."""
 
     found = outstanding(q, key, lane_root=lane_root)
@@ -193,7 +193,7 @@ def _bounded_observation_value(q, key: str, cas, generation, *, lane_root=None):
     effective_generation = generation
     try:
         landed, next_generation = action_wait.outcome_poll(
-            q, key, generation, report_unreadable=True)
+            q, key, generation, report_unreadable=True, bounded_archives=bounded_archives)
         outcome = {
             "generation": next_generation,
             **action_client.encode_outcome_ending(landed),
@@ -242,7 +242,7 @@ def _bounded_observation_value(q, key: str, cas, generation, *, lane_root=None):
     }
 
 
-def bounded_observation(q, key: str, cas, generation, *, lane_root=None, budget_s=None):
+def bounded_observation(q, key: str, cas, generation, *, lane_root=None, budget_s=None, bounded_archives=False):
     """Return one verified read-only wait snapshot without blocking its parent.
 
     The child only reads the submission namespaces, terminal records, immutable
@@ -255,7 +255,7 @@ def bounded_observation(q, key: str, cas, generation, *, lane_root=None, budget_
     value = action_wait.read_observation(
         "pbwait observation",
         lambda: _bounded_observation_value(
-            q, key, cas, generation, lane_root=lane_root),
+            q, key, cas, generation, lane_root=lane_root, bounded_archives=bounded_archives),
         budget_s=(action_wait.OUTCOME_READ_TIMEOUT_S if budget_s is None else budget_s),
     )
     if not isinstance(value, dict):
@@ -405,6 +405,7 @@ def _from_ending(q, ending: endings.ObservedEnding, *, context=None) -> dict:
     scheduler = summary["detail"].get("slurm") or {}
     if context is not None:
         context.update({
+            "ending": (outcome_path, outcome),
             "published_unix": outcome.get("published_unix"),
             "attempt": (outcome.get("withdrawn_attempt") or outcome).get("attempts"),
             "started_unix": outcome.get("claimed_unix"),
@@ -602,7 +603,8 @@ def _look_once_checked(
         generation = state["generation"]
         previous_generation = generation
     found, landed, generation, action, receipt, unreadable, observed_generation = bounded_observation(
-        q, key, cas, generation, lane_root=lane_root, budget_s=budget_s)
+        q, key, cas, generation, lane_root=lane_root, budget_s=budget_s,
+        bounded_archives=ending_context is not None)
     if state is not None:
         state["generation"] = generation
         state["found"] = found
@@ -853,7 +855,8 @@ def consumer_ending_row(q, row, *, cas, context=None):
                 result = action_wait.read_observation(
                     "pbwait verified ending result",
                     lambda: action_result.read_verified_ending_result(
-                        q, row["action_key"], published_unix=published, attempt=number),
+                        q, row["action_key"], published_unix=published, attempt=number,
+                        ending=context.get("ending"), cas_root=cas.root),
                     budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
             except (action_wait.OutcomeObservationTimedOut, action_wait.OutcomeReaderRetained) as exc:
                 result = action_result.unverified_ending_result(exc)

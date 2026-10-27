@@ -29,6 +29,26 @@ def operate(request, store, load):
             result = cpu.read_box_origin(directory, digest)
             assert result and result["pid"] == 2, "origin consumer refused the actual namespace PID"
             return result
+    elif family == "host-admission-census":
+        reservation = load("prismabuild._measurement_reservation")
+        observation = reservation.CensusReader.__new__(reservation.CensusReader)
+        observation.directory = store / "census"
+        observation.directory.mkdir(mode=0o700)
+        observation.name = "compat"
+        observation.pool_identity = "/compat/pool"
+        reservation.time.monotonic = lambda: 100.0
+        reservation.reader._boot_id = lambda proc: "00000000-0000-0000-0000-000000000001"
+        path = observation.shared_path
+        if write:
+            observation.publish_shared(
+                {"measurements": {}, "elections": {}, "selections": {}, "opportunities": {},
+                 "keys": [], "gang_elections": {}, "movements": {}}, "a" * 64)
+        else:
+            path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
+            result = observation.shared_census()
+            assert result is not None, "shared census consumer refused the captured envelope"
+            return result
     else:
         ci = load("prismabuild.container_images")
         identifier = "sha256:" + "a" * 64
