@@ -16,6 +16,7 @@ import pytest
 import history_inputs
 
 HISTORY_TOOLS = {
+    "compat/support/check_controller_population.py": "Standalone population audit compares explicit historical source, assertions and protected corpus bytes.",
     "compat/support/compat_sources.py": "Maintenance capture deliberately resolves historical compatibility sources.",
     "compat/support/rebind_source_reviews.py": "Maintenance rebinding compares reviewed sources across explicit revisions.",
     "compat/support/record_compat.py": "Compatibility capture records the selected historical source identity.",
