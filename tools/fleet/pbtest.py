@@ -1393,13 +1393,62 @@ def shard_pytest_args(arguments: list[str], index: int) -> list[str]:
     return result
 
 
-
 def shard_arguments(spec: dict, pytest_args: list[str], index: int, *,
                     explicit_options: list[str], pytest_workers: list[str]) -> list[str]:
     """The recorder's selection and pytest argv for one immutable shard."""
     return [json.dumps(spec), "-q", "--no-header", "-p", "no:cacheprovider",
             *explicit_options, *shard_pytest_args(pytest_args, index),
             *pytest_workers, *spec["files"]]
+
+
+
+def qualify_shard_command(command: list[str], environment: dict, *,
+                          invocation: list[str], files: list[str], index: int) -> None:
+    """Refuse native evidence outside this generation's selected test recipe."""
+    try:
+        args = argument_parser().parse_args(invocation)
+    except SystemExit as exc:
+        raise ValueError("selected pbtest invocation is unsupported") from exc
+    checkout = Path(args.checkout).resolve()
+    population, config, declared = _pbtest_population(
+        checkout, args.paths, args.capabilities)
+    if (population["refusals"] or not files or len(set(files)) != len(files)
+            or not set(files) <= set(population["files"])
+            or type(index) is not int or index < 0):
+        raise ValueError("native shard files are outside the selected test population")
+    cohorts = {tuple(declared.get(name, ())) for name in files}
+    if len(cohorts) != 1:
+        raise ValueError("native shard crosses selected capability cohorts")
+    spec = {"files": files, "roots": requested_roots(checkout, args.paths)}
+    names = next(iter(cohorts))
+    if names:
+        spec["capabilities"] = pbtest_capabilities.shard_selection(names, config)
+    pytest_args = (parse_pytest_args(args.pytest_args, gpu=args.gpu,
+                                    workers=args.workers_per_shard)
+                   if args.pytest_args is not None else [])
+    if args.pytest_args is not None and environment.get("PYTEST_ADDOPTS") != "":
+        raise ValueError("native shard did not replace inherited pytest addopts")
+    tmpdir = args.tmpdir if args.tmpdir is not None else environment.get("TMPDIR")
+    if not isinstance(tmpdir, str) or not tmpdir:
+        raise ValueError("native shard has no sealed scratch directory")
+    checked_tmpdir = (tmpdir if args.tmpdir is not None
+                      or tmpdir != fleet_roster.LEGACY_ACTION_TMPDIR else None)
+    expected = [*shard_entry(args.python, checkout, tmpdir=checked_tmpdir,
+                            basetemp=args.basetemp, collection=True,
+                            trace=pbtest_outcomes.TRACE_OPTION in pytest_args,
+                            capabilities=bool(declared)),
+                *shard_arguments(spec, pytest_args, index,
+                    explicit_options=["-o", "addopts="] if args.pytest_args is not None else [],
+                    pytest_workers=["-n", str(args.workers_per_shard)]
+                                   if args.workers_per_shard > 1 else [])]
+    if command != expected:
+        raise ValueError("native command differs from the selected pbtest recorder/files/options")
+
+
+def requested_roots(checkout: Path, paths: list[str]) -> list[list[str]]:
+    return [[os.path.normpath(os.path.relpath(checkout / raw, checkout)),
+             "directory" if (checkout / raw).is_dir() else "file"]
+            for raw in paths]
 
 
 def validate_shard_env(entries: list[str]) -> None:
@@ -2131,10 +2180,7 @@ def main() -> int:
     surfaces = [pytest_args[position + 1] for position, option in enumerate(pytest_args[:-1])
                 if option == "--surface-json"]
     shared = not any(os.path.isabs(path) for path in surfaces)
-    requested_roots = [
-        [os.path.normpath(os.path.relpath(checkout / raw, checkout)),
-         "directory" if (checkout / raw).is_dir() else "file"]
-        for raw in args.paths or ["tests"]]
+    roots = requested_roots(checkout, args.paths or ["tests"])
     for index, bucket in enumerate(buckets):
         plan = plan_of[index]
         pins = ([entry for entry in plan["selection"]["dependencies"] if "kind" not in entry]
@@ -2163,7 +2209,7 @@ def main() -> int:
                        f"{pbtest_outcomes.RECORD_BINDING_ENV}={pbtest_outcomes.RECORD_BINDING_VERSION}",
                        *threads, *plan["bound_env"], *explicit_env,
                        "PYTHONPATH=src:experiments", *args.env]
-        spec: dict = {"files": bucket, "roots": requested_roots}
+        spec: dict = {"files": bucket, "roots": roots}
         if plan["selection"] is not None:
             spec["capabilities"] = plan["selection"]
         arguments = shard_arguments(spec, pytest_args, index,

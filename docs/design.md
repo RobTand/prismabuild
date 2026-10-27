@@ -19677,7 +19677,13 @@ qualification; it publishes no success receipt. The verified ending reader's
 opt-in producer view binds immutable attempt, claimed worker, CAS request,
 attestation, target interpreter and held native stdout. Queue reports must
 match the bound native outcome record and selected source/interpreter before
-that evidence qualifies a file. Missing historical evidence, truncated outcome
+that evidence qualifies a file. The selected pbtest generation reconstructs
+its canonical recorder, requested roots/file membership, capability selection
+and effective pytest argv from the launched invocation. The sealed command
+must match, including xdist count and explicit addopts replacement. Generations
+without this qualifier provide no attribution evidence. Environment identity
+also binds the verified recorder and pytest options while excluding shard
+membership, which can change between the candidate and failing-file rerun. Missing historical evidence, truncated outcome
 bytes, unsupported transports or mismatched environments leave failures intact
 and return `attribution-inconclusive`, with no status, culprit, flake filing or
 member attempt charge. Absent newly added test files retain the existing
@@ -19686,7 +19692,8 @@ structural absence rule.
 Qualified flakes retain repository, source, workers, actions, reports, logs and
 receipt references. Filing searches existing exact-node owners and a stable
 repository/node marker before creating an issue. Failed or incomplete owner
-searches do not authorize new issues. Queue-local deduplication keys include
+searches do not authorize new issues. Mixed batches finish every required
+prefix comparison before filing any flake. Queue-local deduplication keys include
 the repository. No mismatch is reclassified as a flake, and storage/producer
 refusals are preserved.
 

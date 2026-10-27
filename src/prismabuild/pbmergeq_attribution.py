@@ -1,5 +1,7 @@
 """Pure failure attribution policy for the merge queue."""
 
+import json
+
 from prismabuild import core
 
 
@@ -7,8 +9,13 @@ def environment_identity(producer: dict, interpreter: dict, runtime: dict,
                          config: dict, request: dict) -> str:
     """Compare observed environments without source/attempt-specific fields."""
     evidence = producer["evidence"]
+    command = request["params"]["command"]
+    selection = json.loads(command[3])
     return core.canonical_sha256({
-        "schema": "pbmergeq.observed_environment.v1",
+        "schema": "pbmergeq.observed_environment.v2",
+        "recorder": command[:3],
+        "pytest_options": command[4:-len(selection["files"])],
+        "capabilities": selection.get("capabilities"),
         "worker": producer["worker_id"], "platform": producer["platform_key"],
         "host_class": producer["host_class"],
         "evidence": {k: evidence[k] for k in

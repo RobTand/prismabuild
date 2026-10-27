@@ -1007,6 +1007,17 @@ class Runner:
                 if (params.get("interpreter") != runtime["python"]
                         or params.get("checkout_snapshot", {}).get("parent") != runtime["source"][0]):
                     raise ValueError("native action differs from selected source/interpreter")
+                if checkout is None or files is None:
+                    raise ValueError("no selected test invocation context")
+                if self._pbtest is None:
+                    self._pbtest = load_published_module(self.cfg.pbtest)
+                qualify = getattr(self._pbtest, "qualify_shard_command", None)
+                if not callable(qualify):
+                    raise ValueError("selected pbtest generation cannot qualify native recipes")
+                qualify(params["command"], request["environment"]["variables"],
+                        invocation=test_command(self.cfg, checkout, files, Path("unused"), [],
+                                                python=runtime["python"])[2:],
+                        files=row["files"], index=row["shard"])
                 native = self.outcomes.parse(verified["producer_stdout"] or "",
                                              record_binding=row.get("record_binding"))
                 reported = self.outcomes.parse(row.get("output") or "",
