@@ -107,7 +107,8 @@ class RootBudget:
                 or not isinstance(backing["guid"], str) or not backing["guid"].isascii()
                 or not backing["guid"].isdigit() or int(backing["guid"]) <= 0
                 or any(type(backing[k]) is not int or backing[k] < minimum
-                       for k in ("quota_bytes", "reservation_bytes"))):
+                       for k in ("quota_bytes", "reservation_bytes"))
+                or backing["quota_bytes"] != backing["reservation_bytes"]):
             raise local_scratch.LocalScratchError("dedicated ZFS quota/reservation must cover its ceiling and floor")
         return cls(root, entry["max_gib"], entry["min_free_gib"], dict(identity), dict(backing))
 
@@ -177,7 +178,7 @@ class RootInputs:
     def _inspect(self, budget):
         found = budget.inspect()
         ordinary = self._ordinary_identity()
-        if all(found["mount"][k] == ordinary[k] for k in ("major_minor", "source")):
+        if any(found["mount"][k] == ordinary[k] for k in ("major_minor", "source")):
             raise local_scratch.LocalScratchError("dedicated scratch aliases ordinary spool backing")
         return found
 
@@ -227,6 +228,24 @@ class RootInputs:
                 declared[kind] = live[kind] = 0
         self.detail = {"schema": OBSERVATION_SCHEMA, "roots": records}
         return declared, live
+
+
+def claim_shortage(ledger, demand):
+    """Refuse root sharing under the caller's continuous mutation exclusion."""
+    selected = {kind: count for kind, count in demand.items()
+                if local_scratch.is_capacity_kind(kind) and int(count) > 0}
+    if not selected:
+        return None
+    try:
+        held = ledger.floor_snapshot(selected)
+    except (OSError, ValueError):
+        return {"resource": "scratch_capacity", "requested": sum(selected.values()),
+                "available": 0, "reason": "holder_census_unavailable"}
+    for kind, need in sorted(selected.items()):
+        if held[kind]:
+            return {"resource": "scratch_capacity", "kind": kind,
+                    "requested": need, "available": 0, "reason": "root_busy"}
+    return None
 
 
 def validate_observation(value):

@@ -4530,28 +4530,14 @@ class ResourceLedger:
                     "resource": "filesystem_floor", "requested": 0, "available": 0,
                     "reason": "gate_unreadable", "detail": repr(exc)}
                 return None
-        if gate is None:
-            return self._begin_acquire_locked(action_key, demand, **kwargs)
-        with self._mutation_locked(blocking=False) as acquired:
-            if not acquired:
-                self.last_token_shortage = {
-                    "resource": "ledger_lock", "requested": 0, "available": 0,
-                    "reason": "mutation_lock_busy"}
-                return None
-            with gate.admitted() as allowed:
-                if not allowed:
-                    self.last_token_shortage = gate.shortage()
-                    return None
-                if not gate.reserve():
-                    self.last_token_shortage = gate.shortage()
-                    return None
-                return self._begin_acquire_locked(action_key, demand, **kwargs)
+        return self._begin_acquire_locked(action_key, demand, floor_gate=gate, **kwargs)
 
     @_guarded_mutation(blocking=False)
     def _begin_acquire_locked(
         self, action_key: str, demand: Mapping[str, int], *,
         adaptive: dict | None = None, cpu_tiers: Mapping | None = None,
         adaptive_gpu: dict | None = None,
+        floor_gate=None,
     ) -> str | None:
         """Take the whole demand into a directory only this claimant owns.
 
@@ -4587,9 +4573,19 @@ class ResourceLedger:
         """
 
         self.last_token_shortage = None
-        return self._take_acquire_locked(
-            action_key, demand, adaptive=adaptive, cpu_tiers=cpu_tiers,
-            adaptive_gpu=adaptive_gpu)
+        if any(local_scratch.is_capacity_kind(kind) for kind in demand):
+            from . import scratch_capacity
+            self.last_token_shortage = scratch_capacity.claim_shortage(self, demand)
+            if self.last_token_shortage is not None:
+                return None
+        kwargs = {"adaptive": adaptive, "cpu_tiers": cpu_tiers, "adaptive_gpu": adaptive_gpu}
+        if floor_gate is None:
+            return self._take_acquire_locked(action_key, demand, **kwargs)
+        with floor_gate.admitted() as allowed:
+            if not allowed or not floor_gate.reserve():
+                self.last_token_shortage = floor_gate.shortage()
+                return None
+            return self._take_acquire_locked(action_key, demand, **kwargs)
 
     def _take_acquire_locked(
         self, action_key: str, demand: Mapping[str, int], *,
@@ -17961,6 +17957,7 @@ class PoolQueue:
             if dedicated_scratch and (ledger is None or not demand):
                 raise PoolContractError("dedicated scratch requires host-ledger admission")
             if dedicated_scratch:
+                intent_refusal = "scratch_capacity_unavailable"
                 if self.scratch_capacity_inputs is None:
                     raise PoolContractError("dedicated scratch requires configured root authority")
                 self.scratch_capacity_inputs.require(request["environment"]["variables"])

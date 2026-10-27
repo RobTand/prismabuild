@@ -127,6 +127,144 @@ def test_root_tokens_cannot_overcommit_or_spend_ordinary_spool(tmp_path):
     assert ledger.acquire("c" * 64, {KIND: 320})
 
 
+@pytest.mark.parametrize("holder", ["a" * 64, "claiming.legacy"], ids=["committed", "private"])
+def test_high_index_holder_blocks_new_root_claim_after_remint(tmp_path, holder):
+    ledger = pool.ResourceLedger(tmp_path / "reservations", host="proof")
+    ledger.ensure_capacity({KIND: 320})
+    # Retained custody from an older worker can occupy the high slots. Seed
+    # those exact tokens without asking the new admission policy to create it.
+    low = ledger.held_dir / ("b" * 64)
+    high = ledger.held_dir / holder
+    low.mkdir()
+    high.mkdir()
+    for index, token in enumerate(sorted(ledger.free_dir.iterdir())):
+        token.rename((low if index < 160 else high) / token.name)
+    assert ledger.held() == {KIND: 320}
+    ledger.release("b" * 64)
+    ledger.retire_free_capacity({KIND: 160})
+    ledger.ensure_capacity({KIND: 160})
+    assert ledger.available()[KIND] == 160
+    assert not ledger.acquire("c" * 64, {KIND: 160})
+    assert ledger.last_token_shortage["reason"] == "root_busy"
+    assert ledger.held() == {KIND: 160}
+    ledger.release(holder)
+    assert ledger.acquire("c" * 64, {KIND: 160})
+
+
+def test_floor_cli_keeps_the_complete_root_kind_member():
+    assert filesystem_floor._member("reservations/proof:" + KIND) == (
+        "reservations", "proof", KIND)
+
+
+def test_two_ledger_owners_cannot_share_one_root(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    ledger = pool.ResourceLedger(tmp_path / "reservations", host="proof")
+    ledger.ensure_capacity({KIND: 320})
+    start = Barrier(2)
+    def take(key):
+        owner = pool.ResourceLedger(tmp_path / "reservations", host="proof")
+        start.wait(timeout=30)
+        return owner.acquire(key, {KIND: 160})
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(take, ["a" * 64, "b" * 64]))
+    assert sorted(outcomes) == [False, True]
+    assert ledger.held() == {KIND: 160}
+
+
+def test_unknown_root_holder_census_refuses_before_floor_charging(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    ledger = pool.ResourceLedger(tmp_path / "reservations", host="proof")
+    ledger.ensure_capacity({KIND: 320})
+    calls = []
+    class Floor:
+        @contextmanager
+        def admitted(self):
+            calls.append("floor")
+            yield True
+        def reserve(self):
+            calls.append("charge")
+            return True
+    monkeypatch.setattr(filesystem_floor, "ledger_gate", lambda *_: Floor())
+    def unknown(_kinds):
+        raise OSError("unreadable holder")
+    monkeypatch.setattr(ledger, "floor_snapshot", unknown)
+    assert ledger.begin_acquire("a" * 64, {KIND: 160}) is None
+    assert ledger.last_token_shortage["reason"] == "holder_census_unavailable"
+    assert calls == []
+    assert ledger.held() == {}
+
+
+def test_mountinfo_uses_the_exact_mount_id_and_decodes_paths():
+    raw = r"41 1 0:22 / /root\040space rw shared:7 - zfs storage_pool/test\134name rw"
+    found = local_scratch._descriptor_mount_backing("pos:\t0\nmnt_id:\t41\n", raw)
+    assert found == {"mount_id": 41, "major_minor": "0:22", "mount_root": "/",
+                     "mountpoint": "/root space", "filesystem_type": "zfs",
+                     "source": "storage_pool/test\\name"}
+
+
+@pytest.mark.parametrize("fdinfo,mountinfo", [
+    ("", ""), ("mnt_id:\t41\nmnt_id:\t42", ""), ("mnt_id:\tunknown", ""),
+    ("mnt_id:\t41", "42 1 0:22 / /root rw - zfs storage_pool/test rw"),
+    ("mnt_id:\t41", "41 1 0:22 / /root rw"),
+    ("mnt_id:\t41", "41 1 invalid / /root rw - zfs storage_pool/test rw"),
+    ("mnt_id:\t41", "41 1 0:22 / /root rw - zfs storage_pool/test"),
+    ("mnt_id:\t41", "41 1 0:22 / /root rw - zfs storage_pool/test rw\n"
+                        "41 1 0:22 / /root rw - zfs storage_pool/test rw"),
+])
+def test_mountinfo_refuses_ambiguous_or_malformed_population(fdinfo, mountinfo):
+    with pytest.raises(local_scratch.LocalScratchError):
+        local_scratch._descriptor_mount_backing(fdinfo, mountinfo)
+
+
+ZFS_TEXT = ("guid\t1234\navailable\t412316860416\nquota\t412316860416\n"
+            "reservation\t412316860416\nmountpoint\t/storage_pool/tl2-qualification-vm\nmounted\tyes\n")
+
+
+def test_zfs_property_output_has_a_closed_exact_population(monkeypatch):
+    monkeypatch.setattr(filesystem_floor, "_command", lambda _argv: ZFS_TEXT)
+    assert scratch_capacity.zfs_properties(BACKING["dataset"]) == {
+        "guid": "1234", "available": "412316860416", "quota": "412316860416",
+        "reservation": "412316860416", "mountpoint": ROOT, "mounted": "yes"}
+
+
+@pytest.mark.parametrize("raw", ["", ZFS_TEXT + "guid\t1234\n",
+                                  ZFS_TEXT.replace("guid\t1234", "guid\t1234\textra"),
+                                  ZFS_TEXT.replace("mounted\tyes\n", "unknown\tyes\n"),
+                                  ZFS_TEXT.replace("guid\t1234", "guid\t" + "1" * 16384)])
+def test_zfs_property_parser_refuses_missing_duplicate_or_extra_output(monkeypatch, raw):
+    monkeypatch.setattr(filesystem_floor, "_command", lambda _argv: raw)
+    with pytest.raises(local_scratch.LocalScratchError, match="unreadable"):
+        scratch_capacity.zfs_properties(BACKING["dataset"])
+
+
+@pytest.mark.parametrize("quota_gib", [128, 127])
+def test_host_probe_checks_the_declared_allocation(tmp_path, monkeypatch, quota_gib):
+    import os
+    import qualify_scratch_capacity as probe
+
+    namespace = tmp_path / "prismabuild-ephemeral"
+    namespace.mkdir(mode=0o700)
+    monkeypatch.setattr(scratch_capacity, "inspect_root", lambda _root: {"free_bytes": 128 * GIB})
+    properties = (f"mountpoint\t{tmp_path}\nquota\t{quota_gib * GIB}\n"
+                  f"reservation\t{128 * GIB}\nsync\tstandard\nexec\toff\nsetuid\toff\ndevices\toff\n")
+    monkeypatch.setattr(probe.subprocess, "run", lambda *_a, **_kw: SimpleNamespace(stdout=properties))
+    placeholder = tmp_path / "kvm-placeholder"
+    placeholder.touch()
+    original_open = os.open
+    monkeypatch.setattr(os, "open", lambda path, flags, *a, **kw: original_open(
+        placeholder if path == "/dev/kvm" else path, flags, *a, **kw))
+    monkeypatch.setattr(probe.fcntl, "ioctl", lambda *_: 12)
+    result = probe.inspect_host(root=str(tmp_path), dataset="storage_pool/test",
+                               max_gib=80, min_free_gib=16, allocation_gib=128)
+    assert result["allocation_gib"] == 128
+    assert result["native_admission_qualified"] is False
+    assert result["errors"] == ([] if quota_gib == 128 else [
+        "dataset quota and reservation differ from the declared allocation"])
+
+
 IDENTITY = {"device": "22", "filesystem": "33", "root_inode": "44",
             "filesystem_type": "zfs", "birthtime_ns": 100}
 BACKING = {"dataset": "storage_pool/tl2-qualification-vm", "guid": "1234",
@@ -268,7 +406,7 @@ def test_allocation_drift_refuses_both_offer_and_launch(configured_root, monkeyp
         inputs.require(variables())
 
 
-@pytest.mark.parametrize("fault", ["fields", "zero", "identity", "reservation", "alias"])
+@pytest.mark.parametrize("fault", ["fields", "zero", "identity", "reservation", "unequal", "alias"])
 def test_config_refuses_invalid_or_aliased_allocations(tmp_path, fault):
     entry = {"root": ROOT, "max_gib": 320, "min_free_gib": 32,
              "identity": copy.deepcopy(IDENTITY), "backing": copy.deepcopy(BACKING)}
@@ -281,6 +419,8 @@ def test_config_refuses_invalid_or_aliased_allocations(tmp_path, fault):
         entry["identity"]["birthtime_ns"] = True
     elif fault == "reservation":
         entry["backing"]["reservation_bytes"] = 351 * GIB
+    elif fault == "unequal":
+        entry["backing"]["quota_bytes"] = 385 * GIB
     else:
         entries.append({**entry, "root": "/alias"})
     config = tmp_path / "config.json"
@@ -355,7 +495,7 @@ def test_publish_and_claim_cannot_spend_unconfigured_root_capacity(tmp_path, mon
     reasons = []
     monkeypatch.setattr(queue, "record_denial", lambda _row, reason, _detail=None: reasons.append(reason))
     assert queue.claim(tags=row["tags"], capacity=row["resources"]) is None
-    assert "scratch_capacity_intent_invalid" in reasons
+    assert "scratch_capacity_unavailable" in reasons
     assert queue.ledger().held() == {}
     assert queue.records.item_path(pool.record_store.READY, action["action_key"]).exists()
 

@@ -42,13 +42,14 @@ MUTANTS = (
            'offered = found["measured_gib"]',
            "test_a_holder_never_creates_credit_for_unwritten_bytes"),
     Mutant("ordinary-alias", "src/prismabuild/scratch_capacity.py",
-           'if all(found["mount"][k] == ordinary[k] for k in ("major_minor", "source")):', "if False:",
+           'if any(found["mount"][k] == ordinary[k] for k in ("major_minor", "source")):', "if False:",
            "test_unknown_or_aliasing_backing_never_grants_capacity[ordinary]"),
     Mutant("launch-recheck", "src/prismabuild/pool.py",
            "if local_scratch.capacity_roots(variables):", "if False:",
            "test_launch_rechecks_backing_before_payload_and_retains_the_claim"),
     Mutant("claim-authority", "src/prismabuild/pool.py",
            'if dedicated_scratch:\n'
+           '                intent_refusal = "scratch_capacity_unavailable"\n'
            '                if self.scratch_capacity_inputs is None:\n'
            '                    raise PoolContractError("dedicated scratch requires configured root authority")\n'
            '                self.scratch_capacity_inputs.require(request["environment"]["variables"])',
@@ -61,6 +62,10 @@ MUTANTS = (
            'if not isinstance(identity, dict) or identity.get("filesystem_type") != "zfs":',
            "if not isinstance(identity, dict):",
            "test_btrfs_subvolumes_do_not_supply_independent_capacity"),
+    Mutant("root-sharing", "src/prismabuild/pool.py",
+           'self.last_token_shortage = scratch_capacity.claim_shortage(self, demand)',
+           'self.last_token_shortage = None',
+           "test_high_index_holder_blocks_new_root_claim_after_remint[committed]"),
 )
 
 

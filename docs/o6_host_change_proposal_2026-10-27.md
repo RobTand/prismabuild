@@ -27,8 +27,11 @@ Inspected dl380g10 over SSH on 2026-10-27, without tests or mutation:
 - A complete PB observation reports dl380g10 `spool_gb=8`. That backing and
   offer remain unchanged.
 - `/dev/kvm` is root:kvm 0660; the existing kvm group includes rob.
-  QEMU executables are root:root 0755. Contained KVM access still needs an
-  admitted native proof. No software-emulation fallback is accepted.
+  QEMU executables are root:root 0755. Admitted read-only action
+  `8003f734600e30dd6523029d793a5940f6980864293ab580cb30c010214daf00`
+  opened KVM and observed API version 12. Its overall result was blocked
+  because the dedicated root and dataset were absent. It booted no VM and
+  made no disk writes. No software-emulation fallback is accepted.
 
 The supervisor is not a `prismabuild-supervisor.service` unit on this host.
 An empty result from inspecting that name proves no supervisor permissions.
@@ -77,6 +80,19 @@ All VM files belong in the registered ephemeral leaf addressed through PB's
 scratch helper. The root and TMPDIR are not automatically redirected. PB
 owns stop proof and deletion after success, failure and interruption. TL2
 supplies no sweeper. A cleanup error retains the claim and its capacity.
+
+Before runtime activation, PB also registers this local root and the exact
+member `reservations/dl380g10:scratch_gb:61f4329524dcd3e9624832f8cabb7f1bdd656cd64cc9d77b7663aa5d2a713865`
+with the used-filesystem floor, through an admitted action on dl380g10.
+The registration interface is
+`python -m prismabuild.filesystem_floor register /storage_pool/tl2-qualification-vm --member MEMBER --coverage-json PATH`.
+Enforce mode requires an authority-supplied coverage snapshot for this exact
+binding. Its inputs and activation approval are not supplied by this dataset
+proposal; diagnostic registration alone does not satisfy that gate. PB must
+retain the current floor policy and record an unbound/unknown refusal if
+coverage is missing. See the operating guide's floor section and coverage
+reference. The measured I/O profile, capacity config and floor binding are
+three separate inputs.
 
 Dataset provisioning, source merge, runtime activation and native O6
 qualification are separate gates. No large O6 action may be submitted until

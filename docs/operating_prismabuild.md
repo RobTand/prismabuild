@@ -5419,11 +5419,21 @@ after provisioning and readback. The JSON has schema
 `filesystem`, `filesystem_type`, `root_inode`, and `birthtime_ns`. For O6 the
 proposed maximum is 320 and the minimum free space is 32 GiB on a 384-GiB
 dataset. Each entry also needs `backing` with the actual `dataset`, `guid`,
-`quota_bytes`, and `reservation_bytes`. Both allocation byte counts must match
-fresh ZFS properties and cover the ceiling plus floor. Only a real, reserved
+`quota_bytes`, and `reservation_bytes`. Both allocation byte counts must be
+equal, match fresh ZFS properties, and cover the ceiling plus floor. Only a real, reserved
 ZFS mount qualifies for this interface. Record actual values; placeholders
 enable nothing. While any root charge is held, new root admissions wait for
 cleanup and a fresh capacity measurement.
+
+Register the exact root kind with the used-filesystem floor before activation:
+`python -m prismabuild.filesystem_floor register ROOT --member reservations/HOST:KIND`.
+`KIND` is the complete `scratch_gb:<root-sha256>` string; the first colon
+separates the ledger from its kind. Run registration through an admitted
+action on the host where the root is local. Enforce mode also requires an
+authority-supplied coverage snapshot for that exact binding
+(`--coverage-json PATH`); diagnostic registration alone remains
+`population_unknown`. Do not disable the floor or invent coverage to admit O6.
+See [floor coverage](filesystem_floor.md#coverage-in-the-existing-binding).
 
 Use the registered ephemeral leaf through PB's scratch helper. The root and
 TMPDIR do not redirect automatically. PB retains capacity until exact stop

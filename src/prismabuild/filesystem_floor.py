@@ -1314,7 +1314,7 @@ def host_admission(queue_root, paths: Iterable, *, label: str) -> bool:
 def _member(text: str) -> tuple[str, str, str]:
     """``reservations/<host>:<kind>`` or ``tier-reservations/<tier>:<kind>``."""
 
-    ledger, _, kind = text.rpartition(":")
+    ledger, _, kind = text.partition(":")
     root, _, name = ledger.partition("/")
     if not (root and name and kind):
         raise argparse.ArgumentTypeError(f"{text!r} is not <ledger-root>/<name>:<kind>")

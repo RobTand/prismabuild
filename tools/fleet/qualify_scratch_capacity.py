@@ -17,7 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from prismabuild import local_scratch, scratch_capacity  # noqa: E402
 
 
-def inspect_host(*, root: str, dataset: str, max_gib: int, min_free_gib: int) -> dict:
+def inspect_host(*, root: str, dataset: str, max_gib: int, min_free_gib: int,
+                 allocation_gib: int = 384) -> dict:
     checks, errors = {}, []
     try:
         found = scratch_capacity.inspect_root(root)
@@ -42,8 +43,10 @@ def inspect_host(*, root: str, dataset: str, max_gib: int, min_free_gib: int) ->
                     "setuid": "off", "devices": "off"}
         if any(values.get(k) != v for k, v in expected.items()):
             errors.append("dataset mount or protection properties differ from the approved proposal")
-        if any(int(values.get(k, "0")) < 384 * local_scratch.GIB for k in ("quota", "reservation")):
-            errors.append("dataset quota and reservation must each cover 384 GiB")
+        if (allocation_gib < max_gib + min_free_gib
+                or any(int(values.get(k, "0")) != allocation_gib * local_scratch.GIB
+                       for k in ("quota", "reservation"))):
+            errors.append("dataset quota and reservation differ from the declared allocation")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         errors.append(f"dataset prerequisite: {type(exc).__name__}")
     try:
@@ -59,6 +62,7 @@ def inspect_host(*, root: str, dataset: str, max_gib: int, min_free_gib: int) ->
         errors.append(f"contained KVM prerequisite: {exc}")
     return {"schema": "prismabuild.scratch_capacity_host_probe.v1", "root": root,
             "dataset": dataset, "max_gib": max_gib, "min_free_gib": min_free_gib,
+            "allocation_gib": allocation_gib,
             "checks": checks, "errors": errors,
             "status": "blocked" if errors else "host-prerequisites-ready",
             "native_admission_qualified": False,
@@ -72,13 +76,16 @@ def main(argv=None):
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--max-gib", type=int, default=320)
     parser.add_argument("--min-free-gib", type=int, default=32)
+    parser.add_argument("--allocation-gib", type=int, default=384)
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-f]{64}", os.environ.get("PRISMABUILD_ACTION_KEY", "")):
         parser.error("submit this probe through the published PrismaBuild client")
-    if args.max_gib <= 0 or args.min_free_gib <= 0:
+    if (args.max_gib <= 0 or args.min_free_gib <= 0
+            or args.allocation_gib < args.max_gib + args.min_free_gib):
         parser.error("capacity and free-space floor must be positive")
     report = inspect_host(root=args.root, dataset=args.dataset,
-                          max_gib=args.max_gib, min_free_gib=args.min_free_gib)
+                          max_gib=args.max_gib, min_free_gib=args.min_free_gib,
+                          allocation_gib=args.allocation_gib)
     print(json.dumps(report))
     return 2 if report["errors"] else 0
 
