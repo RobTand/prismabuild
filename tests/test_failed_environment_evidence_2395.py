@@ -99,6 +99,7 @@ def failed_ending(tmp_path, *, producer=True, foreign=False, interpreter=False,
         body.pop("attestation_sha256")
         attestation = {**body, "attestation_sha256": pb.canonical_sha256(body)}
     queue = pool.PoolQueue(tmp_path / "queue")
+    queue.offers = lambda: []
     queue.records.ensure_layout()
     key = action["action_key"]
     queue.publish(action_key=key, cas_root=cas.root, checkout_root=checkout,
