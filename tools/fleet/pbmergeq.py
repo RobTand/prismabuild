@@ -1315,14 +1315,7 @@ class Queue:
             cleanup["not_before"] = time.time() + self.cfg.stuck_backoff_s
             self.store.save()
             try:
-                vehicle = cleanup["vehicle"]
-                found = (self.github.pr(vehicle["number"]) if "number" in vehicle
-                         else self.github.find_vehicle(vehicle["branch"]))
-                if found is not None and found["state"] == "OPEN":
-                    if not self.github.close_vehicle(bid, found["number"]):
-                        raise RuntimeError("vehicle close refused")
-                if not self.mirror.delete_candidate(vehicle["branch"]):
-                    raise RuntimeError("vehicle branch deletion refused")
+                self.cleanup_vehicle(bid, cleanup["vehicle"])
             except Exception as exc:
                 cleanup["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
                 self.store.event(bid, f"vehicle cleanup retained: {cleanup['last_error']}")
@@ -1330,6 +1323,15 @@ class Queue:
                 del pending[bid]
                 self.store.event(bid, "vehicle cleanup complete")
             self.store.save()
+
+    def cleanup_vehicle(self, bid: str, vehicle: dict) -> None:
+        found = (self.github.pr(vehicle["number"]) if "number" in vehicle
+                 else self.github.find_vehicle(vehicle["branch"]))
+        if found is not None and found["state"] == "OPEN":
+            if not self.github.close_vehicle(bid, found["number"]):
+                raise RuntimeError("vehicle close refused")
+        if not self.mirror.delete_candidate(vehicle["branch"]):
+            raise RuntimeError("vehicle branch deletion refused")
 
     def expired_green(self, batch: dict) -> dict:
         vehicle = batch["vehicle"]
