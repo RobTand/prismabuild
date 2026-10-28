@@ -3,6 +3,8 @@
 Historical draft. For current source status, the staged-only fallback constraint,
 and the next design approval gate, read the
 [2026-10-25 design review](local_resident_sets_review_2026-10-25.md).
+The [2026-10-28 prerequisite checkpoint](results/gate_1730_2026-10-28.md)
+refreshes capacity and staged-path observations without qualifying speed or payback.
 The space and deployment statements below describe October 5 only.
 
 Author: pb-integrator, 2026-10-05. Status: **design only, nothing built.** Revision 2 (after the pool review `rev-1005-164242-445d` at 28b6978f, REQUEST_CHANGES: three blockers B1-B3 fixed below, plus the reviewer's corrections; the review also noted that my first request carried a wrong SHA, which I had filed in error). Direction from Rob via the CEO: "Things that will be needed a lot
