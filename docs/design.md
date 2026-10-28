@@ -8149,8 +8149,12 @@ GPU box. If any eligible box is GB10, a declared cap above the effective
 `mem_gb` is refused with the existing subset-cap diagnostic. The refusal does
 not narrow eligibility. Discrete-only placement retains independent VRAM caps
 above host RAM. Ordinary CLI/mapping submission and decomposition use resolved
-placement; campaign list and logical-manifest preflight check the complete
-manifest before any row is submitted. The shared publication boundary also
+placement; campaign list and logical-manifest preflight use the same dependency
+placement resolver, declared environment and shim-prefixed executable search
+path to check the complete manifest before any row is submitted. An implicit
+host pin counts as discrete-only placement when that host has discrete VRAM;
+`anywhere` still includes all eligible GPU hosts. Preflight does not freeze
+templates, seal actions or publish rows. The shared publication boundary also
 checks caps on already sealed children and compiled producers before request
 or queue publication. Pure decomposition schema validation
 remains fleet-independent and actual submission supplies the authoritative

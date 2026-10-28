@@ -210,7 +210,8 @@ def test_campaign_local_scope_uses_the_actual_host(field, host, refused, fleet, 
 def test_manifest_cap_uses_submission_dependency_placement(path, host, anywhere, fleet, tmp_path):
     fleet.monkeypatch.setattr(submission.socket, "gethostname", lambda: host)
     row = {"argv": ["true"], "cwd": str(fleet.work),
-           "demand": {"gpu": 1, "mem_gb": 8}, "gpu_memory_gb": 16}
+           "demand": {"gpu": 1, "mem_gb": 8}, "gpu_memory_gb": 16,
+           "env": {"OMP_NUM_THREADS": "1" if path == "logical-manifest" else 1}}
     if anywhere:
         row["anywhere"] = True
     refused = anywhere or host == "unified-host"
