@@ -1,5 +1,33 @@
 """Early placement-only GPU policy, independent of runtime device accounting."""
+import argparse
 from collections.abc import Mapping, Sequence
+from pathlib import Path
+
+from . import contracts, fleet_roster
+
+
+def _eligible_gpu_classes(roster: fleet_roster.Roster, tags: Sequence[str]) -> set[str]:
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
+    parser.add_argument("--class", dest="klass", default="gb10")
+    parser.add_argument("--tag", action="append", default=[])
+    parser.add_argument("--gpu", action="store_true")
+    parser.add_argument("--gpu-slots", type=int, default=0)
+    code_tags = {contract.tag for contract in contracts.CONTRACTS}
+    required = {tag for tag in tags if tag not in code_tags
+                and not tag.startswith("runtime-generation:")}
+    classes = set()
+    for key, names, entry in roster.declarations():
+        box = fleet_roster.Box(key, entry, roster)
+        if fleet_roster.is_absent(key, entry) or box.loops == 0:
+            continue
+        try:
+            worker, _ = parser.parse_known_args(box.loop_args)
+        except argparse.ArgumentError as exc:
+            raise ValueError(f"invalid GPU placement for roster box {key!r}: {exc}") from exc
+        if (worker.gpu or worker.gpu_slots > 0) and required <= {
+                *names, worker.klass, *worker.tag}:
+            classes.add(worker.klass)
+    return classes
 
 
 def _require_gb10_memory_subset(
