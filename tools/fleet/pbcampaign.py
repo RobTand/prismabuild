@@ -225,6 +225,7 @@ import io
 import json
 import math
 import os
+import socket
 from dataclasses import replace
 from pathlib import Path
 import posixpath
@@ -569,10 +570,14 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
             transport=transport,
         )
         from prismabuild._gpu_submission_policy import _require_gb10_memory_subset
+        placement_tags = list(row.get("tags") or ())
+        if row.get("here") or (row.get("measurement") and row.get("host_class") is None):
+            placement_tags.append(socket.gethostname())
         _require_gb10_memory_subset(
             demand=normalized_demand, gpu_memory_gb=row.get("gpu_memory_gb"),
-            tags=row.get("tags") or (), host_class=row.get("host_class"),
+            tags=placement_tags, host_class=row.get("host_class"),
             gpu=bool(row.get("gpu")), exclusive=bool(row.get("exclusive")),
+            roster_path=store_for(__file__).roster_path,
         )
     except ValueError as exc:
         raise ManifestError(f"row {index}: {exc}") from None

@@ -34,22 +34,34 @@ def _require_gb10_memory_subset(
     *, demand: Mapping[str, object], gpu_memory_gb: object,
     tags: Sequence[str] = (), host_class: str | None = None,
     gpu: bool = False, exclusive: bool = False,
+    roster_path: Path | None = None,
 ) -> None:
-    """Compare explicit GB10 caps with pbrun's effective host-memory demand.
+    """Compare eligible GB10 caps with pbrun's effective host-memory demand.
 
     Numeric strings are accepted by campaign manifests. Evaluate normalized
     numbers without changing their source mapping or the sealed common spec.
-    Unresolved placement is deliberately not inferred from a hostname or device.
+    Submission boundaries supply their authoritative roster and resolved tags.
+    Pure schema validation without a roster checks explicit GB10 declarations.
     Discrete VRAM is independent of the host reservation.
     """
-    if gpu_memory_gb is None or not ("gb10" in tags or host_class == "gb10"):
+    if gpu_memory_gb is None:
         return
     normalized_demand = {name.strip(): value for name, value in demand.items()}
     mem_gb = int(normalized_demand.get("mem_gb", 16 if gpu else 4))
     if exclusive:
         mem_gb = max(mem_gb, 16)
     cap = float(gpu_memory_gb)
-    if cap > mem_gb:
+    if cap <= mem_gb:
+        return
+    unified = "gb10" in tags or host_class == "gb10"
+    if not unified and roster_path is not None:
+        try:
+            roster = fleet_roster.Roster.read(roster_path)
+            placement = [*tags, *([host_class] if host_class is not None else [])]
+            unified = "gb10" in _eligible_gpu_classes(roster, placement)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"cannot resolve GPU placement from fleet roster: {exc}") from exc
+    if unified:
         raise ValueError(
             f"GB10 gpu_memory_gb={cap:g} exceeds mem_gb={mem_gb}: "
             "the GPU memory cap must be a subset of mem_gb "
