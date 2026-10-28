@@ -131,15 +131,16 @@
       "scoped_repair_2403": {
         "target": "Versioned opt-in hostile execution identity and safe capture before durable writes",
         "implemented_source": {
-          "commit": "8809b5a0a (component behavior);a16c24fab (corrected fixture and oracle);ba4491d21 (main integration)",
+          "commit": "8809b5a0ac37645944c4421ac6f4549bd0ccf388",
           "state": "partial-source-components",
-          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only"
+          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only",
+          "integrated_test_commit": "ba4491d21fd6dc4c80db0c3948f68602455f8435"
         },
         "validation": {
           "state": "scoped-component-qualified",
           "evidence": "docs/evidence/issue2403_hostile_components_2026-10-28.json",
           "acceptance_record": "docs/evidence/issue2403_hostile_acceptance_2026-10-28.json",
-          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture pass. Capture/receipt REDs retained. Full source/Mergify gates and replacement-matcher review pending."
+          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture andfast334pass.55exact terminals/cleanup and52success receipts/payloads/logs/source readbacks verified. Corrected CAS and overlap REDs retained. Full source/Mergify gates and replacement-matcher review pending."
         },
         "deployment": "not deployed; no worker capability advertised; current runtime4f93835c8656",
         "workload_proof": "none; all35 lanePB-H cells remain unqualified",
@@ -237,15 +238,16 @@
       "scoped_repair_2403": {
         "target": "Versioned opt-in hostile execution identity and safe capture before durable writes",
         "implemented_source": {
-          "commit": "8809b5a0a (component behavior);a16c24fab (corrected fixture and oracle);ba4491d21 (main integration)",
+          "commit": "8809b5a0ac37645944c4421ac6f4549bd0ccf388",
           "state": "partial-source-components",
-          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only"
+          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only",
+          "integrated_test_commit": "ba4491d21fd6dc4c80db0c3948f68602455f8435"
         },
         "validation": {
           "state": "scoped-component-qualified",
           "evidence": "docs/evidence/issue2403_hostile_components_2026-10-28.json",
           "acceptance_record": "docs/evidence/issue2403_hostile_acceptance_2026-10-28.json",
-          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture pass. Capture/receipt REDs retained. Full source/Mergify gates and replacement-matcher review pending."
+          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture andfast334pass.55exact terminals/cleanup and52success receipts/payloads/logs/source readbacks verified. Corrected CAS and overlap REDs retained. Full source/Mergify gates and replacement-matcher review pending."
         },
         "deployment": "not deployed; no worker capability advertised; current runtime4f93835c8656",
         "workload_proof": "none; all35 lanePB-H cells remain unqualified",
@@ -639,15 +641,16 @@
       "scoped_repair_2403": {
         "target": "Versioned opt-in hostile execution identity and safe capture before durable writes",
         "implemented_source": {
-          "commit": "8809b5a0a (component behavior);a16c24fab (corrected fixture and oracle);ba4491d21 (main integration)",
+          "commit": "8809b5a0ac37645944c4421ac6f4549bd0ccf388",
           "state": "partial-source-components",
-          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only"
+          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only",
+          "integrated_test_commit": "ba4491d21fd6dc4c80db0c3948f68602455f8435"
         },
         "validation": {
           "state": "scoped-component-qualified",
           "evidence": "docs/evidence/issue2403_hostile_components_2026-10-28.json",
           "acceptance_record": "docs/evidence/issue2403_hostile_acceptance_2026-10-28.json",
-          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture pass. Capture/receipt REDs retained. Full source/Mergify gates and replacement-matcher review pending."
+          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture andfast334pass.55exact terminals/cleanup and52success receipts/payloads/logs/source readbacks verified. Corrected CAS and overlap REDs retained. Full source/Mergify gates and replacement-matcher review pending."
         },
         "deployment": "not deployed; no worker capability advertised; current runtime4f93835c8656",
         "workload_proof": "none; all35 lanePB-H cells remain unqualified",
@@ -708,15 +711,16 @@
       "scoped_repair_2403": {
         "target": "Versioned opt-in hostile execution identity and safe capture before durable writes",
         "implemented_source": {
-          "commit": "8809b5a0a (component behavior);a16c24fab (corrected fixture and oracle);ba4491d21 (main integration)",
+          "commit": "8809b5a0ac37645944c4421ac6f4549bd0ccf388",
           "state": "partial-source-components",
-          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only"
+          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only",
+          "integrated_test_commit": "ba4491d21fd6dc4c80db0c3948f68602455f8435"
         },
         "validation": {
           "state": "scoped-component-qualified",
           "evidence": "docs/evidence/issue2403_hostile_components_2026-10-28.json",
           "acceptance_record": "docs/evidence/issue2403_hostile_acceptance_2026-10-28.json",
-          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture pass. Capture/receipt REDs retained. Full source/Mergify gates and replacement-matcher review pending."
+          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture andfast334pass.55exact terminals/cleanup and52success receipts/payloads/logs/source readbacks verified. Corrected CAS and overlap REDs retained. Full source/Mergify gates and replacement-matcher review pending."
         },
         "deployment": "not deployed; no worker capability advertised; current runtime4f93835c8656",
         "workload_proof": "none; all35 lanePB-H cells remain unqualified",
@@ -2473,15 +2477,16 @@
       "scoped_repair_2403": {
         "target": "Versioned opt-in hostile execution identity and safe capture before durable writes",
         "implemented_source": {
-          "commit": "8809b5a0a (component behavior);a16c24fab (corrected fixture and oracle);ba4491d21 (main integration)",
+          "commit": "8809b5a0ac37645944c4421ac6f4549bd0ccf388",
           "state": "partial-source-components",
-          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only"
+          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only",
+          "integrated_test_commit": "ba4491d21fd6dc4c80db0c3948f68602455f8435"
         },
         "validation": {
           "state": "scoped-component-qualified",
           "evidence": "docs/evidence/issue2403_hostile_components_2026-10-28.json",
           "acceptance_record": "docs/evidence/issue2403_hostile_acceptance_2026-10-28.json",
-          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture pass. Capture/receipt REDs retained. Full source/Mergify gates and replacement-matcher review pending."
+          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture andfast334pass.55exact terminals/cleanup and52success receipts/payloads/logs/source readbacks verified. Corrected CAS and overlap REDs retained. Full source/Mergify gates and replacement-matcher review pending."
         },
         "deployment": "not deployed; no worker capability advertised; current runtime4f93835c8656",
         "workload_proof": "none; all35 lanePB-H cells remain unqualified",

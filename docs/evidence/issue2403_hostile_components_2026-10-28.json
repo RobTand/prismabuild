@@ -19,9 +19,9 @@
   },
   "qualification": "source/component evidence only; zero native PB-H guarantees established",
   "audit": {
-    "action_count": 33,
-    "receipt_count": 30,
-    "cleanup_verified": 33,
+    "action_count": 55,
+    "receipt_count": 52,
+    "cleanup_verified": 55,
     "errors": []
   },
   "audit_programs": {
@@ -1389,5 +1389,76 @@
         }
       ]
     }
-  ]
+  ],
+  "fast": {
+    "verdict": "PASS",
+    "counts": {
+      "passed": 334
+    },
+    "cas_verified": true,
+    "wall_s": 56.223,
+    "artifact": "/home/rob/tmp/pb-tl2-owner-20261027/hostile-final-fast/verdict.json",
+    "scope": "compatibility only; not full source gate or native hostile qualification"
+  },
+  "additional_scoped_actions": [
+    {
+      "action_key": "6349d6ad6ec431df415541ba57a6c810d3b27f6b3af510be5fc537fa9e77ae1a",
+      "source_snapshot": {
+        "commit": "1c135ecb7b38aaa01489c1222fd3f660af82ccd3",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "e18bb3b81b1facbb41ba21c04a04bed0533d1ea2519d8e504538df7355f52b1c"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "9b56faa2e17620eb59b1b6e52c8a39df514e90e7d06b6751f9b54101fa6f4e29",
+        "result": {
+          "bytes": 18110,
+          "sha256": "d3aa9212786dc4938bcd643a8ef37fff7e35f2d3098b1605f38ce8fead2c849e"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "summary": [
+        "26 passed in 1.14s"
+      ]
+    },
+    {
+      "action_key": "1505911b3beb83f40de40ef8835b30d5314563b1c0ccd3f9e8bc76309ec539b4",
+      "source_snapshot": {
+        "commit": "1c135ecb7b38aaa01489c1222fd3f660af82ccd3",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "e18bb3b81b1facbb41ba21c04a04bed0533d1ea2519d8e504538df7355f52b1c"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "75e6ba03cd7fba769acb69c778fa17f4b8c33434177dff6ceca9f8feec951481",
+        "result": {
+          "bytes": 46924,
+          "sha256": "8af01698141af12a2d80e6bba24d1506647cc2cb6ebb3c99af0edf75937dfbb1"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "summary": [
+        "69 passed in 0.77s"
+      ]
+    }
+  ],
+  "full_readback": "/home/rob/tmp/pb-tl2-owner-20261027/hostile-final-evidence-audit.json"
 }

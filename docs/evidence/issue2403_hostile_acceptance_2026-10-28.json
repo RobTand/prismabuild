@@ -74,10 +74,9 @@
       "No privileged broker sandbox backend, sandbox identities, namespaces, default-deny network, immutable/private caches, authenticated result collection, per-action quotas/devices or hostile disposal implementation; all lanePB-H cells unqualified",
       "Capture component is not integrated with worker logs, terminal tails, sidecars, traces or CAS; current trusted logs remain raw; no PB-H7 claim",
       "Initial CAS regression fixture incorrectly used a writable receipt; corrected immutable fixture has a real REDad45492e51bc8a0783b3edf530592326cc3c64709d85625760c52e0fabca5a69 at prior78724e8c4. The earlier writable-refusal run is retained and not counted as typed-profile reproduction",
-      "Early prelaunch scope listedID-01/08/09/SAFE-03 but omittedSC-01; no waiver or retroactive compliance claim. A subsequent explicitly scoped run must coverSC-01 before merge",
       "No runtime activation, host mutation, native hostile payload, route benchmark or live cohort qualification authorized/performed"
     ],
-    "note": "Merge candidate record only. Existing requirement axes remain unchanged. Profile omission preserves trusted params/tags and historical action keys; selected hostile profile always refuses before execution or receipt acceptance. Finite literal capture does not detect arbitrary transformed or unknown secrets. No power-loss durability claim."
+    "note": "Merge candidate record only. Existing requirement axes remain unchanged. Profile omission preserves trusted params/tags and historical action keys; selected hostile profile always refuses before execution or receipt acceptance. Finite literal capture does not detect arbitrary transformed or unknown secrets. No power-loss durability claim. Earlier prelaunch records omittedSC-01; no retroactive compliance is claimed. A later explicitly scoped record preceded6349d6ad6ec431df415541ba57a6c810d3b27f6b3af510be5fc537fa9e77ae1a(profile26pass) and1505911b3beb83f40de40ef8835b30d5314563b1c0ccd3f9e8bc76309ec539b4(capture69pass). Final fast compatibility334PASS and55exact terminal/cleanup readbacks with52success receipts are verified."
   },
   "deploy": {
     "status": "not-this-step"
