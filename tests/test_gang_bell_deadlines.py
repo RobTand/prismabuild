@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from prismabuild import _gang
+from prismabuild import _gang, pool
 from prismabuild.gang_deadlines import member_deadlines
 from prismabuild.host_wait import DeadlineReason
 
@@ -110,6 +110,68 @@ def test_inclusive_expiry_survives_conversion_to_a_larger_clock(evidence):
     assert result["readiness"].deadline.monotonic_at == math.nextafter(10020., math.inf)
     assert result["lease"].deadline.monotonic_at == math.nextafter(10295., math.inf)
     assert result["terminal"].deadline.monotonic_at == 10105.
+
+
+@pytest.mark.parametrize("wall_now,monotonic_now", [
+    (1760000000., 1000.), (100., 10000.),
+])
+def test_readiness_timer_crosses_the_authoritative_expiry(
+        evidence, tmp_path, wall_now, monotonic_now):
+    record, item, _, _ = evidence
+    queue = pool.PoolQueue(tmp_path)
+    stamp = wall_now - 10.
+    _gang.mark_ready(queue, record, record["members"][0], "worker", stamp)
+    ready = pool.record_store.read_document(
+        _gang.state_dir(queue, GROUP) / "ready-0.json")
+    sibling = record["members"][1]
+    assert _gang.sibling_readiness(queue, record, sibling, "sibling",
+                                  stamp + _gang.READY_FRESH_S)["complete"]
+    expiry = member_deadlines(record, item, wall_now=wall_now,
+        monotonic_now=monotonic_now, ready=ready)[0].deadline.monotonic_at
+    wall_at_expiry = wall_now + (expiry - monotonic_now)
+    assert not _gang.sibling_readiness(queue, record, sibling, "sibling",
+                                      wall_at_expiry)["complete"]
+    reconnected = member_deadlines(record, item, wall_now=wall_now + 5.,
+        monotonic_now=monotonic_now + 5., ready=ready)[0].deadline.monotonic_at
+    assert reconnected == expiry
+
+
+@pytest.mark.parametrize("wall_now,monotonic_now", [
+    (1760000000., 1000.), (100., 10000.),
+])
+@pytest.mark.parametrize("timeout_s", [pool.LEASE_TIMEOUT_S, 17.25])
+def test_lease_timer_crosses_the_authoritative_expiry(
+        evidence, tmp_path, monkeypatch, wall_now, monotonic_now, timeout_s):
+    record, item, _, _ = evidence
+    queue = pool.PoolQueue(tmp_path)
+    stamp = wall_now - 10.
+    clock = {"wall": stamp + timeout_s}
+    monkeypatch.setattr(pool, "_now", lambda: clock["wall"])
+    lease = {"heartbeat_unix": stamp}
+    assert not queue._heartbeat_cleanup_due(lease, timeout_s=timeout_s)
+    expiry = member_deadlines(record, item, wall_now=wall_now,
+        monotonic_now=monotonic_now, effective_heartbeat_unix=stamp,
+        lease_timeout_s=timeout_s)[0].deadline.monotonic_at
+    clock["wall"] = wall_now + (expiry - monotonic_now)
+    assert queue._heartbeat_cleanup_due(lease, timeout_s=timeout_s)
+    reconnected = member_deadlines(record, item, wall_now=wall_now + 5.,
+        monotonic_now=monotonic_now + 5., effective_heartbeat_unix=stamp,
+        lease_timeout_s=timeout_s)[0].deadline.monotonic_at
+    assert reconnected == expiry
+
+
+@pytest.mark.parametrize("wall_now,monotonic_now", [
+    (1760000000., 1000.), (100., 10000.),
+])
+def test_strict_expiry_already_crossed_by_one_wall_instant_stays_due(
+        evidence, wall_now, monotonic_now):
+    record, item, ready, _ = evidence
+    ready["ready_unix"] = wall_now - _gang.READY_FRESH_S
+    result = member_deadlines(record, item,
+        wall_now=math.nextafter(wall_now, math.inf), monotonic_now=monotonic_now,
+        ready=ready, effective_heartbeat_unix=wall_now - pool.LEASE_TIMEOUT_S)
+    assert {value.source for value in result} == {"readiness", "lease"}
+    assert all(value.deadline.monotonic_at <= monotonic_now for value in result)
 
 
 def test_actual_ready_renewal_moves_only_its_evidence_expiry(evidence):

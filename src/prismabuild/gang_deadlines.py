@@ -51,7 +51,10 @@ def member_deadlines(record, item, *, wall_now, monotonic_now, ready=None,
     def wall_deadline(source, stamp, reason, *, strict=False):
         converted = monotonic_now + (stamp - wall_now)
         if strict:
-            converted = math.nextafter(converted, math.inf)
+            converted = max(math.nextafter(converted, math.inf),
+                monotonic_now + (math.nextafter(stamp, math.inf) - wall_now))
+            if stamp < wall_now:
+                converted = min(converted, monotonic_now)
         result.append(GangDeadline(identity, source,
             RetryDeadline(reason, converted)))
 

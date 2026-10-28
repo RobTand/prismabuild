@@ -1291,8 +1291,11 @@ just after its recorded stamp +30 s; matching terminal proof matures at its
 original first-seen +120 s; skew retains the barrier's original start plus the
 configured group limit; claim-bound effective heartbeat evidence expires just
 after the existing lease timeout (normally 300 s). Convert from authoritative
-wall evidence once and retain the vector, including already-due entries. A real
-ready/lease renewal moves only that evidence expiry. Reconnection and empty
+wall evidence once and retain the vector, including already-due entries. A
+strict expiry crosses both the source wall and target monotonic representable
+horizons, so the authoritative predicate has expired at the wake even when
+their clock scales differ. Evidence already expired at the sample stays due.
+A real ready/lease renewal moves only that evidence expiry. Reconnection and empty
 long-poll renewal restart no clock. Live/unknown/mismatched terminal evidence,
 claim/barrier completion, teardown, withdrawal, publication replacement and
 retirement cancel their relevant timers; existing policy owns any new episode.

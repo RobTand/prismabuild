@@ -11093,9 +11093,13 @@ the helper does not read records, validate a sealed request or grant authority.
 | Start skew | The original barrier's absolute monotonic start plus the validated group's configured `skew_s` | Claim release, teardown, withdrawal or barrier completion cancels it; no wake/renewal/reconnect restarts it |
 | Lease | Validated claim-bound `_effective_heartbeat` time plus the existing lease timeout (default 300 s), strictly after the horizon | Claim retirement cancels it; a real heartbeat changes this expiry only, not readiness/terminal/skew |
 
-Inclusive-horizon conversion advances the converted monotonic result by one
-representable instant, so clock-scale rounding cannot turn expiry into equality.
-Already-due deadlines remain due. A consumer retains the converted vector until
+Inclusive-horizon conversion takes the later of the next representable
+monotonic instant and the converted next representable wall instant. Advancing
+only monotonic precision can leave a larger Unix wall clock at the inclusive
+horizon; advancing only wall precision can disappear at a larger monotonic
+scale. If the sampled wall clock has already crossed the horizon, the converted
+deadline is capped at the current monotonic sample so it remains due.
+A consumer retains the converted vector until
 its underlying evidence changes, consumes due events once, and retires vectors
 on publication/predicate change. Empty long-poll renewal is transport only.
 Heartbeat/progress/log traffic is not mapped into `gangs` or terminal topics.
