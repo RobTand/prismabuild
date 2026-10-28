@@ -204,6 +204,51 @@ def test_campaign_local_scope_uses_the_actual_host(field, host, refused, fleet, 
         assert pbcampaign.load_manifest(manifest, transport="pool") == [row]
 
 
+@pytest.mark.parametrize("path", ["campaign", "logical-manifest"])
+@pytest.mark.parametrize("host", ["discrete-host", "unified-host"])
+@pytest.mark.parametrize("anywhere", [False, True])
+def test_manifest_cap_uses_submission_dependency_placement(path, host, anywhere, fleet, tmp_path):
+    fleet.monkeypatch.setattr(submission.socket, "gethostname", lambda: host)
+    row = {"argv": ["true"], "cwd": str(fleet.work),
+           "demand": {"gpu": 1, "mem_gb": 8}, "gpu_memory_gb": 16}
+    if anywhere:
+        row["anywhere"] = True
+    refused = anywhere or host == "unified-host"
+    request = submission.request_from_mapping(row, detach=True, transport="pool")
+    if refused:
+        with pytest.raises(submission.SubmissionRefused, match="subset of mem_gb"):
+            submission.prepare(request, store=fleet.store)
+    else:
+        prepared = submission.prepare(request, store=fleet.store)
+        assert prepared["template"]["params"]["placement"]["required_tags"] == [host]
+
+    def unexpected_publication(*args, **kwargs):
+        pytest.fail("manifest preflight must not freeze, seal or publish a row")
+
+    fleet.monkeypatch.setattr(submission, "freeze_template", unexpected_publication)
+    fleet.monkeypatch.setattr(submission, "submit_request", unexpected_publication)
+    fleet.monkeypatch.setattr(submission.pb.PrismaBuildCAS, "publish_action_request",
+                             unexpected_publication)
+    if path == "campaign":
+        body = [{"argv": ["true"]}, row]
+    else:
+        body = _request()
+        body["common"].update(row, argv=["true", dc.TASK_BATCH_PLACEHOLDER])
+    manifest = tmp_path / "dependency-manifest.json"
+    manifest.write_text(json.dumps(body))
+    if refused:
+        with pytest.raises(pbcampaign.ManifestError, match="subset of mem_gb"):
+            pbcampaign.load_manifest(manifest, transport="pool")
+    else:
+        loaded = pbcampaign.load_manifest(manifest, transport="pool")
+        loaded_row = loaded[1] if path == "campaign" else loaded["common"]
+        assert loaded_row == (row if path == "campaign" else body["common"])
+        assert "tags" not in loaded_row
+        assert "here" not in loaded_row
+        assert "anywhere" not in loaded_row
+    assert fleet.sealed == []
+
+
 @pytest.mark.parametrize("raw", ['{"boxes":', '{"boxes": {}}'])
 def test_unresolvable_fleet_fails_closed(raw, fleet, tmp_path):
     fleet.store.roster_path.write_text(raw)
