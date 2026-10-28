@@ -438,3 +438,18 @@ def recorder_hostnames(boxes: Mapping[str, object], host: str) -> list[str]:
     if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) for name in names):
         raise ValueError("invalid recorder hostname")
     return sorted(names)
+
+
+def runtime_presence(root: str | Path) -> dict:
+    """Explicit runtime host declarations, independent of worker offers."""
+    try:
+        roster = Roster.at(root)
+        hosts = {}
+        for key, names, entry in roster.declarations():
+            status, detail = box_status(key, entry)
+            for name in names:
+                hosts[name] = {"state": "absent" if status in ABSENT else "present",
+                               "canonical_host": key, "status": status, **detail}
+    except (OSError, ValueError) as exc:
+        return {"state": "unknown", "hosts": None, "reason": str(exc)}
+    return {"state": "known", "roster_sha256": roster.sha256, "hosts": hosts}

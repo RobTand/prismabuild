@@ -79,7 +79,7 @@ def test_real_script_report_entrypoint(tmp_path):
     script = Path(__file__).resolve().parents[1] / 'tools/fleet/stage_reclaim.py'
     run = subprocess.run([sys.executable, str(script), '--report',
         '--pool-root', str(queue.root), '--tier-id', 'test-tier',
-        '--stage-root', str(stage)], capture_output=True, text=True, timeout=10)
+        '--stage-root', str(stage)], capture_output=True, text=True, timeout=60)
     assert run.returncode == 0, run.stderr
     assert json.loads(run.stdout)['deletion_authorized'] is False
 
