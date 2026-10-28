@@ -30,11 +30,8 @@ outcomes = pbtest.pbtest_outcomes
 REAL_POPEN = subprocess.Popen
 
 SLOW_TESTS = '''\
-import time
-
-
 def test_slow():
-    time.sleep(0.5)
+    pass
 
 
 def test_quick():
@@ -55,6 +52,23 @@ def test_mid():
     pass
 '''
 
+REPORT_DURATIONS = '''\
+import pytest
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    phases = {"setup": 1.0, "call": 2.0, "teardown": 4.0}
+    weights = {
+        "test_slow_file.py": 1.0,
+        "test_mid_file.py": 0.5,
+        "test_fast_file.py": 0.125,
+    }
+    report.duration = phases[report.when] * weights[item.path.name]
+'''
+
 
 def _checkout(tmp_path: Path) -> Path:
     checkout = tmp_path / "project"
@@ -63,6 +77,7 @@ def _checkout(tmp_path: Path) -> Path:
     (checkout / "tests" / "test_slow_file.py").write_text(SLOW_TESTS)
     (checkout / "tests" / "test_mid_file.py").write_text(MID_TESTS)
     (checkout / "tests" / "test_fast_file.py").write_text(FAST_TESTS)
+    (checkout / "tests" / "conftest.py").write_text(REPORT_DURATIONS)
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     return checkout
 
@@ -127,11 +142,11 @@ def test_the_outcome_record_carries_per_file_wall_time(tmp_path, monkeypatch):
     assert record is not None
     durations = record.get("file_durations")
     assert durations is not None, "the record names no per-file durations"
-    assert set(durations) == {
-        "tests/test_slow_file.py", "tests/test_mid_file.py",
-        "tests/test_fast_file.py"}
-    assert durations["tests/test_slow_file.py"] >= 0.4
-    assert durations["tests/test_fast_file.py"] < durations["tests/test_slow_file.py"]
+    assert durations == {
+        "tests/test_slow_file.py": 14.0,
+        "tests/test_mid_file.py": 3.5,
+        "tests/test_fast_file.py": 1.75,
+    }
 
 
 def test_a_slow_file_is_isolated_from_its_shard_mates():
