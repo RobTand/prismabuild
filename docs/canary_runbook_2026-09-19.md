@@ -111,6 +111,14 @@ so the sidecar is never mistaken for a generation.
     writes nothing.
 *   An enabled canary with no driver present refuses **before** anything
     is published: the live runtime is untouched.
+*   Before fresh publication, the driver's `preflight_publication` hook checks
+    recorded worker offers for the publisher's GPU leg. Unknown or impossible
+    placement refuses before staging or activation, including on a dry run.
+    Publish from a GPU worker offering the configured image, publication-canary
+    capability, and CPU1/GPU1/mem16GiB. A shared checkout alone does not remove
+    the publication GPU host pin. The candidate-generation tag is checked after
+    activation, when workers can advertise it. Stage-only publication and
+    `--no-canary` skip placement preflight.
 
 ## On a failed canary
 

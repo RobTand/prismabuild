@@ -5429,6 +5429,25 @@ running quantum. An ineligible/unknown resource state is not permission to run;
 the slot gets the next free boundary at which its safety requirements hold.
 Ordinary standalone canaries retain ordinary admission and cannot mint slots.
 
+**Canary placement before publication (#2285).** Fresh publications with an
+enabled canary call the checkout driver's `preflight_publication(fleet_root=...)`
+before staging, arming a barrier, or activating the runtime. The hook builds the
+actual GPU leg and uses one bounded recorded-offer snapshot with PB's existing
+placement matcher. It requires the publisher host, publication-canary and image
+capabilities, the configured image, and CPU1/GPU1/mem16GiB. Only the candidate
+runtime-generation tag is omitted, because workers cannot offer it before
+activation. This is declared feasibility, not a reservation or a free-capacity
+check. Missing offers, an unsupported driver hook, and unplaceable legs refuse
+without publishing. Dry runs apply the same check while suppressing bytecode
+writes for both the driver import and the hook's lazy imports. The publisher
+restores its incoming bytecode setting on success or refusal. Ordinary
+publication and postactivation imports retain the interpreter's bytecode policy.
+Stage-only publication and
+`--no-canary` do not check placement. A shared checkout does not remove the
+publication GPU host pin. Postactivation generation waiting and placement before
+grant still protect changes after preflight. Component test evidence does not
+establish deployment or a live canary result.
+
 **Verified-canary foreign-load exemption (#1239; approved 2026-09-27).**
 A row the scan has already validated as this host's verified publication
 canary — the #1213 grant, exact generation — and only that row crosses
@@ -8140,6 +8159,25 @@ check. Denial evidence retains sample identity, foreign bytes, committed
 memory, candidate demand, host usage, PB residency, and the physical ceiling.
 A later successful claim
 retires its earlier unknown-residency status projection.
+
+Submission resolves GPU placement against the submitting `FleetStore`'s fleet
+roster before sealing (#2036). Active GPU boxes match the required hardware
+tags, including hostnames, aliases and classes; retired, offline and disabled
+worker loops are excluded. An unclassified request includes every eligible
+GPU box. If any eligible box is GB10, a declared cap above the effective
+`mem_gb` is refused with the existing subset-cap diagnostic. The refusal does
+not narrow eligibility. Discrete-only placement retains independent VRAM caps
+above host RAM. Ordinary CLI/mapping submission and decomposition use resolved
+placement; campaign list and logical-manifest preflight use the same dependency
+placement resolver, declared environment and shim-prefixed executable search
+path to check the complete manifest before any row is submitted. An implicit
+host pin counts as discrete-only placement when that host has discrete VRAM;
+`anywhere` still includes all eligible GPU hosts. Preflight does not freeze
+templates, seal actions or publish rows. The shared publication boundary also
+checks caps on already sealed children and compiled producers before request
+or queue publication. Pure decomposition schema validation
+remains fleet-independent and actual submission supplies the authoritative
+roster. Worker runtime-contract tags do not classify physical memory domains.
 
 Campaign rows expose the same budget as `gpu_memory_gb` and forward it through
 `pbrun`'s seal path, preserving action identity with an equivalent direct
