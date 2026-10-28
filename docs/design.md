@@ -3717,7 +3717,19 @@ without the member or the ordinary package import boundary.
   the submitter synthesizes a deterministic commit from the exact tracked
   and untracked working tree, including the closure stamp, parented on the
   source's own `HEAD`. The stamp is injected into the submitter's private Git
-  index directly from its UTF-8 payload; no stamp or temporary stamp pathname
+  index using snapshot-scoped Git plumbing, including the binary bundle packer.
+  That plumbing resolves a native Git executable from the system search path
+  (`os.defpath`), never an ambient `PATH` launcher. An installation outside that
+  path can set `PRISMABUILD_SNAPSHOT_GIT` to an absolute executable path; an
+  invalid override or absence of native system Git refuses rather than falling
+  back to a wrapper. Other Git callers retain their existing executable policy.
+  Before creating any snapshot refs or bundle, the submitter reads the commit
+  object back and requires both author and committer to be exactly
+  `PrismaBuild <prismabuild@example.invalid> 946684800 +0000`. Wrapper substitution
+  of either identity or date refuses explicitly, before CAS ingestion. This
+  keeps the commit, bundle and stamp closure independent of the submitter's
+  broker capability, ambient identity and wall-clock time. The stamp enters the
+  private Git index directly from its UTF-8 payload; no stamp or temporary stamp pathname
   is published into the source checkout. Its historical relative name, bytes,
   and regular-file mode are retained, preserving closure and bundle identities
   while concurrent submissions need no shared stamp lock or cleanup. Existing

@@ -1902,10 +1902,11 @@ def _git_run(
     env: Mapping[str, str] | None = None,
     input_text: str | None = None,
     errors: str | None = None,
+    executable: str = "git",
 ) -> subprocess.CompletedProcess[str]:
     """Run ``git -C root`` with one option set; the caller maps the result."""
     return subprocess.run(
-        ["git", "-C", str(root), *args],
+        [executable, "-C", str(root), *args],
         capture_output=True,
         text=True,
         errors=errors,
@@ -1925,6 +1926,7 @@ def _git(
     errors: str | None = None,
     accepted_returncodes: tuple[int, ...] = (0,),
     fail: Callable[[str], NoReturn] = _fail,
+    executable: str = "git",
 ) -> str:
     """Run ``git -C root``; map transport and returncode failures through ``fail``."""
     try:
@@ -1935,7 +1937,7 @@ def _git(
             timeout = remaining if timeout is None else min(timeout, remaining)
         completed = _git_run(
             root, *args, timeout=timeout, env=env,
-            input_text=input_text, errors=errors,
+            input_text=input_text, errors=errors, executable=executable,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         fail(f"Git {' '.join(args)} failed: {exc}")
