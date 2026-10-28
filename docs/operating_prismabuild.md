@@ -1211,6 +1211,25 @@ native threads per process; admission cannot infer those needs from argv.
 
 ## Wait, detach, and give up
 
+When a terminal carries `supersedes_terminal`, `pbwait --json` and `--endings`
+include an optional `superseded` object. `pbstatus` includes the same summary
+on job and ending rows, with a readable note in its tables. The summary names
+the earlier state, status, attempts and `finished_unix`, plus `returncode` when
+available. A failed generation with a real nonzero return code followed by a
+success is `flaky_rerun`; lease-loss-like history without a return code is
+`infrastructure_rerun`. Other cases remain unclassified. The display reads at
+most the single named archive, with bounded bytes and time; missing or invalid
+history cannot change the current verdict. It never expands attempt history or
+follows older supersessions. Rows without supersession keep their existing shape.
+Archive readers stay owned by the client, outside immutable-verification children.
+`pbstatus` reads archives inside its existing bounded census reader rather than
+spawning a nested child; that reader's existing parent owns any abandonment.
+A retained reader emits its identity on stderr and fences subsequent archive reads
+across rows and observations until a nonblocking own-child reap confirms its exit.
+An invalid ownership identity retains its raw evidence and fences archive reads
+for the remaining client lifetime. These diagnostics do not replace the current
+execution or CAS verdict; an unavailable archive remains unclassified.
+
 Pool waits use the queue-host bell when available (#1894), without CLI changes.
 The waiter reads a cursor, checks the record, then long-polls for that key's
 outcome-input changes, including nested publication endings, withdrawals,

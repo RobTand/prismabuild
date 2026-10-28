@@ -451,6 +451,7 @@ def _from_ending(q, ending: endings.ObservedEnding, *, context=None) -> dict:
         withdrawn_attempt=summary["withdrawn_attempt"],
         resource_scope_cleanup=summary["resource_scope_cleanup"],
         container_cleanup=summary["container_cleanup"],
+        **({"superseded": summary["superseded"]} if "superseded" in summary else {}),
     )
 
 
@@ -906,6 +907,7 @@ def consumer_ending_row(q, row, *, cas, context=None):
         "started_unix": context.get("started_unix"), "ended_unix": context.get("ended_unix"),
         "reason": str(reason) if reason is not None else None,
         "result": result, "diagnostics": diagnostics,
+        **({"superseded": row["superseded"]} if "superseded" in row else {}),
         "phases": row.get("phases", {}),
     }
 
