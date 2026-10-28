@@ -69,6 +69,12 @@
     ]
   },
   {
+    "path": "src/prismabuild/_gpu_submission_policy.py",
+    "owner": "_eligible_gpu_classes",
+    "unresolved": "{tag for tag in tags if tag not in code_tags and (not tag.startswith('runtime-generation:'))}",
+    "binding": "required"
+  },
+  {
     "path": "src/prismabuild/_measurement_reservation.py",
     "owner": "CensusReader._checked_census",
     "fields": [
