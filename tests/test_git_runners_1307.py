@@ -342,4 +342,5 @@ def test_snapshot_positive_output_and_options_stay_equivalent(
     assert captured == {
         "cwd": tmp_path, "argv": tuple(argv), "env": environment,
         "input_text": "tracked\0", "errors": "surrogateescape", "timeout": None,
+        "executable": submit_core.snapshot_git_executable(),
     }

@@ -182,6 +182,34 @@ def _snapshot_fail(
     raise refusal
 
 
+def snapshot_git_executable() -> str:
+    """Resolve snapshot plumbing independently of ambient PATH launchers."""
+    override = os.environ.get("PRISMABUILD_SNAPSHOT_GIT")
+    if override is not None:
+        if not Path(override).is_absolute() or not shutil.which(override):
+            _snapshot_fail("PRISMABUILD_SNAPSHOT_GIT must name an absolute executable path")
+        return str(Path(override).resolve())
+    for directory in os.defpath.split(os.pathsep):
+        candidate = Path(directory) / "git"
+        try:
+            if not candidate.is_file() or not os.access(candidate, os.X_OK):
+                continue
+            with candidate.open("rb") as handle:
+                signature = handle.read(4)
+            if signature in (
+                b"\x7fELF", b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe",
+                b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe",
+            ) or signature[:2] == b"MZ":
+                return str(candidate.resolve())
+        except OSError:
+            continue
+    _snapshot_fail(
+        "no native snapshot Git executable in the system search path; a Git wrapper "
+        "may strip or substitute the sealed identity and dates. Set "
+        "PRISMABUILD_SNAPSHOT_GIT to an absolute Git executable path"
+    )
+
+
 def _snapshot_git(
     cwd: Path,
     argv: list[str],
@@ -212,8 +240,25 @@ def _snapshot_git(
         accepted_returncodes=accepted_returncodes,
         fail=fail_snapshot_git,
         deadline=deadline,
+        executable=snapshot_git_executable(),
     )
     return output.strip() if strip else output
+
+
+def require_canonical_snapshot_commit(
+    root: Path, commit: str, *, environment: dict[str, str], deadline: float | None,
+) -> None:
+    """Read the actual commit before any ref, bundle or CAS publication."""
+    raw = _snapshot_git(root, ["cat-file", "commit", commit],
+                        environment=environment, strip=False, deadline=deadline)
+    headers = raw.partition("\n\n")[0].splitlines()
+    identity = "PrismaBuild <prismabuild@example.invalid> 946684800 +0000"
+    actual = [line for line in headers if line.startswith(("author ", "committer "))]
+    if actual != [f"author {identity}", f"committer {identity}"]:
+        _snapshot_fail(
+            "Git wrapper substituted the sealed identity or dates "
+            f"(author/committer) via {snapshot_git_executable()}; refusing noncanonical commit"
+        )
 
 
 PERSONAL_EXCLUDES_PIN: tuple[str, ...] = ("-c", "core.excludesFile=/dev/null")
@@ -712,7 +757,7 @@ def deterministic_bundle_argv(git_dir: Path) -> list[str]:
     for key, value in BUNDLE_PACK_CONFIGURATION:
         pins += ["-c", f"{key}={value}"]
     return [
-        "git", f"--git-dir={git_dir}", *pins, "pack-objects",
+        snapshot_git_executable(), f"--git-dir={git_dir}", *pins, "pack-objects",
         *BUNDLE_PACK_OPTIONS,
     ]
 
@@ -1096,6 +1141,9 @@ def snapshot_checkout(
             environment=object_environment,
             input_text="PrismaBuild pbrun checkout snapshot v2\n",
             deadline=deadline,
+        )
+        require_canonical_snapshot_commit(
+            root, commit, environment=object_environment, deadline=deadline,
         )
         bare = temporary / "bundle.git"
         _snapshot_git(root, ["init", "-q", "--template=", "--bare", str(bare)], deadline=deadline)
