@@ -1,0 +1,33 @@
+{
+  "action_key": "5a76704c19367dbf1a52c36186c71e3e2cd726c4e00da102327baae27d1bb5f4",
+  "kind": "capture",
+  "state": "done",
+  "expected_returncode": 0,
+  "source_parent": "18741a0e090db54e4e5e59e711932d8e43010e49",
+  "source_snapshot": {
+    "commit": "c37b9a66303aa3d2f338586fada37a797e55e7ec",
+    "input": {
+      "bytes": 45972618,
+      "id": "pbrun.checkout-snapshot",
+      "sha256": "dba4bc2b2528cc6de919a587892ba1ec1970c89597bf8083fdba2afd3223b977"
+    },
+    "parent": "18741a0e090db54e4e5e59e711932d8e43010e49",
+    "refs": {},
+    "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+    "subdirectory": "."
+  },
+  "worker_script": "/mnt/shared/prismabuild-fleet/runtime-generations/551e803a751e-1793050940-3ecf9c509217/tools/prismabuild_worker.py",
+  "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/5a76704c19367dbf1a52c36186c71e3e2cd726c4e00da102327baae27d1bb5f4.json",
+  "terminal_sha256": "d8434095047d0f2226a23afd3a030196781c4daafe5b083cff3a299774f20860",
+  "stdout_path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/5a76704c19367dbf1a52c36186c71e3e2cd726c4e00da102327baae27d1bb5f4/346d74f0b58a3377fc04687e68c88f684318687ca68448f87741ce02e94ce72c/00000001.stdout.9daac6b2ea260fb190ebfaf8bb7bce009448b1dd32a77fc079de69cf5d3ba4b3.log",
+  "stdout_sha256": "9daac6b2ea260fb190ebfaf8bb7bce009448b1dd32a77fc079de69cf5d3ba4b3",
+  "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/5a/5a76704c19367dbf1a52c36186c71e3e2cd726c4e00da102327baae27d1bb5f4.json",
+  "receipt_file_sha256": "e4f460ec440eda653257d9d33089e92a2a7c8046811d34e025da4f4feb359aa1",
+  "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/c0/c04ad492c8ef3b2fbd65cec62d6d01d44727e13599126d28338f7c8253e5ee55",
+  "payload_sha256": "c04ad492c8ef3b2fbd65cec62d6d01d44727e13599126d28338f7c8253e5ee55",
+  "claim_sha256": "20c76f50a8d394525ea0c6184b7d0729e895fa3a83461bbaadb2c4268d8a4692",
+  "receipt_sha256": "89f1a48bcb5a7b522e0ab76750ec456147e2deda02aa7bd2ecdd8403b3ea17de",
+  "cleanup_complete": true,
+  "checks_passed": true,
+  "attestation_verified": null
+}
