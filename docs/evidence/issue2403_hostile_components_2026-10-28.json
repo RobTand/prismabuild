@@ -1,0 +1,1393 @@
+{
+  "schema": "pb.issue2403.source_components.v1",
+  "tested_source": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+  "current_source": "e796cca4b806330d228494565567adb9c2bbf955",
+  "base": "ccccf78e6f2c774d49f2ea051d14103e92f4c939",
+  "source_equivalence": "e796 adds current-main routing policy and Mergify configuration to ba449; owned production and test bytes are unchanged",
+  "runtime": {
+    "commit": "4f93835c8656569b482b13ef401400657054f604",
+    "generation": "4f93835c8656-1793070920-291773253e78",
+    "candidate_deployed": false
+  },
+  "actual_populations": {
+    "profile_cases": 26,
+    "capture_cases": 69,
+    "executions_per_architecture": 5,
+    "xdist_executions_per_architecture": 2,
+    "component_skips": 0,
+    "additional_controls_per_architecture": 52
+  },
+  "qualification": "source/component evidence only; zero native PB-H guarantees established",
+  "audit": {
+    "action_count": 33,
+    "receipt_count": 30,
+    "cleanup_verified": 33,
+    "errors": []
+  },
+  "audit_programs": {
+    "readback": "/home/rob/tmp/pb-tl2-owner-20261027/audit_evidence.py",
+    "tree_comparison": "/home/rob/tmp/pb-tl2-owner-20261027/audit_snapshot_trees.py"
+  },
+  "snapshot_tree_audit": "/home/rob/tmp/pb-tl2-owner-20261027/final-snapshot-tree-audit.json",
+  "actions": [
+    {
+      "action_key": "4fded7d821cc3fa371a1a236d60c9996f847ec7367c2d29a682ed09a4e43eece",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "3a10020f79c2f78ed2d20c920367f7d5cdaae2e5",
+        "input": {
+          "bytes": 48326301,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "f5d546b8fe491ad97a478ad7a23605849d3d19c7867857c73569abeb305ae363"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "51553b2aa1cf046354ba38dd5eb8e1690d370b1e5cd84def8507d3c6c52fd811",
+        "result": {
+          "bytes": 17264,
+          "sha256": "dbdd950d9db5ecf796c1c7c95a477837494612a673ec6a53d3eeec4ed21f4eb1"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_execution_profile.py"
+          ],
+          "summary": "26 passed in 1.33s",
+          "counts": {
+            "passed": 26
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "db2a02749ac89ac2572c21b56ed9b91e4125c666f3293775a3608fee09a8def6",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "3a10020f79c2f78ed2d20c920367f7d5cdaae2e5",
+        "input": {
+          "bytes": 48326301,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "f5d546b8fe491ad97a478ad7a23605849d3d19c7867857c73569abeb305ae363"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "4a3168f5b170fc5edd0e7a7c1dafeacc5b11d7b53425032c9807bb038283b283",
+        "result": {
+          "bytes": 46153,
+          "sha256": "23d3edcc0665142ac24c50f2bc912da11dd78cd8fe567cc7779e653e48e2078e"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_capture.py"
+          ],
+          "summary": "69 passed in 1.02s",
+          "counts": {
+            "passed": 69
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "c47219d1b0f140d4b34e57c629deaad49de779ffc7f0c125444ff67f966998da",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "3a10020f79c2f78ed2d20c920367f7d5cdaae2e5",
+        "input": {
+          "bytes": 48326301,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "f5d546b8fe491ad97a478ad7a23605849d3d19c7867857c73569abeb305ae363"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "d9b41a65f1434cfab977e44e12f8fce0cefac79d167104df044e520584cc96cc",
+        "result": {
+          "bytes": 16219,
+          "sha256": "30525488c58216f4838ff762da86b2108353d97c2a9a20cc75dc4a9efade3d85"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_contract_registry_publication.py"
+          ],
+          "summary": "21 passed in 0.91s",
+          "counts": {
+            "passed": 21
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "a060eed3df93d199521ee7b95cbabbe733da6dea5293da1e757e3f4ea2bef300",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "3a10020f79c2f78ed2d20c920367f7d5cdaae2e5",
+        "input": {
+          "bytes": 48326301,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "f5d546b8fe491ad97a478ad7a23605849d3d19c7867857c73569abeb305ae363"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "d09b2efc04537b7cfaecab04880e334ab85439a280c69705a25a0fe551ca6691",
+        "result": {
+          "bytes": 11498,
+          "sha256": "bd433f20bb1a0138c7300a05f4bf8a410a4551199897eda953ec2a36ff256e40"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_action_keys_survive_vocabulary_removal.py"
+          ],
+          "summary": "14 passed in 0.27s",
+          "counts": {
+            "passed": 14
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "94bf8905b1f232c8b6225cf264c24eea406209fa86b561d95a019b1bd057c977",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "3a10020f79c2f78ed2d20c920367f7d5cdaae2e5",
+        "input": {
+          "bytes": 48326301,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "f5d546b8fe491ad97a478ad7a23605849d3d19c7867857c73569abeb305ae363"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "64e04b34ded33ef50a591f35400a8da0ef607def6c32f8703a3df0d6aec9eb04",
+        "result": {
+          "bytes": 2704,
+          "sha256": "dc02e5dab053b6edfb984641c66209183591cae12739fa5259586eee87200835"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_design_doc_line_references.py"
+          ],
+          "summary": "1 passed in 0.24s",
+          "counts": {
+            "passed": 1
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "202b84d8da3eb7f543287097fff5739a3eb6f3b973cd9ca15ec0eb3968c3f854",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "3a10020f79c2f78ed2d20c920367f7d5cdaae2e5",
+        "input": {
+          "bytes": 48326301,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "f5d546b8fe491ad97a478ad7a23605849d3d19c7867857c73569abeb305ae363"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "df6a92f141058636fe18ebc1aaf7131345b96b9a5f93652b23f3e28785d2ab05",
+        "result": {
+          "bytes": 6101,
+          "sha256": "473476e6e842e732faf1a7f139fe79df5df3d9afdfd5b192cd04339764a542a8"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_wire_inventory.py"
+          ],
+          "summary": "8 passed in 45.51s",
+          "counts": {
+            "passed": 8
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "9e0adf723a17f8418e2f71f219c9f107d4085f9e1bb304018f9bb1585656dd11",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "3a10020f79c2f78ed2d20c920367f7d5cdaae2e5",
+        "input": {
+          "bytes": 48326301,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "f5d546b8fe491ad97a478ad7a23605849d3d19c7867857c73569abeb305ae363"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "2d9e378eaadd3c618c93555cf8e63f23b0342c82da21477a7f61196fb93c6c56",
+        "result": {
+          "bytes": 5942,
+          "sha256": "e7c5f3b9ae3c9d335443823c4fe754c218e5bbcc9ed22b9a41a90491e8949768"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_duplication_baseline.py"
+          ],
+          "summary": "8 passed in 24.75s",
+          "counts": {
+            "passed": 8
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "4f42f44b07add74ff7a2e4c32c200ee05a71116faa9df2e94b37d6297202f7d6",
+      "host": "sparklina",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "0ceac8c562981e2e8f5f4b15355f526ccd1358db",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ab52c5c62896cd2a271e61083722d1618fe74719bca424ef130d1aafa78f46ce"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "ca27356ca2acf56b234c6b5503a58a606d4e3f8eb68c732ee13efe67cad8ca3b",
+        "result": {
+          "bytes": 17279,
+          "sha256": "3d05c949dcd42b9dc8eb7c12dc4e550d036045f0c14e665965c69635be9e0857"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_execution_profile.py"
+          ],
+          "summary": "26 passed in 0.66s",
+          "counts": {
+            "passed": 26
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "1349f52e2cb2261a24b2344c0bb59223b2d2fd40c369ccc32e4aee18b518cc34",
+      "host": "sparklina",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "0ceac8c562981e2e8f5f4b15355f526ccd1358db",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ab52c5c62896cd2a271e61083722d1618fe74719bca424ef130d1aafa78f46ce"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "4bf8650e6920a969f20189e82e30997a554f1059fef3664022abb302e45d9724",
+        "result": {
+          "bytes": 46168,
+          "sha256": "daaabf26135ed8b2a27697a7c04edd2ea75643291b271fa7e6aeeacf9e280575"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_capture.py"
+          ],
+          "summary": "69 passed in 0.46s",
+          "counts": {
+            "passed": 69
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "7d9454d49f7649edf5d1c22b145f3957e094a5b682d62188aaf3439ce9d83e52",
+      "host": "sparklina",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "0ceac8c562981e2e8f5f4b15355f526ccd1358db",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ab52c5c62896cd2a271e61083722d1618fe74719bca424ef130d1aafa78f46ce"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "370f0fd6ea4e6fc246e0207078e19169adbe9b567be9f8831c29891a631b0133",
+        "result": {
+          "bytes": 16234,
+          "sha256": "f6367f0dfee2b6462d95532fd65e1052ab09259cde5ddc34bc079e6ef7548c93"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_contract_registry_publication.py"
+          ],
+          "summary": "21 passed in 0.43s",
+          "counts": {
+            "passed": 21
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "926edfb4a415b39d424efc23ea0c38da168f36733b33f64d496529ff7809edf3",
+      "host": "sparky",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "0ceac8c562981e2e8f5f4b15355f526ccd1358db",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ab52c5c62896cd2a271e61083722d1618fe74719bca424ef130d1aafa78f46ce"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "dede912fa8ac43eeab3c0bc8cdd7b2ee9f47140882c1da6e012bf1d0216ddeaa",
+        "result": {
+          "bytes": 11510,
+          "sha256": "44469cf6ea0f249f5b20a0f3b0105e35a81d62bfa881ef43b79eeae7e3b1e53a"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_action_keys_survive_vocabulary_removal.py"
+          ],
+          "summary": "14 passed in 0.11s",
+          "counts": {
+            "passed": 14
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "3ba4160718be114e8f86170f7577314a9a55e21dc677ba5d8bec5c1fbc0cb974",
+      "host": "sparky",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "0ceac8c562981e2e8f5f4b15355f526ccd1358db",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ab52c5c62896cd2a271e61083722d1618fe74719bca424ef130d1aafa78f46ce"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "375c6b2998ebdbc07d6205338024bfd51528ab2a8fceabcda4c8f162fde2a87a",
+        "result": {
+          "bytes": 2713,
+          "sha256": "2c1b3608f1ac18afd3dfb2c877e81bd84bf68fbef7a3f2635bec20870d30361f"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_design_doc_line_references.py"
+          ],
+          "summary": "1 passed in 0.07s",
+          "counts": {
+            "passed": 1
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "a436f64761f1ddce4df13cff51b3a057491aafcfd7a6fdb47b8757f9a222e6b3",
+      "host": "sparklina",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "0ceac8c562981e2e8f5f4b15355f526ccd1358db",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ab52c5c62896cd2a271e61083722d1618fe74719bca424ef130d1aafa78f46ce"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "1577c5e6ad8da783629cfe1319dc6452fc59ff237c2109a3e43e132d59027b79",
+        "result": {
+          "bytes": 6116,
+          "sha256": "6b89bec9743a508095b26fe47bb8c0fa760b3e060dba9e8fe22397fb743d0e49"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_wire_inventory.py"
+          ],
+          "summary": "8 passed in 20.89s",
+          "counts": {
+            "passed": 8
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "da316438d5a85a6e55d3c436cb8a61daaad0d825f8ea82ade3766b9aeafa872d",
+      "host": "sparklina",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "0ceac8c562981e2e8f5f4b15355f526ccd1358db",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ab52c5c62896cd2a271e61083722d1618fe74719bca424ef130d1aafa78f46ce"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "2a58426588e8dba57205562da20caf8a872b8e54a45dc9b4f478840906776c4c",
+        "result": {
+          "bytes": 5956,
+          "sha256": "663b5cca3e1bef8245bea2f85506088298bd36ead643cf046a2c98c0b77541ca"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_duplication_baseline.py"
+          ],
+          "summary": "8 passed in 10.63s",
+          "counts": {
+            "passed": 8
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "0f099596466a923bc4daf7b8e9e2061d6056863defebbf764e5bf48877560153",
+      "host": "sparklina",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "721ee7abcb71fa620a6feddcdba45421e2b714fd",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "369a5c9ab3e7af85fb01945ebec25d516beafde5646a46445a8ff7c0117e3b0b"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "68c9121d61d6eb6d790f01913a983761641ee59cbe9e4bb0d2996fae3767d711",
+        "result": {
+          "bytes": 17592,
+          "sha256": "47d72cc9635dee5fd2921d260285ffc9ac955047ceee056a9b273c146cb7fff1"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_execution_profile.py"
+          ],
+          "summary": "26 passed in 0.61s",
+          "counts": {
+            "passed": 26
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "3b9d92614928e970fa47c984fc8a9c4fce11b8b95137303a47ec11c8ca7c5980",
+      "host": "sparklina",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "721ee7abcb71fa620a6feddcdba45421e2b714fd",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "369a5c9ab3e7af85fb01945ebec25d516beafde5646a46445a8ff7c0117e3b0b"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "5dafcbd040d120dfca48e1d9460fb0001beb2f2bc62b5cb62d28654c6efa4bcd",
+        "result": {
+          "bytes": 46477,
+          "sha256": "64d37882ee0801b94dfb8f5492d8d332066b4b0076765bb7311c913970209d21"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_capture.py"
+          ],
+          "summary": "69 passed in 0.40s",
+          "counts": {
+            "passed": 69
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "437de24be587ed339fca6012a13fa0e6112c2d9b555b9a7cd96d6972697a9a7d",
+      "host": "sparklina",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "a8f69c2b71be719e2ac43deffed1f879083c09e1",
+        "input": {
+          "bytes": 48326300,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9719673b90a0c3e6af27f378d4513b91831aa4dd9751ffb6464a861ce41bcecb"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "18d17ff1cc1dd73b180737a31a9faf2ec6eaaf8efeac2e691ba789c421dcb4d0",
+        "result": {
+          "bytes": 17623,
+          "sha256": "ccb7fa5f8e8090d10919da3bea713c81f042dbf038d0ecfaf55bbe8ba011c201"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_execution_profile.py"
+          ],
+          "summary": "26 passed in 0.73s",
+          "counts": {
+            "passed": 26
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "828127e976193b44453c3ca1876b71e7cae7b716d0d7fc610174761b32fdb7aa",
+      "host": "sparklina",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "a8f69c2b71be719e2ac43deffed1f879083c09e1",
+        "input": {
+          "bytes": 48326300,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9719673b90a0c3e6af27f378d4513b91831aa4dd9751ffb6464a861ce41bcecb"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "1bc359c485c0d221123efae76bec55ca04c835974a9172042b922a80428fd445",
+        "result": {
+          "bytes": 46519,
+          "sha256": "40f6ff333d80c04d093ebbe8e2c85bbd87296c061a8b978f9b0b93d0aeae44db"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_capture.py"
+          ],
+          "summary": "69 passed in 0.55s",
+          "counts": {
+            "passed": 69
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "ce12bb4173f00ae6f6e046ee378990c94a8fbacfb202dd0a5312a0c628d196a1",
+      "host": "sparklina",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "52cbd82908e8ad4c7ea98427117c9cf8da701ca3",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "7da0ca31fe7b393c485eb69d8b511b80aa8979fbce80c96d0cab7477f4634a21"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "402c72e63200a5455ae7f747af98edb22a5c24b995e1a1471380dafd73018e85",
+        "result": {
+          "bytes": 17849,
+          "sha256": "05be4d30b92f54adb75589468407e256f3f3abeb4cfb3dd6c812b50eb9b4b41f"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_execution_profile.py"
+          ],
+          "summary": "26 passed in 0.60s",
+          "counts": {
+            "passed": 26
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "fe67319381c9944e8b958a056822f10ffef915fdee699e7c6d12b0b0d2b6b917",
+      "host": "sparklina",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "52cbd82908e8ad4c7ea98427117c9cf8da701ca3",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "7da0ca31fe7b393c485eb69d8b511b80aa8979fbce80c96d0cab7477f4634a21"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "6106bbb0f92d8f0ee244eb767beb5258e2ba7367c030f5a5c067226a8b2eb704",
+        "result": {
+          "bytes": 46703,
+          "sha256": "a0cf4c76e604264c30fe554e8078f24788e25165976375f054b6a42f0ed87c11"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_capture.py"
+          ],
+          "summary": "69 passed in 0.40s",
+          "counts": {
+            "passed": 69
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "bf48c18e985c900018b45351390c5eb4c613a438634bc5c8f951a94e9adfdd77",
+      "host": "sparky",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "906776b5554137cc08b8916f4c0ee0418a1d3183",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "5b757b15dce901afe70420da2abc5c3dafffccd6756778cb417ebf6a3de02068"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "c3d3e7e2173de2c72383bc17fee1daa2e298ff2ff1916240d472bb61cfe99fca",
+        "result": {
+          "bytes": 17880,
+          "sha256": "e0d44edf840815753971f64fb16e782170325b480e2f6c132924ab05d60eddd5"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_execution_profile.py"
+          ],
+          "summary": "26 passed in 0.67s",
+          "counts": {
+            "passed": 26
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "50d31ad9d602baf7a9411d9687bdb404bdd8b64fcdafb0b20ba05d52bd1188cb",
+      "host": "sparklina",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "906776b5554137cc08b8916f4c0ee0418a1d3183",
+        "input": {
+          "bytes": 48326302,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "5b757b15dce901afe70420da2abc5c3dafffccd6756778cb417ebf6a3de02068"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "a62f574511b8151f064483e42a5a93b416c3e9c8613a7d9ad99ed7a843f2f4f6",
+        "result": {
+          "bytes": 46744,
+          "sha256": "e1ef06d28de67b783a0254d4f46e1c65f5e6fd9ee9b3e33b3f2793507a97980e"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_capture.py"
+          ],
+          "summary": "69 passed in 0.54s",
+          "counts": {
+            "passed": 69
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "0b8faa58d1347c380ebd266b1299e2f728542b7b793893dd10ce12daffb07d09",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "05fd78a1c3a902be03dc3d95931ed690c8134078",
+        "input": {
+          "bytes": 48326300,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "36ed50a2d474c8e9fb6fca846e0f12c37dfdf4d6a41f698b0490d30dded159df"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "b479645fd521d94fcbc92bbe19a18a23ec5b3f463ce016df45eed4d439407f5a",
+        "result": {
+          "bytes": 17577,
+          "sha256": "b5585e7a2bc0635c92b430b1341bc9cd9ea35af5625c84c968e08b70489a917b"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_execution_profile.py"
+          ],
+          "summary": "26 passed in 1.55s",
+          "counts": {
+            "passed": 26
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "b53f4599b88525815008b5940f1b4cb3d00fccf75c91b80784eddcf8bee26390",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "05fd78a1c3a902be03dc3d95931ed690c8134078",
+        "input": {
+          "bytes": 48326300,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "36ed50a2d474c8e9fb6fca846e0f12c37dfdf4d6a41f698b0490d30dded159df"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "503d9764187d0d75ec927194a03274b1b3946859975a4835e2d1f794d0710109",
+        "result": {
+          "bytes": 46462,
+          "sha256": "c4ef71cc686266b1732f9c076c3973d5e179cabda5464e239ce22c9d1634ea15"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_capture.py"
+          ],
+          "summary": "69 passed in 1.05s",
+          "counts": {
+            "passed": 69
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "715989989570c82047f86f26c98fcfaf7a2dae25e54fa27ac83ceca0ebae076a",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "78bda9b032fbf43c6127a74ca3bf9e416e962d05",
+        "input": {
+          "bytes": 48326301,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "7a320af028ce0da97214f8a112ab0a3f8f1c2efc3f372278b65fdb72a9f8c350"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "1e81cba2477f6bfa521a080bd424bce06e43a561865bc9dd0b3484250f3360f5",
+        "result": {
+          "bytes": 17608,
+          "sha256": "60f028e0d11856f45f9ce6f9768132b8621f643f4b22d498131a6f5a75ae20fb"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_execution_profile.py"
+          ],
+          "summary": "26 passed in 1.78s",
+          "counts": {
+            "passed": 26
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "eee695e54d5430199fa1efa9199e67022543057111e4efc5cbf552505038a5b0",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "78bda9b032fbf43c6127a74ca3bf9e416e962d05",
+        "input": {
+          "bytes": 48326301,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "7a320af028ce0da97214f8a112ab0a3f8f1c2efc3f372278b65fdb72a9f8c350"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "3cb043fd731dcf9487fb7415c09f1848fcc621384355abf58873465c5d76be8f",
+        "result": {
+          "bytes": 46536,
+          "sha256": "0a9aa14d101243fe5b2922950faa914108234a5b64d217d6d9f627f26871d82c"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_capture.py"
+          ],
+          "summary": "69 passed in 1.75s",
+          "counts": {
+            "passed": 69
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "84ee233299df77451b52cb7eee303cf75789347eda462e121fd14cd684fceb83",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "874b326af9e959bae3554a555fb26d747501c98d",
+        "input": {
+          "bytes": 48326301,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3d595b2b734c46783275cabe07a0193569047537a5abb6f2744c0e3f37704e84"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "32f8b257702ee7b2b6ad34c45931d105c9267be7b552b0b048a5c02af25d72b7",
+        "result": {
+          "bytes": 17841,
+          "sha256": "18998022a6d63c5cd534a8eabe5ff7f8b9271df4ce07277a7d871d0535bb35a4"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_execution_profile.py"
+          ],
+          "summary": "26 passed in 1.44s",
+          "counts": {
+            "passed": 26
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "b96a3b01b24a2b345d15c4a7878fcee8523a9fd5f534766fc178753569fb0591",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "874b326af9e959bae3554a555fb26d747501c98d",
+        "input": {
+          "bytes": 48326301,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3d595b2b734c46783275cabe07a0193569047537a5abb6f2744c0e3f37704e84"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "87e025088b8c4f4c5d4d98c0cae6a41ffc78a6145c47cce16993b4009af86541",
+        "result": {
+          "bytes": 46688,
+          "sha256": "9924d30889a6bc75efc00ed3a6a48192eb8ae41fc9e636b79f91956fe2d25611"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_capture.py"
+          ],
+          "summary": "69 passed in 1.02s",
+          "counts": {
+            "passed": 69
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "f5c04013148573ff6cf24694d29c2acdb26c05981ea805d956012c63da25844b",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "ebc57f4bf00e200d72646a000d4af4a946987ab8",
+        "input": {
+          "bytes": 48326301,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "82d3a506531d4cd95e1e730f29b8006d792699db5968c54169295a7c655b9fd9"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "eabd859ff2a318976d745260ce6158dfe8f73622404809844b3009276686cc7d",
+        "result": {
+          "bytes": 17842,
+          "sha256": "4883ad6b261f262ed30242f60fde1ecb344b9eba3b24110af69ec800a42c609b"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_execution_profile.py"
+          ],
+          "summary": "26 passed in 1.77s",
+          "counts": {
+            "passed": 26
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "2137d127f607abf21fa727bdd5dfdf695e97607f3797d9730daa37846f454051",
+      "host": "dl380g10",
+      "status": "executed",
+      "returncode": 0,
+      "source_snapshot": {
+        "commit": "ebc57f4bf00e200d72646a000d4af4a946987ab8",
+        "input": {
+          "bytes": 48326301,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "82d3a506531d4cd95e1e730f29b8006d792699db5968c54169295a7c655b9fd9"
+        },
+        "parent": "ba4491d21fd6dc4c80db0c3948f68602455f8435",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "6c3f333b34d6d39ae9de7913815ab22206ecf986cc7e85467c29965e154a4e84",
+        "result": {
+          "bytes": 46731,
+          "sha256": "2c4c160eacba5d56e24e0e60d48187353cbc9397183125f8be325c49bb365624"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_capture.py"
+          ],
+          "summary": "69 passed in 1.39s",
+          "counts": {
+            "passed": 69
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "5dfde1cb2f9bb0561dedd5aa001a28737e50e4f287fe6f49669ae01ad53d6e8c",
+      "host": "sparklina",
+      "status": "failed",
+      "returncode": 1,
+      "source_snapshot": {
+        "commit": "6ce994b4345256f93a2f4bd76842b4a27004c49e",
+        "input": {
+          "bytes": 48174817,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "f25334526c0023f9dc484393efd17c449cd2ccb3f61928c8da1b4bea292f2d8d"
+        },
+        "parent": "78724e8c4ae81756784c49219287dd74caa5ec4a",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": null,
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_capture.py"
+          ],
+          "summary": "3 failed, 43 deselected in 0.06s",
+          "counts": {
+            "failed": 3
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "e29b73f40d6668b9b68567d865f0a775ebdc0a5dff62ea6f5564de9cbe4c0f0c",
+      "host": "sparklina",
+      "status": "failed",
+      "returncode": 1,
+      "source_snapshot": {
+        "commit": "6ce994b4345256f93a2f4bd76842b4a27004c49e",
+        "input": {
+          "bytes": 48174817,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "f25334526c0023f9dc484393efd17c449cd2ccb3f61928c8da1b4bea292f2d8d"
+        },
+        "parent": "78724e8c4ae81756784c49219287dd74caa5ec4a",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": null,
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_execution_profile.py"
+          ],
+          "summary": "1 failed, 22 deselected in 0.07s",
+          "counts": {
+            "failed": 1
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "ad45492e51bc8a0783b3edf530592326cc3c64709d85625760c52e0fabca5a69",
+      "host": "dl380g10",
+      "status": "failed",
+      "returncode": 1,
+      "source_snapshot": {
+        "commit": "224f42d57f59b5943f5729967a0c7303787842aa",
+        "input": {
+          "bytes": 48174289,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "71dca9fc76c9a48a4329eef7fb0b2691812d90124c4f4b4dae65e2379bebc903"
+        },
+        "parent": "78724e8c4ae81756784c49219287dd74caa5ec4a",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": null,
+      "cleanup_verified": true,
+      "populations": [
+        {
+          "files": [
+            "tests/test_hostile_execution_profile.py"
+          ],
+          "summary": "1 failed, 25 deselected in 0.33s",
+          "counts": {
+            "failed": 1
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    }
+  ]
+}

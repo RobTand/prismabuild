@@ -127,6 +127,23 @@
         "deployment": "not deployed; no runtime publication, activation or restart",
         "workload_proof": "not established; no live gang or staged-only campaign",
         "remaining_target": "Whole-requirement axes unchanged; independent review, approved-head intake and actual source merge remain owed."
+      },
+      "scoped_repair_2403": {
+        "target": "Versioned opt-in hostile execution identity and safe capture before durable writes",
+        "implemented_source": {
+          "commit": "8809b5a0a (component behavior);a16c24fab (corrected fixture and oracle);ba4491d21 (main integration)",
+          "state": "partial-source-components",
+          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only"
+        },
+        "validation": {
+          "state": "scoped-component-qualified",
+          "evidence": "docs/evidence/issue2403_hostile_components_2026-10-28.json",
+          "acceptance_record": "docs/evidence/issue2403_hostile_acceptance_2026-10-28.json",
+          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture pass. Capture/receipt REDs retained. Full source/Mergify gates and replacement-matcher review pending."
+        },
+        "deployment": "not deployed; no worker capability advertised; current runtime4f93835c8656",
+        "workload_proof": "none; all35 lanePB-H cells remain unqualified",
+        "remaining_scope": "Existing requirement axes unchanged. Full hostile broker/backend and capture integration are owed. Does not certify arbitrary repository test honesty, live secrets, native containment, cleanup or staged-read conformance."
       }
     },
     {
@@ -216,6 +233,23 @@
       "workload_proof": {
         "detail": "unknown",
         "state": "unknown"
+      },
+      "scoped_repair_2403": {
+        "target": "Versioned opt-in hostile execution identity and safe capture before durable writes",
+        "implemented_source": {
+          "commit": "8809b5a0a (component behavior);a16c24fab (corrected fixture and oracle);ba4491d21 (main integration)",
+          "state": "partial-source-components",
+          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only"
+        },
+        "validation": {
+          "state": "scoped-component-qualified",
+          "evidence": "docs/evidence/issue2403_hostile_components_2026-10-28.json",
+          "acceptance_record": "docs/evidence/issue2403_hostile_acceptance_2026-10-28.json",
+          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture pass. Capture/receipt REDs retained. Full source/Mergify gates and replacement-matcher review pending."
+        },
+        "deployment": "not deployed; no worker capability advertised; current runtime4f93835c8656",
+        "workload_proof": "none; all35 lanePB-H cells remain unqualified",
+        "remaining_scope": "Existing requirement axes unchanged. Full hostile broker/backend and capture integration are owed. Does not certify arbitrary repository test honesty, live secrets, native containment, cleanup or staged-read conformance."
       }
     },
     {
@@ -601,6 +635,23 @@
             "state": "partial"
           }
         }
+      },
+      "scoped_repair_2403": {
+        "target": "Versioned opt-in hostile execution identity and safe capture before durable writes",
+        "implemented_source": {
+          "commit": "8809b5a0a (component behavior);a16c24fab (corrected fixture and oracle);ba4491d21 (main integration)",
+          "state": "partial-source-components",
+          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only"
+        },
+        "validation": {
+          "state": "scoped-component-qualified",
+          "evidence": "docs/evidence/issue2403_hostile_components_2026-10-28.json",
+          "acceptance_record": "docs/evidence/issue2403_hostile_acceptance_2026-10-28.json",
+          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture pass. Capture/receipt REDs retained. Full source/Mergify gates and replacement-matcher review pending."
+        },
+        "deployment": "not deployed; no worker capability advertised; current runtime4f93835c8656",
+        "workload_proof": "none; all35 lanePB-H cells remain unqualified",
+        "remaining_scope": "Existing requirement axes unchanged. Full hostile broker/backend and capture integration are owed. Does not certify arbitrary repository test honesty, live secrets, native containment, cleanup or staged-read conformance."
       }
     },
     {
@@ -653,6 +704,23 @@
         "deployment": "not deployed; no publication, activation or service restart in this task",
         "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
         "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
+      },
+      "scoped_repair_2403": {
+        "target": "Versioned opt-in hostile execution identity and safe capture before durable writes",
+        "implemented_source": {
+          "commit": "8809b5a0a (component behavior);a16c24fab (corrected fixture and oracle);ba4491d21 (main integration)",
+          "state": "partial-source-components",
+          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only"
+        },
+        "validation": {
+          "state": "scoped-component-qualified",
+          "evidence": "docs/evidence/issue2403_hostile_components_2026-10-28.json",
+          "acceptance_record": "docs/evidence/issue2403_hostile_acceptance_2026-10-28.json",
+          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture pass. Capture/receipt REDs retained. Full source/Mergify gates and replacement-matcher review pending."
+        },
+        "deployment": "not deployed; no worker capability advertised; current runtime4f93835c8656",
+        "workload_proof": "none; all35 lanePB-H cells remain unqualified",
+        "remaining_scope": "Existing requirement axes unchanged. Full hostile broker/backend and capture integration are owed. Does not certify arbitrary repository test honesty, live secrets, native containment, cleanup or staged-read conformance."
       }
     },
     {
@@ -2401,6 +2469,23 @@
       "workload_proof": {
         "detail": "unknown",
         "state": "unknown"
+      },
+      "scoped_repair_2403": {
+        "target": "Versioned opt-in hostile execution identity and safe capture before durable writes",
+        "implemented_source": {
+          "commit": "8809b5a0a (component behavior);a16c24fab (corrected fixture and oracle);ba4491d21 (main integration)",
+          "state": "partial-source-components",
+          "scope": "Sealed profile/policy identity and unsupported-profile refusal; private bounded literal automaton capture component only"
+        },
+        "validation": {
+          "state": "scoped-component-qualified",
+          "evidence": "docs/evidence/issue2403_hostile_components_2026-10-28.json",
+          "acceptance_record": "docs/evidence/issue2403_hostile_acceptance_2026-10-28.json",
+          "detail": "26profile+69capture cases pass five times per architecture including2xdist, zero skips;52controls perarchitecture pass. Capture/receipt REDs retained. Full source/Mergify gates and replacement-matcher review pending."
+        },
+        "deployment": "not deployed; no worker capability advertised; current runtime4f93835c8656",
+        "workload_proof": "none; all35 lanePB-H cells remain unqualified",
+        "remaining_scope": "Existing requirement axes unchanged. Full hostile broker/backend and capture integration are owed. Does not certify arbitrary repository test honesty, live secrets, native containment, cleanup or staged-read conformance."
       }
     },
     {

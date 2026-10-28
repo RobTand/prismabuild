@@ -1,0 +1,89 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "1b3ea7858db9968b209cdfc38e280c7d80afded6",
+  "scope": [
+    "SC-01",
+    "ID-01",
+    "ID-08",
+    "ID-09",
+    "SAFE-03"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-2403",
+    "issue": "https://github.com/RobTand/prismabuild/issues/2403",
+    "validated_repairs": [
+      {
+        "id": "SC-01",
+        "actions": [
+          "4fded7d821cc3fa371a1a236d60c9996f847ec7367c2d29a682ed09a4e43eece",
+          "db2a02749ac89ac2572c21b56ed9b91e4125c666f3293775a3608fee09a8def6",
+          "4f42f44b07add74ff7a2e4c32c200ee05a71116faa9df2e94b37d6297202f7d6",
+          "1349f52e2cb2261a24b2344c0bb59223b2d2fd40c369ccc32e4aee18b518cc34"
+        ],
+        "outcome": "Scoped source components:26profile-boundary+69capture cases pass on both architectures, five executions each including2xdist; exact source bundle, terminal/log, CAS receipt/payload and cleanup verified. Full manifest:issue2403_hostile_components_2026-10-28.json."
+      },
+      {
+        "id": "ID-01",
+        "actions": [
+          "4fded7d821cc3fa371a1a236d60c9996f847ec7367c2d29a682ed09a4e43eece",
+          "db2a02749ac89ac2572c21b56ed9b91e4125c666f3293775a3608fee09a8def6",
+          "4f42f44b07add74ff7a2e4c32c200ee05a71116faa9df2e94b37d6297202f7d6",
+          "1349f52e2cb2261a24b2344c0bb59223b2d2fd40c369ccc32e4aee18b518cc34"
+        ],
+        "outcome": "Scoped source components:26profile-boundary+69capture cases pass on both architectures, five executions each including2xdist; exact source bundle, terminal/log, CAS receipt/payload and cleanup verified. Full manifest:issue2403_hostile_components_2026-10-28.json."
+      },
+      {
+        "id": "ID-08",
+        "actions": [
+          "4fded7d821cc3fa371a1a236d60c9996f847ec7367c2d29a682ed09a4e43eece",
+          "db2a02749ac89ac2572c21b56ed9b91e4125c666f3293775a3608fee09a8def6",
+          "4f42f44b07add74ff7a2e4c32c200ee05a71116faa9df2e94b37d6297202f7d6",
+          "1349f52e2cb2261a24b2344c0bb59223b2d2fd40c369ccc32e4aee18b518cc34"
+        ],
+        "outcome": "Scoped source components:26profile-boundary+69capture cases pass on both architectures, five executions each including2xdist; exact source bundle, terminal/log, CAS receipt/payload and cleanup verified. Full manifest:issue2403_hostile_components_2026-10-28.json."
+      },
+      {
+        "id": "ID-09",
+        "actions": [
+          "4fded7d821cc3fa371a1a236d60c9996f847ec7367c2d29a682ed09a4e43eece",
+          "db2a02749ac89ac2572c21b56ed9b91e4125c666f3293775a3608fee09a8def6",
+          "4f42f44b07add74ff7a2e4c32c200ee05a71116faa9df2e94b37d6297202f7d6",
+          "1349f52e2cb2261a24b2344c0bb59223b2d2fd40c369ccc32e4aee18b518cc34"
+        ],
+        "outcome": "Scoped source components:26profile-boundary+69capture cases pass on both architectures, five executions each including2xdist; exact source bundle, terminal/log, CAS receipt/payload and cleanup verified. Full manifest:issue2403_hostile_components_2026-10-28.json."
+      },
+      {
+        "id": "SAFE-03",
+        "actions": [
+          "4fded7d821cc3fa371a1a236d60c9996f847ec7367c2d29a682ed09a4e43eece",
+          "db2a02749ac89ac2572c21b56ed9b91e4125c666f3293775a3608fee09a8def6",
+          "4f42f44b07add74ff7a2e4c32c200ee05a71116faa9df2e94b37d6297202f7d6",
+          "1349f52e2cb2261a24b2344c0bb59223b2d2fd40c369ccc32e4aee18b518cc34"
+        ],
+        "outcome": "Scoped source components:26profile-boundary+69capture cases pass on both architectures, five executions each including2xdist; exact source bundle, terminal/log, CAS receipt/payload and cleanup verified. Full manifest:issue2403_hostile_components_2026-10-28.json."
+      }
+    ],
+    "remaining_gaps": [
+      "Independent review of the replacement automaton is pending; Opus r1 was not approval of the full profile",
+      "Required Mergify checks on final integratedSHA and full source gate remain pending; no source merge authorization implied",
+      "No privileged broker sandbox backend, sandbox identities, namespaces, default-deny network, immutable/private caches, authenticated result collection, per-action quotas/devices or hostile disposal implementation; all lanePB-H cells unqualified",
+      "Capture component is not integrated with worker logs, terminal tails, sidecars, traces or CAS; current trusted logs remain raw; no PB-H7 claim",
+      "Initial CAS regression fixture incorrectly used a writable receipt; corrected immutable fixture has a real REDad45492e51bc8a0783b3edf530592326cc3c64709d85625760c52e0fabca5a69 at prior78724e8c4. The earlier writable-refusal run is retained and not counted as typed-profile reproduction",
+      "Early prelaunch scope listedID-01/08/09/SAFE-03 but omittedSC-01; no waiver or retroactive compliance claim. A subsequent explicitly scoped run must coverSC-01 before merge",
+      "No runtime activation, host mutation, native hostile payload, route benchmark or live cohort qualification authorized/performed"
+    ],
+    "note": "Merge candidate record only. Existing requirement axes remain unchanged. Profile omission preserves trusted params/tags and historical action keys; selected hostile profile always refuses before execution or receipt acceptance. Finite literal capture does not detect arbitrary transformed or unknown secrets. No power-loss durability claim."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}
