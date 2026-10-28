@@ -1267,6 +1267,54 @@ budget, then acknowledge reconciliation with the captured generation through
 `reconciled`. A successful reconnect does not establish completeness. This
 source addition neither enables a live consumer nor publishes a runtime.
 
+#### Gang hints and clocks: source support only (#2107)
+
+The source adapter declares optional `gangs` coverage, with exact lowercase
+32-hex group IDs, for the group record and immediate election/readiness/terminal,
+teardown, started and bounded-loan state files. It handles atomic replacement,
+removal, in-place legacy writers, lazy/recreated and populated moved-in roots.
+The shared watcher installs before scanning and replays queued mutations.
+Exhausted/lost watches, unsafe or unreadable files/directories and reconstruction
+failures cannot advertise complete gang coverage. Ring loss/reset requires
+bounded authoritative reconciliation, never just reconnecting the socket.
+
+Subscribe to the group and every member outcome key; reread the original
+confirmed records and preserve their exact action key/publication binding and
+sealed-declaration validation. Group-name coalescing retains pending invalidation
+generations and the earliest read budget. Healthy leases, stamps, progress and
+logs produce no gang or terminal work. This adapter is not complete lease/stamp
+coverage and does not authorize sleeping on an unobserved lease renewal.
+
+The source-only `gang_deadlines.member_deadlines` helper returns separate typed
+absolute monotonic deadlines per original member publication: readiness expires
+just after its recorded stamp +30 s; matching terminal proof matures at its
+original first-seen +120 s; skew retains the barrier's original start plus the
+configured group limit; claim-bound effective heartbeat evidence expires just
+after the existing lease timeout (normally 300 s). Convert from authoritative
+wall evidence once and retain the vector, including already-due entries. A real
+ready/lease renewal moves only that evidence expiry. Reconnection and empty
+long-poll renewal restart no clock. Live/unknown/mismatched terminal evidence,
+claim/barrier completion, teardown, withdrawal, publication replacement and
+retirement cancel their relevant timers; existing policy owns any new episode.
+
+Visibility retry is 50 ms doubling to one second within the existing absolute
+read budget. Bell-unavailable recovery is 0.25 seconds up to five seconds.
+Confirmation/stop/retirement cancels pending recovery, not by granting extra
+policy time. Inspect coverage topics/version, resets, ring retained/capacity,
+connections/subscriptions and watches, plus dirty/visibility and semantic
+changed/coalesced/expired counters. One fully populated 16-member group adds up
+to 54 watches including its optional root and per-file inode watches; additional
+groups share that root. Heartbeat-only traffic adds no ring entries. The current
+4096 ring/128 connection caps are unchanged; joint W6/W7 measured baselines and
+both CPU-arm guards/record compatibility evidence remain required before limits
+or deployment can be accepted. Fast worktree checks are development evidence,
+not the Mergify integrated-SHA merge gate.
+
+No gang consumer is enabled by this source change. W6's distinct topic adapters,
+complete required topic publication, TL approval, #1881 evidence, independent
+review and manager source acceptance remain separate gates. Do not infer deployed
+coverage from this section or use it to enable a dependent complete wait.
+
 Bell v2 is additive (#1939). Existing live pbwait/pbrun/pbtest clients continue
 using v1. Source inclusion does not activate v2 consumers. Before enabling one,
 query `/v2/now` with its exact `X-PrismaBuild-Queue` header and verify every

@@ -11057,6 +11057,70 @@ recovery or close. A successful copy resets the next copy-recovery delay to
 50 milliseconds doubling to one second until owner/result notification, clean
 state or close. This introduces no new blocking-operation or policy deadline.
 
+#### Gang source adapters and individual clocks (#2107)
+
+The optional `gangs` topic uses exact lowercase 32-hex group IDs. `GangInputs`
+maps `gangs/<group>.json`, the immediate `gangs/<group>/` state directory,
+`elect-<index>.json`, `ready-<index>.json`, `terminal-<64-hex-key>.json`,
+`teardown.json`, `started.json` and `bounded-loan.json` to the owning group.
+Indexes use the existing 0..15 maximum, not arbitrary directory depth. Group
+and member publication identity remain in authoritative group/row observations;
+names-only hints never establish membership, sealed declarations or admission.
+Observe all member outcome keys as well as the group. Do not replace election,
+barrier, registration locks, confirmed reads or teardown policy with these hints.
+
+The adapter reuses installed ancestor/root absence proofs, watch-before-scan,
+queued replay, moved-in reconstruction and explicit incomplete coverage on
+unsafe inputs, lost watches, exhaustion, overflow and ring loss. Group files
+and state files receive inode watches for in-place old writers and external
+hardlink detection. Replacement/removal/renaming invalidate the group; moved-away
+watches are retired before they can retain its identity. The bell reads no
+gang bodies and adds no scans under admission or transition locks. Existing
+`DirtyInputs` coalesces group names while retaining each invalidation generation
+and the earliest absolute read budget. `InputChanges` retains member publication
+fields when comparing confirmed group observations.
+
+`gang_deadlines.member_deadlines` exposes individual publication-bound source
+clocks for later consumers. Each result retains group, index, action key and
+original `published_unix`, a source name and a typed absolute monotonic deadline.
+Callers supply validated group/member evidence and paired wall/monotonic samples;
+the helper does not read records, validate a sealed request or grant authority.
+
+| Source | Original clock and boundary | Cancellation / rearm |
+| --- | --- | --- |
+| Readiness | `ready_unix + READY_FRESH_S` (30 s), strictly after its inclusive horizon; future-ready evidence also exposes its original visibility boundary | Retire when claimed, absent, mismatched or no longer relevant; a real new readiness stamp moves only this expiry |
+| Terminal confirmation | Matching member/signature `first_seen_unix + TERMINAL_CONFIRM_S` (120 s), inclusive maturity | Live/unknown/changed proof cancels it; `note_terminal` alone governs restarting invalid/future evidence |
+| Start skew | The original barrier's absolute monotonic start plus the validated group's configured `skew_s` | Claim release, teardown, withdrawal or barrier completion cancels it; no wake/renewal/reconnect restarts it |
+| Lease | Validated claim-bound `_effective_heartbeat` time plus the existing lease timeout (default 300 s), strictly after the horizon | Claim retirement cancels it; a real heartbeat changes this expiry only, not readiness/terminal/skew |
+
+Inclusive-horizon conversion advances the converted monotonic result by one
+representable instant, so clock-scale rounding cannot turn expiry into equality.
+Already-due deadlines remain due. A consumer retains the converted vector until
+its underlying evidence changes, consumes due events once, and retires vectors
+on publication/predicate change. Empty long-poll renewal is transport only.
+Heartbeat/progress/log traffic is not mapped into `gangs` or terminal topics.
+This slice supplies lease clocks, not a complete lease/stamp callback adapter:
+lease-dependent complete waits still require their own published coverage.
+
+NFS visibility uses `DirtyInputs`' existing 50 ms doubling-to-one-second retries
+inside the original budget, cancelled by confirmed visibility, retirement or
+stop. Bell recovery remains the shared hub's 0.25-to-five-second backoff; neither
+retry grants new gang time. Diagnostics remain ring capacity/occupancy, resets,
+coverage changes, subscription/connection counts and installed watches, plus
+consumer changed/coalesced/expired and visibility-retry counters. Watch demand
+is one optional root, one directory per group, and one inode watch per observed
+regular group/state file (at most 52 known files for a fully populated 16-member
+group, hence 54 additional watches for one group and its root). Existing global
+4096-entry ring and 128-connection caps are unchanged, not newly qualified limits.
+Joint W6/W7 baseline load/connection/ring measurements and both CPU-arm required
+guards/compatibility checks remain acceptance evidence, not inferred from source.
+
+This is source support only. No consumer is activated or runtime published.
+W6/PRI-906 (#2106) still owns its distinct adapters; common mechanisms present
+here are not proof that W6 is complete or deployed. Complete required topics,
+TL approval and #1881 evidence remain prerequisites for dependent complete waits
+and final source acceptance.
+
 `queue_bell_input_changes.InputChanges` compares detached authoritative reader
 observations. Each observation carries semantic meaning, explicit evidence
 state and absolute deadlines. Unknown, absent, stale and fresh evidence remain
