@@ -6,7 +6,7 @@ import stat
 
 from .holder_census import CPU_METADATA, GPU_METADATA
 from .queue_bell_topics import (HostReservations, WorkerOffers, HOST_RESERVATION_TOPICS,
-                                AdaptiveInputs, TierInputs, TOPICS)
+                                AdaptiveInputs, TierInputs, GangInputs, TOPICS)
 from .record_store import (TIER_RESERVATIONS, TIER_FUNDING, TIER_FUNDING_RETIRED)
 
 
@@ -85,12 +85,31 @@ class TierInputShapes:
         return None
 
 
+class GangInputShapes:
+    """Only the real gang state depth is traversed; unsafe reads stay unknown."""
+
+    @staticmethod
+    def kind(relative: Path) -> str | None:
+        parts = relative.parts
+        if not parts or parts[0] != "gangs":
+            return None
+        if GangInputs.allows(relative):
+            return "searchable-directory"
+        if len(parts) == 2 and relative.suffix == ".json":
+            return "file" if GangInputs.hint(relative) else "unknown"
+        if (len(parts) == 3 and TOPICS["gangs"].accepts_id(parts[1])
+                and GangInputs.state_file(parts[2])):
+            return "file"
+        return None
+
+
 class InputShapes:
     """Coverage predicates for the declared names-only input families."""
 
     @staticmethod
     def kind(relative: Path) -> str | None:
-        return HostInputShapes.kind(relative) or TierInputShapes.kind(relative)
+        return (HostInputShapes.kind(relative) or TierInputShapes.kind(relative)
+                or GangInputShapes.kind(relative))
 
     @staticmethod
     def watchable(kind: str, info) -> bool:
