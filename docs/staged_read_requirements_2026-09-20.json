@@ -119,12 +119,12 @@
         "validation": {
           "state": "scoped-component-qualified",
           "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
-          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
-          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+          "evidence": "docs/evidence/issue2383_integrated_components_2026-10-28.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Integrated9ffc controls661pass2NFSskip x86/662pass1ZFSskip ARM and fast334pass.68exact terminal/log/source/receipt/payload/cleanup readbacks verified. Full CPU completion, Mergify checks and final review remain pending; no native admission/deletion."
         },
         "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
         "workload_proof": "not run; no O6, native root or hostile qualification",
-        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
+        "remaining_scope": "Existing whole-requirement axes unchanged. Final review and required Mergify checks on integratedSHA are pending. No deploy, native root, hostile or durability claim."
       },
       "scoped_repair_2343": {
         "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
@@ -244,12 +244,12 @@
         "validation": {
           "state": "scoped-component-qualified",
           "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
-          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
-          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+          "evidence": "docs/evidence/issue2383_integrated_components_2026-10-28.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Integrated9ffc controls661pass2NFSskip x86/662pass1ZFSskip ARM and fast334pass.68exact terminal/log/source/receipt/payload/cleanup readbacks verified. Full CPU completion, Mergify checks and final review remain pending; no native admission/deletion."
         },
         "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
         "workload_proof": "not run; no O6, native root or hostile qualification",
-        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
+        "remaining_scope": "Existing whole-requirement axes unchanged. Final review and required Mergify checks on integratedSHA are pending. No deploy, native root, hostile or durability claim."
       }
     },
     {
@@ -407,12 +407,12 @@
         "validation": {
           "state": "scoped-component-qualified",
           "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
-          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
-          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+          "evidence": "docs/evidence/issue2383_integrated_components_2026-10-28.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Integrated9ffc controls661pass2NFSskip x86/662pass1ZFSskip ARM and fast334pass.68exact terminal/log/source/receipt/payload/cleanup readbacks verified. Full CPU completion, Mergify checks and final review remain pending; no native admission/deletion."
         },
         "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
         "workload_proof": "not run; no O6, native root or hostile qualification",
-        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
+        "remaining_scope": "Existing whole-requirement axes unchanged. Final review and required Mergify checks on integratedSHA are pending. No deploy, native root, hostile or durability claim."
       },
       "scoped_repair_2343": {
         "target": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
@@ -663,12 +663,12 @@
         "validation": {
           "state": "scoped-component-qualified",
           "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
-          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
-          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+          "evidence": "docs/evidence/issue2383_integrated_components_2026-10-28.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Integrated9ffc controls661pass2NFSskip x86/662pass1ZFSskip ARM and fast334pass.68exact terminal/log/source/receipt/payload/cleanup readbacks verified. Full CPU completion, Mergify checks and final review remain pending; no native admission/deletion."
         },
         "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
         "workload_proof": "not run; no O6, native root or hostile qualification",
-        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
+        "remaining_scope": "Existing whole-requirement axes unchanged. Final review and required Mergify checks on integratedSHA are pending. No deploy, native root, hostile or durability claim."
       }
     },
     {
@@ -732,12 +732,12 @@
         "validation": {
           "state": "scoped-component-qualified",
           "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
-          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
-          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+          "evidence": "docs/evidence/issue2383_integrated_components_2026-10-28.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Integrated9ffc controls661pass2NFSskip x86/662pass1ZFSskip ARM and fast334pass.68exact terminal/log/source/receipt/payload/cleanup readbacks verified. Full CPU completion, Mergify checks and final review remain pending; no native admission/deletion."
         },
         "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
         "workload_proof": "not run; no O6, native root or hostile qualification",
-        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
+        "remaining_scope": "Existing whole-requirement axes unchanged. Final review and required Mergify checks on integratedSHA are pending. No deploy, native root, hostile or durability claim."
       }
     },
     {
@@ -1051,12 +1051,12 @@
         "validation": {
           "state": "scoped-component-qualified",
           "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
-          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
-          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+          "evidence": "docs/evidence/issue2383_integrated_components_2026-10-28.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Integrated9ffc controls661pass2NFSskip x86/662pass1ZFSskip ARM and fast334pass.68exact terminal/log/source/receipt/payload/cleanup readbacks verified. Full CPU completion, Mergify checks and final review remain pending; no native admission/deletion."
         },
         "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
         "workload_proof": "not run; no O6, native root or hostile qualification",
-        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
+        "remaining_scope": "Existing whole-requirement axes unchanged. Final review and required Mergify checks on integratedSHA are pending. No deploy, native root, hostile or durability claim."
       },
       "scoped_repair_2343": {
         "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
@@ -1348,12 +1348,12 @@
         "validation": {
           "state": "scoped-component-qualified",
           "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
-          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
-          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+          "evidence": "docs/evidence/issue2383_integrated_components_2026-10-28.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Integrated9ffc controls661pass2NFSskip x86/662pass1ZFSskip ARM and fast334pass.68exact terminal/log/source/receipt/payload/cleanup readbacks verified. Full CPU completion, Mergify checks and final review remain pending; no native admission/deletion."
         },
         "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
         "workload_proof": "not run; no O6, native root or hostile qualification",
-        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
+        "remaining_scope": "Existing whole-requirement axes unchanged. Final review and required Mergify checks on integratedSHA are pending. No deploy, native root, hostile or durability claim."
       },
       "scoped_repair_2343": {
         "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
@@ -1592,12 +1592,12 @@
         "validation": {
           "state": "scoped-component-qualified",
           "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
-          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
-          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+          "evidence": "docs/evidence/issue2383_integrated_components_2026-10-28.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Integrated9ffc controls661pass2NFSskip x86/662pass1ZFSskip ARM and fast334pass.68exact terminal/log/source/receipt/payload/cleanup readbacks verified. Full CPU completion, Mergify checks and final review remain pending; no native admission/deletion."
         },
         "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
         "workload_proof": "not run; no O6, native root or hostile qualification",
-        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
+        "remaining_scope": "Existing whole-requirement axes unchanged. Final review and required Mergify checks on integratedSHA are pending. No deploy, native root, hostile or durability claim."
       }
     },
     {
@@ -2548,12 +2548,12 @@
         "validation": {
           "state": "scoped-component-qualified",
           "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
-          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
-          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+          "evidence": "docs/evidence/issue2383_integrated_components_2026-10-28.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Integrated9ffc controls661pass2NFSskip x86/662pass1ZFSskip ARM and fast334pass.68exact terminal/log/source/receipt/payload/cleanup readbacks verified. Full CPU completion, Mergify checks and final review remain pending; no native admission/deletion."
         },
         "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
         "workload_proof": "not run; no O6, native root or hostile qualification",
-        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
+        "remaining_scope": "Existing whole-requirement axes unchanged. Final review and required Mergify checks on integratedSHA are pending. No deploy, native root, hostile or durability claim."
       }
     },
     {

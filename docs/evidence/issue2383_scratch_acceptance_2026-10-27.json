@@ -95,14 +95,14 @@
       }
     ],
     "remaining_gaps": [
-      "Opus r3 review and full PB gate on integrated current-main source are pending; source is not merge-approved",
+      "Final review disposition and required Mergify checks on the integrated PR SHA are pending; source is not merge-approved. Current main integration policy uses the Mergify queue; this lane still routes its own validation through PB under the task instruction.",
       "Early initial test submissions lacked separate prelaunch acceptance artifacts; no waiver or retroactive procedural compliance claimed; later batches recorded prelaunch scope",
       "Dedicated dataset absent and provisioning authorization pending; runtime publication/activation not performed or authorized by this record",
       "No native320-GiB admission, overcommit, stopped-attempt deletion, ambiguous-cleanup capacity retention or O6 boot proof",
       "No whole staged-read requirement or hostile guarantee qualification; component fixtures use controlled broker/process observations",
-      "Full CPU integration on27fe found wire-policy pin, new probe help/publication registration gaps; repaired sourcefbb94f135 requires final controls. Root proof inventory also fails unchanged main6cbaa7524 at/usr/lib/x86_64-linux-gnu. Final shard remains active at record creation."
+      "Full CPU integration on27fe found wire-policy, new-probe help and publication-disposition gaps, repaired infbb94f135; integrated9ffc controls pass661(x86)/662(ARM) with documented host-conditional skips. The old final shard timed out at3600seconds and has no test verdict. Root proof inventory fails both27fe and unchanged6cbaa7524 before pytest. Resumed one-CPU integrated population is pending."
     ],
-    "note": "Scoped source-merge candidate record.38e1ac81d adds atomic holder exclusivity and strict census before floor charging;fbb94f135 updates help, publication disposition and closed-field pins. Original27fe evidence is retained outside the source tree at/home/rob/tmp/pb-tl2-owner-20261027/retained-issue2383-initial-evidence.json as superseded component proof. No deploy, campaign completion, power-loss durability or hostile qualification."
+    "note": "Scoped source-merge candidate record.38e1ac81d adds atomic holder exclusivity and strict census before floor charging;fbb94f135 updates help, publication disposition and closed-field pins. Original27fe evidence is retained outside the source tree at/home/rob/tmp/pb-tl2-owner-20261027/retained-issue2383-initial-evidence.json as superseded component proof. No deploy, campaign completion, power-loss durability or hostile qualification. Latest source branch integrates current mainccccf78e6 as04545964e1bcffeb980822132341c358d7333cb8; the owned src/tools and test bytes equal the validated9ffc source. The new main routing-policy test belongs to main, and no local-test exception was taken."
   },
   "deploy": {
     "status": "not-this-step"

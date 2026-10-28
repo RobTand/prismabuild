@@ -1,0 +1,3435 @@
+{
+  "schema": "pb.issue2383.integrated_component_evidence.v1",
+  "source_commit": "9ffc112b19bf29b868c33741846041db13050fdc",
+  "base_commit": "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036",
+  "source_axis": "source/components only; not merged, deployed or native qualified",
+  "audit": {
+    "action_count": 68,
+    "receipt_count": 68,
+    "cleanup_verified": 68,
+    "errors": []
+  },
+  "artifacts": {
+    "full_readback": "/home/rob/tmp/pb-tl2-owner-20261027/scratch-integrated-evidence-audit.json",
+    "source_bundle_tree_audit": "/home/rob/tmp/pb-tl2-owner-20261027/snapshot-tree-audit.json",
+    "recovery_program": "/home/rob/tmp/pb-tl2-owner-20261027/recover_pbtest_report.py"
+  },
+  "actions": [
+    {
+      "action_key": "367c95df907b5fa063eb26a2e175d316d2cd7c5609f4b4ae6b3a7901598e62dc",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "1a74023a0f3735bbfb17c99f9bc4eeb22b48ede7bb19933a2c09c4db26d81726",
+        "result": {
+          "bytes": 21627,
+          "sha256": "3f9ba55d832a543c4340c882eff37af910bfa4c4c28c64e5425ed04870f23469"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_contract_registry_publication.py",
+            "tests/test_worker_loop_offers_what_is_free.py"
+          ],
+          "summary": "30 passed in 19.35s",
+          "counts": {
+            "passed": 30
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "626e84182798c82bf366357fb66e40bbd7e4dba782943605d7e4b539503b10c4",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "e2098333868481362fc918fa620cc1ee4b765ca549920586b44412c431a84aeb",
+        "result": {
+          "bytes": 2718,
+          "sha256": "eeda386921c9bb5e55381b48ef79d37a10fc9abaa7483df1d37be6b06a0606d8"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_design_doc_line_references.py"
+          ],
+          "summary": "1 passed in 0.08s",
+          "counts": {
+            "passed": 1
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "e86b63df5d57b7c8baee007d6b1e32481c98fecfd877f6a64dd72d7063abc3b1",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "8c9cb022f4bf3bdc814d536b81d6d85d2c663d6f74c5c6e2f63e486831c61a76",
+        "result": {
+          "bytes": 5956,
+          "sha256": "3559a0abaf30198a21b666967f8d30562fbb11ac1024d9cf6d5cec96a1f8aa83"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_duplication_baseline.py"
+          ],
+          "summary": "8 passed in 10.52s",
+          "counts": {
+            "passed": 8
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "4e096cbc1ba3f7a37e605dd634dc9e8275c012cbcf17808c7a4f62e4a313cf49",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "693b72746419f2b79d4921b051874720a276ffb427dc888199b1a68038de65a7",
+        "result": {
+          "bytes": 22315,
+          "sha256": "6dd951c728ab7b89a3d79b62e84dbb0e2272dac4e4a197f55b298b4e4c923448"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_filesystem_floor_1483.py"
+          ],
+          "summary": "38 passed, 1 skipped in 5.92s",
+          "counts": {
+            "passed": 38,
+            "skipped": 1
+          },
+          "completion": "complete",
+          "skipped": [
+            {
+              "nodeid": "tests/test_filesystem_floor_1483.py::test_zfs_pool_is_keyed_by_guid_sampled_usable_and_admits",
+              "when": "call",
+              "reason": "no local ZFS shared store on this worker",
+              "location": "tests/test_filesystem_floor_1483.py:394"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "action_key": "e9e953b7f7d164fd388a65814331382596209dcce8f8912b5275824bf1a2e5f5",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "3258869a0dd81f84d858c576663e198a967e1b488fe40bf095e17e272772ee36",
+        "result": {
+          "bytes": 18740,
+          "sha256": "a3bd87511f1ec59b4cb366d80f6e57e35111dbac259e7b97258c6570dcb529ca"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_filesystem_floor_accounting_1483.py"
+          ],
+          "summary": "28 passed in 0.68s",
+          "counts": {
+            "passed": 28
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "550e356c0de49c6cd3551bdb8ccfca5002895db9716f98eeb859fff32072eefc",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "a678dc7380233566fed362088cf41f2acbca53443db79091d49787592dc647de",
+        "result": {
+          "bytes": 11172,
+          "sha256": "59732912d75b8e97b5029c9f55ee38aa7cb9dc3d09fb78627f96293a76d34dec"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_filesystem_floor_identity_1483.py"
+          ],
+          "summary": "16 passed in 0.40s",
+          "counts": {
+            "passed": 16
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "a39538b397e4d2969e899422fa1570a1b14dab8cc7a9f9e10afa128fef295391",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "777e1a5dcd24a5e71d90279f80d538b06dd01da08be30d8c246339ab10bd6c91",
+        "result": {
+          "bytes": 57059,
+          "sha256": "e7b2f093017e2c6d0ea7e129dd6cbfaf41a3c4c81b7650f22a61b33df782e922"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_fleet_tool_flags_have_help.py"
+          ],
+          "summary": "96 passed in 1.10s",
+          "counts": {
+            "passed": 96
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "e53c2440bb46b9ad86388b4bffac561a7a05c2a488ffb0cd8c47c4d9658e9a43",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "0ff1fe89144fce91d1caebb753541151cc5848a02b51438e673347824080823a",
+        "result": {
+          "bytes": 10879,
+          "sha256": "38159005c5864e27878b4338abb47ff83f1497ed7c1bdf99376a2b1c9a92c7e2"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_floor_ledger_snapshot.py"
+          ],
+          "summary": "16 passed in 0.14s",
+          "counts": {
+            "passed": 16
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "6d4c1ed6158311f24ead7a6180c2eacfe526300c4e6a7b069b348b657d7a0f43",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "0a4cd94094db187ad70cb6b8b5790a943541507903268b9ff3e591b276696d76",
+        "result": {
+          "bytes": 31386,
+          "sha256": "be1a224816358a7e04d42f1e55dab04653862defee84b2aa3a2b04f2d1924281"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_local_scratch_core_recipes.py"
+          ],
+          "summary": "45 passed in 2.63s",
+          "counts": {
+            "passed": 45
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "fe9ea96852636ae5b28640a98dbf16d833e69999922c1e325a22972afd7d7287",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "039643144779f6d2b118c6a135ae3e72693c95075f1dd2dd1a5736ad11be3b59",
+        "result": {
+          "bytes": 23479,
+          "sha256": "4e58870ea70f8b7b7d92e02279d59c5cc61a11826574dc5f144d1c0eaefd038f"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_local_scratch_host_kind.py"
+          ],
+          "summary": "33 passed in 1.88s",
+          "counts": {
+            "passed": 33
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "a7a771f5ee6f05f99bdfeda4ad8160a9fc497d92b55b0363dd1d342d83b04e0f",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "6c8a45722da0969c051747dcf7717db3fce18c5320ebf4682fe766d87cb2a672",
+        "result": {
+          "bytes": 59339,
+          "sha256": "6a3bfd934f486cf2318e9fa59a649dd054cbf9cdde8bcd76b163c8fa7e84adef"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_local_scratch_measured_placement.py"
+          ],
+          "summary": "86 passed in 39.67s",
+          "counts": {
+            "passed": 86
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "7dfc7df15bfdf49090884b821565c012dd9bd27fa13036a80209a7b15aa9a745",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "a4dd361a49085a3056c023f74022456ff52f3cde2ea82c0629f579410fe1916a",
+        "result": {
+          "bytes": 32518,
+          "sha256": "c5d4dec29c622f2475e0375a7d5f589f601a89e49a2941f5e3431adcf752e0ac"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_publish_runtime.py"
+          ],
+          "summary": "61 passed in 34.00s",
+          "counts": {
+            "passed": 61
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "487797a70c210fc5f9581dbba9372f1cfe3c4f887e6706649edd9d6e1072d946",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "327f1fe3d5670d22438499dfb32422ed99aa5c6f25b0f470606c7b9c9c20188b",
+        "result": {
+          "bytes": 220683,
+          "sha256": "8c0a784f8f19f4da9355504a9054f37dad282f0faced72b2a09b2a05692f9cb8"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_scratch_dedicated_capacity.py"
+          ],
+          "summary": "83 passed in 2.87s",
+          "counts": {
+            "passed": 83
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "9f0a380c2b8c196f5e0e092533a0bf610809470ec4b38f0d0db5374456bee623",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "94228c776c17571f7f94394ca0f7c58a938a7fc05acc473b7b01feb8249f1b17",
+        "result": {
+          "bytes": 15471,
+          "sha256": "90643a9c32ce0e1bc2e498fc2586c818d5f3996f0eaa9c3210b8dba032b0ced1"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_scratch_lifetime_directory.py"
+          ],
+          "summary": "24 passed in 1.19s",
+          "counts": {
+            "passed": 24
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "db2d3cbd023e1b727ba8d7b75ffcb6f0d3e8fe0a4c4119d6604e9167eb5c88a4",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "1553c0afd4f7fd024a33415386d4f778f0dcddbd1de463ce83d67287919e8d52",
+        "result": {
+          "bytes": 4457,
+          "sha256": "b3bfe3e4545981d77223814dd55d1e41972e8abedd98a41c18eeb4488e8a71c7"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_scratch_lifetime_ownership.py"
+          ],
+          "summary": "4 passed in 1.31s",
+          "counts": {
+            "passed": 4
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "35708ae6d2c846a507a89448b5a35b94c032cdb2a4f23b0629bdb8c6951a739c",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "bf4753f880aa04fcef0841ac01751dcfa1f28fa4ba6f8583bf880d655d9d7788",
+        "result": {
+          "bytes": 21648,
+          "sha256": "ba997358a4ad2d5b91c967f3c186e27ea1cf71c43e858ffe4f15684161745669"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_scratch_lifetime_pool.py"
+          ],
+          "summary": "34 passed in 20.55s",
+          "counts": {
+            "passed": 34
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "b162a0d9cefcafa1a75295d70e81867747e3853e913581f592e382ed3732437a",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "302dfe48d74a6fe45bbc082574c90070ee975656eefb3862047680b301e94235",
+        "result": {
+          "bytes": 10669,
+          "sha256": "38909ed456113093a9fae62962765ab93e44ebeef79576dadc06ba2de66c2fdb"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_scratch_lifetime_sdk_contract.py"
+          ],
+          "summary": "16 passed in 0.12s",
+          "counts": {
+            "passed": 16
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "a804a48b74bd635b047ac9687cff48ea490a84ce6e18fdd02481fdb7a6c734f7",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "5e9445532e9ccf9972a2a6addf7955ea61981971c16c5083dd0cc0792d3b8e48",
+        "result": {
+          "bytes": 19903,
+          "sha256": "67941ee7bb5a1263a2fbbfe5a27cd27dfc9e697587c21de334799957a6b52064"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_scratch_lifetime_selection.py"
+          ],
+          "summary": "29 passed in 0.19s",
+          "counts": {
+            "passed": 29
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "e3ea18e6b53afcbf8a75a7b79ad8d812c86228271175fcd49cae255445ac43c8",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "58b85ffcaad4a44fd255da901097834a3aaae6f8b739ef4abba52e1a08e43712",
+        "result": {
+          "bytes": 6114,
+          "sha256": "cbe5a0f4074ab45db29b68cb418610f54da1de48d0607670861f57de321259ab"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_wire_inventory.py"
+          ],
+          "summary": "8 passed in 20.22s",
+          "counts": {
+            "passed": 8
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "9c28f8838b4c034d9a358486c7cf4f9db64478a78c01c975c3cfd526a964493e",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "3775b973c8b542aa9fdb859509c4fb4ef16d70d8",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "001792dcc5ae432fcee98cea1a884818859494399c58ef1da29f7b4593c57512"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "52c7d5aa3f257bc6d6854b70a8817dc5e618accbb09e251e780bd890ef2ad9cb",
+        "result": {
+          "bytes": 5583,
+          "sha256": "d138a8f92116fa7f01e8bb28806718340f42d0447bd9cd584a67e020638c80d2"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_worker_loop_offers_its_affinity.py"
+          ],
+          "summary": "6 passed in 1.08s",
+          "counts": {
+            "passed": 6
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "7cf834d6c4f4edefc7449f57544f552390e63345db582ee1b658fdf5ddcd944b",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "fa2ad761c6a38f826f7ba3749a7ba9191bbeed405ab9a5f7eab452e405d6e095",
+        "result": {
+          "bytes": 21613,
+          "sha256": "120de90c1f0e0898f158df482d07cab53a24e268f86fe955f6a5b4c434eebb5e"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_contract_registry_publication.py",
+            "tests/test_worker_loop_offers_what_is_free.py"
+          ],
+          "summary": "30 passed in 6.15s",
+          "counts": {
+            "passed": 30
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "1dd8ac10fa76d46427683c4c4b6ae7f4d6154cda43593b2e250888ce018ebd33",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "b5a160a3f437629a3a897e8f048b65465b5fbcee042b657ba4e8f909ca916af0",
+        "result": {
+          "bytes": 2703,
+          "sha256": "d3cb311b2ddf6bd054df9c38e085269be17459c1e1c083c7348b1526ffa13421"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_design_doc_line_references.py"
+          ],
+          "summary": "1 passed in 0.26s",
+          "counts": {
+            "passed": 1
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "5d111665c7468f1100eea54e23c6df63a1a55c5118663296d2f77c2983ee2ce0",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "22c0c428cf022b563d3f212d302a6f8017f923a0b04bc367ef09e18782bdf443",
+        "result": {
+          "bytes": 5939,
+          "sha256": "05be2e60877663428d707f73fa6bcbe7a83999e6928032bde3ba15ad18730253"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_duplication_baseline.py"
+          ],
+          "summary": "8 passed in 28.70s",
+          "counts": {
+            "passed": 8
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "1196cf3458b719401293bca327d342b0613e96d9026bf00829d110cbc7e23181",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "fce8372637385362bb5f66379dc12586eee9e80911f2bab9130b52dd489a5488",
+        "result": {
+          "bytes": 22368,
+          "sha256": "fcb564eaf01b26ab1ac70a7a5a5abf4a285a6cc74690ee69f0a33dacb2bc0628"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_filesystem_floor_1483.py"
+          ],
+          "summary": "37 passed, 2 skipped in 9.50s",
+          "counts": {
+            "passed": 37,
+            "skipped": 2
+          },
+          "completion": "complete",
+          "skipped": [
+            {
+              "nodeid": "tests/test_filesystem_floor_1483.py::test_server_address_alone_cannot_authenticate_an_nfs_export",
+              "when": "call",
+              "reason": "no readable NFS mount on this worker",
+              "location": "tests/test_filesystem_floor_1483.py:526"
+            },
+            {
+              "nodeid": "tests/test_filesystem_floor_1483.py::test_host_admission_skips_the_poll_only_under_enforce",
+              "when": "call",
+              "reason": "no readable NFS mount on this worker",
+              "location": "tests/test_filesystem_floor_1483.py:741"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "action_key": "912c5468110224ed270aae150f4c8cdf7850df33387dc4bdc0953ad2fe0c0f66",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "4a2b3e2cb004dd8cdd650e0e69fd0128eaad1218ea1428ba39b64a03c6323e8c",
+        "result": {
+          "bytes": 18725,
+          "sha256": "eabcf865ffb4c516b7d423653699c2b1275bd0b91ee7d5793444c115401d9ae4"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_filesystem_floor_accounting_1483.py"
+          ],
+          "summary": "28 passed in 0.95s",
+          "counts": {
+            "passed": 28
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "4c3ee95f32b8899478028e3230f319b1b0c55ee559f88ed2efca9fc666299145",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "d5f22b774f2eae810318f1afe37e16f00ab561b069f00337f9641defafe6a0b2",
+        "result": {
+          "bytes": 11159,
+          "sha256": "817f9827ee6047ab1b8595410e4365c4f7c9065e3760796ae3fb4b135502c76d"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_filesystem_floor_identity_1483.py"
+          ],
+          "summary": "16 passed in 1.05s",
+          "counts": {
+            "passed": 16
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "86634f8a773e2f0fd78e44e52fd8b9f5f7f3d729ce4607343143379506974d94",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "233a0cc2de842e8099ae53141d317cda66770d1df709ba6f589951a06cc163cd",
+        "result": {
+          "bytes": 57044,
+          "sha256": "bde242ebdd220f0e32e6d61fdde9b440e8fe78885cec0328418cb424b576c191"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_fleet_tool_flags_have_help.py"
+          ],
+          "summary": "96 passed in 2.34s",
+          "counts": {
+            "passed": 96
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "6d3945ee0ae83d216d164459d579128f55aea1dfe0bed18cb290d8a69da7477f",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "28a34f1c0fd112a57ba87f21b5b107757e382abe911606a4b06a512f77659319",
+        "result": {
+          "bytes": 10863,
+          "sha256": "259fb6a9e4679a345d3de4b3b8a7c1d3bce9e5493e1eb504d9804e64c9b4f53e"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_floor_ledger_snapshot.py"
+          ],
+          "summary": "16 passed in 0.35s",
+          "counts": {
+            "passed": 16
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "dd03117dbb133aed517155cd12b19789e33c9134cf04f8fa55f1c1f443241b70",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "fcde517cbd013873c3c2949c43f7fa3eb3a96d5d5ed9c3a2e43fe11fe56dbc08",
+        "result": {
+          "bytes": 31371,
+          "sha256": "9ab70b1e5bf48710672bf3c0e41713a7209b8f324ef4de7f86324ce878af0d7b"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_local_scratch_core_recipes.py"
+          ],
+          "summary": "45 passed in 6.21s",
+          "counts": {
+            "passed": 45
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "54d5fbca29a0e0d7020bad68be9ced89f864f6bbd3277b52b8dfd1b9589cc507",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "ccd8befb7e6ee80ec77ac9c10680c4e992da23e3f16ddd4366d290d37cce2f91",
+        "result": {
+          "bytes": 23464,
+          "sha256": "6fcb1db0e494deedb8d04b55105e0578ff864c792e956910d56db14173b097c2"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_local_scratch_host_kind.py"
+          ],
+          "summary": "33 passed in 4.19s",
+          "counts": {
+            "passed": 33
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "d54d3c72865fe8ee97c6d6b501c77b573fb4fd4ce0f90fc723158b8883017eab",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "08a9ab9dfc5584104c34e2f0cc6fafba2ab5799013438cad095b062fbcd5f1bf",
+        "result": {
+          "bytes": 59326,
+          "sha256": "11c5d1c80d6184df7cc064a7157f148ba8bb0cb66b91e0905db09c16971dc2d8"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_local_scratch_measured_placement.py"
+          ],
+          "summary": "86 passed in 36.82s",
+          "counts": {
+            "passed": 86
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "448a25d8a059e4e753afb09fb3e9348750672625c8a591db241daa0dcffe873e",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "43ffa1c4ac5bc90d45f37cff5646bceab72f6205625a6744e173092cc02354a8",
+        "result": {
+          "bytes": 32506,
+          "sha256": "78fc6c30ab36d445538a204f0a67ebf78ec5bce0b23d08867c03169e1d7f2268"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_publish_runtime.py"
+          ],
+          "summary": "61 passed in 21.07s",
+          "counts": {
+            "passed": 61
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "0b6384aabbe5be3bd1a6850fb4b4957c2faed2d8ba2cfb562c212903e2679559",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "119979b91d4119b3d7fb92dc68236adcd776f87be00492772f9e94ac2cd87681",
+        "result": {
+          "bytes": 220668,
+          "sha256": "f3469d4a1df08565b97c60cc5f392bbba1869308564249483a7b2fe541ed91a3"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_scratch_dedicated_capacity.py"
+          ],
+          "summary": "83 passed in 5.44s",
+          "counts": {
+            "passed": 83
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "2c54843c06a2e23d70d0fe2bad80f4d08c3c228382c560b6102e7d2e0a08acc9",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "095c15028c88bf318194615f0b22eb6db71c9efdad59f52408bba79e26e08a77",
+        "result": {
+          "bytes": 15458,
+          "sha256": "643f86433b8146e0bd779f9d97bc19d1c426ab3b6ba74482501e3cbcf1bf97db"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_scratch_lifetime_directory.py"
+          ],
+          "summary": "24 passed in 1.81s",
+          "counts": {
+            "passed": 24
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "0334cdf9bf1ce0f92457a0dfc13f80a08548daf7543a7ab4cf6a25e642537024",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "8b5b1990930e7cebd5a46bb14bf1af8d447afc452b82134cd6271dae5b9f0de0",
+        "result": {
+          "bytes": 4442,
+          "sha256": "6753e205316795a05e7ca50d5e8a5eec776fc5d3b626a94473c01dd8269d5918"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_scratch_lifetime_ownership.py"
+          ],
+          "summary": "4 passed in 3.11s",
+          "counts": {
+            "passed": 4
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "57510a11d1daaa7fde0d1657b8c7f5a6e1fa1509884f6e99443de499f2fd7e6b",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "bc3cffc5ebb949657549a282a2955c6a3f0ce328da3090356181ed2d6f40c415",
+        "result": {
+          "bytes": 21635,
+          "sha256": "5072b0d869fc445ac2099b0da294180ca329993ffbaf1c10d26706f64aee5f91"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_scratch_lifetime_pool.py"
+          ],
+          "summary": "34 passed in 28.03s",
+          "counts": {
+            "passed": 34
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "0e7dc4d3986bb8583a58926791db6ff96df187c451d5583fe683e6706b46a1ba",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "30a358d07dcdd053c55bf83c43e65a80d3fc614ebb1423fd33ca48878821dee6",
+        "result": {
+          "bytes": 10654,
+          "sha256": "52ad9f0d8d2a4e2cedf7a93c00429addefcbb01ff0b593fec45db7edd032dddf"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_scratch_lifetime_sdk_contract.py"
+          ],
+          "summary": "16 passed in 0.29s",
+          "counts": {
+            "passed": 16
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "68b9c873dc6a6667712e6be70764d29d24195732ec0f54916134f84fac04ad9d",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "e64f7321488420b0c791851da66f95889a4b7e02ace80e8db4fe85581ce22dde",
+        "result": {
+          "bytes": 19888,
+          "sha256": "2c2833b6306ac7cc8f3460839be4eea84d8674b645abf4ef8140f3d39bfd9324"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_scratch_lifetime_selection.py"
+          ],
+          "summary": "29 passed in 0.44s",
+          "counts": {
+            "passed": 29
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "6454b93b0d3759abd3a236193d95356c43ad67cc445ec2003729eba2b8f2bffc",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "45bef4b125357ebb6c951307c76ca6075e925333ae4c8306b8bee842bf3f1fa2",
+        "result": {
+          "bytes": 6101,
+          "sha256": "414090198377c3e155f2e7a64ee8f41cbb2f4dbb981bdd3c5046e3e4c38a276c"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_wire_inventory.py"
+          ],
+          "summary": "8 passed in 43.88s",
+          "counts": {
+            "passed": 8
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "4e6a711157013eb3c65656ac0ef011d1ff7013fd522589866e75962651ea5da2",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "c97b328d6e13d805a10ee6f4d29c17959f780d79",
+        "input": {
+          "bytes": 48347061,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "626ad811c053be7fc1895d7f069aac3ea5edc92dad2e27ed995627dcfd9a2a8d"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "95e31f384440ac53b8aad7a14e972b152d1b12206f1aeb32ab7b8609ea1c2c3e",
+        "result": {
+          "bytes": 5568,
+          "sha256": "ed39c2de35808cbb7021b53f28082d7506e872cb5ff6e3ecf55e6e9d802d29d5"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_worker_loop_offers_its_affinity.py"
+          ],
+          "summary": "6 passed in 2.01s",
+          "counts": {
+            "passed": 6
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "e497a5769df800f322880e06f9d506ee31d0166ad6fa48a6a899b28c59787f99",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "3b5994edb51c0b632d4db30c6dadcda15981400576747234dd40b96c148204ff",
+        "result": {
+          "bytes": 12806,
+          "sha256": "f307ca72267bf36f9889a5268bd7d942e3084df6d99f5d5526d6507bd923f172"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_a_data_manifest_can_revisit_entries.py",
+            "tests/test_progress_write_atomic_1311.py"
+          ],
+          "summary": "18 passed in 1.11s",
+          "counts": {
+            "passed": 18
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "144a1e0000643c1ce8553a73309082a56d82903ce30a3297878fda703262475e",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "8f79702d23954df9be773573fb1c7921fdf5b174d2f1642d9008511b4167c2b7",
+        "result": {
+          "bytes": 37154,
+          "sha256": "e9c513ca7502efcb3cb91bb8d07b8ad8a54a57420afd241319d56b7c4e8f1e76"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_a_data_manifest_names_bytes_exactly.py",
+            "tests/test_regression_test_gate.py"
+          ],
+          "summary": "62 passed in 1.28s",
+          "counts": {
+            "passed": 62
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "709846ec835305442e60783472e71844ab6c78113189165ed22c814d4783acca",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "8edf691bb6bc4d9e356c0526fb85403c2eed0dda0772df9c1889014f093750f8",
+        "result": {
+          "bytes": 15664,
+          "sha256": "aa87d3029f2d3238ad2f45ea24b55cdb45764ed4b47ef1b8775648067f930bf5"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_action_keys_survive_vocabulary_removal.py",
+            "tests/test_sorted_json_byte_profile.py"
+          ],
+          "summary": "20 passed in 0.32s",
+          "counts": {
+            "passed": 20
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "8fe012489c5f8fad5944862ef980c523af9f91aeddb288b7ff45bbb558748a9a",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "e91f6999293fdddc76a720267dcd9b9a0ee1e27875fde81d5ee9d9bd83cded9e",
+        "result": {
+          "bytes": 15316,
+          "sha256": "e04ac89755c92589dd6a0f4c94d65334f75af0a9d5b9bf15311e93d0c61dfc53"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_cas_request_lookup_1313.py",
+            "tests/test_test_tiers.py"
+          ],
+          "summary": "29 passed in 3.46s",
+          "counts": {
+            "passed": 29
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "326078618473d3df14c9ddf6bbe189ee1a906e1770d3dffaf5a43afdcfae5188",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "c28ac42ab176af29b503bfe2bd102eaf27d97d67a7fd1dfb4b7ec103c96e0dc2",
+        "result": {
+          "bytes": 4583,
+          "sha256": "8ab026e0bda9c284621b39e46a8a2b1b3eeba884222a956335214d5122549eb7"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_cas_staging_descriptor_ownership.py"
+          ],
+          "summary": "4 passed in 0.22s",
+          "counts": {
+            "passed": 4
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "681fdeb3f9b8e3bcd15c467b2b689aa41232dcd690784d3167517af460c56b3b",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "a8c33ab7f3789374f852147705c48539e18c0a7ee20b3309ad8610b9cd99e0fe",
+        "result": {
+          "bytes": 12328,
+          "sha256": "8c6c43fa59ada0f01a65c7ce60c42231f9d5a3d34640199303046d556cd3f770"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_compressed_data_manifests.py"
+          ],
+          "summary": "19 passed in 0.59s",
+          "counts": {
+            "passed": 19
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "b6a95de516239fcfd3f59d465451fabda2833a0872f8b0008af25de7d1cf4be0",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "67e9e36eb22b50fd39d737e21f4fac1298075792787914618dac3cd8ab221fe6",
+        "result": {
+          "bytes": 13660,
+          "sha256": "a67b95484afc8c7f6ff78caf3fdeafe9812cdc3c03032fafad615ab81e66f730"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_dependency_digest_contract.py"
+          ],
+          "summary": "20 passed in 0.39s",
+          "counts": {
+            "passed": 20
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "c218b06f97a5c57c2ed4757cbe347182bb71c859e173a0173f4744249e1edc15",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "a0b7416178728ef374503b050b8b254003d7a972653f71abf2e0a3d9b41e2e28",
+        "result": {
+          "bytes": 11237,
+          "sha256": "a824ed6faed51d80f2576e51dd461de663e09b50c48908c1614038dc208d86c5"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_digest_primitives_1547.py"
+          ],
+          "summary": "17 passed in 0.65s",
+          "counts": {
+            "passed": 17
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "91272775c8df89c35b0862300902a001f026b4cf55b7c0caec15a8a545827886",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "5498d187f5c9e183d912cce83766d7760f71a9109312acba30d6dd956640b765",
+        "result": {
+          "bytes": 4607,
+          "sha256": "3ac8e89265f31ef0c30c21ee63741881a305b6d7af2140e78217c8519f54e482"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_manifest_map_env_injection.py"
+          ],
+          "summary": "5 passed in 0.10s",
+          "counts": {
+            "passed": 5
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "7f1bac015a13e87de1aff0043eacc7a616c90198deb01adc198c43b63005c243",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "75b05e6d53f771e22bf0cd7644661af7ac4573c365476eb0f686c437da08a714",
+        "result": {
+          "bytes": 22294,
+          "sha256": "0d7eafabd3e6938260a54e8527e1b0a1ed85346ff1f983e9b2f5a34bb51a89e1"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_park_proof_identity.py"
+          ],
+          "summary": "40 passed in 0.34s",
+          "counts": {
+            "passed": 40
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "09701388c5d51aef7531327f25b56aefbbe2f27be9a63a3d46d260c7518dc960",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "1abd328e13968739f1949f1840f0b9b9a887df60b0778f58defb90c815b35bf4",
+        "result": {
+          "bytes": 6033,
+          "sha256": "7f5864df32daf6bb8199babdc7099c7da9d20e4774fcbcb1538c500732949bab"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_pbtest_cpu_shards_declare_their_bound.py"
+          ],
+          "summary": "6 passed in 0.20s",
+          "counts": {
+            "passed": 6
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "87e95c07d23fe3e1d3308969a3d636b0a989396d208ababc9327d4ea5459bf0f",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "4368ef4de282087ed3b9d43a7b70a3004e65ca1b034fde01fd70967d3204e10b",
+        "result": {
+          "bytes": 4867,
+          "sha256": "fb87392f1b31948c921ba9748b9171ad429a1aa90db4bcae58d78be50e8c3095"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_pbtest_incomplete_summary_1365.py"
+          ],
+          "summary": "4 passed in 0.16s",
+          "counts": {
+            "passed": 4
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "95a74245fc960046adea716a7531e61e3754254d3b56ee01f3e1fa7fb829b1df",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "f6020d0c4f9681f0c0c8e2ff9c01bde16da728ea3998d36c11734985308e6d1c",
+        "result": {
+          "bytes": 17336,
+          "sha256": "2a97e8fad1e7697256d36e39fba423912776b9b68c41e277125910a0f8598626"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_pbtest_plan_only.py"
+          ],
+          "summary": "24 passed in 0.60s",
+          "counts": {
+            "passed": 24
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "a066df1359aefc8dd5b317def5c79ec278b7e5980e40ea5726d06320e555ed51",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "30fdbe747862aedcd3e6fe833272f6adbd3b5937cf0d64eb409d380bf6e8930e",
+        "result": {
+          "bytes": 8515,
+          "sha256": "6493bdf4f94963e7707345f26ac75c544fe1ccea0049ecbf1eae69893e187cbb"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_pbtest_recovers_unobserved.py"
+          ],
+          "summary": "8 passed in 0.44s",
+          "counts": {
+            "passed": 8
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "0bdd44200bbc2dcd848c6e863af174b9de7ef266458c1b2368e01e7d35f1da2c",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "f0d2b58424dfed3e694f5573e148221e92f74d5cb01e2c3f097fff712b32e130",
+        "result": {
+          "bytes": 3829,
+          "sha256": "e4e062ff419cc78fd118089d7d1c5ab149b61fbb899825d0e1d85b01a9d1679b"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_pbtest_requested_paths.py"
+          ],
+          "summary": "3 passed in 0.21s",
+          "counts": {
+            "passed": 3
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "5ce04c855d354c52949e04672ebfd8deb91cf8faaba43792337265716df61d09",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "2028cb15824e8042d0ebec08b218b61776497d6e1023b3c1a65ad58ee0cc5b05",
+        "result": {
+          "bytes": 10373,
+          "sha256": "b8c5e2ada5e09f8796b76f594dedb34a83ad9c9a5adb1144fb213d85195b2a1a"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_pbtest_seals_interpreter_1462.py"
+          ],
+          "summary": "13 passed in 2.41s",
+          "counts": {
+            "passed": 13
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "617593737848abda2c3cd6f71e93fcb36aa3894a61b983d54a3c496b0e549939",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "d5c9ff7a9f26cec6f40da02791e856c4937261d45b50ffebd242da9a84e0ff05",
+        "result": {
+          "bytes": 4106,
+          "sha256": "95a19343b041df3813ea1e6c9f1dc0dbaff50c8e600adfc9e4d447e92a5824bf"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_pbtest_unobserved_outcome.py"
+          ],
+          "summary": "3 passed in 0.26s",
+          "counts": {
+            "passed": 3
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "f3519fe1a5d01df13650b952cc5bb093d863a34b2e75084a54c2311c1ce86cb3",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "ac29293f8e573f36cf8f2892fe55cfad884c9d3c0bd0c4da88af91db5adad595",
+        "result": {
+          "bytes": 10577,
+          "sha256": "4cc388e5cd0093ab8729de359f0848aef9530adca58222dc8e07a68c9a63cc9a"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_pbtest_worker_threads_1192.py"
+          ],
+          "summary": "15 passed in 0.30s",
+          "counts": {
+            "passed": 15
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "7211852374a793a7feee140e29e51ae4c299e132698733a85958ff4cd1f26f22",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "708859632f01d1736329cae7a862ef7c79d88893fa4900e885cfafab1732d085",
+        "result": {
+          "bytes": 6214,
+          "sha256": "b350f38dba925f80c7ad2bf8eed5b719a74908b1e02446f03ce8480449a6debb"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_pbtest_workers.py"
+          ],
+          "summary": "9 passed in 0.23s",
+          "counts": {
+            "passed": 9
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "0b86ac065d3863e7b49fc5af9849eb0aa1c43acfff80428eb68f985689f397f0",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "26f9e552eff5c707ff318aa58d846a9589779b51",
+        "input": {
+          "bytes": 48347065,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c6a840fd0daf4b321626a259e1317974fe1dbd1b84a5afe1396eae2d1eb7336"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "42b762ad4c893e5ff5ddeaf348f814884d16db697c33bf52369526346be66bf5",
+        "result": {
+          "bytes": 8793,
+          "sha256": "a05b5a23f19d3d8a37de44279178dfd3ec3d3833bb5b0b15b0a649fb1cedae5a"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_prelaunch_manifest_1594.py"
+          ],
+          "summary": "15 passed in 0.10s",
+          "counts": {
+            "passed": 15
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "790133dfee036eb9a0b3866bc169b864377a3378847273e804bfd0c4491de441",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "13a0c907a3ec39e5bac8da5db1f6f7ce87251253",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ae206d5c63475522696d110a8178e8e7dfc0ce414c485bfb6ca5c7b76d4eba11"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "15dfc70eb9c9fcb442996d628b187753b092e1a9295496a3ff156f29dd6ea322",
+        "result": {
+          "bytes": 745019,
+          "sha256": "4b85ee77ba788666e86d24a4992d853bd92b8b25a93598cdd2c3320b2a2ff685"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_1707_activity_signal_boundary.py",
+            "tests/test_a_coordinator_wait_on_queued_children_is_not_no_progress.py",
+            "tests/test_a_fill_capacity_is_minted_only_from_what_the_disks_delivered.py",
+            "tests/test_a_mover_refusal_is_visible_to_the_owner.py",
+            "tests/test_a_promotion_handoff_defers_the_source_retirement.py",
+            "tests/test_a_released_consumers_row_is_refused_at_claim.py",
+            "tests/test_a_row_refused_on_held_cpus_withholds_its_box.py",
+            "tests/test_a_staged_range_holds_its_tokens_until_an_egress_deletes_it.py",
+            "tests/test_a_waiting_client_reads_its_ending_by_name.py",
+            "tests/test_adoption_does_not_pin_beyond_a_missing_frontier.py",
+            "tests/test_an_unknown_image_inventory_keeps_the_drain.py",
+            "tests/test_bootstrap_qualification.py",
+            "tests/test_broker_read_baseline.py",
+            "tests/test_candidate_qualification.py",
+            "tests/test_checkout_identity_is_byte_derived.py",
+            "tests/test_claim_qualification_histories.py",
+            "tests/test_client_reader_history.py",
+            "tests/test_consumer_surface.py",
+            "tests/test_dead_partial_done_owner_retires.py",
+            "tests/test_diag940_profiler_path.py",
+            "tests/test_exact_cover_merge_fails_closed.py",
+            "tests/test_fleet_tools_resolve_repo_core_1318.py",
+            "tests/test_gang_record_isolation_1521.py",
+            "tests/test_git_runners_1307.py",
+            "tests/test_grafana_deploy.py",
+            "tests/test_issue_link_workflow.py",
+            "tests/test_live_store_probe_is_bounded.py",
+            "tests/test_logical_pricing_snapshot.py",
+            "tests/test_measurement_reservation_census_1419.py",
+            "tests/test_mount_probe_tracks_completed_unreaped_child.py",
+            "tests/test_ordinary_shared_fallback_2199.py",
+            "tests/test_pbcanary_legs12.py",
+            "tests/test_pbmcp_snapshot_filters.py",
+            "tests/test_pbrun_bounded_attachment.py",
+            "tests/test_pbrun_gpu_contract.py",
+            "tests/test_pbrun_sealed_environment.py",
+            "tests/test_pbstatus_deadline.py",
+            "tests/test_pbtest_bounds_resident_clients_1348.py",
+            "tests/test_pbtest_outcomes_load_is_lazy_1554.py",
+            "tests/test_pbtest_tmp_retention_option_1535.py",
+            "tests/test_pool.py",
+            "tests/test_pool_enumeration_stale_handle.py",
+            "tests/test_pool_poison_record_is_a_denial.py",
+            "tests/test_pool_reset_refusal.py",
+            "tests/test_pool_withdraw_detail.py",
+            "tests/test_prelaunch_recovery_claim_interval_1637.py",
+            "tests/test_private_claim_admission_compat_1419.py",
+            "tests/test_produced_spool_paced_export.py",
+            "tests/test_publication_canary_handoff.py",
+            "tests/test_qualify_scratch_lifetime.py",
+            "tests/test_r6_tier_mutation_exclusion.py",
+            "tests/test_ready_gpu_residency_releases_cpu_admission.py",
+            "tests/test_require_pool_run_switch_substitution.py",
+            "tests/test_retained_worker_proxy.py",
+            "tests/test_runtime_capture_source_binding.py",
+            "tests/test_shared_census_safety_2199.py",
+            "tests/test_slurm_singleton.py",
+            "tests/test_snapshot_staged_ignored_paths.py",
+            "tests/test_staged_path_benchmark_publication.py",
+            "tests/test_superseded_origin_consumers.py",
+            "tests/test_terminal_stdout_is_bounded.py",
+            "tests/test_the_holder_settles_its_container_transaction_before_release.py",
+            "tests/test_the_prewarm_loop_windows_a_manifest_larger_than_the_arc.py",
+            "tests/test_the_ram_window_publishes_and_evicts_per_chunk.py",
+            "tests/test_the_window_stops_when_the_consumer_releases_nothing.py",
+            "tests/test_unified_foreign_memory_2088.py",
+            "tests/test_window_multiconsumer_liveness.py",
+            "tests/test_worker_loop_offers_its_affinity.py"
+          ],
+          "summary": "1213 passed, 212 warnings in 201.94s (0:03:21)",
+          "counts": {
+            "passed": 1213
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "f413450ce83836be4f751b6dbd97c136f0b2840e6359df38d71b1f6046a3af30",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "13a0c907a3ec39e5bac8da5db1f6f7ce87251253",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ae206d5c63475522696d110a8178e8e7dfc0ce414c485bfb6ca5c7b76d4eba11"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "ff74d175e54ee86e50b68e26dbafa34567aa8a1a98bc26a67fa22c976c5ed103",
+        "result": {
+          "bytes": 511406,
+          "sha256": "443be65730719a8eaed87707b622033e3edcc56adee46de32826999d500df4c1"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_1707_default_stall_repro.py",
+            "tests/test_a_dead_producers_batches_and_paths_are_released.py",
+            "tests/test_a_finish_reads_only_the_funding_it_can_count.py",
+            "tests/test_a_mover_seals_a_movement_environment.py",
+            "tests/test_a_publish_mkdir_survives_a_concurrent_prune.py",
+            "tests/test_a_released_gpu_box_goes_to_the_ready_gpu_row.py",
+            "tests/test_a_running_consumer_keeps_its_map_and_its_admission.py",
+            "tests/test_a_staged_wait_is_not_no_progress.py",
+            "tests/test_a_warm_listing_loses_trust_with_its_filesystem.py",
+            "tests/test_advance_needs_names_its_fence_target.py",
+            "tests/test_an_unknown_interpreter_keeps_the_image_reason_1595.py",
+            "tests/test_bootstrap_record_binding_1842.py",
+            "tests/test_broker_scope_contract_1301.py",
+            "tests/test_candidate_refusals.py",
+            "tests/test_checkout_reaps_dead_siblings.py",
+            "tests/test_claim_requires_admission_1419.py",
+            "tests/test_client_report_boundaries.py",
+            "tests/test_contained_deadline_profile.py",
+            "tests/test_decomposed_common_policies.py",
+            "tests/test_digest_sites_1547.py",
+            "tests/test_exact_role_log_metadata_migration.py",
+            "tests/test_fleet_world.py",
+            "tests/test_gang_registration_1521.py",
+            "tests/test_gitignore_pbrun_patterns.py",
+            "tests/test_heartbeat_liveness_2230.py",
+            "tests/test_issue_maintenance.py",
+            "tests/test_local_resident_adoption.py",
+            "tests/test_logical_task_data_manifests.py",
+            "tests/test_measurement_reservation_foreign_load_2267.py",
+            "tests/test_movement_package.py",
+            "tests/test_output_lock_identity.py",
+            "tests/test_pbcanary_verdict.py",
+            "tests/test_pbmcp_startup.py",
+            "tests/test_pbrun_bounded_pool_wait.py",
+            "tests/test_pbrun_help.py",
+            "tests/test_pbrun_sealed_publication.py",
+            "tests/test_pbstatus_ending_completeness_review.py",
+            "tests/test_pbtest_capability_claim_eligibility.py",
+            "tests/test_pbtest_prints_its_action_keys.py",
+            "tests/test_pbtest_trace_pinned_procfs_reader_1550.py",
+            "tests/test_pool_action_timeout.py",
+            "tests/test_pool_execution_observation.py",
+            "tests/test_pool_preempts_a_background_holder.py",
+            "tests/test_pool_reset_transport.py",
+            "tests/test_pool_withdraw_names_the_holder.py",
+            "tests/test_prelaunch_review_1594.py",
+            "tests/test_process_group_termination.py",
+            "tests/test_producer_snapshot_is_proven.py",
+            "tests/test_publication_canary_main.py",
+            "tests/test_queue_bell.py",
+            "tests/test_ram_adoption_metadata_amplification_repro.py",
+            "tests/test_reaper_notes_the_fill_borrow_end.py",
+            "tests/test_require_pool_scheduler.py",
+            "tests/test_retire_residency_plans_tool.py",
+            "tests/test_runtime_optional_digest_owner_reader.py",
+            "tests/test_slurm_cache_hit_never_replaces_an_execution.py",
+            "tests/test_slurm_smoke.py",
+            "tests/test_snapshot_symlink_containment.py",
+            "tests/test_staged_path_epoch_bytes.py",
+            "tests/test_supervisor_adoption_keeps_matching_loops_1664.py",
+            "tests/test_test_runtime_inventory.py",
+            "tests/test_the_landing_record_fits_its_reader_at_scale.py",
+            "tests/test_the_prewarm_loop_windows_a_manifest_that_declares_no_phases.py",
+            "tests/test_the_ram_window_publishes_only_what_the_tmpfs_can_hold.py",
+            "tests/test_the_withdrawal_precheck_reads_no_plan_without_a_marker.py",
+            "tests/test_unified_memory_commitment_fence_2089.py",
+            "tests/test_window_progress_protection.py",
+            "tests/test_worker_loop_offers_what_is_free.py"
+          ],
+          "summary": "834 passed, 1 skipped, 5 warnings in 166.29s (0:02:46)",
+          "counts": {
+            "passed": 834,
+            "skipped": 1
+          },
+          "completion": "complete",
+          "skipped": [
+            {
+              "nodeid": "tests/test_slurm_smoke.py::test_slurm_lane_against_a_real_controller",
+              "when": "call",
+              "reason": "set PRISMABUILD_SLURM_SMOKE=1 to run the container smoke",
+              "location": "tests/test_slurm_smoke.py:56"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "action_key": "b4cb78ced782cc027bfeb57e339b02a936a101a6fe81d8ce23eb8af3057a86d9",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "13a0c907a3ec39e5bac8da5db1f6f7ce87251253",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ae206d5c63475522696d110a8178e8e7dfc0ce414c485bfb6ca5c7b76d4eba11"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "2c8e93ebc625e389fe63a3ef09783f0f095fdea3d3b36e1f9af6e4ec594f3dd3",
+        "result": {
+          "bytes": 783715,
+          "sha256": "a0f48f642dc6b3a789bc75eb0bb761c22661106c3719599a18ade47d283344e1"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_1707_progress_supervision_by_stall.py",
+            "tests/test_a_dead_producers_held_mover_is_retired.py",
+            "tests/test_a_finished_copy_returns_the_rate_it_reserved.py",
+            "tests/test_a_mover_stages_the_range_it_declared_and_no_more.py",
+            "tests/test_a_publish_reaches_the_role_loops_too.py",
+            "tests/test_a_remembered_device_is_fenced_once_per_lookup.py",
+            "tests/test_a_same_key_retry_preserves_its_own_qualified_coverage.py",
+            "tests/test_a_stale_ceiling_is_probed_by_queued_demand.py",
+            "tests/test_a_wedged_egress_ends_no_progress.py",
+            "tests/test_agent_proves_the_box_stopped.py",
+            "tests/test_an_unproven_ending_is_refused_terminally_at_its_bound.py",
+            "tests/test_borrow_return_ownership.py",
+            "tests/test_btrfs_subvolume_records_are_retained.py",
+            "tests/test_candidate_scan_order.py",
+            "tests/test_checkout_recovery_1465.py",
+            "tests/test_claim_transaction_histories.py",
+            "tests/test_client_sdk_fail_closed_edges.py",
+            "tests/test_container_class_admission.py",
+            "tests/test_decomposed_data_plan_ownership.py",
+            "tests/test_docker_removal_in_progress_1403.py",
+            "tests/test_execution_budget_is_stated_not_silent.py",
+            "tests/test_floor_ledger_snapshot.py",
+            "tests/test_gang_reservation_1517.py",
+            "tests/test_gpu_capacity.py",
+            "tests/test_heartbeat_review_judges_2230.py",
+            "tests/test_joint_commitment_stalls_are_reported.py",
+            "tests/test_local_resident_commands.py",
+            "tests/test_main_push_guard.py",
+            "tests/test_measurement_reservation_undeclared_incumbent_1419.py",
+            "tests/test_movement_tool_roots_1659.py",
+            "tests/test_output_lock_identity_1299.py",
+            "tests/test_pbevidence_ships_with_the_generation_1598.py",
+            "tests/test_pbmcp_starvation.py",
+            "tests/test_pbrun_bundle_determinism.py",
+            "tests/test_pbrun_host_class.py",
+            "tests/test_pbrun_slurm_partition.py",
+            "tests/test_pbstatus_nfs_readahead.py",
+            "tests/test_pbtest_capability_cohorts.py",
+            "tests/test_pbtest_program_fits_one_argument.py",
+            "tests/test_pbtest_verdict_c26_vectors.py",
+            "tests/test_pool_admission_staleness_is_not_placement.py",
+            "tests/test_pool_external_cpu_placement.py",
+            "tests/test_pool_prewarm_receipt_retention.py",
+            "tests/test_pool_resource_scope.py",
+            "tests/test_pool_withdraw_successor_identity.py",
+            "tests/test_prelaunch_same_key_resubmission_after_withdrawal.py",
+            "tests/test_process_io_departures.py",
+            "tests/test_profile_checkpoint_deadline_determinism.py",
+            "tests/test_publication_canary_mint_deadline.py",
+            "tests/test_queue_bell_adaptive_inputs.py",
+            "tests/test_ram_chunk_fragments_compose_to_one_overlay.py",
+            "tests/test_receipt_activation_direction.py",
+            "tests/test_require_pool_shell_boundaries.py",
+            "tests/test_retire_worker.py",
+            "tests/test_runtime_publication_1659.py",
+            "tests/test_slurm_cutover_admission_fence.py",
+            "tests/test_slurm_smoke_multinode.py",
+            "tests/test_sparks_declare_gang_admission_1664.py",
+            "tests/test_staged_path_wire_replay.py",
+            "tests/test_supervisor_backs_off_a_refused_role.py",
+            "tests/test_tested_repository.py",
+            "tests/test_the_launch_context_publishes_the_queue_root.py",
+            "tests/test_the_prewarm_pacer_does_not_hold_against_the_action_it_serves.py",
+            "tests/test_the_ram_window_reads_its_own_fence_back.py",
+            "tests/test_tier_admission_is_off_by_default.py",
+            "tests/test_unified_memory_evidence_2088.py",
+            "tests/test_window_two_consumers_hold_and_wait.py",
+            "tests/test_worker_loop_park_boundary.py"
+          ],
+          "summary": "1189 passed, 19 skipped, 6 warnings in 191.89s (0:03:11)",
+          "counts": {
+            "passed": 1189,
+            "skipped": 19
+          },
+          "completion": "complete",
+          "skipped": [
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_closed_fd_mmap_is_a_live_checkout_reference[prepare-external-hardlink]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3315367/map_files/f438fe98b000-f438fe98c000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_closed_fd_mmap_is_a_live_checkout_reference[prepare-deleted-external]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3315451/map_files/f1ab2ae79000-f1ab2ae7a000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_closed_fd_mmap_is_a_live_checkout_reference[apply-external-hardlink]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3315823/map_files/e4fb1d969000-e4fb1d96a000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_closed_fd_mmap_is_a_live_checkout_reference[apply-deleted-external]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3315948/map_files/ee02186dd000-ee02186de000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_closed_fd_dlopen_is_a_live_checkout_reference[prepare-external-hardlink]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3316400/map_files/e641a24c0000-e641a24c1000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_closed_fd_dlopen_is_a_live_checkout_reference[prepare-deleted-external]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3316478/map_files/feda715e0000-feda715e1000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_closed_fd_dlopen_is_a_live_checkout_reference[apply-external-hardlink]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3316849/map_files/e53802160000-e53802161000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_closed_fd_dlopen_is_a_live_checkout_reference[apply-deleted-external]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3316916/map_files/e8a27d670000-e8a27d671000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_unrelated_closed_fd_mapping_does_not_block_the_exact_orphan",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3317085/map_files/ef8de0331000-ef8de0332000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_process_mapping_metadata_failure_is_not_proof_of_death[maps-unreadable]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3318873/map_files/f22283c48000-f22283c49000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_process_mapping_metadata_failure_is_not_proof_of_death[maps-missing]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3318926/map_files/e81a0574e000-e81a0574f000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_process_mapping_metadata_failure_is_not_proof_of_death[maps-truncated]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3318984/map_files/e65e98ee8000-e65e98ee9000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_process_mapping_metadata_failure_is_not_proof_of_death[maps-malformed]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3319041/map_files/f2854f089000-f2854f08a000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_process_mapping_metadata_failure_is_not_proof_of_death[maps-record-omitted]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3319107/map_files/e2cf329ad000-e2cf329ae000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_process_mapping_metadata_failure_is_not_proof_of_death[map-files-unreadable]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3319193/map_files/e239f76c5000-e239f76c6000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_process_mapping_metadata_failure_is_not_proof_of_death[map-file-unreadable]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3319302/map_files/e78a2734c000-e78a2734d000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_process_mapping_metadata_failure_is_not_proof_of_death[map-file-missing]",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3319375/map_files/e2611ca69000-e2611ca6a000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_checkout_recovery_1465.py::test_real_kernel_io_uring_mapping_retains_complete_map_files_proof",
+              "when": "call",
+              "reason": "PB1472 positive native identity proof unavailable: map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace: [Errno 1] Operation not permitted: '/proc/3289436/map_files/eb471425b000-eb471425c000'",
+              "location": "tests/test_checkout_recovery_1465.py:1553"
+            },
+            {
+              "nodeid": "tests/test_slurm_smoke_multinode.py::test_the_lane_against_three_nodes",
+              "when": "call",
+              "reason": "set PRISMABUILD_SLURM_SMOKE=1 to run the container smoke",
+              "location": "tests/test_slurm_smoke_multinode.py:60"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "action_key": "e033f4e8384a4a4e18ce4839b76df3446b8df4642cf5a5ca3df938243a015928",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "13a0c907a3ec39e5bac8da5db1f6f7ce87251253",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ae206d5c63475522696d110a8178e8e7dfc0ce414c485bfb6ca5c7b76d4eba11"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "c73bfd3548be870f84d897ca9729df53256d427cfc3b84381cc444a9cf74884f",
+        "result": {
+          "bytes": 754906,
+          "sha256": "a5efa2f0b22230c0f656ff08616b62afcbc7c810692b83704da129e9dccd490b"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_458_reboot_gate_regression.py",
+            "tests/test_a_dead_producers_origin_files_survive_every_sweep.py",
+            "tests/test_a_fixed_roster_derives_one_deterministic_exact_cover.py",
+            "tests/test_a_mover_warms_the_range_it_staged.py",
+            "tests/test_a_publish_wait_is_recorded_by_verdict_and_seconds.py",
+            "tests/test_a_remounted_device_is_not_trusted.py",
+            "tests/test_a_same_tick_document_rename_is_not_cached.py",
+            "tests/test_a_stale_donor_declines_and_current_material_is_reused.py",
+            "tests/test_a_withdrawn_mover_leaves_nothing_on_the_stage.py",
+            "tests/test_agent_says_what_version_it_runs.py",
+            "tests/test_an_unpublished_declaration_is_released_once_nothing_can_publish_it.py",
+            "tests/test_borrowed_cpu_guest_eviction.py",
+            "tests/test_btrfs_trust_review_regressions.py",
+            "tests/test_capability_consumer_closure.py",
+            "tests/test_checkout_recovery_1472.py",
+            "tests/test_claimed_consumers_drain_a_tier_in_admission_order.py",
+            "tests/test_client_sdk_surface.py",
+            "tests/test_container_class_requirements.py",
+            "tests/test_decomposition_refuses_before_it_publishes_anything.py",
+            "tests/test_docker_shim_cpu_affinity.py",
+            "tests/test_family_fill_lends_once.py",
+            "tests/test_fullstack_claim_retry_primitives.py",
+            "tests/test_gang_residency_members.py",
+            "tests/test_gpu_container_runtime.py",
+            "tests/test_heartbeat_stamp_skew_2230.py",
+            "tests/test_kept_read_clock.py",
+            "tests/test_local_resident_dispatch.py",
+            "tests/test_maintenance_drain_ownership.py",
+            "tests/test_measurement_sampler_unknown.py",
+            "tests/test_mover_receipts_are_keyed_on_pool_identity.py",
+            "tests/test_output_reconciliation_cycle.py",
+            "tests/test_pbgang_member_options_1517.py",
+            "tests/test_pbmcp_tier.py",
+            "tests/test_pbrun_cache_hit.py",
+            "tests/test_pbrun_launcher_layouts.py",
+            "tests/test_pbrun_slurm_read_failure_headline.py",
+            "tests/test_pbstatus_pool.py",
+            "tests/test_pbtest_collection_owner_shard.py",
+            "tests/test_pbtest_publishes_its_own_shards.py",
+            "tests/test_pbtest_xdist_shared_skip_1220.py",
+            "tests/test_pool_ambiguous_holder_recovery.py",
+            "tests/test_pool_finish_cleanup_retry.py",
+            "tests/test_pool_publication_endings.py",
+            "tests/test_pool_retry_own_pending_finishes_1403.py",
+            "tests/test_pool_withdraw_waits_for_the_stop.py",
+            "tests/test_prelaunch_second_capture_1628.py",
+            "tests/test_process_io_discovery.py",
+            "tests/test_profile_primary_checkpoint.py",
+            "tests/test_publication_canary_slot.py",
+            "tests/test_queue_bell_host_inputs.py",
+            "tests/test_ram_epoch_sweep_preserves_live_advance.py",
+            "tests/test_recompute_attempt_receipts.py",
+            "tests/test_require_pool_substitution_heredoc.py",
+            "tests/test_retired_lock_files_keep_exclusion.py",
+            "tests/test_runtime_source_pin.py",
+            "tests/test_slurm_cutover_gate.py",
+            "tests/test_slurm_submission_script_immutable.py",
+            "tests/test_spent_output_retry_disposition.py",
+            "tests/test_staged_vouch_withdrawal.py",
+            "tests/test_supervisor_declares_the_spool_budget.py",
+            "tests/test_tests_keep_sleep_module_local.py",
+            "tests/test_the_mint_reads_each_plan_once.py",
+            "tests/test_the_prewarm_pacer_holds_only_when_a_client_is_reading.py",
+            "tests/test_the_reader_plan_measures_and_fails_open.py",
+            "tests/test_tier_default_collector_equivalence.py",
+            "tests/test_unified_memory_external_overlap_1661.py",
+            "tests/test_wire_inventory.py",
+            "tests/test_worker_loop_proves_it_parked.py"
+          ],
+          "summary": "1201 passed, 18 warnings in 180.05s (0:03:00)",
+          "counts": {
+            "passed": 1201
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "41d34db188b8387f66843feaa51081ea75fd575ac5fdaafb93a446cd208b161c",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "13a0c907a3ec39e5bac8da5db1f6f7ce87251253",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ae206d5c63475522696d110a8178e8e7dfc0ce414c485bfb6ca5c7b76d4eba11"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "7d0a1e42e6af7a6f5e4cd800584007e1737b0e50721349538a5c4e60ff44a536",
+        "result": {
+          "bytes": 697985,
+          "sha256": "6dc4e9d710f43a2b92e5dc3b39039c78236ee9fd554ab0dd745ffd7beb0f9e76"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_798_nonregular_census_review.py",
+            "tests/test_a_dead_producers_spool_is_retired.py",
+            "tests/test_a_fresh_tier_loop_announces_before_its_cold_read.py",
+            "tests/test_a_movers_retries_and_determinism_are_its_own.py",
+            "tests/test_a_ram_promotion_holds_its_tokens_until_the_egress_frees_them.py",
+            "tests/test_a_replaced_progress_record_is_read_again.py",
+            "tests/test_a_same_tick_receipt_removal_invalidates_the_folds.py",
+            "tests/test_a_stalled_mover_ends_no_progress.py",
+            "tests/test_a_worker_offer_names_the_addresses_it_reads_from.py",
+            "tests/test_allowance_suite_filesystem_isolation.py",
+            "tests/test_an_unreachable_origin_is_refused_by_name.py",
+            "tests/test_bounded_reader_core_boundary.py",
+            "tests/test_c26_progress_characterization.py",
+            "tests/test_capability_eligibility.py",
+            "tests/test_checkout_recovery_fixture_settlement_1711.py",
+            "tests/test_claimed_window_does_not_set_newcomer_priority_barrier.py",
+            "tests/test_client_upgrade.py",
+            "tests/test_container_image_inventory.py",
+            "tests/test_default_transport_travels_with_the_generation.py",
+            "tests/test_docker_shim_global_options.py",
+            "tests/test_filed_plan_leads_gate_claim.py",
+            "tests/test_fullstack_producer_rows.py",
+            "tests/test_gang_runtime_presence_2343.py",
+            "tests/test_gpu_evicts_cpu_guests.py",
+            "tests/test_higher_priority_window_waits_for_existing_promises.py",
+            "tests/test_kept_reads_package.py",
+            "tests/test_local_resident_lifecycle.py",
+            "tests/test_manifest_promotion_phase_seconds.py",
+            "tests/test_measurement_unmeasured_carry.py",
+            "tests/test_n_consumers_of_one_range_share_one_copy.py",
+            "tests/test_output_window_obligation.py",
+            "tests/test_pbmcp_arguments.py",
+            "tests/test_pbmcp_tools.py",
+            "tests/test_pbrun_client_events.py",
+            "tests/test_pbrun_lost_claim_attribution.py",
+            "tests/test_pbrun_slurm_record_write_failure.py",
+            "tests/test_pbstatus_queue_root.py",
+            "tests/test_pbtest_dependency_pins.py",
+            "tests/test_pbtest_reconciles_outcomes.py",
+            "tests/test_pbwait.py",
+            "tests/test_pool_attempt_history.py",
+            "tests/test_pool_finish_lost_race.py",
+            "tests/test_pool_queue_default_root.py",
+            "tests/test_pool_retry_survives_a_corrupt_claimed_record_1403.py",
+            "tests/test_pool_withdrawn_retention_1533.py",
+            "tests/test_prelaunch_shared_pinned_begin_1690.py",
+            "tests/test_process_io_identity.py",
+            "tests/test_profile_source_cleanliness_1459.py",
+            "tests/test_publication_canary_timeout_diagnostics.py",
+            "tests/test_queue_bell_host_read_set.py",
+            "tests/test_ram_fill_host_tokens_follow_the_fence.py",
+            "tests/test_record_compatibility.py",
+            "tests/test_require_pool_vllm_carveout.py",
+            "tests/test_retired_scope_reap_rechecks.py",
+            "tests/test_sample_docker_coverage.py",
+            "tests/test_slurm_cutover_node_flags.py",
+            "tests/test_slurm_submit_timeout.py",
+            "tests/test_spool_declaration_is_charged_by_default_905.py",
+            "tests/test_stale_material_done_owner_retires.py",
+            "tests/test_supervisor_elastic_workers.py",
+            "tests/test_the_arbitration_holds_through_main.py",
+            "tests/test_the_newcomer_gate_counts_shared_growth_once.py",
+            "tests/test_the_prewarm_reader_is_paced_by_the_disks.py",
+            "tests/test_the_reconcile_resolves_only_what_it_may_delete.py",
+            "tests/test_tier_demand_requires_a_residency_block.py",
+            "tests/test_unified_memory_historical_regressions_2089.py",
+            "tests/test_withdraw_end_to_end.py",
+            "tests/test_worker_loop_reloads_unversioned.py"
+          ],
+          "summary": "1056 passed, 40 warnings in 282.06s (0:04:42)",
+          "counts": {
+            "passed": 1056
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "fe79a90f1b215e12db901b444fb9026622cd8b2178ddb056df890ba08a04a1b5",
+      "host": "sparky",
+      "source_snapshot": {
+        "commit": "13a0c907a3ec39e5bac8da5db1f6f7ce87251253",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ae206d5c63475522696d110a8178e8e7dfc0ce414c485bfb6ca5c7b76d4eba11"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "9872e02af65b70ecbee498936ea1f4b8a42491dbe386f03a6bd08e7cf4a56855",
+        "result": {
+          "bytes": 817523,
+          "sha256": "8f26a47d94e49428660c3a65d3f509230a7ed257406e773cb419addbc5f137ec"
+        },
+        "worker": "sparky",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_817_root_archive_review.py",
+            "tests/test_a_declared_container_image_is_sealed_and_checked.py",
+            "tests/test_a_gpu_refused_row_is_not_overtaken_by_gpu_rows.py",
+            "tests/test_a_nested_prefix_successors_adopted_file_survives_retirement.py",
+            "tests/test_a_ram_resident_entry_names_the_ram_path_beside_the_stage_path.py",
+            "tests/test_a_republished_key_keeps_one_terminal.py",
+            "tests/test_a_same_tick_record_version_is_not_kept.py",
+            "tests/test_a_steady_tier_cycle_rereads_only_what_changed.py",
+            "tests/test_a_yielding_copy_neither_deadlocks_nor_stalls.py",
+            "tests/test_an_abandoned_acquisition_returns_every_token.py",
+            "tests/test_an_unreadable_terminal_directory_is_not_an_empty_one.py",
+            "tests/test_bounded_reader_ownership.py",
+            "tests/test_c26_progress_readiness_acceptance.py",
+            "tests/test_capture_argv.py",
+            "tests/test_checkout_recovery_preservation_reporting.py",
+            "tests/test_class_scoped_cpu_admission.py",
+            "tests/test_client_upgrade_initializes_boot_gate.py",
+            "tests/test_container_inventory_metadata.py",
+            "tests/test_deferred_action_edges.py",
+            "tests/test_docker_shim_memory.py",
+            "tests/test_filesystem_floor_1483.py",
+            "tests/test_fullstack_progress_retry.py",
+            "tests/test_gang_sweep_progress_1521.py",
+            "tests/test_gpu_host_ready_work_admission.py",
+            "tests/test_history_inputs.py",
+            "tests/test_lease_lost_cleanup_pending.py",
+            "tests/test_local_resident_locking.py",
+            "tests/test_manifest_rows_gain_residency_plans.py",
+            "tests/test_measurement_unmeasured_timeout.py",
+            "tests/test_needrestart_broker_restart_exclusion.py",
+            "tests/test_owned_tree.py",
+            "tests/test_pbmcp_bounded.py",
+            "tests/test_pbmcp_withdrawn_attempt_history.py",
+            "tests/test_pbrun_container_lifecycle.py",
+            "tests/test_pbrun_multiline_argv.py",
+            "tests/test_pbrun_snapshot_workspace_expires.py",
+            "tests/test_pbstatus_reader_failures.py",
+            "tests/test_pbtest_digest_owner_shard_1553.py",
+            "tests/test_pbtest_record_binding_1842.py",
+            "tests/test_pbwait_bounded_observation.py",
+            "tests/test_pool_broker_disconnect.py",
+            "tests/test_pool_finish_tombstone.py",
+            "tests/test_pool_read_pressure_signal.py",
+            "tests/test_pool_scope_creation_recovery.py",
+            "tests/test_posix_lock.py",
+            "tests/test_prelaunch_tier_gate_1594.py",
+            "tests/test_process_io_membership.py",
+            "tests/test_profile_summary_timeout.py",
+            "tests/test_publication_pins_candidate_roster_bytes.py",
+            "tests/test_queue_bell_host_regressions.py",
+            "tests/test_ram_host_hold_is_not_a_cpu_holder.py",
+            "tests/test_record_store_liveness_controls.py",
+            "tests/test_residency_is_derived_and_gates_admission.py",
+            "tests/test_review_terminal_plan_stat_refusal.py",
+            "tests/test_sample_profile.py",
+            "tests/test_slurm_epilog.py",
+            "tests/test_slurm_transition_step_failures.py",
+            "tests/test_spool_poll_repin_evidence.py",
+            "tests/test_stale_mention_co_owner_cache.py",
+            "tests/test_supervisor_fakes.py",
+            "tests/test_the_campaign_shape_harness.py",
+            "tests/test_the_nonfinal_window_fences_its_advance.py",
+            "tests/test_the_pricing_log_prices_as_the_full_read.py",
+            "tests/test_the_reconcile_walk_reuses_only_what_moved.py",
+            "tests/test_tier_domain_failure_controls.py",
+            "tests/test_unified_memory_readahead_is_counted_once.py",
+            "tests/test_withdraw_generation.py",
+            "tests/test_worker_loop_requires_known_receipts.py"
+          ],
+          "summary": "1264 passed, 1 skipped, 51 warnings in 223.30s (0:03:43)",
+          "counts": {
+            "passed": 1264,
+            "skipped": 1
+          },
+          "completion": "complete",
+          "skipped": [
+            {
+              "nodeid": "tests/test_filesystem_floor_1483.py::test_zfs_pool_is_keyed_by_guid_sampled_usable_and_admits",
+              "when": "call",
+              "reason": "no local ZFS shared store on this worker",
+              "location": "tests/test_filesystem_floor_1483.py:394"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "action_key": "762c9e6689c36167e6e3e2b500eeb11a026af5c8b3bd10700a1dcdbd2a9227ee",
+      "host": "sparklina",
+      "source_snapshot": {
+        "commit": "13a0c907a3ec39e5bac8da5db1f6f7ce87251253",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ae206d5c63475522696d110a8178e8e7dfc0ce414c485bfb6ca5c7b76d4eba11"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "ff2686908899a41da8894182cc5e8f07105d7d4b4b628365bc11702b359b2388",
+        "result": {
+          "bytes": 687903,
+          "sha256": "4e68eefe64c171a267b75cbc268d397db01e23abf5db0c1696b437cf463ad3eb"
+        },
+        "worker": "sparklina",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_a_bare_digest_matches_an_image_id_or_repo_digest.py",
+            "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py",
+            "tests/test_a_hanging_test_fails_with_its_name_in_the_record.py",
+            "tests/test_a_prefix_read_never_takes_the_whole_file_name.py",
+            "tests/test_a_ram_tier_mints_what_the_tmpfs_says_it_may_hold.py",
+            "tests/test_a_reserved_range_is_not_resident_until_published.py",
+            "tests/test_a_same_tick_rename_is_not_cached.py",
+            "tests/test_a_stopped_role_is_named_in_supervisor_health.py",
+            "tests/test_acquire_reuses_unchanged_cover_documents.py",
+            "tests/test_an_already_warm_row_does_not_spend_the_lookahead.py",
+            "tests/test_an_unreadable_tier_announcement_is_not_an_epoch_move.py",
+            "tests/test_box_capacity.py",
+            "tests/test_c26_verdict_characterization.py",
+            "tests/test_capture_preserves_directory_path_observations.py",
+            "tests/test_claim_arbitration_histories.py",
+            "tests/test_class_scoped_cpu_headroom.py",
+            "tests/test_commit_funding_boundary_controls.py",
+            "tests/test_contract_registry_publication.py",
+            "tests/test_denial_record_encoding.py",
+            "tests/test_docker_shim_relays_termination_1599.py",
+            "tests/test_filesystem_floor_accounting_1483.py",
+            "tests/test_fullstack_reader_boundaries.py",
+            "tests/test_gang_switch_1521.py",
+            "tests/test_gpu_memory.py",
+            "tests/test_holder_census_queries.py",
+            "tests/test_legacy_client_facts.py",
+            "tests/test_local_resident_metadata.py",
+            "tests/test_marker_file_readers.py",
+            "tests/test_membership_handoff_carrier.py",
+            "tests/test_nfs_metadata_attribution.py",
+            "tests/test_paced_exports_share_a_tier.py",
+            "tests/test_pbmcp_claim_identity.py",
+            "tests/test_pbmergeq.py",
+            "tests/test_pbrun_cpu_slot_has_no_gpu.py",
+            "tests/test_pbrun_no_default_deadline.py",
+            "tests/test_pbrun_spool_host_window.py",
+            "tests/test_pbstatus_review_boundaries.py",
+            "tests/test_pbtest_empty_capability_union_1495.py",
+            "tests/test_pbtest_record_phases_1842.py",
+            "tests/test_pbwait_finds_a_later_submission.py",
+            "tests/test_pool_busy_box_cannot_sample_itself_free.py",
+            "tests/test_pool_finish_torn_terminal.py",
+            "tests/test_pool_ready_late_finisher.py",
+            "tests/test_pool_sweep_is_throttled_to_the_heartbeat.py",
+            "tests/test_power_reference_is_gpu_only.py",
+            "tests/test_prelaunch_tier_module_1594.py",
+            "tests/test_produced_batches_keep_distinct_stage_paths.py",
+            "tests/test_profile_window_deadline.py",
+            "tests/test_publication_refusal_stops_the_range.py",
+            "tests/test_queue_bell_host_review_edges.py",
+            "tests/test_ram_host_two_way_sync.py",
+            "tests/test_record_store_mutation_controls.py",
+            "tests/test_residency_owner_c21.py",
+            "tests/test_role_inherited_stdio.py",
+            "tests/test_scratch_declaration_record.py",
+            "tests/test_slurm_epilog_docker_census_failure.py",
+            "tests/test_slurm_verify_invalidates_a_prior_pass.py",
+            "tests/test_stage_and_ram_chunks_tile_one_phase_independently.py",
+            "tests/test_stale_mentions_partial_prune.py",
+            "tests/test_supervisor_graceful_stop.py",
+            "tests/test_the_chunk_splitter_cuts_only_at_entry_boundaries.py",
+            "tests/test_the_ordinary_pbrun_action_is_sealed_unchanged.py",
+            "tests/test_the_r13_dead_instance_gives_its_paths_back.py",
+            "tests/test_the_retirement_tick_reads_each_owner_once.py",
+            "tests/test_tier_funding.py",
+            "tests/test_unified_memory_status_recovery_2089.py",
+            "tests/test_withdrawal_retires_the_plan_it_minted.py",
+            "tests/test_worker_loop_retires_every_kind.py"
+          ],
+          "summary": "867 passed, 91 warnings in 172.99s (0:02:52)",
+          "counts": {
+            "passed": 867
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    },
+    {
+      "action_key": "3b614291c9932431a95f41cd8485a8ce49fb45affc6c549d9298e2d0d507f579",
+      "host": "dl380g10",
+      "source_snapshot": {
+        "commit": "13a0c907a3ec39e5bac8da5db1f6f7ce87251253",
+        "input": {
+          "bytes": 48347063,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "ae206d5c63475522696d110a8178e8e7dfc0ce414c485bfb6ca5c7b76d4eba11"
+        },
+        "parent": "9ffc112b19bf29b868c33741846041db13050fdc",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "receipt": {
+        "receipt_sha256": "7af6a9f67104c978e70a2c2a19cd7ba0e4f7dbe3789d9d9e55c9a59b19a7c21f",
+        "result": {
+          "bytes": 752924,
+          "sha256": "82949402d3f9c6e0b8ca4153be124552de297c27d310f4d64add2fce49be3e7a"
+        },
+        "worker": "dl380g10",
+        "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+        "verified": true
+      },
+      "cleanup_verified": true,
+      "actual_populations": [
+        {
+          "files": [
+            "tests/test_a_batch_record_has_a_public_reader.py",
+            "tests/test_a_decomposed_child_is_an_ordinary_sealed_action.py",
+            "tests/test_a_hold_by_an_unknown_attempt_is_named.py",
+            "tests/test_a_prelaunch_sharer_waits_for_its_whole_vouch.py",
+            "tests/test_a_range_decision_takes_its_censuses_once.py",
+            "tests/test_a_residency_map_names_bytes_a_mover_verified.py",
+            "tests/test_a_second_role_refuses_the_host_role_lock.py",
+            "tests/test_a_successors_committed_identity_survives_a_link_back.py",
+            "tests/test_action_resource_profile.py",
+            "tests/test_an_arbitration_rereads_only_what_moved.py",
+            "tests/test_an_unreadable_withdrawn_directory_is_not_an_empty_one.py",
+            "tests/test_box_origin_1542.py",
+            "tests/test_canary_envelope_1315.py",
+            "tests/test_captured_fleet_roster_consumers.py",
+            "tests/test_claim_arbitration_policy.py",
+            "tests/test_cleanup_gate_covers_the_no_scope_path.py",
+            "tests/test_commit_requires_existing_funding.py",
+            "tests/test_control_attribution_born_in_interval.py",
+            "tests/test_denial_transition_decision_snapshot.py",
+            "tests/test_drain_boundary_order.py",
+            "tests/test_filesystem_floor_identity_1483.py",
+            "tests/test_fullstack_stage_ram_chain.py",
+            "tests/test_gang_teardown_1517.py",
+            "tests/test_gpu_profile_modes.py",
+            "tests/test_holder_is_named_by_device_and_inode.py",
+            "tests/test_lifecycle_claim_boundaries.py",
+            "tests/test_local_resident_mover.py",
+            "tests/test_materializer_git_runner_1318.py",
+            "tests/test_membership_published_entrypoint.py",
+            "tests/test_nfs_readahead.py",
+            "tests/test_partial_owner_cannot_adopt_full_range.py",
+            "tests/test_pbmcp_cursors.py",
+            "tests/test_pbmergeq_gate.py",
+            "tests/test_pbrun_cross_box_cwd.py",
+            "tests/test_pbrun_observation_retry.py",
+            "tests/test_pbrun_stamp_overlay.py",
+            "tests/test_pbstatus_starvation.py",
+            "tests/test_pbtest_exit_completion_1530.py",
+            "tests/test_pbtest_record_privacy_1842.py",
+            "tests/test_pbwait_observation_retry.py",
+            "tests/test_pool_capacity_mint_markers.py",
+            "tests/test_pool_holder_contradiction.py",
+            "tests/test_pool_ready_transition_recovery.py",
+            "tests/test_pool_tier_mint_lock.py",
+            "tests/test_preemption_handoff_admission.py",
+            "tests/test_prelaunch_tier_publish_1594.py",
+            "tests/test_produced_output_admission.py",
+            "tests/test_progress_declared_allowances.py",
+            "tests/test_publication_refuses_a_dropped_roster_option_1664.py",
+            "tests/test_queue_bell_installed_coverage.py",
+            "tests/test_ram_mirror_strict_observations.py",
+            "tests/test_record_store_proof_controls.py",
+            "tests/test_residency_publication_protocol.py",
+            "tests/test_role_log_migration_generation_integrity.py",
+            "tests/test_scratch_dedicated_capacity.py",
+            "tests/test_slurm_install_scripts.py",
+            "tests/test_slurm_wait_outages.py",
+            "tests/test_stage_capacity_counts_the_bytes_already_staged.py",
+            "tests/test_stalled_leader_2060_contract.py",
+            "tests/test_supervisor_host_alias.py",
+            "tests/test_the_claim_cover_check_reuses_a_claims_derived_paths.py",
+            "tests/test_the_origin_retirement_tick_reads_each_scope_once.py",
+            "tests/test_the_ram_egress_frees_the_ram_range_before_the_stage_range.py",
+            "tests/test_the_sealed_ram_leg_is_chunked_per_phase.py",
+            "tests/test_tier_ledger_directory_names.py",
+            "tests/test_unknown_cpu_interpreter_placement.py",
+            "tests/test_withdrawn_and_receiptless_owners_are_retired.py",
+            "tests/test_worker_offer_announcement_is_bounded.py"
+          ],
+          "summary": "946 passed, 42 warnings in 115.19s (0:01:55)",
+          "counts": {
+            "passed": 946
+          },
+          "completion": "complete",
+          "skipped": []
+        }
+      ]
+    }
+  ]
+}
