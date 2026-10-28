@@ -1,0 +1,61 @@
+{
+  "bind": {
+    "reason": "reuse verified 2026-10-25 immutable-image fixtures",
+    "status": "not_rerun"
+  },
+  "canonical_path": {
+    "device": 77,
+    "mountinfo": "3673 53 0:77 / /mnt/shared rw,noatime shared:994 - nfs4 10.100.99.3:/storage_pool/shared rw,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,fatal_neterrors=none,proto=rdma,nconnect=16,port=20049,timeo=600,retrans=2,sec=sys,clientaddr=10.100.99.2,local_lock=none,addr=10.100.99.3",
+    "path": "/mnt/shared/tessera-runs/moe/glm53-a8-bf16menu-20260930/release/exported",
+    "present": true
+  },
+  "cleanup": "none; no shared data deleted",
+  "finished_unix": 1793162094.6440516,
+  "host": "sparklina",
+  "loadavg": [
+    0.23388671875,
+    0.52734375,
+    0.4462890625
+  ],
+  "local_path": {
+    "device": 66306,
+    "mountinfo": "37 2 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw,errors=remount-ro",
+    "path": "/home/rob/models-local/a8s-exported",
+    "present": true
+  },
+  "schema": "prismabuild.gate_1730_metadata.2026-10-28",
+  "space": {
+    "available_bytes": 263701884928,
+    "d1": {
+      "avail_gib": 245.59,
+      "fits": false,
+      "floor_gib": 45.77,
+      "need_gib": 163.47,
+      "reason": "1.5N+20GiB rule fails",
+      "tmp_need_gib": 265.21
+    },
+    "destination": "/home/rob/models-local",
+    "fresh_copy_margin_bytes": -21064025628,
+    "historical_set_bytes": 175527382717,
+    "post_copy_floor_margin_twentieth_bytes": 780670196028,
+    "required_fresh_copy_bytes": 284765910556,
+    "total_bytes": 982819848192
+  },
+  "speed": {
+    "reason": "metadata-only prerequisite observation; no payload reads",
+    "status": "not_run"
+  },
+  "stage_parent": {
+    "device": 79,
+    "mountinfo": "770 57 0:79 / /stage/prewarm ro,noatime shared:1078 - nfs4 10.100.99.3:/stage/prewarm ro,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,fatal_neterrors=none,proto=rdma,nconnect=16,port=20049,timeo=600,retrans=2,sec=sys,clientaddr=10.100.99.2,lookupcache=pos,local_lock=none,addr=10.100.99.3",
+    "path": "/stage/prewarm",
+    "present": true
+  },
+  "stage_path": {
+    "device": 79,
+    "mountinfo": "770 57 0:79 / /stage/prewarm ro,noatime shared:1078 - nfs4 10.100.99.3:/stage/prewarm ro,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,fatal_neterrors=none,proto=rdma,nconnect=16,port=20049,timeo=600,retrans=2,sec=sys,clientaddr=10.100.99.2,lookupcache=pos,local_lock=none,addr=10.100.99.3",
+    "path": "/stage/prewarm/tessera-runs/moe/glm53-a8-bf16menu-20260930/release/exported",
+    "present": true
+  },
+  "started_unix": 1793162094.6389415
+}
