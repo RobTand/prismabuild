@@ -8,6 +8,14 @@ import math
 from pathlib import Path
 
 
+def default_unknown_seconds(durations):
+    raise NotImplementedError("shared p90 duration fallback")
+
+
+def shards(files, durations, count, *, unknown_seconds):
+    raise NotImplementedError("shared deterministic duration-balanced shards")
+
+
 def partition(plan: dict, durations: dict, threshold: float) -> dict:
     if not math.isfinite(threshold) or threshold < 0:
         raise ValueError('threshold must be finite and nonnegative')

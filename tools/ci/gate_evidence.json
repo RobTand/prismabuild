@@ -185,6 +185,7 @@
       },
       "whole_population_prs": 14
     },
+    "replay_superseded_by": "review_round.replay_and_path_survey (fresh REST capture, corrected path selector)",
     "terminal_record_complete": true
   },
   "circleci": {
@@ -786,18 +787,389 @@
       "action_key": "052659b0b86628d3c8433181627ced361dee7c597b2ed05e78969ed49eb5ac5a",
       "owner_assertion": "Error-message assertion only: regex owner did not match unowned. The test already rejected owner #2428; this red does not prove an owner-validation behavioral change."
     },
-    "intermediate_attempts": "An intermediate percent-format edit also changed the survey branch, causing collection errors. Those attempts are not green evidence. The corrected source is queued for validation.",
+    "intermediate_attempts": "An intermediate percent-format edit also changed the survey branch, causing collection errors. Those attempts are not green evidence. Corrected source passed all 77 tests in seven shards.",
     "main_merged": "90332a0e",
+    "pool_diagnostic_fresh_history_check": "The fresh 150-PR capture contains exactly the same 26 pool.py PRs as analysis.pool_functions; its per-PR AST counts remain applicable.",
+    "quarantine_owners_open": [
+      1997,
+      2434,
+      2435,
+      2436,
+      2437
+    ],
     "red_receipts": "none; failures publish terminal records and logs, not CAS success receipts",
     "red_terminal_records_complete": true,
     "replay_and_path_survey": {
       "action_key": "dbec798afd3eeb713b15b23d7ec741f726bb2c2f4f1f63738ba06dd6d772baa1",
+      "cas_verified": true,
+      "conservative_patterns_files": 1174,
       "cpu": 1,
+      "exit_code": 0,
+      "full_population_prs": 14,
       "history_capture": "review/history-capture/history.json",
+      "history_capture_sha256": "f3be541483d37b0f09211baeb63d210937b133b7d7a49d517029342e4a8eaee3",
+      "large_modules": {
+        "src/prismabuild/core.py": {
+          "estimate": {
+            "missing_files": [
+              "tests/test_gate_select.py",
+              "tests/test_tl3_harness_table.py"
+            ],
+            "serial_seconds": null,
+            "source": {
+              "commit": "22e9d75298608078c91d331a646f6446352577f6",
+              "duration_resolution_seconds": 0.01,
+              "file_durations_sha256": "b851d9be1c8ef71e38f840efd5c18d97c89ae164da1cb39059c97e917c339a5d",
+              "inventory": "inventory-22e9d752/inventory.json",
+              "inventory_sha256": "43fd222e4ce2e3da0866c1cafa2ee1fc219b653f78872d29f2fd5e42834fd27f",
+              "method": "per-file sum of per-test medians from complete shard samples; some files have only repeats 2 and 3",
+              "notes": [
+                "Repeat 1 shard 0 rc=137 is excluded; incomplete shard 18 evidence is not a verdict.",
+                "The 27 archival-replay files collected no tests and remain quarantined under #1997.",
+                "New files absent from the inventory have unknown costs; missing is never zero.",
+                "Whole-file costs are retained for partially quarantined files, a conservative estimate."
+              ],
+              "platforms": [
+                "Xeon",
+                "Spark X925"
+              ],
+              "repeats": 3
+            },
+            "wall_seconds": null,
+            "workers": 5
+          },
+          "selected_files": 647
+        },
+        "src/prismabuild/pool.py": {
+          "estimate": {
+            "missing_files": [
+              "tests/test_gate_select.py",
+              "tests/test_tl3_harness_table.py"
+            ],
+            "serial_seconds": null,
+            "source": {
+              "commit": "22e9d75298608078c91d331a646f6446352577f6",
+              "duration_resolution_seconds": 0.01,
+              "file_durations_sha256": "b851d9be1c8ef71e38f840efd5c18d97c89ae164da1cb39059c97e917c339a5d",
+              "inventory": "inventory-22e9d752/inventory.json",
+              "inventory_sha256": "43fd222e4ce2e3da0866c1cafa2ee1fc219b653f78872d29f2fd5e42834fd27f",
+              "method": "per-file sum of per-test medians from complete shard samples; some files have only repeats 2 and 3",
+              "notes": [
+                "Repeat 1 shard 0 rc=137 is excluded; incomplete shard 18 evidence is not a verdict.",
+                "The 27 archival-replay files collected no tests and remain quarantined under #1997.",
+                "New files absent from the inventory have unknown costs; missing is never zero.",
+                "Whole-file costs are retained for partially quarantined files, a conservative estimate."
+              ],
+              "platforms": [
+                "Xeon",
+                "Spark X925"
+              ],
+              "repeats": 3
+            },
+            "wall_seconds": null,
+            "workers": 5
+          },
+          "selected_files": 932
+        }
+      },
       "memory_gib": 4,
+      "path_survey": {
+        "idioms": {
+          "SourceFileLoader": {
+            "files": 7,
+            "occurrences": 10
+          },
+          "glob": {
+            "files": 168,
+            "occurrences": 385
+          },
+          "interpolated_string": {
+            "files": 851,
+            "occurrences": 4435
+          },
+          "joinpath": {
+            "files": 12,
+            "occurrences": 24
+          },
+          "open": {
+            "files": 161,
+            "occurrences": 334
+          },
+          "os.path.abspath": {
+            "files": 4,
+            "occurrences": 5
+          },
+          "os.path.dirname": {
+            "files": 4,
+            "occurrences": 6
+          },
+          "os.path.join": {
+            "files": 5,
+            "occurrences": 9
+          },
+          "os.path.realpath": {
+            "files": 6,
+            "occurrences": 11
+          },
+          "path_constructor": {
+            "files": 1094,
+            "occurrences": 3155
+          },
+          "posixpath.join": {
+            "files": 1,
+            "occurrences": 1
+          },
+          "read_bytes": {
+            "files": 473,
+            "occurrences": 1937
+          },
+          "read_text": {
+            "files": 599,
+            "occurrences": 1742
+          },
+          "rglob": {
+            "files": 100,
+            "occurrences": 185
+          },
+          "run_path": {
+            "files": 48,
+            "occurrences": 106
+          },
+          "slash_join": {
+            "files": 1303,
+            "occurrences": 20103
+          },
+          "spec_from_file_location": {
+            "files": 121,
+            "occurrences": 130
+          },
+          "with_name": {
+            "files": 104,
+            "occurrences": 198
+          },
+          "with_suffix": {
+            "files": 33,
+            "occurrences": 49
+          }
+        },
+        "method": "AST occurrence and distinct-file counts across tests/**/*.py; overlapping idioms; includes temporary paths and fixture generation, not a claim of dependency completeness"
+      },
+      "population": {
+        "estimate": {
+          "missing_files": [
+            "tests/test_gate_circleci.py",
+            "tests/test_gate_partition.py",
+            "tests/test_gate_replay.py",
+            "tests/test_gate_run.py",
+            "tests/test_gate_select.py",
+            "tests/test_gate_shadow.py",
+            "tests/test_issue_link.py",
+            "tests/test_tl3_harness_table.py"
+          ],
+          "serial_seconds": null,
+          "source": {
+            "commit": "22e9d75298608078c91d331a646f6446352577f6",
+            "duration_resolution_seconds": 0.01,
+            "file_durations_sha256": "b851d9be1c8ef71e38f840efd5c18d97c89ae164da1cb39059c97e917c339a5d",
+            "inventory": "inventory-22e9d752/inventory.json",
+            "inventory_sha256": "43fd222e4ce2e3da0866c1cafa2ee1fc219b653f78872d29f2fd5e42834fd27f",
+            "method": "per-file sum of per-test medians from complete shard samples; some files have only repeats 2 and 3",
+            "notes": [
+              "Repeat 1 shard 0 rc=137 is excluded; incomplete shard 18 evidence is not a verdict.",
+              "The 27 archival-replay files collected no tests and remain quarantined under #1997.",
+              "New files absent from the inventory have unknown costs; missing is never zero.",
+              "Whole-file costs are retained for partially quarantined files, a conservative estimate."
+            ],
+            "platforms": [
+              "Xeon",
+              "Spark X925"
+            ],
+            "repeats": 3
+          },
+          "wall_seconds": null,
+          "workers": 5
+        },
+        "size": 1249,
+        "version": "22dfebfa9043958462540afe7e1d0590ee394f97b7c9c7b0eae526cf23a8d34e"
+      },
       "portable": true,
       "priority": -10,
-      "state": "pending fleet admission"
+      "receipt_sha256": "9fdedf92b0d72f3dd781d506e8220b405ed995651606463673c2bd372e0556af",
+      "source": {
+        "boundary_pages": 3,
+        "captured_at": "2026-10-31T19:28:26.181091+00:00",
+        "repository": "RobTand/prismabuild",
+        "source": "GitHub REST pulls and pull files"
+      },
+      "state": "complete",
+      "summary": {
+        "distribution": {
+          "over_300_files": 54,
+          "over_600_files": 36
+        },
+        "prs": 150,
+        "selected_files": {
+          "p50": 210,
+          "p90": 1046
+        },
+        "unknown_cost_prs": [
+          2438,
+          2431,
+          2429,
+          2421,
+          2423,
+          2363,
+          2411,
+          2418,
+          2414,
+          2408,
+          2412,
+          2393,
+          2402,
+          2401,
+          2301,
+          2404,
+          2389,
+          2269,
+          2388,
+          2386,
+          2379,
+          2191,
+          2399,
+          2372,
+          2371,
+          2367,
+          2364,
+          2355,
+          2344,
+          2291,
+          2398,
+          2378,
+          2361,
+          2069,
+          2377,
+          2370,
+          2362,
+          2356,
+          2030,
+          2394,
+          2366,
+          2354,
+          2353,
+          2316,
+          2244,
+          2392,
+          2348,
+          2346,
+          2053,
+          2391,
+          2358,
+          2352,
+          2350,
+          2349,
+          2319,
+          2306,
+          2262,
+          2385,
+          2321,
+          2317,
+          2351,
+          2381,
+          2337,
+          2282,
+          2221,
+          2347,
+          2335,
+          2334,
+          2266,
+          2255,
+          2209,
+          2345,
+          2208,
+          2299,
+          2287,
+          2257,
+          2241,
+          2132,
+          2339,
+          2326,
+          2322,
+          2320,
+          2234,
+          2211,
+          2207,
+          2336,
+          2288,
+          2228,
+          2163,
+          2236,
+          2218,
+          2214,
+          2196,
+          2327,
+          2330,
+          2329,
+          2272,
+          2314,
+          1982,
+          2311,
+          2312,
+          2289,
+          2309,
+          2252,
+          2290,
+          2305,
+          2300,
+          2294,
+          2076,
+          2264,
+          2245,
+          2263,
+          2276,
+          2265,
+          2277,
+          2283,
+          2284,
+          2189,
+          2188,
+          2187,
+          2185,
+          2174,
+          2170,
+          2169,
+          2195,
+          2154,
+          2155,
+          2151,
+          1750,
+          2152,
+          2147,
+          2148,
+          2140,
+          2139,
+          2138,
+          2055,
+          2142,
+          2136,
+          2134,
+          2137,
+          2131,
+          2133,
+          2081,
+          2065,
+          2082,
+          2052,
+          1719,
+          2056,
+          2034,
+          2020
+        ],
+        "wall_seconds": {
+          "p50": null,
+          "p90": null
+        }
+      },
+      "terminal_records_complete": true
     },
     "source_commit": "1b7ca39417b23835c3f0d1ec090a1df04b6f4eaf",
     "validation": {
@@ -815,9 +1187,135 @@
       "native_threads": 1,
       "portable": true,
       "priority": -10,
-      "state": "pending fleet admission"
+      "results": [
+        {
+          "action_key": "a2b41963b1573f65fc79bfbbdd4028bbc6ddc9196f809abd4bbac3db2b320edd",
+          "cas_receipt": {
+            "sha256": "a8b230de9df626e0d65bea2b952d7b59a773fb6fe3c071efe98debc1970d6394",
+            "verified": true
+          },
+          "completion": "complete",
+          "exit_code": 0,
+          "failing_nodes": [],
+          "files": [
+            "tests/test_gate_select.py"
+          ],
+          "green": true,
+          "report": "verified",
+          "skipped": [],
+          "summary": "43 passed in 25.15s"
+        },
+        {
+          "action_key": "2d7f15127a9e747b72ad021557fe42ef278f2cca1f9dc161791277e65bb62171",
+          "cas_receipt": {
+            "sha256": "bcb41f3572f4190b21bbfe019aea11416f3ae0cf46b09276920ab7917b749499",
+            "verified": true
+          },
+          "completion": "complete",
+          "exit_code": 0,
+          "failing_nodes": [],
+          "files": [
+            "tests/test_gate_circleci.py"
+          ],
+          "green": true,
+          "report": "verified",
+          "skipped": [],
+          "summary": "8 passed in 0.45s"
+        },
+        {
+          "action_key": "18d1ecbdb8e113bb2ed98fdd072f021d48bcb29d6982350aa4cdf3ca66cf7f5e",
+          "cas_receipt": {
+            "sha256": "6c825bafd3dbf971bcfdaae288d38e648825c5f7cdbde53ba7b7c0fef159c189",
+            "verified": true
+          },
+          "completion": "complete",
+          "exit_code": 0,
+          "failing_nodes": [],
+          "files": [
+            "tests/test_gate_replay.py"
+          ],
+          "green": true,
+          "report": "verified",
+          "skipped": [],
+          "summary": "3 passed in 0.39s"
+        },
+        {
+          "action_key": "74f6d4e7fff8999d30c955f6874e47da7650ff9ce01925efd2c85c9ef837725c",
+          "cas_receipt": {
+            "sha256": "fd3adeadac2f3673d80acb380c3d4276fe3e8421167a0895982717813f5d0bc9",
+            "verified": true
+          },
+          "completion": "complete",
+          "exit_code": 0,
+          "failing_nodes": [],
+          "files": [
+            "tests/test_gate_run.py"
+          ],
+          "green": true,
+          "report": "verified",
+          "skipped": [],
+          "summary": "11 passed in 0.83s"
+        },
+        {
+          "action_key": "ad86cff1669d6d07e07cb9a0e689d371b5abd1f80bcf303864fe74505900ea4d",
+          "cas_receipt": {
+            "sha256": "75c4f73d1e1c7d4824597299e9c423de0b32ead709360b5a8cd658b2792550f9",
+            "verified": true
+          },
+          "completion": "complete",
+          "exit_code": 0,
+          "failing_nodes": [],
+          "files": [
+            "tests/test_gate_partition.py"
+          ],
+          "green": true,
+          "report": "verified",
+          "skipped": [],
+          "summary": "1 passed in 0.37s"
+        },
+        {
+          "action_key": "620b24540af4f2fa1eef438c920b3596128d9cfacb5b24b0a4d015e604a12fe3",
+          "cas_receipt": {
+            "sha256": "ac8d43932753fee0f016edd25f8c079ec9e00903eb638e6f86ab8c81ea8149ba",
+            "verified": true
+          },
+          "completion": "complete",
+          "exit_code": 0,
+          "failing_nodes": [],
+          "files": [
+            "tests/test_gate_shadow.py"
+          ],
+          "green": true,
+          "report": "verified",
+          "skipped": [],
+          "summary": "5 passed in 0.38s"
+        },
+        {
+          "action_key": "c369b536dde0577d7b8ad0be33c543142351fa8ae4986eef6576200bd80b430b",
+          "cas_receipt": {
+            "sha256": "56487467ad35e512acdbe9772802f90dc35444909433ddb69fb67055845ef446",
+            "verified": true
+          },
+          "completion": "complete",
+          "exit_code": 0,
+          "failing_nodes": [],
+          "files": [
+            "tests/test_agent_compute_routing_policy.py"
+          ],
+          "green": true,
+          "report": "verified",
+          "skipped": [],
+          "summary": "6 passed in 0.38s"
+        }
+      ],
+      "state": "passed",
+      "terminal_records_complete": true,
+      "tests_passed": 77
     },
-    "x86_confirmation": "pending: x86 PrismaBuild admission unavailable since 19:28Z"
+    "x86_confirmation": {
+      "reason": "Architecture confirmation requested after x86 admission resumed at 19:36:39 UTC; prior outage is resolved",
+      "state": "submitted"
+    }
   },
   "schema": "prismabuild.gate_implementation_evidence.v2",
   "tested_commit": "2a306516d8067aa2653ab441e38eba0397c824d9"
