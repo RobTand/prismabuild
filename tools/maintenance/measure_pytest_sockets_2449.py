@@ -33,10 +33,24 @@ def main():
                 binds.append({"path": os.fsdecode(encoded), "bytes": len(encoded)})
         return result
 
+    class ShardMeasurements:
+        @pytest.hookimpl(hookwrapper=True)
+        def pytest_runtest_call(self, item):
+            yield
+            # This regression writes the exact socket path only after its
+            # child shard binds it. Read before tmp_path fixture teardown.
+            if item.originalname != "test_real_shard_binds_socket_and_cleans_its_base_temp":
+                return
+            root = item.funcargs["tmp_path"]
+            for record in root.rglob("socket-path.json"):
+                path = json.loads(record.read_text())
+                binds.append({"path": path, "bytes": len(os.fsencode(path)),
+                              "source": "real child shard"})
+
     socket.socket.bind = measured
     try:
         with pytest_basetemp() as base:
-            code = int(pytest.main(["-q", "-p", "no:cacheprovider", "--basetemp", str(base), *args.files]))
+            code = int(pytest.main(["-q", "-p", "no:cacheprovider", "--basetemp", str(base), *args.files], plugins=[ShardMeasurements()]))
         record = {"returncode": code, "base": str(base), "removed": not base.parent.exists(),
                   "binds": len(binds), "longest": max(binds, key=lambda row: row["bytes"], default=None)}
         args.output.write_text(json.dumps(record, indent=2) + "\n")
