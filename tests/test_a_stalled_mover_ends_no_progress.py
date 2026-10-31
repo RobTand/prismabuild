@@ -1050,6 +1050,7 @@ def test_movers_sharing_a_pool_at_their_fill_share_are_not_killed(
     credit."""
 
     import concurrent.futures
+    import threading
 
     monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
     monkeypatch.setattr(pool, "POOL_MEMBER_STAT", _Disks(UNDER), raising=False)
@@ -1066,12 +1067,26 @@ def test_movers_sharing_a_pool_at_their_fill_share_are_not_killed(
     assert derivation["grace_s"] == 4
 
     prepared = []
+
+    def all_copying():
+        assert len(prepared) == 3
+        assert all(control.ready.is_set() and control.process.poll() is None
+                   for _base, control, _queue, _item in prepared)
+
+    copy_gates = threading.Barrier(3, action=all_copying, timeout=60)
+
+    class SharedCopyGate(ControlledAction):
+        def launch(self, native, argv, **kwargs):
+            super().launch(native, argv, **kwargs)
+            copy_gates.wait()
+            return self
+
     for index in range(3):
         base = tmp_path / f"mover-{index}"
         base.mkdir()
         argv = _mover_argv(base, digest=digest, total=total, readers=3,
                            manifest=tmp_path / "manifest.json")
-        control = ControlledAction(base / "copy-control", steps=1,
+        control = SharedCopyGate(base / "copy-control", steps=1,
                                    step_s=total / MB)
         queue, item = _prepare_mover(
             base, _gated_mover_source(argv, control, read="share", readers=3),
