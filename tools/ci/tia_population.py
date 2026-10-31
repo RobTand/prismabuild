@@ -7,6 +7,7 @@ from dataclasses import replace
 import importlib.util
 import sys
 import json
+import os
 from pathlib import Path
 
 
@@ -17,7 +18,7 @@ def population_pytest_configure(config):
 
 def population_pytest_collection_modifyitems(config, items):
     root = Path.cwd()
-    path = root / 'tools/ci/gate_select.py'
+    path = root / os.environ.get('PB_TIA_GATE_DIR', 'tools/ci') / 'gate_select.py'
     spec = importlib.util.spec_from_file_location('tia_population_gate', path)
     gate = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gate)

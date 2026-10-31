@@ -33,11 +33,15 @@ class Recorder:
         self.unattributed: set[str] = set()
         self.files: dict[str, str] = {}
         self.codes: dict[object, str | None] = {}
-        self.catalog = {}
-        for directory in ('src', 'tools'):
-            for path in sorted((self.root / directory).rglob('*.py')):
-                self.catalog[str(path)] = (path.relative_to(self.root).as_posix(),
-                                          raw_sha256(path.read_bytes()))
+        inherited = os.environ.get('PB_TIA_CATALOG')
+        cached = json.loads(Path(inherited).read_text()) if inherited else {}
+        self.catalog = cached.get('files') if cached.get('root') == str(self.root) else None
+        if self.catalog is None:
+            self.catalog = {}
+            for directory in ('src', 'tools'):
+                for path in sorted((self.root / directory).rglob('*.py')):
+                    self.catalog[str(path)] = (path.relative_to(self.root).as_posix(),
+                                              raw_sha256(path.read_bytes()))
         self.fixture_calls: list[set[str]] = []
         self.node = os.environ.get('PB_TIA_NODE', '')
         self.tool = None
@@ -153,6 +157,11 @@ def record_pytest_configure(config):
         raise RuntimeError('TIA needs PB_TIA_ROOT, PB_TIA_OUTPUT and PB_TIA_COMMIT')
     boot = state.output / 'bootstrap'
     boot.mkdir(exist_ok=True)
+    catalog = boot / 'catalog.json'
+    temporary_catalog = boot / f'catalog-{os.getpid()}.tmp'
+    temporary_catalog.write_bytes(compact_ascii_json_bytes({'root': str(state.root), 'files': state.catalog}))
+    temporary_catalog.replace(catalog)
+    os.environ['PB_TIA_CATALOG'] = str(catalog)
     # The file has an opt-in environment check, even when PYTHONPATH leaks to another invocation.
     target = boot / 'sitecustomize.py'
     temporary = boot / f'sitecustomize-{os.getpid()}.tmp'
