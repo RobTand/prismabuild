@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import socket
 import sys
+import threading
 from typing import assert_never
 
 from . import action_result, action_wait, core as pb, endings, pool
@@ -523,6 +524,7 @@ def bounded_outcome_render(q, outcome_path: Path, outcome: dict, *, budget_s: fl
         raise action_wait.OutcomeReadUnavailable("pool outcome verification returned an invalid summary")
     action_wait.require_execution_ending(value["summary"], where="execution verification IPC summary")
     value['cached_replay'] = decode_replay_metadata(value, action_key=str(outcome.get('action_key') or ''))
+    value["summary"].update(superseded_summary(q, outcome))
     return value
 
 
@@ -621,7 +623,7 @@ def _diagnosed_outcome_render_value(q, outcome_path: str, outcome: dict) -> dict
 
 
 def _outcome_render_value(q, outcome_path: str, outcome: dict) -> dict:
-    summary = outcome_summary(q, Path(outcome_path), outcome)
+    summary = outcome_summary(q, Path(outcome_path), outcome, include_superseded=False)
     attempts = q.attempt_outcomes(outcome) if summary["adopted"] is not None else []
     missing = outcome.get("attempt_history_missing_before", 0)
     return {
@@ -633,7 +635,113 @@ def _outcome_render_value(q, outcome_path: str, outcome: dict) -> dict:
     }
 
 
-def outcome_summary(q, outcome_path, outcome, *, verify_attempts=True) -> dict:
+_SUPERSEDED_READ_LOCK = threading.Lock()
+_SUPERSEDED_READER_FAULT: action_wait.OutcomeReadUnavailable | None = None
+
+
+def read_superseded_archive(path: Path):
+    """Read bounded archive bytes under the caller's existing isolated-reader budget."""
+    return pool.record_store.read_bounded_document(path, max_bytes=8 * 1024 * 1024)
+
+
+def _read_superseded_archive(path: Path):
+    """Own historical readers in the client, including census without a wait scope."""
+    global _SUPERSEDED_READER_FAULT
+    with _SUPERSEDED_READ_LOCK:
+        fault = _SUPERSEDED_READER_FAULT
+        if isinstance(fault, action_wait.OutcomeReaderRetained):
+            if not action_wait.reap_retained(fault.readers):
+                fault = _SUPERSEDED_READER_FAULT = None
+        archived = None
+        if fault is None:
+            with action_wait.client_readers(join=True) as history:
+                abandoned_before = history.abandoned_count
+                identities_before = len(history.identities)
+                error = None
+                try:
+                    archived = action_wait.read_observation(
+                        "superseded terminal display",
+                        lambda: read_superseded_archive(path),
+                        budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
+                except (action_wait.OutcomeReadUnavailable, OSError, ValueError,
+                        pool.PoolError, pb.PrismaBuildError) as exc:
+                    error = exc
+                if isinstance(error, (action_wait.OutcomeReaderRetained,
+                                      action_wait.RetainedIdentityUnavailable)):
+                    fault = error
+                elif history.abandoned_count > abandoned_before:
+                    identities = history.identities[identities_before:]
+                    message = str(error or "superseded terminal reader retained after payload delivery")
+                    fault = (action_wait.OutcomeReaderRetained(message, identities)
+                             if history.complete and identities else
+                             action_wait.RetainedIdentityUnavailable(message, []))
+                _SUPERSEDED_READER_FAULT = fault
+        if fault is not None:
+            retained = (f"; retained reader={sorted_json(fault.retained)}"
+                        if isinstance(fault, action_wait.OutcomeReaderRetained) else "")
+            print(f"PrismaBuild: superseded terminal display unavailable: {fault}{retained}; "
+                  "further archive reads fenced until reader ownership is resolved",
+                  file=sys.stderr, flush=True)
+        return archived
+
+
+def superseded_summary(q, record: Mapping[str, object], *, archive_reader=None) -> dict:
+    """Display one earlier generation without following history or deciding a verdict.
+
+    An injected archive reader must run under the caller's existing read budget;
+    otherwise this projection owns a separate bounded reader and its recovery.
+    """
+    history = record.get("supersedes_terminal")
+    if not isinstance(history, Mapping):
+        return {}
+    summary = {
+        "state": history.get("state")[:160] if isinstance(history.get("state"), str) else None,
+        "status": history.get("status")[:160] if isinstance(history.get("status"), str) else None,
+        "attempts": history.get("attempts") if type(history.get("attempts")) is int
+                    and 0 <= history["attempts"] < 2**63 else None,
+        "finished_unix": endings.publication_generation(history.get("finished_unix")),
+        "classification": None,
+    }
+    detail = history.get("detail")
+    archived_path = history.get("superseded_path")
+    key = record.get("action_key")
+    if isinstance(archived_path, str) and len(archived_path) <= 4096 and isinstance(key, str):
+        path = Path(archived_path)
+        if (path.parent == q.records.superseded_dir()
+                and path.name.startswith(f"{key}.")
+                and path.name.endswith(f".{history.get('state')}-terminal.json")):
+            try:
+                archived = (archive_reader or _read_superseded_archive)(path)
+            except (OSError, ValueError, pool.PoolError, pb.PrismaBuildError):
+                archived = None
+            if (isinstance(archived, Mapping) and archived.get("action_key") == key
+                    and all(archived.get(field) == history.get(field) for field in
+                            ("published_unix", "status", "attempts", "finished_unix"))):
+                detail = archived.get("detail")
+    if isinstance(detail, Mapping):
+        returncode = detail.get("returncode", detail.get("action_returncode"))
+        if type(returncode) is int and -(2**63) <= returncode < 2**63:
+            summary["returncode"] = returncode
+            if (returncode != 0 and history.get("state") == pool.record_store.FAILED
+                    and record.get("status") in {"executed", "cache_hit"}):
+                summary["classification"] = "flaky_rerun"
+        elif returncode is None and str(history.get("status") or "").startswith(
+                ("lease_lost", "worker_lost", "preempted", "interrupted")):
+            summary["classification"] = "infrastructure_rerun"
+    return {"superseded": summary}
+
+
+def superseded_note(row: Mapping[str, object]) -> str:
+    summary = row.get("superseded")
+    if not isinstance(summary, Mapping):
+        return ""
+    description = " ".join(f"{field}={summary[field]}" for field in
+                           ("state", "status", "returncode", "attempts", "finished_unix")
+                           if field in summary)
+    return f"superseded {summary.get('classification') or 'unclassified'}: {description}"
+
+
+def outcome_summary(q, outcome_path, outcome, *, verify_attempts=True, include_superseded=True) -> dict:
     """One ending reduced to the fields a caller reports, after verification.
 
     The mutable terminal summary is state-machine output.  Where the record
@@ -646,6 +754,9 @@ def outcome_summary(q, outcome_path, outcome, *, verify_attempts=True) -> dict:
     Consumer projection may defer attempt verification to the bounded streaming
     ending reader with verify_attempts=False. It must not claim verification
     from this summary alone. Legacy callers retain full verification here.
+
+    Immutable-verification children omit superseded display so the client owns
+    that optional read and any retained-reader recovery after verification.
 
     ``transport`` defaults to the pull queue: the SLURM lane stamps its own
     records and the pool's predate the field.
@@ -762,6 +873,7 @@ def outcome_summary(q, outcome_path, outcome, *, verify_attempts=True) -> dict:
         "attempts": outcome.get("attempts"),
         "withdrawn_by": outcome.get("withdrawn_by"),
         "reason": outcome.get("reason"),
+        **(superseded_summary(q, outcome) if include_superseded else {}),
     }
 
 
