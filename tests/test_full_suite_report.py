@@ -285,3 +285,11 @@ def test_junit_collection_error_keeps_its_file_identity():
     rows = report.parse_junit('''<testsuite><testcase name="tests/test_import.py" classname="">
         <error>ImportError: unavailable dependency</error></testcase></testsuite>''')
     assert rows['tests/test_import.py']['outcome'] == 'failed'
+
+
+def test_quarantine_reads_the_shared_gate_schema(tmp_path):
+    import json
+    path = tmp_path / 'quarantine.json'
+    path.write_text(json.dumps({'entries': [{'target': 'tests/a.py::test_x', 'issue': 2434}],
+                               'cost_exclusions': [{'target': 'tests/b.py', 'issue': 2328}]}))
+    assert report.quarantine_entries(path) == {'tests/a.py::test_x', 'tests/b.py'}
