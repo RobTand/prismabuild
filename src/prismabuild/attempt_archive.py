@@ -425,7 +425,13 @@ def _publish_attempt_log_archive(queue_root: Path, descriptor: Mapping[str, obje
         while len(pending) >= MAX_LOG_CHUNK_BYTES:
             publish_chunk(bytes(pending[:MAX_LOG_CHUNK_BYTES]))
             del pending[:MAX_LOG_CHUNK_BYTES]
-    _stream_live_attempt_log(queue_root / fact["path"], fact, stage)
+    try:
+        _stream_live_attempt_log(queue_root / fact["path"], fact, stage)
+    except FileNotFoundError:
+        # Another collector may have published and unlinked after our index probe.
+        _refresh_attempt_archive_address(index_path, root)
+        _stream_archived_attempt_log(config, fact, lambda raw: None)
+        return _attempt_archive_json(index_path, limit=MAX_LOG_INDEX_BYTES)
     if pending:
         publish_chunk(bytes(pending))
     identity = dict(queue_id=config["queue_id"], store_id=config["store_id"], descriptor=fact)

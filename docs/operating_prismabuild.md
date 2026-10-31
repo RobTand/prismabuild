@@ -5056,6 +5056,9 @@ backlogs when choosing the next batch.
 Inspect terminal exit status and `gc-receipts/attempt-logs-*.json`, including
 skips. A process interruption may leave valid archive entries and live duplicate
 logs, or an already covered deletion prefix. Rerun to adopt verified publications.
+Concurrent collectors also adopt an exact verified archive when another collector
+publishes and unlinks between the initial index probe and live open. This uses
+one bounded archive recheck; missing or corrupt archives still stop the batch.
 An unavailable or misbound archive refuses; never remove an index or assume a
 missing store is empty history. Verify actual resolver delivery after rollout.
 

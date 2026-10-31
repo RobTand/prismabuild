@@ -22212,7 +22212,11 @@ empty chunk list. There is no extraction, whole-key tarball, global history
 checkpoint or archive expiration policy. Metadata over a bound retains the
 source. Native immutable publication fsyncs file and created ancestors, links
 atomically, fsyncs the parent, and verifies custody. Retries adopt verified prior
-indexes even when another collector chose a different valid segmentation.
+indexes even when another collector chose a different valid segmentation. If the live
+source disappears after the initial index probe, publication refreshes the exact
+index address once and fully verifies its descriptor, manifest and all chunks
+before adoption. Missing or corrupt archive evidence still aborts the batch;
+there is no polling or unverified success path.
 
 ### Rollout verification and unlink authority
 
