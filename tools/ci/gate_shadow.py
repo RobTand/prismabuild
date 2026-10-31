@@ -24,7 +24,7 @@ def audit(plan: dict, records: list[dict], junit_paths: list[Path]) -> dict:
         problems.append('CI results name a different population version')
     if len(junit_paths) != len(records):
         problems.append('each final CI assignment needs its JUnit file')
-    failures = set()
+    failures, observed = set(), set()
     for path in junit_paths:
         try:
             cases = list(ET.parse(path).iter('testcase'))
@@ -37,9 +37,12 @@ def audit(plan: dict, records: list[dict], junit_paths: list[Path]) -> dict:
             filename = case.get('file', '').removeprefix('./')
             if not filename or filename not in full:
                 problems.append('JUnit test case has missing or unexpected file identity')
+            observed.add(filename)
             if case.find('failure') is not None or case.find('error') is not None:
                 if filename:
                     failures.add(filename)
+    if observed != full:
+        problems.append('JUnit does not cover the full population')
     missed = sorted(failures - predicted)
     verdict = 'inconclusive' if problems else 'missed_failure' if missed else 'no_miss_observed'
     return {'schema': 'prismabuild.gate_shadow_accuracy.v1', 'verdict': verdict,

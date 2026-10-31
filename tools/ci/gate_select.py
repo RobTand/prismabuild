@@ -193,7 +193,7 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
     version = hashlib.sha256(json.dumps(version_body, sort_keys=True).encode()).hexdigest()
     triggers = sorted(path for path in set(changed) if
         path in {'conftest.py', 'tests/conftest.py', 'pyproject.toml', 'tools/verify.py',
-                 'tests/proof_execution.json', 'tests/receipt_execution.json'} or
+                 'tests/proof_execution.json', 'tests/receipt_execution.json', '.circleci/config.yml'} or
         path.startswith(('tools/ci/gate_', 'tests/test_gate_')))
     reasons: dict[str, list[str]] = {}
     for name, (imports, paths) in index.items():
@@ -214,7 +214,8 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
         if why:
             reasons[name] = why
     reverse = helper_importers(index, changed)
-    pending = sorted(set(reasons) | {path for path in changed if path.startswith('tests/')})
+    pending = sorted({name for name, why in reasons.items() if any(reason != 'fast tier' for reason in why)} |
+                     {path for path in changed if path.startswith('tests/')})
     seen = set(pending)
     while pending:
         helper = pending.pop()

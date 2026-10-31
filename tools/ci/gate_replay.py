@@ -55,10 +55,16 @@ def changed_functions(before: str, after: str) -> dict:
             'before_functions': len(old), 'after_functions': len(new)}
 
 
-def pool_function_report(captured: dict) -> dict:
+def pool_function_report(captured: dict, root: Path | None = None) -> dict:
     rows = []
     for pull in captured['pulls']:
-        diff = changed_functions(pull['before'], pull['after'])
+        def source(side):
+            if side in pull:
+                return pull[side]
+            sha = pull['base_sha' if side == 'before' else 'head_sha']
+            return subprocess.check_output(['git', 'show', sha + ':src/prismabuild/pool.py'],
+                                           cwd=root, text=True)
+        diff = changed_functions(source('before'), source('after'))
         rows.append({key: value for key, value in pull.items() if key not in {'before', 'after'}} | diff)
     counts = sorted(row['count'] for row in rows)
     return {'schema': 'prismabuild.pool_changed_functions.v1',
@@ -155,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.fetch_history:
         print(capture_history(args.fetch_history))
         return 0
-    report = (pool_function_report(json.loads(args.pool_functions.read_text())) if args.pool_functions
+    report = (pool_function_report(json.loads(args.pool_functions.read_text()), args.root.resolve()) if args.pool_functions
               else replay(args.root.resolve(), json.loads(args.history.read_text())))
     rendered = json.dumps(report, sort_keys=True, indent=2) + '\n'
     if args.output:
