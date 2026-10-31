@@ -6,7 +6,11 @@ branch starts `mergify/merge-queue/`, the PR author is login `mergify[bot]` with
 id 37929162, and the head repository is this repository. A same-repository PR
 with the `gate-canary` label also runs the full gate, without duplicating the
 single-job PR selection run. No CI job uses the fleet.
-Mergify requires `pr-gate` to queue and the final job `gate` to merge.
+Mergify enforcement is pending the lead's separate queue-configuration PR.
+Current branch protection requires only `issue-link`, and the current queue
+checks PRs in place. The intended policy requires `pr-gate` to queue and the
+final job `gate` to merge. Full queue coverage depends on `gate` succeeding on
+authenticated batch SHAs, not on a check of an individual source PR.
 
 The full plan records a shadow selection while coverage stays full. The full
 matrix defaults to sixteen shards, alternating `ubuntu-24.04` and `ubuntu-24.04-arm`.
