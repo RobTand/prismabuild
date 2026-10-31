@@ -1,0 +1,79 @@
+[
+  {
+    "change": "removed",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "PoolQueue._arbitrate_claim_census",
+      "unresolved": "backfill_eligible and _gang.backfill_allowed(self, gang_blocked, _now())",
+      "binding": "allowed"
+    },
+    "count": 1,
+    "reason": "The preemptible-loan branch now defers while a bounded loan has an exact claim or held tokens. Its preemption proof and backfill_allowed checks remain. The scanner observes the local allowed expression, not a wire allowlist."
+  },
+  {
+    "change": "removed",
+    "row": {
+      "path": "tools/fleet/pbgang.py",
+      "owner": "_pbgang_load_manifest",
+      "fields": [
+        "members",
+        "priority",
+        "priority_reason",
+        "skew_s",
+        "timeout_s"
+      ]
+    },
+    "count": 1,
+    "reason": "Replace the manifest top-level allowlist only to add queue_wait_timeout_s. Its finite-positive validation is in gang_wait.timeout; all prior fields and unknown-field refusals remain. Default omission preserves no queue-wait cancellation."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "PoolQueue._arbitrate_claim_census",
+      "unresolved": "backfill_eligible and (not gang_loans.pending(self, gang_blocked['group'])) and _gang.backfill_allowed(self, gang_blocked, _now())",
+      "binding": "allowed"
+    },
+    "count": 1,
+    "reason": "The preemptible-loan branch now defers while a bounded loan has an exact claim or held tokens. Its preemption proof and backfill_allowed checks remain. The scanner observes the local allowed expression, not a wire allowlist."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "PoolQueue._arbitrate_claim_census",
+      "unresolved": "True",
+      "binding": "allowed"
+    },
+    "count": 1,
+    "reason": "The bounded exception sets allowed only after Observer.allowed proves the continuous dual-signal interval, sealed runtime bound and remaining slot. Existing reservation and remaining-fence loops still run. This local binding is not a record field policy."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/gang_loans.py",
+      "owner": "reserve_loan",
+      "unresolved": "sorted({member['action_key'] for record in records.values() for member in record['members']})",
+      "binding": "keys"
+    },
+    "count": 1,
+    "reason": "The keys expression gathers every original member transition lock before reserving the single bounded-loan slot. It is an internal sorted lock set, not an external record allowlist. No member is dropped or narrowed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/fleet/pbgang.py",
+      "owner": "_pbgang_load_manifest",
+      "fields": [
+        "members",
+        "priority",
+        "priority_reason",
+        "queue_wait_timeout_s",
+        "skew_s",
+        "timeout_s"
+      ]
+    },
+    "count": 1,
+    "reason": "Replace the manifest top-level allowlist only to add queue_wait_timeout_s. Its finite-positive validation is in gang_wait.timeout; all prior fields and unknown-field refusals remain. Default omission preserves no queue-wait cancellation."
+  }
+]

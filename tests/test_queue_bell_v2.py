@@ -90,6 +90,8 @@ def test_v2_typed_identifier_contract_does_not_assume_all_ids_are_actions():
 
 @pytest.mark.parametrize("loss", ["epoch", "future", "ring", "reset", "coverage", "partial"])
 def test_v2_loss_never_reports_complete_wait(bell, loss):
+    if loss == "partial":
+        bell.service.ring.set_coverage(tuple(topic for topic in TOPICS if topic != "done"))
     before = _v2_get(bell, "/v2/now")
     overrides = {}
     if loss == "epoch":
@@ -103,17 +105,16 @@ def test_v2_loss_never_reports_complete_wait(bell, loss):
         bell.service.ring.reset()
     elif loss == "coverage":
         bell.service.ring.set_coverage(("ready",))
-    else:
-        overrides["topics"] = "tiers"
     reply = _v2_poll(bell, before, **overrides)
     assert reply["reset"] is True
     assert reply["reason"]
     assert "events" not in reply
     assert reply["coverage"]["topics"] == (["ready"] if loss == "coverage"
-                                                else sorted(TOPICS))
+                                                else before["coverage"]["topics"])
 
 
 def test_v2_positive_client_negotiation_and_wrong_queue(bell):
+    bell.service.ring.set_coverage(("done",))
     before = bell.client.now_v2(("done",))
     with pytest.raises(queue_bell.Unavailable, match="coverage"):
         bell.client.now_v2(("tiers",))

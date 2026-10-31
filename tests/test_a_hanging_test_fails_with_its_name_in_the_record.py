@@ -125,46 +125,12 @@ def test_a_test_sleeping_past_the_bound_fails_naming_the_test(
         "the failure record must name the test that hung; "
         f"stdout:\n{proc.stdout}"
     )
-
-
-def test_the_name_reaches_stderr_before_the_session_can_be_killed(
-        tmp_path: Path):
-    """The summary is printed at the end of a session that may never reach it.
-
-    A bound does not promise the remaining tests fit in the lease, so the
-    shard can still be killed at its deadline with no summary written. The
-    handler writes the node id and the limit to stderr and flushes *before*
-    raising, and the pool counts those bytes into the lease's execution
-    observation while the action is alive -- which is how the name survives a
-    session that ends the way ``766d7ae5...`` ended.
-    """
-    proc = _run_child(
-        tmp_path / "streamed",
-        {"test_hang.py": _HANGING_TEST},
-        timeout_env=CHILD_TIMEOUT_S,
-        subprocess_timeout_s=120,
-    )
     assert "test_the_hanging_test" in proc.stderr, (
         "the node id must reach stderr as the alarm fires, not only the "
         f"end-of-session summary; stderr:\n{proc.stderr}"
     )
     assert CHILD_TIMEOUT_S in proc.stderr, (
         f"and with the limit that fired; stderr:\n{proc.stderr}")
-
-
-def test_the_bound_names_the_limit_in_the_failure(tmp_path: Path):
-    """A timeout failure that does not say it was a timeout reads as a test
-    bug. The record must distinguish "this test hung" from "this test broke"
-    -- the timeout limit and the test share the failure message."""
-    proc = _run_child(
-        tmp_path / "reason",
-        {"test_hang.py": _HANGING_TEST},
-        timeout_env=CHILD_TIMEOUT_S,
-        subprocess_timeout_s=120,
-    )
-    assert proc.returncode == 1, (
-        f"the hanging test must fail; stdout:\n{proc.stdout}"
-    )
     assert CHILD_TIMEOUT_S in proc.stdout, (
         "the failure must say the per-test limit that fired, so the reader "
         f"can tell a hang from a break; stdout:\n{proc.stdout}"

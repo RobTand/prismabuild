@@ -1,0 +1,80 @@
+{
+  "source": "7585278f635e4e1d7cd7dc8eb324125b07969f40",
+  "capture_command": [
+    "python3",
+    "/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py",
+    "--cwd",
+    "/home/rob/paperclip-worktrees/prismabuild/v21-integrate-2363",
+    "--anywhere",
+    "--cpus",
+    "1",
+    "--demand",
+    "mem_gb=3",
+    "--priority",
+    "-10",
+    "--timeout-s",
+    "600",
+    "--env",
+    "OMP_NUM_THREADS=1",
+    "--env",
+    "MKL_NUM_THREADS=1",
+    "--env",
+    "OPENBLAS_NUM_THREADS=1",
+    "--env",
+    "TMPDIR=/home/rob/pbt17",
+    "--detach",
+    "--",
+    "/home/rob/venvs/pb-cpu/bin/python",
+    "tests/compat/support/record_compat.py",
+    "--generate",
+    "/mnt/shared/paperclip-runs/PRI-243/capture-integrated-7585278f635",
+    "--case",
+    "upgrade-intent/armed"
+  ],
+  "capture_resources": {
+    "cpu": 1,
+    "mem_gb": 3,
+    "gpu": 0,
+    "native_threads": 1,
+    "priority": -10
+  },
+  "qualification_selection": [
+    "tests/test_canary_placement_preflight.py",
+    "tests/test_barrier_activation_boundary.py",
+    "tests/test_compat_capture_intake.py",
+    "tests/test_record_compatibility_controller_upgrade.py selected upgrade-intent/armed plus upgrade-attestation/first and repeated exact nodes",
+    "tests/test_wire_inventory.py",
+    "tests/test_fleet_tool_flags_have_help.py",
+    "tests/test_duplication_baseline.py",
+    "tests/test_design_doc_line_references.py"
+  ],
+  "qualification_resources": {
+    "per_action": {
+      "cpu": 1,
+      "mem_gb": 4,
+      "gpu": 0,
+      "native_threads": 1
+    },
+    "max_clients": 8,
+    "aggregate_upper_bound": {
+      "cpu": 8,
+      "mem_gb": 32,
+      "gpu": 0
+    },
+    "priority": -10,
+    "payload_cap_s": 3600,
+    "observation_cap_s": 21600
+  },
+  "phase": {
+    "owner": "PRI-243",
+    "first_launch": "2026-10-27T12:17:42.451401+00:00",
+    "first_check_offset_s": 1800,
+    "max_checks": 8,
+    "hard_observation_s": 21600,
+    "wake_owner": "7474312e-878a-48fb-9278-997151629640",
+    "deadline": "2026-10-27T18:17:42.451401+00:00",
+    "checks": 0
+  },
+  "authority": "PRI-243 description; latest PRI-33/PRI-128 notices impose no producer pause; no R6 mutation or publisher execution",
+  "capture_cli_correction": "Published --json is withdrawal-only; parser refused before sealing or publication. Remove only --json; resources, source and output unchanged."
+}

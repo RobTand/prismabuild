@@ -27,9 +27,11 @@ twelve landed ranges ``chain-031`` to ``chain-019`` (264 GiB) are past it.
 from __future__ import annotations
 
 import json
+from itertools import count
 from pathlib import Path
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -351,7 +353,7 @@ def _landing(queue: pool.PoolQueue, key: str) -> dict[str, object]:
 
 
 def test_three_r12_consumers_publish_an_expected_landing_for_every_queued_range(
-        tmp_path: Path) -> None:
+        tmp_path: Path, monkeypatch) -> None:
     """#989: the third consumer's next range lands after the reader's 300 s.
 
     (a) and (b) hold ``chain-043`` to ``chain-034`` (220 GiB each), and each
@@ -377,6 +379,10 @@ def test_three_r12_consumers_publish_an_expected_landing_for_every_queued_range(
     _r12_shaped(queue, stage, shift, "b", landed=holding, ready=["chain-033"])
     _r12_shaped(queue, stage, shift, "c", landed=["chain-043"], ready=[])
 
+    ticks = count(100.0, 2.0)
+    monkeypatch.setattr(tier_loop, "time", SimpleNamespace(
+        monotonic=lambda: next(ticks), time=time.time,
+        perf_counter=time.perf_counter))
     _cycle(queue, stage, gib=capacity)
 
     docs = {name: _landing(queue, key) for name, key in THREE.items()}
@@ -399,9 +405,7 @@ def test_three_r12_consumers_publish_an_expected_landing_for_every_queued_range(
                      if entry["state"] == "ready"),
                     key=lambda entry: entry["queue_position"])
     assert [entry["queue_position"] for entry in queued] == list(range(len(queued)))
-    # The pass records what it cost; three R12 plans on NFS-free tmp_path
-    # must not approach a cycle (60 s) -- or even one second.
-    assert all(0 <= doc["publish_s"] < 1.0 for doc in docs.values())
+    assert sorted(doc["publish_s"] for doc in docs.values()) == [2.0, 4.0, 6.0]
     rates = {doc["landing_bytes_per_s"] for doc in docs.values()}
     assert len(rates) == 1              # one tier, one rate
     rate = rates.pop()

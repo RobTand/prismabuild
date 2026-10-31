@@ -1,0 +1,1 @@
+pbrun: log capture executable=/usr/bin/tee

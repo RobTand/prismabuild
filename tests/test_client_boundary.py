@@ -60,6 +60,8 @@ import re
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWLISTS = Path(__file__).with_name("boundary_allowlists")
 PUBLISHER = "tools/fleet/publish_runtime.py"
@@ -259,15 +261,20 @@ def test_the_scope_follows_the_published_tools():
     assert "tools/fleet/profile_finish_census.py" not in paths
 
 
-def test_client_references_equal_the_frozen_allowlist():
-    references, _ = scan()
+@pytest.fixture(scope="module")
+def client_inventory():
+    return scan()
+
+
+def test_client_references_equal_the_frozen_allowlist(client_inventory):
+    references, _ = client_inventory
     assert_equal(references, "client_references.txt",
                  "PrismaBuild core does not know its clients: take the value from "
                  "the submitter or from configuration, or host a plugin the client registers")
 
 
-def test_legacy_record_ids_equal_the_frozen_allowlist():
-    _, ids = scan()
+def test_legacy_record_ids_equal_the_frozen_allowlist(client_inventory):
+    _, ids = client_inventory
     assert_equal(ids, "legacy_ids.txt",
                  "a new record type uses the prismabuild.* namespace")
 

@@ -1,0 +1,1999 @@
+{
+  "head": "85fa57bb7194afe9562193a7368d2e3a403a9293",
+  "actions": 19,
+  "passing_executions": 553,
+  "entries": [
+    {
+      "action_key": "6a74feb6d4c909c2bb8fb5b0a06349eab94d89b51bcb65ef3050a8e1fed5b7cc",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "0017cfa550204fab89fd1e29c38283c198980c8ce8a1926e0b84cf7e62570256",
+      "request_sha256": "254e7fa4e92662392a1ea9005c0e4f48ca1b012c0c900332c4bd83221ff02f00",
+      "logs": {
+        "stdout": {
+          "bytes": 49321,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/6a74feb6d4c909c2bb8fb5b0a06349eab94d89b51bcb65ef3050a8e1fed5b7cc/3316b1a0ab3b0fbf0ad025d382bd16c0aa86f4418c037dc5709b4972aa00d701/00000001.stdout.39e9ddd48c93a324b92166a93ac0033c7337911b4807d1c76ae7611bec69887f.log",
+          "sha256": "39e9ddd48c93a324b92166a93ac0033c7337911b4807d1c76ae7611bec69887f"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/6a74feb6d4c909c2bb8fb5b0a06349eab94d89b51bcb65ef3050a8e1fed5b7cc/3316b1a0ab3b0fbf0ad025d382bd16c0aa86f4418c037dc5709b4972aa00d701/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 96,
+      "nodeids": [
+        "tests/test_pool.py::test_a_claim_clears_its_own_denial_history",
+        "tests/test_pool.py::test_a_claim_with_no_lease_at_all_is_stale",
+        "tests/test_pool.py::test_a_crashing_execute_never_leaves_a_dangling_claim",
+        "tests/test_pool.py::test_a_demand_larger_than_any_box_is_refused_not_queued",
+        "tests/test_pool.py::test_a_failure_retries_until_its_attempts_are_spent",
+        "tests/test_pool.py::test_a_gpu_demand_is_not_placeable_on_a_cpu_box",
+        "tests/test_pool.py::test_a_keyless_ready_record_is_filed_rather_than_left_to_starve",
+        "tests/test_pool.py::test_a_late_copy_of_a_terminal_generation_cannot_be_claimed",
+        "tests/test_pool.py::test_a_lease_beside_its_record_is_never_swept",
+        "tests/test_pool.py::test_a_lease_whose_record_is_gone_is_swept",
+        "tests/test_pool.py::test_a_lease_written_moments_ago_is_left_alone",
+        "tests/test_pool.py::test_a_ready_record_a_worker_cannot_execute_is_quarantined",
+        "tests/test_pool.py::test_a_reaper_that_loses_the_race_writes_no_keyless_stub",
+        "tests/test_pool.py::test_a_stale_offer_does_not_vouch_for_a_dead_box",
+        "tests/test_pool.py::test_a_starved_background_item_cannot_withhold_the_host_from_foreground_work",
+        "tests/test_pool.py::test_a_starved_item_withholds_the_host_instead_of_being_overtaken",
+        "tests/test_pool.py::test_a_terminal_generation_is_not_resurrected_by_stale_reaping",
+        "tests/test_pool.py::test_acquire_is_all_or_nothing",
+        "tests/test_pool.py::test_action_key_must_be_a_digest",
+        "tests/test_pool.py::test_admission_refuses_when_the_box_is_full",
+        "tests/test_pool.py::test_admission_requires_explicit_capacity",
+        "tests/test_pool.py::test_aging_reorders_within_a_priority_band_and_never_across_one",
+        "tests/test_pool.py::test_an_empty_registry_answers_unknown_rather_than_no",
+        "tests/test_pool.py::test_an_item_never_denied_has_no_withhold_age",
+        "tests/test_pool.py::test_an_older_terminal_generation_does_not_block_a_fresh_submission",
+        "tests/test_pool.py::test_an_unplaceable_item_is_knowable_before_it_is_published",
+        "tests/test_pool.py::test_atomic_write_leaves_no_partial_file",
+        "tests/test_pool.py::test_cache_hit_counts_as_done_not_failed",
+        "tests/test_pool.py::test_capacity_is_not_oversubscribed_under_contention",
+        "tests/test_pool.py::test_capacity_tokens_are_created_idempotently",
+        "tests/test_pool.py::test_claim_returns_none_on_empty_queue",
+        "tests/test_pool.py::test_denials_age_an_item_to_the_front",
+        "tests/test_pool.py::test_every_ledger_scan_survives_the_held_tree_vanishing",
+        "tests/test_pool.py::test_exactly_one_of_many_threads_claims_an_item",
+        "tests/test_pool.py::test_execute_reaps_the_action_when_the_worker_itself_is_interrupted",
+        "tests/test_pool.py::test_execute_refreshes_the_lease_across_a_slow_action",
+        "tests/test_pool.py::test_execute_timeout_reaps_the_action_the_worker_launched",
+        "tests/test_pool.py::test_execute_timeout_returns_even_when_the_action_outlives_the_kill",
+        "tests/test_pool.py::test_execute_times_out_and_kills_the_child",
+        "tests/test_pool.py::test_execution_checkout_ignores_a_broken_ambient_git_directory",
+        "tests/test_pool.py::test_execution_checkout_records_cleanup_failure_without_hiding_success",
+        "tests/test_pool.py::test_execution_checkout_refuses_a_ref_the_bundle_contradicts",
+        "tests/test_pool.py::test_execution_checkout_removes_ordinary_materialization",
+        "tests/test_pool.py::test_execution_checkout_still_materializes_a_v1_record",
+        "tests/test_pool.py::test_finish_does_not_republish_a_payloadless_stub",
+        "tests/test_pool.py::test_finish_losing_the_race_does_not_overwrite_the_winners_record",
+        "tests/test_pool.py::test_finish_routes_to_done_or_retry",
+        "tests/test_pool.py::test_finishing_an_action_returns_its_capacity",
+        "tests/test_pool.py::test_fixture_action_is_not_selected_by_an_unrelated_queue_cancellation",
+        "tests/test_pool.py::test_gpu_placement_is_respected",
+        "tests/test_pool.py::test_heartbeat_refresh_keeps_a_claim_alive",
+        "tests/test_pool.py::test_intent_is_written_before_the_claim",
+        "tests/test_pool.py::test_losing_the_claim_race_releases_the_tokens",
+        "tests/test_pool.py::test_max_attempts_of_one_is_terminal_on_the_first_failure",
+        "tests/test_pool.py::test_pool_root_must_be_absolute",
+        "tests/test_pool.py::test_priority_then_age_orders_the_queue",
+        "tests/test_pool.py::test_publish_then_claim_moves_between_directories",
+        "tests/test_pool.py::test_reap_does_not_steal_a_claim_made_moments_ago",
+        "tests/test_pool.py::test_reap_then_reclaim_is_the_self_healing_path",
+        "tests/test_pool.py::test_reaping_a_dead_claimant_returns_its_capacity",
+        "tests/test_pool.py::test_reaping_a_foreign_claimant_returns_capacity_to_that_host",
+        "tests/test_pool.py::test_release_survives_the_holder_vanishing_after_its_is_dir_check",
+        "tests/test_pool.py::test_retire_free_capacity_lowers_the_offer_but_never_a_held_token",
+        "tests/test_pool.py::test_schema_strings_keep_the_published_namespace",
+        "tests/test_pool.py::test_serve_once_executes_and_records",
+        "tests/test_pool.py::test_serve_once_records_a_failing_worker_as_failed",
+        "tests/test_pool.py::test_serve_once_returns_none_on_empty_queue",
+        "tests/test_pool.py::test_snapshot_execution_is_isolated_from_midrun_submitter_mutation",
+        "tests/test_pool.py::test_stale_lease_is_requeued",
+        "tests/test_pool.py::test_tag_placement_requires_every_tag",
+        "tests/test_pool.py::test_the_first_denial_stamp_is_the_age_of_the_block_not_of_the_last_denial",
+        "tests/test_pool.py::test_the_withhold_expires_so_a_long_block_does_not_become_the_deadlock",
+        "tests/test_pool.py::test_timeout_bounds_a_real_worker_running_a_real_action",
+        "tests/test_pool.py::test_two_items_two_claimants_no_double_claim",
+        "tests/test_pool.py::test_work_that_can_never_fit_here_does_not_deadlock_the_box",
+        "tests/test_pool.py::test_worker_argv_uses_canonical_run_local_launch",
+        "tests/test_record_compatibility.py::test_a_missing_adapter_cannot_hide_an_existing_wire_kind",
+        "tests/test_record_compatibility.py::test_actual_candidate_writer_mutation_fails_the_unchanged_old_consumer",
+        "tests/test_record_compatibility.py::test_closure_tampering_refuses_even_when_the_old_reader_still_accepts",
+        "tests/test_record_compatibility.py::test_empty_legacy_teardown_stops_the_actual_start_barrier",
+        "tests/test_record_compatibility.py::test_forged_code_with_an_old_reader_filename_is_refused",
+        "tests/test_record_compatibility.py::test_introduced_publication_namespace_is_not_a_codec_pass_for_an_old_queue_reader",
+        "tests/test_record_compatibility.py::test_legacy_configuration_defaults_reach_both_policy_readers[config-local-tier/source-renewal_ceiling_s-absent]",
+        "tests/test_record_compatibility.py::test_legacy_configuration_defaults_reach_both_policy_readers[config-ram-tier/source-promotion_chunk_gib-None]",
+        "tests/test_record_compatibility.py::test_legacy_configuration_defaults_reach_both_policy_readers[config-ram-tier/source-promotion_chunk_gib-absent]",
+        "tests/test_record_compatibility.py::test_legacy_outcome_without_numeric_generation_remains_visible[None]",
+        "tests/test_record_compatibility.py::test_legacy_outcome_without_numeric_generation_remains_visible[absent]",
+        "tests/test_record_compatibility.py::test_legacy_outcome_without_numeric_generation_remains_visible[legacy]",
+        "tests/test_record_compatibility.py::test_nested_closed_fields_are_rejected_by_retained_consumers[fragment/ssd-entry]",
+        "tests/test_record_compatibility.py::test_nested_closed_fields_are_rejected_by_retained_consumers[landing/horizon-horizon]",
+        "tests/test_record_compatibility.py::test_nested_closed_fields_are_rejected_by_retained_consumers[landing/horizon-range]",
+        "tests/test_record_compatibility.py::test_nested_closed_fields_are_rejected_by_retained_consumers[map/ssd-entry]",
+        "tests/test_record_compatibility.py::test_nested_closed_fields_are_rejected_by_retained_consumers[material/ssd-entry]",
+        "tests/test_record_compatibility.py::test_pre_1018_historical_reader_refuses_actual_horizon_writer_but_forward_reads",
+        "tests/test_record_compatibility.py::test_pythonpath_poison_cannot_supply_a_retained_dependency",
+        "tests/test_record_compatibility.py::test_setup_reader_cannot_stand_in_for_the_old_consumer"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_record_compatibility.py",
+          "tests/test_pool.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_pool.py",
+          "tests/test_record_compatibility.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_pool.py": "4f1b0693a8ab9174d955abe012af452375db70fc82834c1418074ca6a9180763",
+          "tests/test_record_compatibility.py": "7893d5b3a7f5b85a841dd0340fe6264f0298a77b607f6893094e0b295bdf7e86"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "dde22fce1c7ab1c69f9c4997184d774b0c50de0602cb8c57652918dea18a5f89",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "06dfce98c6043c8c192942b66357e8f02ae7c5f6c1aae154c49769c279f3d594",
+      "request_sha256": "3c317910ba64ef42ab9798489ef3032c7179bc4bfe70210721cf026537c95f14",
+      "logs": {
+        "stdout": {
+          "bytes": 26140,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/dde22fce1c7ab1c69f9c4997184d774b0c50de0602cb8c57652918dea18a5f89/9d09cb452b59ce898f7a47716c299f6c3e7554924252abeff2228e7f975c6377/00000001.stdout.0edb7342ae62dca3901a8d6de9b5df8888652aea93cf10c4fc54e74405542c2e.log",
+          "sha256": "0edb7342ae62dca3901a8d6de9b5df8888652aea93cf10c4fc54e74405542c2e"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/dde22fce1c7ab1c69f9c4997184d774b0c50de0602cb8c57652918dea18a5f89/9d09cb452b59ce898f7a47716c299f6c3e7554924252abeff2228e7f975c6377/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 32,
+      "nodeids": [
+        "tests/test_duplication_baseline.py::test_a_third_definition_of_an_exempt_name_is_still_a_growth",
+        "tests/test_duplication_baseline.py::test_digest_inventory_excludes_the_owner_and_finds_raw_sites",
+        "tests/test_duplication_baseline.py::test_must_differ_pairs_are_live_and_give_a_reason",
+        "tests/test_duplication_baseline.py::test_near_duplicate_pairs_only_shrink",
+        "tests/test_duplication_baseline.py::test_primitive_digest_sites_only_shrink",
+        "tests/test_duplication_baseline.py::test_same_name_distinct_records_are_exact_live_paths_with_reasons",
+        "tests/test_duplication_baseline.py::test_same_name_helpers_only_shrink",
+        "tests/test_duplication_baseline.py::test_scanner_finds_a_renamed_copy_and_ignores_same_file_pairs",
+        "tests/test_measurement_reservation_census_1419.py::test_a_real_mirror_arriving_between_holder_reads_prevents_measurement_election",
+        "tests/test_measurement_reservation_census_1419.py::test_an_unfenced_priority_keeps_H_through_begin_without_needing_M",
+        "tests/test_measurement_reservation_census_1419.py::test_busy_measurement_key_is_nonblocking_even_with_stale_candidates",
+        "tests/test_measurement_reservation_census_1419.py::test_census_cap_is_unknown_not_an_empty_election",
+        "tests/test_measurement_reservation_census_1419.py::test_claim_defer_retry_preserves_one_election",
+        "tests/test_measurement_reservation_census_1419.py::test_claimed_tombstone_ready_defer_gap_never_loses_election",
+        "tests/test_measurement_reservation_census_1419.py::test_corrupt_selector_never_disappears_into_legacy_attention[generation]",
+        "tests/test_measurement_reservation_census_1419.py::test_corrupt_selector_never_disappears_into_legacy_attention[host]",
+        "tests/test_measurement_reservation_census_1419.py::test_corrupt_selector_never_disappears_into_legacy_attention[opportunity_unix]",
+        "tests/test_measurement_reservation_census_1419.py::test_elected_identity_or_evidence_loss_never_authorizes_refill[corrupt]",
+        "tests/test_measurement_reservation_census_1419.py::test_elected_identity_or_evidence_loss_never_authorizes_refill[cpu_unknown]",
+        "tests/test_measurement_reservation_census_1419.py::test_elected_identity_or_evidence_loss_never_authorizes_refill[missing]",
+        "tests/test_measurement_reservation_census_1419.py::test_lock_only_gate_preserves_nonadaptive_decisions",
+        "tests/test_measurement_reservation_census_1419.py::test_locked_authoritative_retirement_allows_lower_progress[successor]",
+        "tests/test_measurement_reservation_census_1419.py::test_locked_authoritative_retirement_allows_lower_progress[terminal]",
+        "tests/test_measurement_reservation_census_1419.py::test_locked_authoritative_retirement_allows_lower_progress[withdrawal]",
+        "tests/test_measurement_reservation_census_1419.py::test_mixed_capacity_claim_cannot_bypass_an_adaptive_election",
+        "tests/test_measurement_reservation_census_1419.py::test_mixed_lock_contention_is_nonblocking_and_takes_no_tokens",
+        "tests/test_measurement_reservation_census_1419.py::test_new_unlocked_measurement_at_refresh_restarts_without_tokens",
+        "tests/test_measurement_reservation_census_1419.py::test_persisted_live_reader_blocks_restart_before_another_fork",
+        "tests/test_measurement_reservation_census_1419.py::test_stale_prefetch_cannot_omit_an_elected_measurement",
+        "tests/test_measurement_reservation_census_1419.py::test_two_host_election_is_one_persisted_generation_choice",
+        "tests/test_measurement_reservation_census_1419.py::test_unavailable_host_identity_refuses_nonadaptive_capacity_claim",
+        "tests/test_measurement_reservation_census_1419.py::test_unmanaged_claim_is_refused_without_changing_elected_ownership"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_duplication_baseline.py",
+          "tests/test_measurement_reservation_census_1419.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_duplication_baseline.py",
+          "tests/test_measurement_reservation_census_1419.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_duplication_baseline.py": "c844a44dcec35e59bb4a0f375128a07f1354ed804479c39ecfc04ea149f71013",
+          "tests/test_measurement_reservation_census_1419.py": "3205321edc660b0c3b5c8adac606092124e96486c2746361f1d8e51186b375aa"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "d2e39cde2a0b61b7741a9294d7130f3e46efe38e691d24160f0a62133f70f1fb",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "b8137ad9318e79a9623680ed07f43d803200fa6bc7f91af2de1acc66e2727325",
+      "request_sha256": "4d8a0482f446042583b60c362597c9934d08ba5dbe887dcdf00db9def30479af",
+      "logs": {
+        "stdout": {
+          "bytes": 37514,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/d2e39cde2a0b61b7741a9294d7130f3e46efe38e691d24160f0a62133f70f1fb/2aeb397201f94861c152a0f8c23a7b6d6cbb30243b861625bbef0938c4cb9b20/00000001.stdout.36c02adf7069558b4be6b28efa17bf5c4c135518ecbd4113bb61d8a7b10e0f0b.log",
+          "sha256": "36c02adf7069558b4be6b28efa17bf5c4c135518ecbd4113bb61d8a7b10e0f0b"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/d2e39cde2a0b61b7741a9294d7130f3e46efe38e691d24160f0a62133f70f1fb/2aeb397201f94861c152a0f8c23a7b6d6cbb30243b861625bbef0938c4cb9b20/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 51,
+      "nodeids": [
+        "tests/test_ordinary_census_admission_2199.py::test_a_census_denial_does_not_spread_to_an_unfenced_priority_band",
+        "tests/test_ordinary_census_admission_2199.py::test_a_complete_retirement_census_is_shared_across_independent_loops",
+        "tests/test_ordinary_census_admission_2199.py::test_a_live_census_is_shared_without_another_reader_fence",
+        "tests/test_ordinary_census_admission_2199.py::test_a_live_or_garbled_measurement_election_never_grants_refill[False]",
+        "tests/test_ordinary_census_admission_2199.py::test_a_live_or_garbled_measurement_election_never_grants_refill[True]",
+        "tests/test_ordinary_census_admission_2199.py::test_a_new_election_invalidates_a_siblings_shared_census",
+        "tests/test_ordinary_census_admission_2199.py::test_a_retirement_cache_must_be_verifiable_before_ordinary_admission[boot_unknown]",
+        "tests/test_ordinary_census_admission_2199.py::test_a_retirement_cache_must_be_verifiable_before_ordinary_admission[expired]",
+        "tests/test_ordinary_census_admission_2199.py::test_a_retirement_cache_must_be_verifiable_before_ordinary_admission[garbled]",
+        "tests/test_ordinary_census_admission_2199.py::test_a_retirement_cache_must_be_verifiable_before_ordinary_admission[other_boot]",
+        "tests/test_ordinary_census_admission_2199.py::test_a_retirement_cache_must_be_verifiable_before_ordinary_admission[other_pool]",
+        "tests/test_ordinary_census_admission_2199.py::test_a_vanished_sidecar_cannot_clear_a_pass_remembered_election",
+        "tests/test_ordinary_census_admission_2199.py::test_an_elected_measurement_owner_is_not_reclassified_as_an_incumbent[mutation-erased-owner]",
+        "tests/test_ordinary_census_admission_2199.py::test_an_elected_measurement_owner_is_not_reclassified_as_an_incumbent[sealed-owner]",
+        "tests/test_ordinary_census_admission_2199.py::test_an_election_outside_the_host_or_priority_band_needs_no_reader[sparklina--10]",
+        "tests/test_ordinary_census_admission_2199.py::test_an_election_outside_the_host_or_priority_band_needs_no_reader[sparklina--20]",
+        "tests/test_ordinary_census_admission_2199.py::test_an_election_outside_the_host_or_priority_band_needs_no_reader[sparky-10]",
+        "tests/test_ordinary_census_admission_2199.py::test_boot_identity_loss_after_a_complete_read_only_disables_shared_reuse",
+        "tests/test_ordinary_census_admission_2199.py::test_election_between_source_discovery_and_H_cannot_authorize_admission",
+        "tests/test_ordinary_census_admission_2199.py::test_gang_elections_keep_lower_and_equal_priority_on_the_reader_path[0]",
+        "tests/test_ordinary_census_admission_2199.py::test_gang_elections_keep_lower_and_equal_priority_on_the_reader_path[10]",
+        "tests/test_ordinary_census_admission_2199.py::test_gang_retirement_is_shared_but_garbled_authority_is_not[garbled]",
+        "tests/test_ordinary_census_admission_2199.py::test_gang_retirement_is_shared_but_garbled_authority_is_not[retired]",
+        "tests/test_ordinary_census_admission_2199.py::test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow[garbled]",
+        "tests/test_ordinary_census_admission_2199.py::test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow[live]",
+        "tests/test_ordinary_census_admission_2199.py::test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow[none]",
+        "tests/test_ordinary_census_admission_2199.py::test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow[retired]",
+        "tests/test_ordinary_census_admission_2199.py::test_mutation_skipping_election_sources_is_caught_at_the_reservation",
+        "tests/test_ordinary_census_admission_2199.py::test_mutation_skipping_shared_generation_verification_is_caught",
+        "tests/test_ordinary_census_admission_2199.py::test_ordinary_admission_latency_under_a_contended_census_fence",
+        "tests/test_ordinary_census_admission_2199.py::test_paired_admission_with_six_retired_elections[after]",
+        "tests/test_ordinary_census_admission_2199.py::test_paired_admission_with_six_retired_elections[before]",
+        "tests/test_ordinary_census_admission_2199.py::test_paired_ordinary_admission_latency[after]",
+        "tests/test_ordinary_census_admission_2199.py::test_paired_ordinary_admission_latency[before]",
+        "tests/test_ordinary_census_admission_2199.py::test_parsed_sidecars_are_reused_but_replacements_are_rechecked",
+        "tests/test_ordinary_census_admission_2199.py::test_per_key_retirement_preserves_every_full_census_fence[absent]",
+        "tests/test_ordinary_census_admission_2199.py::test_per_key_retirement_preserves_every_full_census_fence[busy]",
+        "tests/test_ordinary_census_admission_2199.py::test_per_key_retirement_preserves_every_full_census_fence[held]",
+        "tests/test_ordinary_census_admission_2199.py::test_per_key_retirement_preserves_every_full_census_fence[old-mark]",
+        "tests/test_ordinary_census_admission_2199.py::test_per_key_retirement_preserves_every_full_census_fence[successor]",
+        "tests/test_ordinary_census_admission_2199.py::test_per_key_retirement_preserves_every_full_census_fence[torn]",
+        "tests/test_ordinary_census_admission_2199.py::test_per_key_retirement_preserves_every_full_census_fence[withdrawn]",
+        "tests/test_ordinary_census_admission_2199.py::test_retired_election_and_unrelated_pass_counter_still_admit",
+        "tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned",
+        "tests/test_wire_inventory.py::test_control_classification_cannot_hide_a_new_durable_reader",
+        "tests/test_wire_inventory.py::test_inventory_finds_unregistered_imported_embedded_and_data_wires",
+        "tests/test_wire_inventory.py::test_inventory_follows_transitive_module_owners_without_importing_them",
+        "tests/test_wire_inventory.py::test_source_review_rebinding_compares_every_non_schema_expression",
+        "tests/test_wire_inventory.py::test_stale_source_review_retains_discovery_and_still_refuses[line]",
+        "tests/test_wire_inventory.py::test_stale_source_review_retains_discovery_and_still_refuses[source]",
+        "tests/test_wire_inventory.py::test_symbolic_fstring_policies_retain_selected_source_bytes"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_wire_inventory.py",
+          "tests/test_ordinary_census_admission_2199.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          16,
+          17
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_ordinary_census_admission_2199.py",
+          "tests/test_wire_inventory.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_ordinary_census_admission_2199.py": "f358053340c8184cc0dd7909fd676205d5cc069f25ae32bcc24cde0e3cfc5e3d",
+          "tests/test_wire_inventory.py": "58583e6a71bff1cbeae091a4383f7b207185e5fdfeb42a5d90d86b633dd0e6cc"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "2b74073b0dd4465f2c311ac7664f12f3a17b2706b2153c5c9ae2ecb6b3d936a0",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "2011fbd8aa2ad9f5f42ce0ea6dbfe9e740e1e3d256021b4030aa8d6589f81d6f",
+      "request_sha256": "889a509d73ebf15772d274eb5321276b1c7105091ea74b043592f4e7f423ed73",
+      "logs": {
+        "stdout": {
+          "bytes": 23369,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2b74073b0dd4465f2c311ac7664f12f3a17b2706b2153c5c9ae2ecb6b3d936a0/af2232f16fb360c9ba090f69d990f6d98d7022c0216f8de32352e95295220567/00000001.stdout.7c46008d59346ad45746e42b537d1efa012ed5821af2b5d1926ce2c663b6a019.log",
+          "sha256": "7c46008d59346ad45746e42b537d1efa012ed5821af2b5d1926ce2c663b6a019"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2b74073b0dd4465f2c311ac7664f12f3a17b2706b2153c5c9ae2ecb6b3d936a0/af2232f16fb360c9ba090f69d990f6d98d7022c0216f8de32352e95295220567/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 32,
+      "nodeids": [
+        "tests/test_gang_fence_backfill.py::test_a_late_hold_keeps_gang_backfill_running[False]",
+        "tests/test_gang_fence_backfill.py::test_a_late_hold_keeps_gang_backfill_running[True]",
+        "tests/test_gang_fence_backfill.py::test_a_late_request_observation_cannot_erase_the_token_return",
+        "tests/test_gang_fence_backfill.py::test_a_stale_ready_member_never_lends_its_host",
+        "tests/test_gang_fence_backfill.py::test_a_startable_gang_never_lends_its_fresh_ready_host[claimed]",
+        "tests/test_gang_fence_backfill.py::test_a_startable_gang_never_lends_its_fresh_ready_host[ready]",
+        "tests/test_gang_fence_backfill.py::test_a_token_short_gang_member_preempts_an_unmarked_incumbent",
+        "tests/test_gang_fence_backfill.py::test_an_equal_priority_reservation_shortfall_never_becomes_a_backfill_loan",
+        "tests/test_gang_fence_backfill.py::test_an_unfenced_minus_ten_row_needs_no_preemption_eligibility_read",
+        "tests/test_gang_fence_backfill.py::test_backfill_on_both_hosts_reclaims_without_any_fresh_ready_mark",
+        "tests/test_gang_fence_backfill.py::test_both_token_short_members_preempt_their_unmarked_incumbents",
+        "tests/test_gang_fence_backfill.py::test_disabled_policy_restores_strict_fence",
+        "tests/test_gang_fence_backfill.py::test_election_updates_defer_to_the_member_transition[begin]",
+        "tests/test_gang_fence_backfill.py::test_election_updates_defer_to_the_member_transition[note]",
+        "tests/test_gang_fence_backfill.py::test_election_updates_defer_to_the_member_transition[observe]",
+        "tests/test_gang_fence_backfill.py::test_failed_cleanup_is_visible_and_never_grants_capacity",
+        "tests/test_gang_fence_backfill.py::test_idle_fenced_host_admits_restartable_minus_ten",
+        "tests/test_gang_fence_backfill.py::test_ordinary_token_preemption_protects_the_members_own_lent_backfill",
+        "tests/test_gang_fence_backfill.py::test_peer_ready_preempts_before_token_gate_and_records_release",
+        "tests/test_gang_fence_backfill.py::test_release_telemetry_failure_does_not_gate_cleanup",
+        "tests/test_gang_fence_backfill.py::test_teardown_releases_fence_without_requiring_preemption",
+        "tests/test_gang_fence_backfill.py::test_unqualified_rows_remain_fenced[options0]",
+        "tests/test_gang_fence_backfill.py::test_unqualified_rows_remain_fenced[options1]",
+        "tests/test_gang_fence_backfill.py::test_unqualified_rows_remain_fenced[options2]",
+        "tests/test_gang_fence_backfill.py::test_unqualified_rows_remain_fenced[options3]",
+        "tests/test_gang_fence_backfill.py::test_unqualified_rows_remain_fenced[options4]",
+        "tests/test_gang_fence_backfill.py::test_unqualified_rows_remain_fenced[options5]",
+        "tests/test_runtime_capture_source_binding.py::test_runtime_capture_binds_the_actual_helper_without_extending_the_runtime_body",
+        "tests/test_runtime_capture_source_binding.py::test_runtime_capture_refuses_a_stale_or_ambiguous_helper_binding[core-pin]",
+        "tests/test_runtime_capture_source_binding.py::test_runtime_capture_refuses_a_stale_or_ambiguous_helper_binding[duplicate-pin]",
+        "tests/test_runtime_capture_source_binding.py::test_runtime_capture_refuses_a_stale_or_ambiguous_helper_binding[helper]",
+        "tests/test_runtime_capture_source_binding.py::test_runtime_capture_refuses_a_stale_or_ambiguous_helper_binding[missing-pin]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_runtime_capture_source_binding.py",
+          "tests/test_gang_fence_backfill.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7,
+          8
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gang_fence_backfill.py",
+          "tests/test_runtime_capture_source_binding.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_fence_backfill.py": "0bc8b23b34a0f59a5f95f39f0e2713b8532487757017eebf0717b3ca37e5a6ec",
+          "tests/test_runtime_capture_source_binding.py": "ddd6b9fc722af2ec4d988ae95cb9a152722efb117956dc09ea24a9fd5b70f4cb"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "3262f79c304a6265e8eee8ccac29e94ec19cb60bde85ae84104622a0e6946c54",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "1842697740a70b32938af1f239005c1e1b94cee6d06388792f4c3cee0d4e95fd",
+      "request_sha256": "2aeb895fe3678d174dea65a0f7fe615804d465f1df5727547a6fc90355efbbc6",
+      "logs": {
+        "stdout": {
+          "bytes": 8015,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/3262f79c304a6265e8eee8ccac29e94ec19cb60bde85ae84104622a0e6946c54/127bddb8d5bb708218858f26aefd7bd147c6a2ff49e5c9a20f50f59c1115d865/00000001.stdout.ab8aa8a2a07391c1b38b32b3ebcf0cca56524d1a04b11c172ce3d8b562233af7.log",
+          "sha256": "ab8aa8a2a07391c1b38b32b3ebcf0cca56524d1a04b11c172ce3d8b562233af7"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/3262f79c304a6265e8eee8ccac29e94ec19cb60bde85ae84104622a0e6946c54/127bddb8d5bb708218858f26aefd7bd147c6a2ff49e5c9a20f50f59c1115d865/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 3,
+      "nodeids": [
+        "tests/test_gang_teardown_with_prelaunch_1543.py::test_a_prelaunch_gang_with_a_dead_member_is_torn_down",
+        "tests/test_gang_teardown_with_prelaunch_1543.py::test_a_shape_refused_member_is_never_a_terminal_reading",
+        "tests/test_runtime_source_pin.py::test_changed_helper_requires_a_new_attested_core_before_it_can_load"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_runtime_source_pin.py",
+          "tests/test_gang_teardown_with_prelaunch_1543.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gang_teardown_with_prelaunch_1543.py",
+          "tests/test_runtime_source_pin.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_teardown_with_prelaunch_1543.py": "496c34f06e594d307fe3fc4aebb4b0c22e693e3d2bda4f62f62ac0692789d6f2",
+          "tests/test_runtime_source_pin.py": "a423098ca16a0324b7b42bfccb0f8356ea86506520280267b6e479485a4dff4f"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "fb7f572d3fe78a0f23b3f03ea02d690708201d8a8b0d65e8f2dc63ae25e57f01",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "e8e2f104d3aa0c236efd88e998f2ba9de8178153fb7f1bf8a38923e3df135abe",
+      "request_sha256": "b6bdf368ec3b98a0da2dbf63bb9e69e03715ff8ee6f049b2114c6744d9c88235",
+      "logs": {
+        "stdout": {
+          "bytes": 64158,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/fb7f572d3fe78a0f23b3f03ea02d690708201d8a8b0d65e8f2dc63ae25e57f01/d6e11acd9e838d235d8c10ef48bca76315e4d0e20bada8e15a1e963be5288edd/00000001.stdout.9c785001e65bdf87465cb3fa672b6133d135afa9f639afc1d488d5a55e84aa33.log",
+          "sha256": "9c785001e65bdf87465cb3fa672b6133d135afa9f639afc1d488d5a55e84aa33"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/fb7f572d3fe78a0f23b3f03ea02d690708201d8a8b0d65e8f2dc63ae25e57f01/d6e11acd9e838d235d8c10ef48bca76315e4d0e20bada8e15a1e963be5288edd/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 130,
+      "nodeids": [
+        "tests/test_core.py::test_a_controller_that_recovers_within_the_backoff_attests",
+        "tests/test_core.py::test_a_failed_action_carries_its_own_exit_status",
+        "tests/test_core.py::test_a_signalled_action_carries_the_signal",
+        "tests/test_core.py::test_a_signalled_action_leaves_its_signal_in_the_sidecar",
+        "tests/test_core.py::test_a_worker_verdict_carries_no_action_status",
+        "tests/test_core.py::test_a_worker_verdict_leaves_no_action_status_sidecar",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path0-v2]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path1-codebook]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path2-replacement2]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path3-4444444444444444444444444444444444444444444444444444444444444444]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path4-5555555555555555555555555555555555555555555555555555555555555555]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path5-2]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path6-different]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path7-different]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path8-different]",
+        "tests/test_core.py::test_action_key_has_expected_plain_sha256_shape",
+        "tests/test_core.py::test_action_key_is_canonical_and_inputs_are_sorted",
+        "tests/test_core.py::test_action_v2_requires_an_artifact_family_token_and_refuses_v1",
+        "tests/test_core.py::test_an_unasked_worker_writes_no_action_status",
+        "tests/test_core.py::test_atomic_publish_fifo_swap_never_performs_blocking_readback_open",
+        "tests/test_core.py::test_blob_publication_skips_only_winning_inode_rehash",
+        "tests/test_core.py::test_cache_detects_payload_and_receipt_tampering",
+        "tests/test_core.py::test_cache_hit_skips_execution_and_fully_revalidates",
+        "tests/test_core.py::test_cache_structural_error_is_not_a_clean_miss",
+        "tests/test_core.py::test_cas_lookup_rejects_receipt_parent_swapped_after_open",
+        "tests/test_core.py::test_cas_publish_refuses_worker_core_changed_after_preflight",
+        "tests/test_core.py::test_cas_publish_result_parent_swap_never_writes_through_symlink",
+        "tests/test_core.py::test_cas_refuses_attestation_from_a_different_loaded_core",
+        "tests/test_core.py::test_cas_runs_runtime_recheck_after_action_precommit_callback",
+        "tests/test_core.py::test_cli_ingests_and_verifies_input_contract",
+        "tests/test_core.py::test_cli_seals_keys_runs_and_verifies",
+        "tests/test_core.py::test_closing_worker_lock_copy_does_not_unlock_inheriting_action",
+        "tests/test_core.py::test_code_closure_is_root_independent_and_live_verified",
+        "tests/test_core.py::test_code_closure_refuses_traversal_duplicates_and_symlinks",
+        "tests/test_core.py::test_deterministic_recompute_must_match",
+        "tests/test_core.py::test_env_only_slurm_evidence_no_longer_attests_a_host_class",
+        "tests/test_core.py::test_fake_scontrol_attests_the_class_the_job_was_constrained_to",
+        "tests/test_core.py::test_fake_scontrol_conjunction_still_requires_the_class",
+        "tests/test_core.py::test_fake_scontrol_job_constraint_that_does_not_require_the_class_is_refused[(null)]",
+        "tests/test_core.py::test_fake_scontrol_job_constraint_that_does_not_require_the_class_is_refused[[gb10*1]]",
+        "tests/test_core.py::test_fake_scontrol_job_constraint_that_does_not_require_the_class_is_refused[]",
+        "tests/test_core.py::test_fake_scontrol_job_constraint_that_does_not_require_the_class_is_refused[gb10|x86]",
+        "tests/test_core.py::test_fake_scontrol_job_constraint_that_does_not_require_the_class_is_refused[sparky]",
+        "tests/test_core.py::test_fake_scontrol_wrong_node_feature_is_refused",
+        "tests/test_core.py::test_fresh_result_publish_reuses_verified_winning_inode",
+        "tests/test_core.py::test_host_class_is_refused_unless_the_controller_enforced_it[slurm0-does not carry the Feature 'gb10']",
+        "tests/test_core.py::test_host_class_is_refused_unless_the_controller_enforced_it[slurm1-constraint does not require the Feature 'gb10']",
+        "tests/test_core.py::test_host_class_preflight_records_controller_attested_slurm_evidence",
+        "tests/test_core.py::test_host_class_requires_kernel_attested_slurm_membership",
+        "tests/test_core.py::test_identifiers_still_refuse_control_characters",
+        "tests/test_core.py::test_input_ingestion_and_lookup_detect_conflict_and_tampering",
+        "tests/test_core.py::test_input_ingestion_publishes_canonical_readback_verified_contract",
+        "tests/test_core.py::test_input_ingestion_race_reuses_one_verified_content_address",
+        "tests/test_core.py::test_input_ingestion_refuses_source_changed_during_stable_copy",
+        "tests/test_core.py::test_input_ingestion_refuses_symlinked_cas_shard",
+        "tests/test_core.py::test_input_ingestion_rejects_expectation_mismatch_before_publication",
+        "tests/test_core.py::test_input_ingestion_rejects_symlink_source_and_malformed_contract",
+        "tests/test_core.py::test_input_ingestion_revalidates_canonical_inode_after_winning_link",
+        "tests/test_core.py::test_local_miss_and_hit_preserve_exact_result_shapes",
+        "tests/test_core.py::test_local_result_repair_rechecks_receipt_after_lock_wait",
+        "tests/test_core.py::test_local_result_repair_requires_exact_claim_and_refuses_symlink",
+        "tests/test_core.py::test_local_worker_fails_closed_on_dirty_output_or_missing_result",
+        "tests/test_core.py::test_local_worker_rechecks_closure_after_result_staging",
+        "tests/test_core.py::test_local_worker_rechecks_closure_at_receipt_link",
+        "tests/test_core.py::test_local_worker_rechecks_core_after_result_staging",
+        "tests/test_core.py::test_local_worker_rechecks_launcher_after_result_staging",
+        "tests/test_core.py::test_local_worker_refuses_closure_changed_by_action_before_publish",
+        "tests/test_core.py::test_local_worker_refuses_launcher_changed_by_action_before_publish",
+        "tests/test_core.py::test_local_worker_refuses_symlinked_result_parent",
+        "tests/test_core.py::test_local_worker_serializes_shared_checkout_output",
+        "tests/test_core.py::test_local_worker_uses_exact_argv_and_closed_environment",
+        "tests/test_core.py::test_node_name_that_disagrees_with_the_controller_is_refused",
+        "tests/test_core.py::test_nonportable_action_refuses_unattestable_toolchain_or_unbound_argv0",
+        "tests/test_core.py::test_nonportable_preflight_binds_executable_bytes",
+        "tests/test_core.py::test_nonportable_preflight_refuses_unknown_libc_attestation",
+        "tests/test_core.py::test_nonportable_preflight_requires_and_verifies_cas_inputs",
+        "tests/test_core.py::test_nul_is_still_refused_in_payload_text[argv]",
+        "tests/test_core.py::test_nul_is_still_refused_in_payload_text[environment]",
+        "tests/test_core.py::test_nul_is_still_refused_in_payload_text[params]",
+        "tests/test_core.py::test_paths_and_nested_params_reject_ambiguous_json",
+        "tests/test_core.py::test_payload_text_may_carry_newlines_and_tabs",
+        "tests/test_core.py::test_pbrun_preflight_proves_the_sealed_parent_and_refs",
+        "tests/test_core.py::test_pbrun_snapshot_v1_keeps_its_exact_shape",
+        "tests/test_core.py::test_pbrun_snapshot_v1_refuses_ancestry_keys",
+        "tests/test_core.py::test_pbrun_snapshot_v2_accepts_an_unborn_parent",
+        "tests/test_core.py::test_pbrun_snapshot_v2_carries_parent_and_named_refs",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[--upload-pack=touch]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[../escape]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[HEAD]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[main^{}]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[master:evil]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[prismabuild-snapshot]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[refs/heads/main]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[with space]",
+        "tests/test_core.py::test_persisted_controller_evidence_must_name_the_worker_node",
+        "tests/test_core.py::test_platform_scope_is_derived_from_live_facts_not_a_label",
+        "tests/test_core.py::test_portability_is_declared_by_the_submitter_not_by_the_family",
+        "tests/test_core.py::test_portable_work_in_a_job_never_asks_the_controller",
+        "tests/test_core.py::test_preflight_refuses_core_changed_after_module_import",
+        "tests/test_core.py::test_preflight_refuses_launcher_changed_after_entrypoint_capture",
+        "tests/test_core.py::test_preflight_refuses_toolchain_mismatch_before_execution",
+        "tests/test_core.py::test_regular_identity_fifo_swap_never_performs_blocking_reopen",
+        "tests/test_core.py::test_sigint_worker_reaps_action_group_before_releasing_output_lock",
+        "tests/test_core.py::test_sigkill_after_result_staging_is_reaped_and_retry_recomputes",
+        "tests/test_core.py::test_sigkill_during_action_keeps_output_locked_until_orphan_exits",
+        "tests/test_core.py::test_sigterm_worker_reaps_action_group_before_exiting",
+        "tests/test_core.py::test_slurm_cgroup_attestation_accepts_duplicate_v1_controller_rows",
+        "tests/test_core.py::test_slurm_worker_entrypoint_attests_its_early_launcher_snapshot",
+        "tests/test_core.py::test_stable_file_identity_refuses_owner_mutation_without_retry",
+        "tests/test_core.py::test_stable_file_identity_refuses_perpetual_one_link_ctime_churn",
+        "tests/test_core.py::test_stable_file_identity_refuses_substantive_mutation_without_retry[mode]",
+        "tests/test_core.py::test_stable_file_identity_refuses_substantive_mutation_without_retry[mtime]",
+        "tests/test_core.py::test_stable_file_identity_refuses_wrong_address_before_metadata_retry",
+        "tests/test_core.py::test_stable_file_identity_replays_transient_link_metadata_from_fresh_fd[one-to-one]",
+        "tests/test_core.py::test_stable_file_identity_replays_transient_link_metadata_from_fresh_fd[two-to-one]",
+        "tests/test_core.py::test_stable_receipt_read_replays_publication_link_cleanup",
+        "tests/test_core.py::test_standalone_immutable_owner_is_its_sibling_and_rechecked_before_link",
+        "tests/test_core.py::test_stochastic_action_is_atomic_first_result_wins",
+        "tests/test_core.py::test_stochastic_receipt_loser_hashes_different_canonical_blob",
+        "tests/test_core.py::test_the_job_id_is_the_cgroup_s_and_the_environment_must_agree",
+        "tests/test_core.py::test_the_worker_leaves_the_action_status_where_it_was_asked_to",
+        "tests/test_core.py::test_the_worker_probes_exactly_the_distributions_the_action_declares",
+        "tests/test_core.py::test_timeout_terminates_child_process_group",
+        "tests/test_core.py::test_two_workers_recheck_initial_misses_under_output_lock",
+        "tests/test_core.py::test_unreachable_controller_retries_then_refuses_by_name",
+        "tests/test_core.py::test_unsealed_or_non_normalized_action_is_rejected",
+        "tests/test_core.py::test_v3_receipt_namespace_preserves_and_ignores_legacy_v2",
+        "tests/test_core.py::test_worker_core_has_no_unattested_repository_imports",
+        "tests/test_core.py::test_worker_runtime_attestation_binds_core_and_optional_launcher"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_core.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          9,
+          15
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_core.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_core.py": "b65f309780f6e89c907508a9b97c62c89b6d74eea122748c3c7d5d15b9fc77e3"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "8175a559f3287f7541ccd8f5e8fed1e17d5bf5aee0da54027bb9953cc66d9233",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "17247b43a033f0415bd144255177e54dbd7a2052ee9d145b3a56cdbb3be9586b",
+      "request_sha256": "5d7a004034ae7219ac37dad305cf739726d92083c2fd0d78943dc2139730495c",
+      "logs": {
+        "stdout": {
+          "bytes": 17092,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/8175a559f3287f7541ccd8f5e8fed1e17d5bf5aee0da54027bb9953cc66d9233/78b60af36e07c2f1b465f3c0bdec1c87e9abe0b57f7878424321ed4992bfdeb2/00000001.stdout.6727059a501fe394ed778dbca3987d3c36f6a8321b7d00a9df89b3f6b813bd01.log",
+          "sha256": "6727059a501fe394ed778dbca3987d3c36f6a8321b7d00a9df89b3f6b813bd01"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/8175a559f3287f7541ccd8f5e8fed1e17d5bf5aee0da54027bb9953cc66d9233/78b60af36e07c2f1b465f3c0bdec1c87e9abe0b57f7878424321ed4992bfdeb2/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 16,
+      "nodeids": [
+        "tests/test_gang_record_isolation_1521.py::test_an_ending_without_publication_identity_is_not_a_gang_member_ending",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_claim_refuses_without_acquiring_tokens[election_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_claim_refuses_without_acquiring_tokens[group_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_claim_refuses_without_acquiring_tokens[teardown_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_election_refresh-duplicate_key]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_election_refresh-election_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_election_refresh-group_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_election_refresh-missing_publication]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_election_refresh-teardown_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_publications-duplicate_key]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_publications-election_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_publications-group_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_publications-missing_publication]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_publications-teardown_json]",
+        "tests/test_gang_record_isolation_1521.py::test_unreadable_gang_directory_keeps_census_closed[_scan_election_refresh]",
+        "tests/test_gang_record_isolation_1521.py::test_unreadable_gang_directory_keeps_census_closed[_scan_publications]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_gang_record_isolation_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gang_record_isolation_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_record_isolation_1521.py": "e6606a64be13b78cb7bb70e574429a4e4b82c02eb74487494bcc0076740c2111"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "5c1a9886e4688f39091f17c83e9fe845338e32cfc18872b341204d26952513fb",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "b5a9677a9b4f4f69a47a32a2b0ef4b371dd146ead454fabbe0489b0d76c932a2",
+      "request_sha256": "7e99afdfd7f3c3570c3e10a35b6e4a62bdc1be65dc44f66bdd72ceab53a24c30",
+      "logs": {
+        "stdout": {
+          "bytes": 11615,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/5c1a9886e4688f39091f17c83e9fe845338e32cfc18872b341204d26952513fb/382886ebf6012caba5afbd5d22309fda76e2bd468face67252a242bb8dc24217/00000001.stdout.6f069c6f4a7e8af8fadb7a70b5646a7c0a03b6377e926023c926e0156d224e8a.log",
+          "sha256": "6f069c6f4a7e8af8fadb7a70b5646a7c0a03b6377e926023c926e0156d224e8a"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/5c1a9886e4688f39091f17c83e9fe845338e32cfc18872b341204d26952513fb/382886ebf6012caba5afbd5d22309fda76e2bd468face67252a242bb8dc24217/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 10,
+      "nodeids": [
+        "tests/test_gang_cleanup_1521.py::test_busy_orphan_does_not_starve_later_rows_across_sweeps",
+        "tests/test_gang_cleanup_1521.py::test_old_teardown_does_not_cancel_a_successor_publication[immediate]",
+        "tests/test_gang_cleanup_1521.py::test_old_teardown_does_not_cancel_a_successor_publication[sweep]",
+        "tests/test_gang_cleanup_1521.py::test_orphan_sweep_bounds_row_reads_and_remembers_progress",
+        "tests/test_gang_cleanup_1521.py::test_pruning_requires_the_groups_exact_terminal_publications",
+        "tests/test_gang_cleanup_1521.py::test_registered_slow_members_are_not_orphans",
+        "tests/test_gang_cleanup_1521.py::test_registration_is_rechecked_under_the_member_transition_lock",
+        "tests/test_gang_cleanup_1521.py::test_repeated_teardown_does_not_retarget_a_covered_claims_successor",
+        "tests/test_gang_cleanup_1521.py::test_sweep_retries_running_member_withdrawal_until_it_is_covered",
+        "tests/test_gang_cleanup_1521.py::test_unregistered_members_expire_but_fresh_and_ordinary_rows_survive"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_gang_cleanup_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7,
+          8
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gang_cleanup_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_cleanup_1521.py": "a4aa1a2218bc7af9749e8060ea03193d37f26bc33ff9e838498d72e392623b97"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "56206002dd3175fb5b33d495e3c068aec918e1c9ecdd1179a1662d94b65e2960",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "383be2c1300a575e3ef4b0fb04f84f82014c1b48eafa9390372b1bc456046ab0",
+      "request_sha256": "257f2144420fa2594e4a79e4408698fe64a654942a6820fca2a3326e38208ebb",
+      "logs": {
+        "stdout": {
+          "bytes": 7435,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/56206002dd3175fb5b33d495e3c068aec918e1c9ecdd1179a1662d94b65e2960/1fcc7af4e5e7ff65d0e5be5a6bd2a68dfeabd92b7499fddae303ca3f232b33f9/00000001.stdout.780ffd199e219e8f9419b4cd764fec772b6c09189ff7a5111e55eb949d14f0fc.log",
+          "sha256": "780ffd199e219e8f9419b4cd764fec772b6c09189ff7a5111e55eb949d14f0fc"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/56206002dd3175fb5b33d495e3c068aec918e1c9ecdd1179a1662d94b65e2960/1fcc7af4e5e7ff65d0e5be5a6bd2a68dfeabd92b7499fddae303ca3f232b33f9/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 3,
+      "nodeids": [
+        "tests/test_gang_registration_1521.py::test_identical_registration_is_idempotent_after_members_end",
+        "tests/test_gang_registration_1521.py::test_late_publisher_cannot_register_withdrawn_orphans",
+        "tests/test_gang_registration_1521.py::test_registration_cannot_cross_the_orphan_sweeps_last_check"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_gang_registration_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7,
+          8
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gang_registration_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_registration_1521.py": "e794524526109be53b6b7a46a2d448e8eb4c9e3e5ffe7f84b8ea092335ac8db1"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "4759b241dc6bd7370220ad915309050bf6bafc5112f099f0482a4a7fef78a432",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "e1d0de0e5cbd89ee3df80185f9326e80de9b63076acf8e8a4bcfe5229b056a2f",
+      "request_sha256": "1555f94c6f179deeb58b2f174457e50cce8b530ebadc3fd6d3dbd8e3b591088d",
+      "logs": {
+        "stdout": {
+          "bytes": 7650,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/4759b241dc6bd7370220ad915309050bf6bafc5112f099f0482a4a7fef78a432/66683223da008294e98061f90e4d2b891e3f7d4a8eca555be51ba587a5f658ca/00000001.stdout.558be4717f4b50c8303847257c863b5214454dee80ade54c158a28a200efc0df.log",
+          "sha256": "558be4717f4b50c8303847257c863b5214454dee80ade54c158a28a200efc0df"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/4759b241dc6bd7370220ad915309050bf6bafc5112f099f0482a4a7fef78a432/66683223da008294e98061f90e4d2b891e3f7d4a8eca555be51ba587a5f658ca/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 3,
+      "nodeids": [
+        "tests/test_gang_sweep_progress_1521.py::test_malformed_ending_does_not_abort_another_gangs_cleanup[None]",
+        "tests/test_gang_sweep_progress_1521.py::test_malformed_ending_does_not_abort_another_gangs_cleanup[not-a-number]",
+        "tests/test_gang_sweep_progress_1521.py::test_retained_first_group_does_not_starve_a_later_teardown"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_gang_sweep_progress_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          9,
+          15
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gang_sweep_progress_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_sweep_progress_1521.py": "4b2ddcfd411b686ee812ca61ccc9e4d66e4528bf0ae7d9546f3a5c5501182ee4"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "2abca1a7c51d971cdc6e2d4d572c9c96e1969a9e364dc5cca50fdc95fd957cad",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "720fc5786993f3eae4270b0b3cfc10506c7498a8b3858f9b71d61423ab02f757",
+      "request_sha256": "c9be57e1b598a14c6deafe2e44cc114653507def4d1cd120bd657c59030e9888",
+      "logs": {
+        "stdout": {
+          "bytes": 7929,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2abca1a7c51d971cdc6e2d4d572c9c96e1969a9e364dc5cca50fdc95fd957cad/07f66b37365057b8f47cd67446d914c7f8fbaf7f4bc745507327146f08d21670/00000001.stdout.e82fec5dbc99ad6813b3dc0adad36c25c08894d2b1dbb87ed2e3874974f8c87d.log",
+          "sha256": "e82fec5dbc99ad6813b3dc0adad36c25c08894d2b1dbb87ed2e3874974f8c87d"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2abca1a7c51d971cdc6e2d4d572c9c96e1969a9e364dc5cca50fdc95fd957cad/07f66b37365057b8f47cd67446d914c7f8fbaf7f4bc745507327146f08d21670/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 4,
+      "nodeids": [
+        "tests/test_gang_switch_1521.py::test_disabled_worker_causes_the_real_submission_refusal",
+        "tests/test_gang_switch_1521.py::test_non_gang_claim_bytes_are_unchanged_by_the_gang_switch",
+        "tests/test_gang_switch_1521.py::test_worker_announcement_follows_the_gang_switch[False]",
+        "tests/test_gang_switch_1521.py::test_worker_announcement_follows_the_gang_switch[True]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_gang_switch_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          18,
+          19
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gang_switch_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_switch_1521.py": "9a8b0268917a3e7af04ce9d3640fae2bf9cb6f016928f54257e529d14ca9bc46"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "93447a335e2cf34d160374eb2de431a325629e9511b658f4d777b7cdd048d423",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "9218cb8e42d02c0b519d997da11490067b8e46fbf6e7341622ab7881c9b60cca",
+      "request_sha256": "f57bd19e97d5b0a5988f1f145653a50eed174d2f48e330fcab567677a43023ff",
+      "logs": {
+        "stdout": {
+          "bytes": 7625,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/93447a335e2cf34d160374eb2de431a325629e9511b658f4d777b7cdd048d423/7a3a0032075194cebcdb9c1373921a09ec68288441542211aeb77dd8d27b941e/00000001.stdout.5debc5d2a0924062e08687b0175c1e2431022fae28385a1d33d28a2e4dc35076.log",
+          "sha256": "5debc5d2a0924062e08687b0175c1e2431022fae28385a1d33d28a2e4dc35076"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/93447a335e2cf34d160374eb2de431a325629e9511b658f4d777b7cdd048d423/7a3a0032075194cebcdb9c1373921a09ec68288441542211aeb77dd8d27b941e/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 3,
+      "nodeids": [
+        "tests/test_gang_reservation_1517.py::test_a_stale_ready_mark_does_not_commit_the_peer",
+        "tests/test_gang_reservation_1517.py::test_both_hosts_busy_fences_each_host_and_starts_nothing",
+        "tests/test_gang_reservation_1517.py::test_the_host_that_frees_first_does_not_start_its_member_alone"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_gang_reservation_1517.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7,
+          8
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gang_reservation_1517.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_reservation_1517.py": "ed3f5a37ed9b05a0adde9a1fc3c337e55574f258aa58ec28cca859b349b21d5c"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "161de394f3e5b409bd54057177d387e10922bbb25a3a0fb991a02042cccf784c",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "af5cac2666d1040fe6837953ef18dbebc5acd6376fd8921a888e547ffc55e0b4",
+      "request_sha256": "7b7581d231669e27cb4e5fc18826fd8226596c12d2aeae3722490801da27956f",
+      "logs": {
+        "stdout": {
+          "bytes": 10304,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/161de394f3e5b409bd54057177d387e10922bbb25a3a0fb991a02042cccf784c/e7f0475d08bf50c0e7694ddd19a0b3b8276becf3a342e1ddbda3e375a54ce84c/00000001.stdout.f93e7ea2fb8b631f905f8a3d45aa2f5c1a37b2a62fbbb34ab9c03c23e7323d8c.log",
+          "sha256": "f93e7ea2fb8b631f905f8a3d45aa2f5c1a37b2a62fbbb34ab9c03c23e7323d8c"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/161de394f3e5b409bd54057177d387e10922bbb25a3a0fb991a02042cccf784c/e7f0475d08bf50c0e7694ddd19a0b3b8276becf3a342e1ddbda3e375a54ce84c/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 8,
+      "nodeids": [
+        "tests/test_gang_teardown_1517.py::test_a_claimed_member_never_launches_alone",
+        "tests/test_gang_teardown_1517.py::test_a_gang_member_gets_exactly_one_attempt",
+        "tests/test_gang_teardown_1517.py::test_a_member_failure_tears_the_gang_down_and_releases_its_fences",
+        "tests/test_gang_teardown_1517.py::test_a_member_whose_lease_is_lost_tears_the_gang_down",
+        "tests/test_gang_teardown_1517.py::test_pbrun_seals_a_gang_member_and_refuses_retries",
+        "tests/test_gang_teardown_1517.py::test_the_barrier_releases_when_every_member_is_claimed",
+        "tests/test_gang_teardown_1517.py::test_two_equal_priority_gangs_never_split_the_two_hosts",
+        "tests/test_gang_teardown_1517.py::test_withdrawing_a_waiting_member_withdraws_the_gang_and_releases_both_hosts"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_gang_teardown_1517.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7,
+          8
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gang_teardown_1517.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_teardown_1517.py": "a3bf5d64b5ad3a6c543040b62beea12cbd83917b96980070e20e454bcd769856"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "b92572b39601190345c75cc7eac6aad1261c39612b53bb1a2c028f0e2e5cf106",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "d1d53499122f0a5182a7dc486ed6722bfdb037d02467508135e8e8e1d98851d1",
+      "request_sha256": "25b4d86af7eb3c5dd0093613472cac3d72806197c32f513fa35511d81effc22c",
+      "logs": {
+        "stdout": {
+          "bytes": 32825,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/b92572b39601190345c75cc7eac6aad1261c39612b53bb1a2c028f0e2e5cf106/70047d055111c8847888081bacd467d986b3d1fa73c88c75b66d8a330a37c4e0/00000001.stdout.3cf1d12dc4e27c0e0ed51c0331929063d771df0ed3fb2ae2866bc83b125eb378.log",
+          "sha256": "3cf1d12dc4e27c0e0ed51c0331929063d771df0ed3fb2ae2866bc83b125eb378"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/b92572b39601190345c75cc7eac6aad1261c39612b53bb1a2c028f0e2e5cf106/70047d055111c8847888081bacd467d986b3d1fa73c88c75b66d8a330a37c4e0/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 45,
+      "nodeids": [
+        "tests/test_gang_residency_members.py::test_a_busy_lead_lock_blocks_the_teardown_and_restarts_the_wait",
+        "tests/test_gang_residency_members.py::test_a_changed_ending_restarts_the_wait",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[map_incomplete]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[map_not_composed]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[map_stale]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[map_unreadable]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[no_leads]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[not_requested]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[plan_unreadable]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[prelaunch_undeclared]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[ram_epoch_stale]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[resident]",
+        "tests/test_gang_residency_members.py::test_a_failed_confirming_read_restarts_the_window",
+        "tests/test_gang_residency_members.py::test_a_failed_first_verdict_read_restarts_the_window",
+        "tests/test_gang_residency_members.py::test_a_failed_refresh_under_the_lead_lock_restarts_confirmation[done]",
+        "tests/test_gang_residency_members.py::test_a_failed_refresh_under_the_lead_lock_restarts_confirmation[movers]",
+        "tests/test_gang_residency_members.py::test_a_failed_refresh_under_the_lead_lock_restarts_confirmation[ready]",
+        "tests/test_gang_residency_members.py::test_a_fresh_read_that_disagrees_blocks_the_teardown",
+        "tests/test_gang_residency_members.py::test_a_future_terminal_timestamp_restarts_confirmation",
+        "tests/test_gang_residency_members.py::test_a_lead_that_reads_live_again_clears_the_mark_and_the_gang_survives",
+        "tests/test_gang_residency_members.py::test_a_live_reading_whose_mark_survives_restarts_the_window",
+        "tests/test_gang_residency_members.py::test_a_member_whose_leads_all_ended_terminally_tears_the_gang_down",
+        "tests/test_gang_residency_members.py::test_a_member_whose_leads_are_merely_pending_does_not_tear_the_gang_down",
+        "tests/test_gang_residency_members.py::test_a_planner_row_member_is_gated_like_an_explicit_one",
+        "tests/test_gang_residency_members.py::test_a_requeue_that_wins_before_the_proof_blocks_the_teardown",
+        "tests/test_gang_residency_members.py::test_a_resident_member_claims_with_its_verdict_and_map",
+        "tests/test_gang_residency_members.py::test_a_shape_refusal_at_the_confirming_read_blocks_the_teardown[map_unreadable]",
+        "tests/test_gang_residency_members.py::test_a_shape_refusal_at_the_confirming_read_blocks_the_teardown[prelaunch_undeclared]",
+        "tests/test_gang_residency_members.py::test_a_withdrawn_member_tears_down_the_same_way",
+        "tests/test_gang_residency_members.py::test_cached_live_misses_do_not_confirm_an_aged_terminal_mark[False-claimed]",
+        "tests/test_gang_residency_members.py::test_cached_live_misses_do_not_confirm_an_aged_terminal_mark[False-ready]",
+        "tests/test_gang_residency_members.py::test_cached_live_misses_do_not_confirm_an_aged_terminal_mark[True-claimed]",
+        "tests/test_gang_residency_members.py::test_cached_live_misses_do_not_confirm_an_aged_terminal_mark[True-ready]",
+        "tests/test_gang_residency_members.py::test_failed_unlink_and_replacement_require_a_new_confirmation_window[False-confirming]",
+        "tests/test_gang_residency_members.py::test_failed_unlink_and_replacement_require_a_new_confirmation_window[False-initial]",
+        "tests/test_gang_residency_members.py::test_failed_unlink_and_replacement_require_a_new_confirmation_window[False-live]",
+        "tests/test_gang_residency_members.py::test_failed_unlink_and_replacement_require_a_new_confirmation_window[True-confirming]",
+        "tests/test_gang_residency_members.py::test_failed_unlink_and_replacement_require_a_new_confirmation_window[True-initial]",
+        "tests/test_gang_residency_members.py::test_failed_unlink_and_replacement_require_a_new_confirmation_window[True-live]",
+        "tests/test_gang_residency_members.py::test_fresh_pin_proof_preserves_a_resident_gang[None]",
+        "tests/test_gang_residency_members.py::test_fresh_pin_proof_preserves_a_resident_gang[holder]",
+        "tests/test_gang_residency_members.py::test_fresh_pin_proof_preserves_a_resident_gang[receipt]",
+        "tests/test_gang_residency_members.py::test_pending_leads_refuse_the_member_before_its_gang_code",
+        "tests/test_gang_residency_members.py::test_teardown_supersedes_the_members_plan_and_leaves_the_leads_to_the_tier_loop",
+        "tests/test_gang_residency_members.py::test_two_members_sharing_one_lead_go_resident_together"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_gang_residency_members.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7,
+          9
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gang_residency_members.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_residency_members.py": "51f0c114e17de53536d60c3dbb93226bf71fab2e89794a16b2cc955f9e99e5a7"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "9af0b611d0aeaa5adf10ff601d72894519d12f3a29fd0b42459200e7037bf886",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "4138a8d80c15895df352c615fa3e3923c07a6de0b04596b2361fab420b0b0ea8",
+      "request_sha256": "c99a7d943f98612cd186972fb0a7ad025c1cd7c91e172d40d8fb1d5729d1c7f2",
+      "logs": {
+        "stdout": {
+          "bytes": 13448,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/9af0b611d0aeaa5adf10ff601d72894519d12f3a29fd0b42459200e7037bf886/7d0294de11626e306e4f68bdfdf991aa1f9c122e3ff271f4fda6cafc71b72d9e/00000001.stdout.6545b84b1b49267b16857614b772680bc57847849b8a43f57977fa0b0dd33563.log",
+          "sha256": "6545b84b1b49267b16857614b772680bc57847849b8a43f57977fa0b0dd33563"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/9af0b611d0aeaa5adf10ff601d72894519d12f3a29fd0b42459200e7037bf886/7d0294de11626e306e4f68bdfdf991aa1f9c122e3ff271f4fda6cafc71b72d9e/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 12,
+      "nodeids": [
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_a_claimed_copy_that_filed_its_receipt_no_longer_counts",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_a_copy_faster_than_the_pools_whole_delivery_is_warm",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_a_curve_still_rising_at_its_last_level_probes_one_more",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_a_level_within_its_error_of_the_best_is_the_knee",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_a_report_from_before_the_claim_prices_nothing",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_a_stale_plan_fails_open",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_seconds_a_copy_stood_aside_are_not_a_shortfall",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_single_receipts_measure_no_error_and_cap_nothing",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_the_cap_admits_that_many_movers_and_no_more",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_the_fold_skips_what_did_not_measure_this_pool",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_the_knee_is_the_first_level_the_measurement_cannot_tell_from_the_best",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_the_waited_copy_is_admitted_without_fill_and_holds_its_stage"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_the_reader_plan_measures_and_fails_open.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          9,
+          15
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_the_reader_plan_measures_and_fails_open.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_the_reader_plan_measures_and_fails_open.py": "9ed16d027664f3c09c4ed1ea7237ab3f34e8a670c7a9c87b66645da4670017cf"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "81c212e1f7bf4aad27496c64feda23611c171fa8d13dde3e60c162d3e79b2b31",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "669928b5f61269af563725627a16de0801f40c6db06bb3da93a71e30bfce5f8e",
+      "request_sha256": "0f0f7be8d32399642b3509223ea06e4d326362c50dc87eb8641db6010cb21b47",
+      "logs": {
+        "stdout": {
+          "bytes": 15432,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/81c212e1f7bf4aad27496c64feda23611c171fa8d13dde3e60c162d3e79b2b31/8111386fe2da1fab02f8709138de4da0c6c7d9b1ee07c6811e426af61fa18856/00000001.stdout.f879fa88575d13583803b589ab1937b8d77b2bd46d9a522b87d1f72bfbb79e61.log",
+          "sha256": "f879fa88575d13583803b589ab1937b8d77b2bd46d9a522b87d1f72bfbb79e61"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/81c212e1f7bf4aad27496c64feda23611c171fa8d13dde3e60c162d3e79b2b31/8111386fe2da1fab02f8709138de4da0c6c7d9b1ee07c6811e426af61fa18856/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 2,
+      "nodeids": [
+        "tests/test_the_landing_record_fits_its_reader_at_scale.py::test_eight_chunked_r12_records_fit_their_reader",
+        "tests/test_the_landing_record_fits_its_reader_at_scale.py::test_eight_r12_records_fit_their_reader_and_the_cycle_is_counted"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_the_landing_record_fits_its_reader_at_scale.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          9,
+          15
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_the_landing_record_fits_its_reader_at_scale.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_the_landing_record_fits_its_reader_at_scale.py": "d4a6204ac23568f3742b51ad2a12a4c4201734da38dab9fdbb28a056a3d2f79a"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "3292922959505ef77b09452d9c08e63c2deee8e15a594bdf8948be04325d1e1a",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "1247ec89dbb6e9955c26104f25dc3b16e633887f2a0fbcaca7772320887db08b",
+      "request_sha256": "b6d907c7435b6bfd50f0ef0b65c7ae244b3592a5d5b39aca4c888863b3beb449",
+      "logs": {
+        "stdout": {
+          "bytes": 19611,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/3292922959505ef77b09452d9c08e63c2deee8e15a594bdf8948be04325d1e1a/290f5bb9dbc2a246463571e7b76a34145dacfda012c6f610207c4b06b62c97f6/00000001.stdout.164f59953cd898c85fe97d48e826385a973f38fdf0e29473d4aaf0323b777044.log",
+          "sha256": "164f59953cd898c85fe97d48e826385a973f38fdf0e29473d4aaf0323b777044"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/3292922959505ef77b09452d9c08e63c2deee8e15a594bdf8948be04325d1e1a/290f5bb9dbc2a246463571e7b76a34145dacfda012c6f610207c4b06b62c97f6/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 19,
+      "nodeids": [
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_declared_read_rate_prices_consumption_when_it_is_the_larger[1000.0-144-declared]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_declared_read_rate_prices_consumption_when_it_is_the_larger[1990.0-1-measured]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_declared_read_rate_prices_consumption_when_it_is_the_larger[1990.0-144-declared]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_gated_newcomer_is_relieved_by_ranges_past_the_horizon",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_pinned_range_past_the_horizon_is_declined_whole",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_range_landed_again_is_priced_at_its_new_landing",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_range_past_the_horizon_makes_room_for_another_consumers_lead",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_running_consumer_regated_after_its_lead_retires_still_preempts",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_running_consumers_next_range_preempts_ranges_past_another_horizon",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_window_claimed_before_the_horizon_keeps_its_ranges",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_window_publishes_only_to_its_refill_horizon",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_an_evicted_range_is_published_again_when_its_reader_nears_it",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_an_undefined_horizon_leaves_the_window_as_it_was[override0]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_an_undefined_horizon_leaves_the_window_as_it_was[override1]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_an_undefined_horizon_leaves_the_window_as_it_was[override2]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_an_undefined_horizon_leaves_the_window_as_it_was[override3]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_an_undefined_horizon_leaves_the_window_as_it_was[override4]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_no_range_inside_a_horizon_is_evicted_when_room_cannot_be_made",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_the_horizon_is_the_docstring_arithmetic"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_a_consumer_stages_only_to_its_refill_horizon.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7,
+          8
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_a_consumer_stages_only_to_its_refill_horizon.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_a_consumer_stages_only_to_its_refill_horizon.py": "c97a361d02909fa0fde7c19b49fcc1adecaf3042cad39f478ca80030c19404d9"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "c37c7c8f589cac3cdc0c684976315b317897e7ce52fb34b4f9cc4adeef01cf99",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "e155ea9cc530a2ead121b101e9532a670e86c7bdbefbaf29a7f4d195985667ab",
+      "request_sha256": "ee9ad44bdedafd3a3dbf35ab130566048800ade0829f1e30bdaaba29fe5d36e8",
+      "logs": {
+        "stdout": {
+          "bytes": 11566,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/c37c7c8f589cac3cdc0c684976315b317897e7ce52fb34b4f9cc4adeef01cf99/f6272d32796664ff6cab9aaadd88d2965e7b9352c380d0cdf74bc783691bf332/00000001.stdout.38a08decee6a97333b2f1c62d04d1a46131ee200bedf869c10a0715ca33842a0.log",
+          "sha256": "38a08decee6a97333b2f1c62d04d1a46131ee200bedf869c10a0715ca33842a0"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/c37c7c8f589cac3cdc0c684976315b317897e7ce52fb34b4f9cc4adeef01cf99/f6272d32796664ff6cab9aaadd88d2965e7b9352c380d0cdf74bc783691bf332/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 11,
+      "nodeids": [
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-1-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[0-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1.5-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[False-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[None-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[True-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[nan-False]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          8,
+          15
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "62f41544aadd84231e67a2e5c8af8067118095dae9bf88f4515bfdd082908114",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "ea1d37f0873dd776dd65baa1eb5078e5f8cca5022fa73c2009c7643ca07d7a6c",
+      "request_sha256": "ebca5198ebd5ebff3db8d7b181a34c75c73a93803997636443a74f60ee898940",
+      "logs": {
+        "stdout": {
+          "bytes": 11045959,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/62f41544aadd84231e67a2e5c8af8067118095dae9bf88f4515bfdd082908114/3da26b5daf592c2076b78fee8af4a2548637d074207c08b3c54c1d1c88b44b16/00000001.stdout.a925cb7f6c5b419a29fccadbe69152f33726538b0a14459f416d0d02555a6633.log",
+          "sha256": "a925cb7f6c5b419a29fccadbe69152f33726538b0a14459f416d0d02555a6633"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/62f41544aadd84231e67a2e5c8af8067118095dae9bf88f4515bfdd082908114/3da26b5daf592c2076b78fee8af4a2548637d074207c08b3c54c1d1c88b44b16/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 73,
+      "nodeids": [
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[checkout-snapshot]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[checkout-v1-input]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-action]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-attestation]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-awaited]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-claim]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-closure]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-contention]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-manifest-v1]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-manifest-v2]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-progress-policy]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-receipt]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-runtime]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[out-declaration]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[profile-exit]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[profile-route]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[checkout-snapshot/clean]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[checkout-snapshot/dirty]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[checkout-v1-input/shape-gate-input]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-action/portable]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-action/smoke-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-action/template-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-attestation/in-process]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-attestation/script]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-awaited/cli]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-awaited/validated]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-claim/in-process]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-claim/script]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-closure/multiple]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-closure/single]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-closure/stamp-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-contention/mover]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-contention/validated]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v1/merged-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v1/origin-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v1/phased]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v1/stage-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v1/task-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v1/unphased]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v2/canary-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v2/placed-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v2/read-plan]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-progress-policy/cli-cycle]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-progress-policy/cli-linear]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-progress-policy/egress]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-progress-policy/mover]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-progress-policy/validated]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-receipt/in-process]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-receipt/script]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-runtime/in-process]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-runtime/script]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[out-declaration/sealed]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[profile-exit/ended]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[profile-exit/launch-failed]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[profile-exit/launched]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[profile-route/armed]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[profile-route/docker]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[checkout-snapshot]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[checkout-v1-input]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-action]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-attestation]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-awaited]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-claim]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-closure]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-contention]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-manifest-v1]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-manifest-v2]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-progress-policy]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-receipt]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-runtime]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[out-declaration]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[profile-exit]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[profile-route]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "7ba9bdf2119d98191c25c376a4d302d2d7244e2c9e37fc34ce8beb36f871acbd"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_record_compatibility_core.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          14,
+          34
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_record_compatibility_core.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_record_compatibility_core.py": "7e6ac0313499b90c56ea41033ebfca0fd40c71f86a6768c0c43ab44eb907e94d"
+        },
+        "exitstatus": 0
+      }
+    }
+  ],
+  "source_bundles": [
+    {
+      "snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "ac5cda9213fc2c3aeda47c3224959834f57335132aafc8d5f9cc075693347e63"
+      },
+      "commit": "5d68446df8465d49e61faff2c7218faecc2c38a7",
+      "source_sha256": {
+        "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+        "src/prismabuild/_gang.py": "c20d37ae2c3199e4b6bb74ed29c7369baea948de91a4edb4add4f9e4f5b9982f",
+        "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+        "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4",
+        "tests/compat/field_sets.json": "3ac91dc12f076a644af2828cf8f96286249f5bc3f65764b34b43a153f4572d05",
+        "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+        "docs/design.md": "c0d63cd4c77bf116122b3cd7b95c5325ad4a18ae2e5c1e96dfc52c74bfcd600f"
+      }
+    },
+    {
+      "snapshot": {
+        "bytes": 46547195,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "7ba9bdf2119d98191c25c376a4d302d2d7244e2c9e37fc34ce8beb36f871acbd"
+      },
+      "commit": "19ae8610dea5c48f09908cc34d3f0cd0ffb6d8ed",
+      "source_sha256": {
+        "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+        "src/prismabuild/_gang.py": "c20d37ae2c3199e4b6bb74ed29c7369baea948de91a4edb4add4f9e4f5b9982f",
+        "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+        "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4",
+        "tests/compat/field_sets.json": "3ac91dc12f076a644af2828cf8f96286249f5bc3f65764b34b43a153f4572d05",
+        "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+        "docs/design.md": "c0d63cd4c77bf116122b3cd7b95c5325ad4a18ae2e5c1e96dfc52c74bfcd600f"
+      }
+    }
+  ],
+  "limits": "CPU component evidence only. Worker attestation signatures unchecked. No deployment, GPU or campaign claim."
+}

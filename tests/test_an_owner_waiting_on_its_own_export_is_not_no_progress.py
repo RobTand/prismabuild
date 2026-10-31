@@ -41,7 +41,7 @@ PHASE_ALLOWANCE = 0.4
 FIXED_UNIX = 1000.0
 CLOCK_ORIGINS = [(FIXED_UNIX, 0.0), (10_000.0, 7000.0),
                  (1_700_000_000.0, 1_234_567.0)]
-NATIVE_SLEEP = time.sleep
+NATIVE_SLEEP = time.sleep  # pb-timing-ok: never called identity reference; owner clock controls delays
 NATIVE_POPEN = subprocess.Popen
 
 
@@ -342,7 +342,7 @@ def test_owner_adapter_keeps_standard_library_process_and_sleep(tmp_path, monkey
     queue, item = _owner(tmp_path)
     _OwnerProcess(queue, item, "a" * 64, tmp_path / "export", clock, monkeypatch,
                   steps=[])
-    assert time.sleep is NATIVE_SLEEP
+    assert time.sleep is NATIVE_SLEEP  # pb-timing-ok: never called identity check; owner clock controls delays
     assert subprocess.Popen is NATIVE_POPEN
 
 

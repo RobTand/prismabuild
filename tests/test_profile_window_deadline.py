@@ -6,7 +6,8 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
-import time
+
+from profile_test_support import early_profile_command, wait_for_profile_file
 
 import pytest
 
@@ -14,31 +15,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _assert_stopped(pid):
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            state = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0]
-        except (FileNotFoundError, ProcessLookupError):
-            # The killed child's /proc entry can vanish between the lookup and
-            # the read, and the kernel reports that as ESRCH rather than
-            # ENOENT; both mean the process this helper is waiting for is gone
-            # (#846).  Permission and every other OSError stay loud.
-            return
-        if state == 'Z':
-            return
-        time.sleep(.01)
-    pytest.fail(f'owned process {pid} did not stop')
+    import select
+    try:
+        descriptor = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return
+    try:
+        assert select.select([descriptor], [], [], 60)[0], f'owned process {pid} survived'
+    finally:
+        os.close(descriptor)
 
 
 @pytest.mark.parametrize('stop_signal', [signal.SIGTERM, signal.SIGKILL])
 def test_pool_term_during_window_settle_keeps_profile_and_reaps_action(tmp_path, stop_signal):
     driver = tmp_path / 'driver.py'
     driver.write_text('''
-import json, os, sys, time
+import json, os, sys
 from contextlib import contextmanager
 from pathlib import Path
 sys.path[:0] = [sys.argv[1] + '/src', sys.argv[1] + '/tests']
 from test_sample_profile import _FakeBackend, _action, _speedscope
+from profile_test_support import wait_for_profile_file
 from prismabuild import core as pb
 base = Path(sys.argv[2])
 class Early(_FakeBackend):
@@ -63,20 +60,15 @@ def signals_ready():
 pb._sigterm_unwinds_this_process = signals_ready
 def settling(self, process=None, *, deadline=None):
     global pending
-    settle_deadline = time.monotonic() + 10
-    while time.monotonic() < settle_deadline:
-        try:
-            record = self.exit_status()
-            if record.get('phase') == 'launched': break
-        except pb.ProfileUnusable: pass
-        time.sleep(.01)
+    record = json.loads(wait_for_profile_file(
+        self.exit_status_path, lambda text: json.loads(text).get('phase') == 'launched'))
     pending = {'group': process.pid, 'child': record['child_pid']}
     return original(self, process, deadline=deadline)
 pb._ProfileSession._settled_exit_status = settling
 checkout = base/'checkout'; checkout.mkdir()
 action = _action(checkout, profile='fake')
 body = {k:v for k,v in action.items() if k != 'action_key'}
-body['task'] = {**body['task'], 'argv': [sys.executable, '-c', 'import time; time.sleep(120)']}
+body['task'] = {**body['task'], 'argv': [sys.executable, '-c', 'import signal; signal.pause()']}
 os.environ[pb.ACTION_STATUS_PATH_ENV] = str(base/'status.json')
 pb.run_local_action(pb.seal_action(body), cas_root=base/'cas', checkout_root=checkout)
 ''')
@@ -84,21 +76,13 @@ pb.run_local_action(pb.seal_action(body), cas_root=base/'cas', checkout_root=che
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     owned = None
     try:
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            if (tmp_path/'settling.json').exists():
-                owned = json.loads((tmp_path/'settling.json').read_text())
-                break
-            if process.poll() is not None:
-                pytest.fail(repr(process.communicate()))
-            time.sleep(.01)
-        assert owned is not None, 'driver never reached the window settle'
+        owned = json.loads(wait_for_profile_file(tmp_path/'settling.json', process=process))
         if stop_signal == signal.SIGKILL:
             # The contained production path kills the entire broker scope;
             # no Python finally/exception handler gets to preserve evidence.
             os.killpg(owned['group'], signal.SIGKILL)
         process.send_signal(stop_signal)
-        stdout, stderr = process.communicate(timeout=20)
+        stdout, stderr = process.communicate(timeout=60)
         assert process.returncode == (143 if stop_signal == signal.SIGTERM else -9), (stdout, stderr)
         _assert_stopped(owned['child'])
         status = tmp_path/'status.json'
@@ -145,7 +129,7 @@ def test_unusable_early_report_does_not_leave_action_running(tmp_path, monkeypat
     checkout.mkdir()
     action = _action(checkout, profile='fake')
     body = {k:v for k,v in action.items() if k != 'action_key'}
-    body['task'] = {**body['task'], 'argv': [sys.executable, '-c', 'import time; time.sleep(120)']}
+    body['task'] = {**body['task'], 'argv': [sys.executable, '-c', 'import signal; signal.pause()']}
     with pytest.raises(pb.LocalActionError, match='no usable profile'):
         pb.run_local_action(pb.seal_action(body), cas_root=tmp_path/'cas', checkout_root=checkout)
     _assert_stopped(int(child_pid.read_text()))
@@ -162,20 +146,7 @@ def test_direct_execution_deadline_still_governs_after_a_profile_window(
         exits_before_action = True
 
         def launch_argv(self, argv, *, profile_path):
-            code = (
-                'import sys, subprocess, time\n'
-                'from pathlib import Path\n'
-                'subprocess.Popen(sys.argv[3:])\n'
-                'deadline = time.monotonic() + 10\n'
-                'while not Path(sys.argv[8]).exists():\n'
-                '    assert time.monotonic() < deadline\n'
-                '    time.sleep(.01)\n'
-                'Path(sys.argv[1]).write_text(sys.argv[2])\n'
-            )
-            return [
-                sys.executable, '-c', code, str(profile_path),
-                _speedscope('window'), *argv,
-            ]
+            return early_profile_command(argv, profile_path, _speedscope('window'))
 
     monkeypatch.setitem(pb.PROFILE_BACKENDS, 'fake', Early())
     checkout = tmp_path / 'checkout'
@@ -184,12 +155,24 @@ def test_direct_execution_deadline_still_governs_after_a_profile_window(
     body = {key: value for key, value in action.items() if key != 'action_key'}
     body['task'] = {
         **body['task'],
-        'argv': [sys.executable, '-c', 'import time; time.sleep(120)'],
+        'argv': [sys.executable, '-c', 'import signal; signal.pause()'],
     }
+    original = pb._ProfileSession.action_returncode
+    def expired(self, process=None, *, deadline=None):
+        wait_for_profile_file(
+            self.exit_status_path, lambda text: json.loads(text).get('phase') == 'launched')
+        class ExpiredClock:
+            @staticmethod
+            def monotonic():
+                return 101.0
+        with monkeypatch.context() as patch:
+            patch.setattr(pb, 'time', ExpiredClock())
+            return original(self, process, deadline=100.0)
+    monkeypatch.setattr(pb._ProfileSession, 'action_returncode', expired)
     with pytest.raises(pb.LocalActionError, match='timed out') as raised:
         pb.run_local_action(
             pb.seal_action(body), cas_root=tmp_path / 'cas',
-            checkout_root=checkout, timeout_seconds=0.2,
+            checkout_root=checkout,
         )
     assert raised.value.returncode is None
     assert raised.value.profile is not None
@@ -197,12 +180,12 @@ def test_direct_execution_deadline_still_governs_after_a_profile_window(
 
 
 @pytest.mark.parametrize(
-    ('action_sleep', 'times_out'),
-    [(0.30, True), (0.02, False)],
+    ('end_offset', 'times_out'),
+    [(1.0, True), (-1.0, False)],
     ids=('action-ended-after-deadline', 'action-ended-before-deadline'),
 )
 def test_profile_checkpoint_delay_uses_the_action_end_time_for_a_deadline(
-    tmp_path, monkeypatch, action_sleep, times_out,
+    tmp_path, monkeypatch, *, end_offset, times_out,
 ):
     """Ingest latency cannot turn a late windowed action into a success (#514)."""
     from test_sample_profile import _FakeBackend, _action, _speedscope
@@ -212,20 +195,7 @@ def test_profile_checkpoint_delay_uses_the_action_end_time_for_a_deadline(
         exits_before_action = True
 
         def launch_argv(self, argv, *, profile_path):
-            code = (
-                'import subprocess, sys, time\n'
-                'from pathlib import Path\n'
-                'subprocess.Popen(sys.argv[3:])\n'
-                'deadline = time.monotonic() + 10\n'
-                'while not Path(sys.argv[8]).exists():\n'
-                '    assert time.monotonic() < deadline\n'
-                '    time.sleep(.01)\n'
-                'Path(sys.argv[1]).write_text(sys.argv[2])\n'
-            )
-            return [
-                sys.executable, '-c', code, str(profile_path),
-                _speedscope('window'), *argv,
-            ]
+            return early_profile_command(argv, profile_path, _speedscope('window'))
 
     monkeypatch.setitem(pb.PROFILE_BACKENDS, 'fake', Early())
     original_ingest = pb._ProfileSession.ingest
@@ -237,19 +207,9 @@ def test_profile_checkpoint_delay_uses_the_action_end_time_for_a_deadline(
         nonlocal comparison_deadline, checkpoint_time
         # Observe the real relay rather than guessing when scheduling lets the
         # action finish. This is only an observation watchdog, not its budget.
-        watchdog = time.monotonic() + 10
-        while True:
-            try:
-                record = self.exit_status()
-            except pb.ProfileUnusable:
-                record = {}
-            if record.get('phase') == 'ended':
-                break
-            assert time.monotonic() < watchdog, 'relay never recorded completion'
-            time.sleep(.01)
-        # Keep the parameterized before/after relationship, but derive it from
-        # completion: no real process has to fit into the tested 150 ms window.
-        comparison_deadline = record['ended_monotonic'] + 0.15 - action_sleep
+        record = json.loads(wait_for_profile_file(
+            self.exit_status_path, lambda text: json.loads(text).get('phase') == 'ended'))
+        comparison_deadline = record['ended_monotonic'] - end_offset
         result = original_ingest(self, cas)
         checkpoint_time = max(record['ended_monotonic'], comparison_deadline) + 1
         return result

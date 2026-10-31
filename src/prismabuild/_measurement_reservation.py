@@ -34,6 +34,8 @@ READ_SECTION = "measurement-publications-v1"
 READ_BUDGET_S = 5.0
 REFRESH_SECTION = "measurement-election-refresh-v1"
 SOURCE_SECTION = "measurement-shared-sources-v1"
+ORDINARY_SOURCES_SECTION = "ordinary-selection-sources-v1"
+ORDINARY_PROOF_SECTION = "ordinary-election-proof-v1"
 #: The reuse refresh reads far fewer, much smaller records than a full
 #: census, so it runs on a smaller share of the same bounded-reader
 #: contract: an abandonable owned child with durable reader ownership,
@@ -164,8 +166,8 @@ def _ordinary_selection_sources(queue: PoolQueue, cached: dict, *, recheck=False
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode):
             raise CensusUnavailable("nonregular ordinary election source")
-        version = (info.st_dev, info.st_ino, info.st_mode, info.st_size,
-                   info.st_mtime_ns, info.st_ctime_ns)
+        version = [info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                   info.st_mtime_ns, info.st_ctime_ns]
         prior = cached.get(name)
         if prior is not None and prior[0] == version:
             current[name] = prior
@@ -178,7 +180,7 @@ def _ordinary_selection_sources(queue: PoolQueue, cached: dict, *, recheck=False
             chosen = selection(record)
             if chosen is not None and chosen["action_key"] != key:
                 raise CensusUnavailable("ordinary selection sidecar key mismatch")
-            current[name] = (version, chosen)
+            current[name] = [version, chosen]
         if deadline.remaining() <= 0:
             raise CensusUnavailable("ordinary election proof budget exceeded")
     if recheck and current != cached:
@@ -517,13 +519,32 @@ def _elected_member_state(record: dict, key: str, *, ready_versions: set, claime
     return "terminal"
 
 
+def _gang_election_rows(record: dict, elections: dict, rows: dict[str, list[dict]], *,
+                        ready_versions: set, claimed_versions: set) -> dict:
+    from . import _gang
+    live = any(any(float(row.get("published_unix", math.nan)) == member["published_unix"]
+                   for row in rows.get(member["action_key"], []))
+               for member in record["members"])
+    if not live:
+        return {}
+    rank = list(_gang.rank(record))
+    return {election["action_key"]: {
+        "group": record["group"], "index": index, "action_key": election["action_key"],
+        "host": election["host"], "priority": election["priority"], "rank": rank,
+        "demand": _member_demand(rows, record, election["action_key"]),
+        "member_state": _elected_member_state(
+            record, election["action_key"], ready_versions=ready_versions,
+            claimed_versions=claimed_versions)}
+        for index, election in elections.items()}
+
+
 def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int, *,
                     ready_versions: set | None = None, claimed_versions: set | None = None) -> dict:
     """Live gang host elections (#1517), read in the same bounded child.
 
     A gang election fences its host while any member row of a gang without a
-    teardown is still READY or CLAIMED. An unreadable or malformed gang
-    record fails the census closed, exactly as a malformed publication does.
+    teardown is still READY or CLAIMED. Unreadable or malformed gang records
+    refuse their own gang; other gangs retain their trusted elections.
     Elections are written only by the elected host's own pass under its host
     admission, which also serializes this host's readers, so no member key
     joins the M lock set.
@@ -541,33 +562,23 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int, *
     found: dict[str, dict] = {}
     ready = ready_versions if ready_versions is not None else set()
     claimed = claimed_versions if claimed_versions is not None else set()
-    try:
-        with entries:
-            for entry in entries:
-                count += 1
-                if count > MAX_RECORDS:
-                    raise CensusUnavailable("measurement census record cap exceeded")
-                if not entry.name.endswith(".json") or entry.name.startswith("."):
-                    continue
-                group = entry.name[:-5]
+    with entries:
+        for entry in entries:
+            count += 1
+            if count > MAX_RECORDS:
+                raise CensusUnavailable("measurement census record cap exceeded")
+            if not entry.name.endswith(".json") or entry.name.startswith("."):
+                continue
+            group = entry.name[:-5]
+            try:
                 record = _gang.read_group(queue, group)
                 if record is None or _gang.teardown(queue, group) is not None:
                     continue
-                live = [member for member in record["members"]
-                        if any(float(row.get("published_unix", math.nan)) == member["published_unix"]
-                               for row in rows.get(member["action_key"], []))]
-                if not live:
-                    continue
-                rank = list(_gang.rank(record))
-                for index, election in _gang.elections(queue, group, record["size"]).items():
-                    found[election["action_key"]] = {
-                        "group": group, "index": index, "action_key": election["action_key"],
-                        "host": election["host"], "priority": election["priority"], "rank": rank,
-                        "demand": _member_demand(rows, record, election["action_key"]),
-                        "member_state": _elected_member_state(
-                            record, election["action_key"], ready_versions=ready, claimed_versions=claimed)}
-    except _gang.GangContractError as exc:
-        raise CensusUnavailable(str(exc)) from exc
+                elections = _gang.elections(queue, group, record["size"])
+            except _gang.GangContractError:
+                continue
+            found.update(_gang_election_rows(
+                record, elections, rows, ready_versions=ready, claimed_versions=claimed))
     return found
 
 def _scan_election_refresh(queue: PoolQueue) -> dict:
@@ -589,15 +600,22 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
     count += len(gang_names)
     if count > MAX_RECORDS:
         raise CensusUnavailable("measurement refresh record cap exceeded")
-    groups: dict[str, dict] = {}
+    groups: dict[str, tuple[dict, dict]] = {}
     for name in gang_names:
         if not name.endswith(".json") or name.startswith("."):
             continue
         group = name[:-5]
-        record = _gang.read_group(queue, group)
-        if record is None or _gang.teardown(queue, group) is not None:
+        try:
+            record = _gang.read_group(queue, group)
+            if record is None or _gang.teardown(queue, group) is not None:
+                continue
+            elections = _gang.elections(queue, group, record["size"])
+        except _gang.GangContractError:
             continue
-        groups[group] = record
+        count += len(elections)
+        if count > MAX_RECORDS:
+            raise CensusUnavailable("measurement refresh record cap exceeded")
+        groups[group] = record, elections
     try:
         pass_names = sorted(
             entry.name for entry in os.scandir(queue.root / pool_mod.record_store.PASSES))
@@ -625,7 +643,7 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
     members: dict[str, list] = {}
     ready_versions: set[tuple[str, float]] = set()
     claimed_versions: set[tuple[str, float]] = set()
-    for group, record in groups.items():
+    for record, _ in groups.values():
         for member in record["members"]:
             key = member["action_key"]
             if key in members:
@@ -646,28 +664,10 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
                 rows.append({"published_unix": version[1], "resources": row.get("resources")})
             members[key] = rows
     gangs: dict[str, dict] = {}
-    for group, record in groups.items():
-        try:
-            rank = list(_gang.rank(record))
-            found = _gang.elections(queue, group, record["size"])
-        except _gang.GangContractError as exc:
-            raise CensusUnavailable(str(exc)) from exc
-        count += len(found)
-        if count > MAX_RECORDS:
-            raise CensusUnavailable("measurement refresh record cap exceeded")
-        live = [member for member in record["members"]
-                if any(float(row["published_unix"]) == member["published_unix"]
-                       for row in members.get(member["action_key"], []))]
-        if not live:
-            continue
-        for index, election in found.items():
-            gangs[election["action_key"]] = {
-                "group": group, "index": index, "action_key": election["action_key"],
-                "host": election["host"], "priority": election["priority"], "rank": rank,
-                "demand": _member_demand(members, record, election["action_key"]),
-                "member_state": _elected_member_state(
-                    record, election["action_key"], ready_versions=ready_versions,
-                    claimed_versions=claimed_versions)}
+    for record, elections in groups.values():
+        gangs.update(_gang_election_rows(
+            record, elections, members, ready_versions=ready_versions,
+            claimed_versions=claimed_versions))
     return {"selections": selections, "gang_elections": gangs}
 
 
@@ -960,6 +960,36 @@ class _SourceGenerationReader(CensusReader):
         self.name = census_reader.name + ".sources"
         self.pool_identity = census_reader.pool_identity
         self._held = None
+
+
+class _OrdinaryAdmissionReader(CensusReader):
+    """Independent proof custody; an unresolved child leaves full census usable."""
+
+    _sections = (ORDINARY_SOURCES_SECTION, ORDINARY_PROOF_SECTION)
+
+    def __init__(self, census_reader: CensusReader):
+        self.queue = census_reader.queue
+        self.directory = census_reader.directory
+        self.name = census_reader.name + ".ordinary"
+        self.pool_identity = census_reader.pool_identity
+        self._held = None
+
+    def selection_sources(self, cached: dict, *, recheck=False) -> dict:
+        return self._spawn_owned(
+            self._held[0], ORDINARY_SOURCES_SECTION,
+            lambda: _ordinary_selection_sources(self.queue, cached, recheck=recheck),
+            REFRESH_BUDGET_S)
+
+    def election_census(self, item: dict, dependent_owner: object,
+                        selections: Iterable[dict], ledger: ResourceLedger,
+                        busy: set[str]) -> dict | None:
+        value = self._spawn_owned(
+            self._held[0], ORDINARY_PROOF_SECTION,
+            lambda: {"census": _ordinary_election_census(
+                self.queue, item, ledger.base.name, dependent_owner, selections, ledger, busy)},
+            REFRESH_BUDGET_S)
+        census = value.get("census")
+        return self._checked_census(census) if census is not None else None
 
 
 class PassCensus:
@@ -1283,7 +1313,7 @@ def admission_census(queue: PoolQueue, ledger: ResourceLedger, controller):
 def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                                ledger: ResourceLedger, controller, item: dict, refusal=None, *,
                                dependent_owner: object):
-    """Ordinary rows need the reader only when an election could fence them.
+    """Ordinary rows need the full census only when an election could fence them.
 
     Shared reads preserve M-before-H ordering and recheck every mutable source.
     The negative proof takes H and keeps it through the actual reservation, so
@@ -1305,7 +1335,9 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
             try:
                 census_reader = CensusReader(queue, ledger)
                 saved = census_reader.shared_census()
-                sources = _ordinary_selection_sources(queue, pass_census.ordinary_sources)
+                ordinary_reader = _OrdinaryAdmissionReader(census_reader)
+                held.enter_context(ordinary_reader.held(blocking=False))
+                sources = ordinary_reader.selection_sources(pass_census.ordinary_sources)
                 pass_census.ordinary_sources = sources
                 busy = set()
                 prior = pass_census.census
@@ -1326,7 +1358,7 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                     if not held.enter_context(queue.action_transition_lock(key, blocking=False)):
                         busy.add(key)
                 held.enter_context(queue._admission_lock(controller))
-                _ordinary_selection_sources(queue, sources, recheck=True)
+                ordinary_reader.selection_sources(sources, recheck=True)
                 for _, chosen in sources.values():
                     if chosen is not None:
                         pass_census.ordinary_elections.setdefault(
@@ -1368,8 +1400,8 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                                and item.get("priority", 0) <= chosen["priority"]
                                for chosen in prior["gang_elections"].values())))
                     if not remembered:
-                        current = _ordinary_election_census(
-                            queue, item, ledger.base.name, dependent_owner,
+                        current = ordinary_reader.election_census(
+                            item, dependent_owner,
                             pass_census.ordinary_elections.values(),
                             ledger, busy)
             except (OSError, ValueError, TypeError, KeyError, CensusUnavailable,
@@ -1723,8 +1755,8 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
         # No optimistic timeout-derived safe-fit/backfill permission follows.
         # Every incumbent must be a claimed action on this host, whose own
         # lifetime bounds the wait. A claimed action that declared no finite
-        # deadline (``pbrun`` without ``--timeout-s``, a progress-governed
-        # action) still elects: refusing left the host open to refill once
+        # deadline (``pbrun`` without ``--timeout-s``, a progress- or
+        # stall-governed action) still elects: refusing left the host open
         # the bounded attention lapsed, and a continuous lower-priority stream
         # starved the measurement (#1419). A RAM-tier fill hold (#1222) or a
         # raw holder with no readable claim is not an action lifetime: no

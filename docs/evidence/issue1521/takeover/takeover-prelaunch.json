@@ -1,0 +1,251 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "prelaunch",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "18e3324d3d6f9a113a0b9f5f65e48e918794bc23",
+  "scope": [
+    "SC-01",
+    "ID-02",
+    "ID-08",
+    "ID-09",
+    "SM-01",
+    "INV-08",
+    "SAFE-03",
+    "ACC-01",
+    "ACC-02"
+  ],
+  "prelaunch": {
+    "submission": {
+      "sealed_key": "pending submission; record exact keys from each immutable progress report",
+      "declares": [
+        "synthetic repository test inputs",
+        "no fleet data manifest or bulk ranges",
+        "per-test native completion reports",
+        "published runtime generation 551e803a751e-1793050940-3ecf9c509217"
+      ],
+      "source_head": "affe5b27eedd8e2ac55e9b07e52ad7b64e0e1db8",
+      "frozen_plan_sha256": "91e9e11f10326e4bb6979bb335832ecccb7ed4e4e7ace1bd442da223055589e5",
+      "resources": {
+        "concurrent_lane_limit": 3,
+        "max_clients_each": 8,
+        "adjacent_peak_cpu": 16,
+        "numeric_peak_cpu": 4,
+        "aggregate_cpu": 20,
+        "aggregate_action_mem_gib": 38,
+        "coordinator_mem_gib_allowance": 2,
+        "aggregate_mem_gib": 40,
+        "gpu": 0,
+        "native_threads_per_pytest_worker": 1
+      }
+    },
+    "readiness_gate": "PB-owned verdict required at claim. Runtime capability and named interpreter eligibility remain with PB. No application-acquired ready verdict.",
+    "tier_policy": "strict",
+    "window_fit": "proven for repository-contained CPU fixture work; no staged bulk input or GPU work declared"
+  },
+  "merge": {
+    "status": "not-this-step"
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "requirement_status": {
+    "ledger_source": "/home/rob/paperclip-worktrees/prismabuild/PRI-47/docs/staged_read_requirements_2026-09-20.json",
+    "source_head": "affe5b27eedd8e2ac55e9b07e52ad7b64e0e1db8",
+    "requirements": {
+      "SC-01": {
+        "text": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+        "implementation": {
+          "commit": "PB:ca0f5555",
+          "path": "src/prismabuild/pool.py claim/admission paths",
+          "state": "yes"
+        },
+        "deployment": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "validation": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "ID-02": {
+        "text": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
+        "implementation": {
+          "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
+          "path": "src/prismabuild/pool.py nonce/scope plumbing; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",
+          "state": "yes"
+        },
+        "deployment": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "validation": {
+          "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
+          "state": "partial"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "ID-08": {
+        "text": "Behavior attributed per (runtime_commit, generation_id).",
+        "implementation": {
+          "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
+          "path": "runtime generation link; worker attestations; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",
+          "state": "yes"
+        },
+        "deployment": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): Offers from sparky, sparklina and dl380g10 announced runtime_commit 81d95cba8d91 at 1790169703 and a0fdcd2f7482 from 1790171012 to 1790171023 (13:43Z); the dl380g10 tier role runs the a0fdcd2f7482-1790170897-121d887b4732 tree; DESKTOP-P5UOGNJ is offline (PB#900) and stale on a80eea97.",
+          "state": "partial"
+        },
+        "validation": {
+          "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
+          "state": "partial"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "ID-09": {
+        "text": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
+        "target_enforcement": "application-side validity gate on campaign outputs",
+        "implementation": {
+          "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:cd7e1b97e5dc (#831) reads a generation's ending from its immutable attempts; 44098612105d (#887) counts a claim whose finish is in flight as outstanding.",
+          "path": "src/prismabuild/pool.py terminal records + CAS receipts (a-c); (d) application-side, referenced",
+          "state": "partial"
+        },
+        "deployment": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): #831 and #887 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs).",
+          "state": "yes"
+        },
+        "validation": {
+          "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0 attests a-c for its own record 2026-09-23 update (snapshot 13:50Z): #831 fail-before 6a8645b2e7f4 (9 failed), green 79adabbb74f9 (11 passed), 838c1c51a36d (185 passed).",
+          "state": "partial"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "SM-01": {
+        "text": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
+        "target_enforcement": "new gated transitions (lease-gated running, publication-success terminal, policy withdrawal)",
+        "implementation": {
+          "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:58bed81e040e (#794), cd7e1b97e5dc (#831), 44098612105d (#887) deployed; 5e0bdc037537 (#953), a12de512c6a0 (#962), f5ae2a06efc9 (#969) merged, not deployed",
+          "path": "src/prismabuild/pool.py ready/claimed/done/failed/withdrawn dirs + claim records (new read/lease-gated transitions absent)",
+          "state": "partial"
+        },
+        "deployment": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): #794, #831 and #887 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs); #953, #962 and #969 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
+          "state": "yes"
+        },
+        "validation": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): #831 fail-before 6a8645b2e7f4 (9 failed), green 79adabbb74f9 (11 passed) and 838c1c51a36d; #953 base 1bbf66324c08 (5 failed), head e0ebafc1cbd9 (3333 passed); #962 head fc58a8f0de58 (12/12 shards, 5381 passed); #969 red c6a01dc82d3f (4 failed). Component tests only; no lifecycle-wide conformance run. 2026-09-27 (#964, branch maintenance/964-20260927): the claim-side release fence now confirms a released key's index under the key's transition lock, so a ready row whose scan listed the index before the entry is refused by name (origin_consumer_released) instead of claimed; entry-without-record still reads as no release and unreadable evidence still denies as unknown. Component validation only: focused 7/7 shards green (45 passed), final-source race 3 passed and supervisor/spool 41 passed, adjacent sweep 15/16 shards green (5370 tests). No deployment and no lifecycle-wide conformance run; older running generations keep the window until adoption. Scoped record: docs/evidence/issue964_release_claim_fence_acceptance_2026-09-27.json.",
+          "state": "partial"
+        },
+        "workload_proof": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) was withdrawn from claimed by rob@sparky; the record is pb-queue/withdrawn/683cb3caa5ea....json. That exercises one transition on a real campaign; the other transitions have no workload record.",
+          "state": "partial"
+        }
+      },
+      "INV-08": {
+        "text": "Retries never double-count; adoption verifies identity/trust without recompute.",
+        "target_enforcement": "PQ journal re-verify execution proof",
+        "implementation": {
+          "commit": "PB:ca0f5555 + PQ:95dbb24a",
+          "path": "src/prismabuild/pool.py attempt nonces; PQ checkpoint journal re-verify grammar (referenced, not re-read)",
+          "state": "partial"
+        },
+        "deployment": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "validation": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "SAFE-03": {
+        "text": "No false complete: terminal record plus CAS receipt attest exit 0 and PB's own records only; payload-identity verification is the application consumer's gate, never attested by terminal success.",
+        "implementation": {
+          "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:d1e217607942 (#957) records every skip's node ID and reason; d3c6b4241e86 (#967) reconciles each shard's outcomes with its collection by node ID.",
+          "path": "src/prismabuild/pool.py terminal + CAS receipt publication rules",
+          "state": "yes"
+        },
+        "deployment": {
+          "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0 2026-09-23 update (snapshot 13:50Z): #957 and #967 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
+          "state": "yes"
+        },
+        "validation": {
+          "detail": "single admitted CPU repro attests PB-side rule only 2026-09-23 update (snapshot 13:50Z): #957 c749c91fcae9, cfb88c896310 (20 passed), 37-file set 35bedc758b9c (549 passed); #967 b31c34b551fd (567 passed), PQ full suite 63ebbe7e42cf and 39 more shards.",
+          "state": "partial"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "ACC-01": {
+        "text": "Schema plus real-producer parser fixtures incl. gzip/path/serialization variants.",
+        "target_enforcement": "new: PQ parser-fixture suite incl. gzip/path/serialization negatives",
+        "implementation": {
+          "commit": null,
+          "path": null,
+          "state": "no"
+        },
+        "deployment": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "validation": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "ACC-02": {
+        "text": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
+        "target_enforcement": "new: PB lifecycle/race suite incl. staged-lease races",
+        "implementation": {
+          "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+          "path": "tests/test_reader_lease_lifetime.py: rename/publish ordering, simultaneous egress, refcount double-acquire, retiring generations, epoch ABA, malformed taint, namespace isolation, promotion cover proof",
+          "state": "partial"
+        },
+        "deployment": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "validation": {
+          "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
+          "state": "partial"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      }
+    },
+    "scoped_implementation": "ownership refactor only; core source bytes restored, no contract/default changes",
+    "scoped_validation": "pending fresh PB results; previous evidence remains historical and exact-head-bound",
+    "scoped_deployment": "not deployed; no runtime publication or restart",
+    "remaining_target": "No full staged-read requirement or campaign acceptance established by helper repair"
+  },
+  "limits": "Original RED, GREEN and main evidence are immutable and exact-head-bound. This authorizes only source qualification, not deployment or a campaign-complete claim."
+}

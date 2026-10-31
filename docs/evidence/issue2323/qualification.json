@@ -1,0 +1,1161 @@
+{
+  "schema": "pri150.terminal_plan_qualification.v1",
+  "tested_source": "ef29f71e2e1352be45b5c5d78e9ca97d7b83809c",
+  "matching_source_trees": {
+    "src": "9b4cab8c92e4b3f60a9efcbaa7fa59a061a2dafb",
+    "tests": "373d11d9aa5fd3789aa135fd6589f2ad89733f81",
+    "tools": "5e987f4195348a3552fff25747f89f16cf367a84"
+  },
+  "approved_ancestor": "c4df93be52c08ceca024b94a482b20ef0056900d",
+  "main_ancestor_at_qualification": "e2be346b0c1a7d4fa24ee0d2d146bcd3949c4fca",
+  "reproductions": [
+    {
+      "key": "0cdf3a5c872326cf91d0a9be7760bef4b5addc09602924f5eef37c4b1ce98470",
+      "passed": 1,
+      "failed": 1,
+      "status": "failed",
+      "receipt_sha256": null,
+      "evidence": "/mnt/shared/paperclip-runs/PRI-150/red.endings.json"
+    },
+    {
+      "key": "19c8fb5e9724a14b7f7fd1665d7879efe4a06b248c4c73918432a6a453905412",
+      "passed": 17,
+      "failed": 1,
+      "status": "failed",
+      "receipt_sha256": null,
+      "evidence": "/mnt/shared/paperclip-runs/PRI-150/boundary-red2.endings.json"
+    }
+  ],
+  "lanes": [
+    {
+      "architecture": "x86",
+      "passed_including_repeats": 619,
+      "failed": 0,
+      "skipped": 0,
+      "runs": [
+        {
+          "round": 1,
+          "report": "/mnt/shared/paperclip-runs/PRI-150/x86-ef29f71e2e.json",
+          "report_sha256": "4ff0d20c6e1cc3a2495a86d25fb278d7b0b0b5f7edc8b0aa1c2b10d365a56c1b",
+          "readback": "/mnt/shared/paperclip-runs/PRI-150/x86-qualified.json",
+          "passed": 443,
+          "shards": 17,
+          "hosts": {
+            "dl380g10": 17
+          },
+          "actions": [
+            {
+              "key": "2bdf0c5402745c6149a403e94b55416044ae4ae7093bed13fa883e9dcfe672e6",
+              "host": "dl380g10",
+              "passed": 2,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "fb7e19553fc3ae62b61befa852dca313a230ccf54705b2b6f9b7b9b7a5ce3363",
+              "result_sha256": "b506fdbe91ac1e6704bd7b388cc0aef1fe69b28054bc3ebf793400eb846ed66f",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 8158,
+                "sha256": "9ad2258e71a915d14efcccb269e6f276b98e7969367880fa79194d11d11ae506"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "05ce5eca1c681f76723ee34cce8095f72ac6824d7e421cfc4de3f5f6e0de1eb3",
+              "host": "dl380g10",
+              "passed": 42,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "c9f7021fad13cfbee1d39a6e9f5a6ec8a91591d72696ae2cfbb567bf965fdfe5",
+              "result_sha256": "66a7a872da880792494b877c18638c52b9befe44a7b3d4c73b3833be23f852de",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 34922,
+                "sha256": "0e8e27d941b7092ad07d894daf7f68740d6e2f9f9d57cc88dfa86d2a3420bc79"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "502cdbe95ca70a6f9a1f652926b3a2df6879969ac911de1979ff07a066baf4c5",
+              "host": "dl380g10",
+              "passed": 6,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "749da8e1df2e89e194903d5417abbc43d9bdae9412efd21083d89b6c9f49b8d3",
+              "result_sha256": "79114c0fa5d05955c5c3091ca1ca629a8d2fb59ad6156e961efddbe67afdba79",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 9242,
+                "sha256": "ea384bdcbd1a2f0e99bb36a66cd36341d8683a3ab44107642f5c73e248a850c6"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "25a76e0dd940889fc45198bd2eecf17bd55929d6d722e4efe65b25e298fc9bb4",
+              "host": "dl380g10",
+              "passed": 6,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "96d679cebbdf58bd6d5f2dada3d6a1381dd6d64045f154d0fd5e9889738b5818",
+              "result_sha256": "239b266a6054992ff678b9d4b197e3d6dbbbe11bee92a191c4e66b66aa9628b2",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 9442,
+                "sha256": "8b271d81fd812c978091b8882925b4f912dc707fdd1ce8176b0d29b3e0642d8b"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "71be5edfb0eab4d717ad1626ded1960d294c931db3d35ec7bb49e36a7c4ba8bd",
+              "host": "dl380g10",
+              "passed": 45,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "437913b5e7b05680c063087cca35728c3997eed030c0f3771d7101e6fe1a36c7",
+              "result_sha256": "26f6d4c60f83bf239dd334195935aa01d1c2ee2ba1a6f5e7e2189110a2d37dbf",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 31929,
+                "sha256": "fcc3bb9c8c0d27822aa9431c13b64c8ec60e80d762f425fb7f1664387db79aed"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "c23b77aec74ce4cb28df144721c9267b9f0b12dccf250aec53d6731fa0c0ee61",
+              "host": "dl380g10",
+              "passed": 2,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "6f8f0f57fc59f97730f6ac2b11c4033094d6af261bba36e78ba6e7a532f5a3e8",
+              "result_sha256": "109241537e57902b2a1906eb5a2bbff22882726a07e1fb382d9b36d401483bb6",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 7564,
+                "sha256": "e1b69cfeca2f69cb1752461fcd413bb8b3c112290f32cb3799beea451f5c7640"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "0fdb6d96c81b47fe05ca62ff8822429b3318161a2c3089560470f5e198bdba8f",
+              "host": "dl380g10",
+              "passed": 16,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "a843d0bd91a4d90583cf2978220263080c73b2b784508d2f2776674826ace063",
+              "result_sha256": "71c170a1e2774642c98a55adb6d6418d0f9343749f6a74769736ba7d76a9f7b0",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 17148,
+                "sha256": "f8ed7d767b202935cb5a8033b54097087863175e6e0e582cf26a17498ee4edf7"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "29488cc159b66f68f4f0a70860406755a4982f3af083d3b8ea26efe1e336c7e8",
+              "host": "dl380g10",
+              "passed": 7,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "8fe1952b92e0b7dfd535275697d6c7db3b949eec1ad007da2ac57e78b8584b16",
+              "result_sha256": "e4d164b5e2b5e5c08ea3ac5dc02e6f28d983f7faf25c43907a2e236ab36df461",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 10830,
+                "sha256": "2ff534091a0bc4cce9a8a584c2ac850510911fda779169fb0595e4695bc8d66c"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "78dd268bb7342ba79392d137116d64337457f4e5ff3149ec4aa35ef8f7fa75c5",
+              "host": "dl380g10",
+              "passed": 8,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "fb23c26fb7ba3a8d17a2ecf0adee7d7be94d26972e9f021925cca9abb17bd98f",
+              "result_sha256": "c206a09f568ffa48ff73576cb2f6a608bb854da9745bfc411d3053f96fe90514",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 9370,
+                "sha256": "2f9e29bd27a3f65c2f9c5536a44ed02bb8f3d8001d1d204d1a264194a42726ec"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "ce468d5135e8c1a179f4a2fe17d20f3faa2d7db5d7036291aa05163e4cf03c51",
+              "host": "dl380g10",
+              "passed": 4,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "084d642f19ac8f1f05fe543c251bfb8bbfd1a6779bbdabe4f3d113a13600e102",
+              "result_sha256": "0df4772246366a0535fb486e935e8b1f585afb174e7bbc586a0d50ec86f085ad",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 7905,
+                "sha256": "3966f7e98939f2f798e66408c1947844dfa865ed77d2f232044b7ae7e2da6d76"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "133a2ade5930220962384b19fd78c0d0d33a9d254ad72e4967c67008a7b971f3",
+              "host": "dl380g10",
+              "passed": 8,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "d18e23ec9b346bf405b8d315077ef591e4b99aa1fd43a93d4691675c778e7ebe",
+              "result_sha256": "22311fec72dc8c3adc785a701a37069e70d9390d60b3b1e46159cddb7804ca79",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 10268,
+                "sha256": "1092ebbc762af4823ba8cd38e366c22885ecd660b32db1c1bbd5b689fdd6baee"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "f865b9dd00a8738edf9b1acdd72b68a13a19789ced411d4be7bc94c303d00eb7",
+              "host": "dl380g10",
+              "passed": 17,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "47c7bab469318453525c27f1af1a2d38ab18e509dd72d3a5eec787d5a716e6f7",
+              "result_sha256": "5e67001676d16c49e2783a1be7c3bc584782c9ec177b116d34c0cd079f73ae65",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 15499,
+                "sha256": "d3627fbc332fe417216e74fa07dde11c40bd99674f35f9493f14a8c03397c6e8"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "edb0ee638db4ae4a58dedd9eb65feb163a572c8c8f59d38ba30724ab6357a08e",
+              "host": "dl380g10",
+              "passed": 8,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "bbfe217451f540fa80b688d404998e86982183f756236edecf204f5676ca309a",
+              "result_sha256": "11da8c85e7bc220645269bf729988eec94d80c79de867ca2ca0b5926f967f66f",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 8913,
+                "sha256": "57027bd88fc067e31ff6d637af8c42f05f0591fcd1f8670b67c4c70bfb1964da"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "a40d5622e66c472bc0841dc49598f769780589858d62082bf64c29b986d38de5",
+              "host": "dl380g10",
+              "passed": 92,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "0f611c50063432551ce7040b5b34e4cc32d6c97c12898f65cb87d393111db1bd",
+              "result_sha256": "192c360e6e6e56d739549b31516d634f88279dd33532939b14e4e7daac0b4837",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 57526,
+                "sha256": "257c4d208e35e4d4d83103b0b68c33e50bbf853539a1bfc37579836d06834753"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "3fba1361f63b99c863e407d5e6420cb16108c169c576ab21f9aab14948395c7e",
+              "host": "dl380g10",
+              "passed": 8,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "6058c6075af19449c8cd6b3923e92ef78b11204547990ae18527fe79cd6d0a64",
+              "result_sha256": "9b869fc34da3655e185e4893752c9775c2f18be331df6da530b64abf5816d526",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 8727,
+                "sha256": "43de489d33dbb477d8cb4e9d0e1045fb28bc30e55308e117c2acbcd98e837f70"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "04b46086d68022e896146624233c54e0222ccabfbce008f2d9565b926fcdd5c4",
+              "host": "dl380g10",
+              "passed": 1,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "8a2933e5482e4f86c7f243ccb9df7bafe8c0ea0d1a0577ecfeba5c1e24f45784",
+              "result_sha256": "d96ee284d78c323079ee434fa00efa5529d80c7f30e3ff4ae1f1b4b55ebf8725",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 5480,
+                "sha256": "81c03d6aa31fbe2335dd1ead5f8c8c6c351fd019b045896b0a9c0bfa97aeffd4"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "2168a722377460f2bb551fd08ccb35719994b7573a74271dea6e5f1556e86f51",
+              "host": "dl380g10",
+              "passed": 171,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "bc1c44e2d5232fa6063607bcec169375812ffc6cff654bf2f1aa1c3cd5bdca8d",
+              "result_sha256": "cedf35f3c9fffcf944b7152b6c4152d5ec1d17527739cdda0278da591d254723",
+              "snapshot_sha256": "2d6e704635be14a38edfeb90e31ab7bc4757cf28ff1d529b927930d3bb504323",
+              "stdout": {
+                "bytes": 95105,
+                "sha256": "a1f62062bd934cdb7b463ea7f910938ae9beb9384e31e5feb802107db1617f2e"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "report": "/mnt/shared/paperclip-runs/PRI-150/x86-repeat2-ef29f71e2e.json",
+          "report_sha256": "a44d0fc47e1509b80b122851c5b294736a525abf9464057e05570afecb41c3c1",
+          "readback": "/mnt/shared/paperclip-runs/PRI-150/x86-repeat2-qualified.json",
+          "passed": 44,
+          "shards": 2,
+          "hosts": {
+            "dl380g10": 2
+          },
+          "actions": [
+            {
+              "key": "bdb5b288ba40036573a02ea3cfce86000d5934964c7e67fe84409f4fcd44bdc9",
+              "host": "dl380g10",
+              "passed": 2,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "99bf25de5d5e0675fa3abbb33c4df368be2092c9e64e2fa6efcee2441dfa5066",
+              "result_sha256": "111a6ceb63f48d51fdcbe6ac51af7789a300accd63d837800123a67245298c04",
+              "snapshot_sha256": "933cd5842d013edf3f1aa648f36ecf7aa3b10b865cacb1eac0e28b0c52fd3d4c",
+              "stdout": {
+                "bytes": 8470,
+                "sha256": "d2e1eac22509c0c000e75af5b06459d29c190e0b5628ef99a25c34d88aacd18a"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "3d64338ca5ba333f6b2d52262921d05d1f42dd9d6a97a0b843cb7647e9819fe4",
+              "host": "dl380g10",
+              "passed": 42,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "5f604931eccaee2c26879d4b71a82c6554ccdbc8b4a6d8640629d3b622e3ceff",
+              "result_sha256": "298b5f4129539196d7043639994e17a3c4359879af6d127cad10369dd6152994",
+              "snapshot_sha256": "933cd5842d013edf3f1aa648f36ecf7aa3b10b865cacb1eac0e28b0c52fd3d4c",
+              "stdout": {
+                "bytes": 35303,
+                "sha256": "03d6e6bf67117a98618b8e4ed937c0bd3c26597285c467f869f4790dd7017af9"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "report": "/mnt/shared/paperclip-runs/PRI-150/x86-repeat3-ef29f71e2e.json",
+          "report_sha256": "83200d5b12e7efaf2db1a81150cfe50278b076d5c27998aa14dc1b00702b979e",
+          "readback": "/mnt/shared/paperclip-runs/PRI-150/x86-repeat3-qualified.json",
+          "passed": 44,
+          "shards": 2,
+          "hosts": {
+            "dl380g10": 2
+          },
+          "actions": [
+            {
+              "key": "d0306bc6876f695c79ac7790158d3063f695010569c03214401d5baf8e50b023",
+              "host": "dl380g10",
+              "passed": 2,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "13077f0ae4fd7e648e0ec60b15a177f2acf96cdb8338cde16dd2a322c26ee03e",
+              "result_sha256": "5293dafde929f2eb9b240928d51ff2b5e10d0bd1c3e5560f25f7d5ab9621ae61",
+              "snapshot_sha256": "18dc32ecec4a9aeb2c7fe3d7cc0e3f0abfa71a910b95d16e2ee2baa29c2542de",
+              "stdout": {
+                "bytes": 8586,
+                "sha256": "8f7e8f7a657c2a67afa7109133f6d330c6e57dab3c57c31c5b807f5f7678d755"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "afa0c9defea96cb8d0c5f2fdaf2f7d9be855175af55d6d54bc5c700a040a2ff8",
+              "host": "dl380g10",
+              "passed": 42,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "8795ebbb002dd0599500518e3d8708b16e899f3deeb52f4bd696b86c75d9ffb9",
+              "result_sha256": "6c99d967de9898a6eb4ff27da18cde1b301646fd1024fc60311c514edebaab36",
+              "snapshot_sha256": "18dc32ecec4a9aeb2c7fe3d7cc0e3f0abfa71a910b95d16e2ee2baa29c2542de",
+              "stdout": {
+                "bytes": 35438,
+                "sha256": "843450eed738dbe6ccd9b6f13f24eaaefb917e6aba55513bedbf8fec1ad07019"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            }
+          ]
+        },
+        {
+          "round": 4,
+          "report": "/mnt/shared/paperclip-runs/PRI-150/x86-repeat4-ef29f71e2e.json",
+          "report_sha256": "73cf361446b6daadcf7d72e9777c04d57c66cb14897b9131f11c50d6f5d9ebdf",
+          "readback": "/mnt/shared/paperclip-runs/PRI-150/x86-repeat4-qualified.json",
+          "passed": 44,
+          "shards": 2,
+          "hosts": {
+            "dl380g10": 2
+          },
+          "actions": [
+            {
+              "key": "857cf7c77229b2c2d0aba9f985c4fbd3bc90750945d5144aee301a50aec0a3fe",
+              "host": "dl380g10",
+              "passed": 2,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "21b05df4e1f18b9633057f52a00d432eb00ad27a50021cf6cb698a7a54ef3a63",
+              "result_sha256": "d3fc650808b1c2185c0ea64b258ed9e4939e5555ab454cd01a3092fa7e994866",
+              "snapshot_sha256": "529011d17ed8bc138b6f919a5fbff48d5b2b1d887d77019148faa90d85096bc7",
+              "stdout": {
+                "bytes": 8706,
+                "sha256": "c4982c2ca6b7e19bb3a14eb931e5cd9695637123dca627228854c95095654fed"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "e3ace7b9ef315fbdd888788c5a1c47061b1465da3bce0572f6d167c5538fa135",
+              "host": "dl380g10",
+              "passed": 42,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "7e7bf2fe96bae75f14772a543fe8a2a33ae18c359cd83cdd3438f20d9c623938",
+              "result_sha256": "269457d3d05a911f891ac486d812d052464b5af8e50a67be3f4778503d987250",
+              "snapshot_sha256": "529011d17ed8bc138b6f919a5fbff48d5b2b1d887d77019148faa90d85096bc7",
+              "stdout": {
+                "bytes": 35558,
+                "sha256": "f771e293faf17a5984b8e0d2dd788044d83ab31be659a3a04e18f7c8f7e18213"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            }
+          ]
+        },
+        {
+          "round": 5,
+          "report": "/mnt/shared/paperclip-runs/PRI-150/x86-repeat5-ef29f71e2e.json",
+          "report_sha256": "8dae53482445901dbba7fed68521cc3fde467bf2edd42b7db4ca722d2a947994",
+          "readback": "/mnt/shared/paperclip-runs/PRI-150/x86-repeat5-qualified.json",
+          "passed": 44,
+          "shards": 2,
+          "hosts": {
+            "dl380g10": 2
+          },
+          "actions": [
+            {
+              "key": "2e6f3f0fd741e17177efdd6d0a54389944c7b8c402ac262d7a08ebd3a56b94da",
+              "host": "dl380g10",
+              "passed": 2,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "b88feb5cb584906ff62ffd312dbb72bb9f6930531fd7b22f8518d1f260aae9f0",
+              "result_sha256": "efd6af2599d8b95ba1614b7f8add6f85c25938c029608b1b688a71a7c1e6dfd2",
+              "snapshot_sha256": "ea353d038ca74341b4a1851ccdb8e08c9225f56782f0b4ca2e824993e867d861",
+              "stdout": {
+                "bytes": 8824,
+                "sha256": "55865b8ca7f22b05ffe6aeca088c52dd1c8a063281adc277e7911e81f7b8e1a8"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            },
+            {
+              "key": "07b98f1ee001d31ed01b9cd86768918dfd086d0b49f05470d4d3d326ed46dcfa",
+              "host": "dl380g10",
+              "passed": 42,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "d33e5789ad885f601eed9c4d6c88fdbdcbf476e17e3d0c61072467315689e543",
+              "result_sha256": "5d8f6dabfe70f8543c1e7dc14c1ce3a23e5a92cca0394c3eb27f6bfc7a3af083",
+              "snapshot_sha256": "ea353d038ca74341b4a1851ccdb8e08c9225f56782f0b4ca2e824993e867d861",
+              "stdout": {
+                "bytes": 35750,
+                "sha256": "0c992bdb437613d07ce65a0b144437df377e4c2ca7c37a6cc47a15485005e1b2"
+              },
+              "stderr": {
+                "bytes": 46,
+                "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "architecture": "arm312",
+      "passed_including_repeats": 619,
+      "failed": 0,
+      "skipped": 0,
+      "runs": [
+        {
+          "round": 1,
+          "report": "/mnt/shared/paperclip-runs/PRI-150/arm-py312-ef29f71e2e.json",
+          "report_sha256": "bed600edbb5ccba33af699e3b39119e4aed4375b8dec186f5a167785368670e9",
+          "readback": "/mnt/shared/paperclip-runs/PRI-150/arm-py312-qualified.json",
+          "passed": 443,
+          "shards": 17,
+          "hosts": {
+            "sparklina": 7,
+            "sparky": 10
+          },
+          "actions": [
+            {
+              "key": "03204adba3917fb1e403bab386a49dfdeac1c3acd8d559445fac592c303672c4",
+              "host": "sparklina",
+              "passed": 2,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "f6ab2289214f42c8c4cf4e24a2c48d66349dc53569e5e574e96a0c48ef26a8e3",
+              "result_sha256": "6f3a79209ff3974e2cec926098a7a1b9b72ffda54a97f9a855b3403b7ffc7322",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 8260,
+                "sha256": "f045ed7b733c73f840f1358550ce5ed7a2ba86c5ffa0bc7e6726be611eca1821"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "56b0630f94af07e5e5f665951447a64557291df264d6dfc2518472f7f86e6905",
+              "host": "sparklina",
+              "passed": 42,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "33390b294fdb0f5588c96a386c45d115bdd7ee1b86ecce2ca7413db994188b95",
+              "result_sha256": "d5bdfee6194b683f6d5f7a287df5c48e540b9b14a485db94f488dfda10d597fd",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 35022,
+                "sha256": "5565be09ee406abdfc0ea11e539923ff1290265ce5a523219055cee622d318d4"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "592ab6f11eee200b16963ede3be45ac50938e051b2948be88c93f11787dcc27f",
+              "host": "sparklina",
+              "passed": 6,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "3e058d4f34f5d0f033c7a8824dec44a0b296d0c70de0f4fdcdcb47149ab87d7c",
+              "result_sha256": "b57e7daeb567421534b279cde465d26f9a5fe12d007f0bedb2152e227e8a8789",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 9344,
+                "sha256": "f2cac74affbba264c22d131e60905092965780953ee1e87ac786906c99bcb9a0"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "d63999839990e23343604e471a14b83e7deffe9743f4715aefeea4591bae7aba",
+              "host": "sparky",
+              "passed": 6,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "9627eb4d30a32fdf796c7ea26be780514b71b9e48f4a438acd7d4384a9c4b5d8",
+              "result_sha256": "056a7cb714c1d76def0fcd8d2a6702aae9da843b0456d262413caf8bfa0eb2a3",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 9536,
+                "sha256": "a1d70025d6f8b86d0b453e13e3f3b0b20596211e9812179cd257a929bd502ff8"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "3e8fae36129fa41f30c12691ee2a198a18f2e01b70f4b457fc363d7bc827615c",
+              "host": "sparky",
+              "passed": 45,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "150d3abcb3e45995006f026edcd497fb704ac3d8656873e6b0700048fdb19210",
+              "result_sha256": "7a164264d7c94472ad1258ecb69fa96b54f21fe3cb5a0f3ce7a963d87ed4e834",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 32021,
+                "sha256": "985f094ea69329e99b4d04b630180f853c8dcd1c7b715c2789936e28e9e409f3"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "2fc5c86b3d5fb9aa4f6acec7947f468179e25ed0dcab9ad39043b86760a380f9",
+              "host": "sparky",
+              "passed": 2,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "27784c4cd8ab18d77194019100d5cbf2246d9aefb321401d8c6a61837ec0169d",
+              "result_sha256": "ddba7bc73e6f271de452a1734045510b8150683abe3c7fe30043e0d9daa26ba6",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 7657,
+                "sha256": "57ce57049a81545f68b752115af3f29940f63a9de021a96b7ed50866ecb25b80"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "b406a78052f7c291baae9ccdec98d895116c97e17e1b6537377ecd4a92b412d7",
+              "host": "sparklina",
+              "passed": 16,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "96babdc5bb36f4f305cd9eeb43695877e3654278b7371d6616e52287426d08b8",
+              "result_sha256": "7320e97d496ce4cf9e24ad55f6e14d23378d44b4b9a7760cb18531ed23a96ae1",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 17250,
+                "sha256": "33dac9dbc57220a78c48b946d493a967318412e0be6c21c6810c4e157e35930d"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "0023801c8fb995e6fedf7d5e9a1a907311dabd50c42ff427bd7e6c7a90896b2e",
+              "host": "sparky",
+              "passed": 7,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "864673124dd094e6a2bf6c785849654b5ca21caef1b2c5f737dece91343f0d0e",
+              "result_sha256": "7527dc52ed906019c42db76ca870c0829d3e3c8699c7a112229fcb19b3116d00",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 10677,
+                "sha256": "ea03867cdd71985e77d2d4eb03a845214c708c33ca120a4e60d0901a21f51974"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "67cb14ee4bf748d1316526d913e00a55809efe6376486345c9bf6f4db5a957c7",
+              "host": "sparklina",
+              "passed": 8,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "ba7ee37a4a6574612aed63ec1bdcb6328c00d8634346766fe18177ac113d0ca7",
+              "result_sha256": "b5ad8a41391d17f907eb433472117ff7595d4ba75200ea962355a6a07113d197",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 9472,
+                "sha256": "09429b780e80a73f8552e790d41094f3dcd51003bd453ac8e13a90795e25255a"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "4ce57137f5d18c68f4775462d14062539ac569d96a02648dcb0ea66ec9e63268",
+              "host": "sparky",
+              "passed": 4,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "ae9b219445f1436933e15112a2df094089d665060fc4ed67b0eab8db51120f4c",
+              "result_sha256": "2016b1bd26a35349f69cdeca8d050f53a1ac6fb7388a086dce4a123f9ebff6cd",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 8005,
+                "sha256": "3d2745f78a770267b4d2d2b5ffed55eb97ce183d8e15bce1754028549fd1b3df"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "4b4cf85ef96f2477c0d34542760d6e320cd87a3b9fb3e579a63223f95e9235e5",
+              "host": "sparky",
+              "passed": 8,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "765a2d1a1e406bfd6f882b51f4b7ffc4397e826823a0542c1e55f89c57747ccd",
+              "result_sha256": "b1a01bc6cd0a177e755ed8394f7020b162f8a861b4fdb869bb24e18f65bf336f",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 10361,
+                "sha256": "11c2dd060e2d67d843f3df498810651094058ba9350fc820739bf307dacc36e3"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "afb2378bc7118b010c3e1738f48f6883ca4be5387401da1a66c3b792b6a34f6a",
+              "host": "sparklina",
+              "passed": 17,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "79a27ffd62db3c438df8755ce083435e18ff88011807a7e03b50ad3bb9eb83e8",
+              "result_sha256": "f3ecb11fe1c31a63985182d7620d060c39937afed7337ddd32bc130f8c5b1b57",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 15600,
+                "sha256": "426b2fcf4af70b8a19dd42ffb7fa0eac27d52bd0ac5ffeb0ca1f5a9a40278064"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "d46763bd0a4d0c49277aae710ccbeac6acd5326ce4adf06ce3a2505333963844",
+              "host": "sparky",
+              "passed": 8,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "fc7c73f3a587f8b7e4505f9888dc753dcbc9d587080424ee9dda5e17592ad02b",
+              "result_sha256": "eaa9ea00cad41f2c6f386d53acec0d3752ad4b89b15a4ab77e90bec9a7466457",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 8996,
+                "sha256": "304004ff1eea9c0f40ea1c632de9fce23afbc9bc2ed72dbcc4e1701fb9359459"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "f9a8e2b175e65ab209d1bd458b4827019daf598ebc67a7b4d91a861bd75d1b43",
+              "host": "sparklina",
+              "passed": 92,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "9c3db1db45b66e2fa2bdbb5fe78927b4bb9d882f904a846f41363afcf6abc2a6",
+              "result_sha256": "5f4be00d399a69b24a95cae81a9751b941e7cb13dcb1fd0db734dc81b50da3f3",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 57628,
+                "sha256": "e368b292eb9baa9dd4bc40b265367285010a483fce3ca37da7d3637863e0c1e5"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "b0448ff28abf44213f59b82dcd1033f32a48eb2345e78cf3015c97cff9741460",
+              "host": "sparky",
+              "passed": 8,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "c080973869c04b5c510b8f1e862ba8cc0b47ed39d854fef41f40185a81a14246",
+              "result_sha256": "3c3fcdfe9a4eae59f7849342594b34f116ef481c7987ee8df7a1ac898438e256",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 8822,
+                "sha256": "ef9037e1c51f19dd0673e36f9687c6c00bb9a5ea274e0f0b148b28b1619f42db"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "2cca2fda2a5d6d9d26d8f01d8203e9af7694a35295830d453c6ac4722d33a8bd",
+              "host": "sparky",
+              "passed": 1,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "4c86627642654d72f603d3187c07b1006222fc8ac42b6d0ca5c25da5b032a133",
+              "result_sha256": "a132f18d510d9d8c001d71ac363a37241a802ab692a1efbba6e4dd79d1e924d8",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 5576,
+                "sha256": "b4abdb21bbd411f6f9829bc52d8eb3359502e218e226ca2ed764d6e7cc0ce1d1"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "84314b780d6d61f89a691c6db899362c0f2d0bd4571dae7cfb6cad3fd6dc1b26",
+              "host": "sparky",
+              "passed": 171,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "e66b984f2c09f7948c4d38e34fdbbca148c7a947fa32b584ee5fee525bc7fb87",
+              "result_sha256": "e5c532483000ebe1c93baabf98b655d44d74d964c0d870a13037fc1b325d6274",
+              "snapshot_sha256": "4f9f6cd2d22fa55be4d723570c70575a4ae2d1a75eb7a6eb228fb42937e855eb",
+              "stdout": {
+                "bytes": 95199,
+                "sha256": "c4eebfd0f1bf67dab2f115dd2469d6e0e64b88fba92a577ba11490ffdeceac32"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "report": "/mnt/shared/paperclip-runs/PRI-150/arm312-repeat2-ef29f71e2e.json",
+          "report_sha256": "5bfe025aeb63e4ac784597e1b511bc7f2a869cc2c1ffba8b7d94ec8ab1bfec4d",
+          "readback": "/mnt/shared/paperclip-runs/PRI-150/arm312-repeat2-qualified.json",
+          "passed": 44,
+          "shards": 2,
+          "hosts": {
+            "sparky": 2
+          },
+          "actions": [
+            {
+              "key": "5eebc0a4dac157780bdce3804f5633038a62af9aca4dfb644bef2a38b39d7149",
+              "host": "sparky",
+              "passed": 2,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "c0f5d22860749cb2e753e32a538dda1e2528f8842fd0bb6d52d4a06b08396f73",
+              "result_sha256": "4ac93e5fd83b5c7a4a0fc12154e9c59574047c802c3f1501fbe982a9f3452d32",
+              "snapshot_sha256": "d3aab500dc73ab85ab151a747d7c13eb6947a8447207ec18351a1e5fdec1d1e7",
+              "stdout": {
+                "bytes": 8569,
+                "sha256": "3996213a6f9d62453c234d4bbd82fe0b1f4275d200c12f32cb9f3bcf96881ff2"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "443bffefd420dd3223271aed977da0fc1977666a09cd74d14f40212720742ef9",
+              "host": "sparky",
+              "passed": 42,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "1e970e2fe2edff95a08f0014dacd1b6953243c4a1fb20b08e5f27fa56412f578",
+              "result_sha256": "53beab06ade7b3b774c352269695bec0e8a625997be3702f3a911877f799fa55",
+              "snapshot_sha256": "d3aab500dc73ab85ab151a747d7c13eb6947a8447207ec18351a1e5fdec1d1e7",
+              "stdout": {
+                "bytes": 35379,
+                "sha256": "1b5064a9e7ef114cb61f0cdfa6409fbcc6e1e802d0f06284b31f779ae9a73130"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "report": "/mnt/shared/paperclip-runs/PRI-150/arm312-repeat3-ef29f71e2e.json",
+          "report_sha256": "7fbd2c04aa0a45417d1cf5dca5c6501550b7d7872658d4f0b3e431fa473901d1",
+          "readback": "/mnt/shared/paperclip-runs/PRI-150/arm312-repeat3-qualified.json",
+          "passed": 44,
+          "shards": 2,
+          "hosts": {
+            "sparky": 1,
+            "sparklina": 1
+          },
+          "actions": [
+            {
+              "key": "b83d55ff53e49827535d64961e7a6fea451659aa4c9113b32c1183095f642fde",
+              "host": "sparky",
+              "passed": 2,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "057ed6d83cdb7667e899a7f5b1f1b28eac6d6e079734cc0b640eec76aa5e5308",
+              "result_sha256": "94a2f9c34398aa3518ff632015340a179e0e7696edd9279c85af7081737ebdcd",
+              "snapshot_sha256": "a8cfea76800da7781c153e02e527375e28dd4f51b6d8a99e99505b00eb20bb46",
+              "stdout": {
+                "bytes": 8687,
+                "sha256": "eb1a5c77c6f10dc1e242f4bfd3875e22d0f4626c476b93aadce7f59565ebd5e0"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "5c238cc1cae4cc9de15605b151ea49721aa00c4e8a219219be48dba91aed3f16",
+              "host": "sparklina",
+              "passed": 42,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "c359522edeee9c0b82e7be68f0ed8ccfff2e30bf30c559f773497b1e7469e0d8",
+              "result_sha256": "919c60a6feacf001579f6d5383e75c4a516e37bb3ce422b6d62a8e72db67c727",
+              "snapshot_sha256": "a8cfea76800da7781c153e02e527375e28dd4f51b6d8a99e99505b00eb20bb46",
+              "stdout": {
+                "bytes": 35552,
+                "sha256": "c4dcb7b8b1b9d33a4ba10d762c80b40f734d34cc0dd423dafe042e117f12b335"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            }
+          ]
+        },
+        {
+          "round": 4,
+          "report": "/mnt/shared/paperclip-runs/PRI-150/arm312-repeat4-ef29f71e2e.json",
+          "report_sha256": "91833b138451eee32e194d1bbfe2282dde2d7bd9354f5e6c63069b2f476a55b9",
+          "readback": "/mnt/shared/paperclip-runs/PRI-150/arm312-repeat4-qualified.json",
+          "passed": 44,
+          "shards": 2,
+          "hosts": {
+            "sparklina": 2
+          },
+          "actions": [
+            {
+              "key": "bf6909b511bfc3c459abe48039a96fc6fd8a5189a56378413a975631d4e5e9ce",
+              "host": "sparklina",
+              "passed": 2,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "5ed830547b71690bd9ce035438f7a0b3116b1cf2573288a3427be2e4537cd0f6",
+              "result_sha256": "fdca96ac6550806686aa247d048f2776e0bffd1fef026e8815f5f283a2d93a8f",
+              "snapshot_sha256": "214224c2a3cdaaf3a4fbf7c1664d69b5de47506332c40fbcf87418cc4917fc90",
+              "stdout": {
+                "bytes": 8812,
+                "sha256": "1baf3d628183bfa137b6585701851d0ea4de8265b2b404ffe23239ca0d585f9d"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "945e6c89e309d8e70c9c773c01181b9317de016204c58ad43c3720a268605bc1",
+              "host": "sparklina",
+              "passed": 42,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "65d3684adb68fae35f78f77da0f4d958c242fbe4ebfd881a5d3562ff102c5a21",
+              "result_sha256": "3f1f4f8e2ee454163d09d7dd6a2ba5ff20a1360352d3ce4db5cbe0f7dc2ea647",
+              "snapshot_sha256": "214224c2a3cdaaf3a4fbf7c1664d69b5de47506332c40fbcf87418cc4917fc90",
+              "stdout": {
+                "bytes": 35694,
+                "sha256": "a58750c2f9479915425b01845d4bcabc399382d5e78768100a1a3359c8357133"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            }
+          ]
+        },
+        {
+          "round": 5,
+          "report": "/mnt/shared/paperclip-runs/PRI-150/arm312-repeat5-ef29f71e2e.json",
+          "report_sha256": "deaa538b54cae28cf0eb4840f8f5d569b59bc41bacbe9cb185255cd24c346fa1",
+          "readback": "/mnt/shared/paperclip-runs/PRI-150/arm312-repeat5-qualified.json",
+          "passed": 44,
+          "shards": 2,
+          "hosts": {
+            "sparky": 1,
+            "sparklina": 1
+          },
+          "actions": [
+            {
+              "key": "4a6706da319ceae97fb0424b2fd3c25ca2949bdbca9ef26546a13188062ff08e",
+              "host": "sparky",
+              "passed": 2,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "83fbcbe8241b1942f5828ac5d08a8654f1fee7836c7419d6ca0f4e7d57c1011b",
+              "result_sha256": "59af03326ca2378a4cbaef81f5404236ef478d921613836b74d100c75bdc62ee",
+              "snapshot_sha256": "d3f2f38dd385e97255b21c32403ae4517b6ba382d7a3b34a7490a17cb15080dc",
+              "stdout": {
+                "bytes": 8922,
+                "sha256": "001ffd3c85fea53c99dada06ae1b08b77fe66e2051b96bb181bdfc1d155f417c"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            },
+            {
+              "key": "960e8b3bc351d9867bee2062b3a58fc8a0606e9a1786eb358d5ee98cb6fca13a",
+              "host": "sparklina",
+              "passed": 42,
+              "status": "executed",
+              "exit_code": 0,
+              "cleanup_complete": true,
+              "receipt_sha256": "8a362e9b42b7f4f2ca594ae6bb31b146eddcd964379f079da77d92a24167f826",
+              "result_sha256": "5aa8042594650cae8280d4fb90fec7d565451195e19fcb6b01f12d56b4282aeb",
+              "snapshot_sha256": "d3f2f38dd385e97255b21c32403ae4517b6ba382d7a3b34a7490a17cb15080dc",
+              "stdout": {
+                "bytes": 35833,
+                "sha256": "8cd87d48ebec19c1443db2ee541e5f9affcbd93d34bba9f61cc6aaf6dc21c2cb"
+              },
+              "stderr": {
+                "bytes": 43,
+                "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "repetition_gate": {
+    "files": [
+      "tests/test_review_terminal_plan_stat_refusal.py",
+      "tests/test_gang_plan_stat_uncertainty.py"
+    ],
+    "runs_per_architecture": 5,
+    "xdist_runs_per_architecture": 5,
+    "distinct_commands": "Broad run uses --tb=short; repeats add --durations=2 through --durations=5. Each run has distinct action keys and executed terminal records."
+  },
+  "verification": "verify_qualification.py reads native call/teardown coverage, terminal and cleanup, immutable log hash/length, canonical CAS receipt, CAS result and snapshot; src/tests/tools trees match tested_source. Retained verifier and raw reports are delivered as a Paperclip attachment.",
+  "resources": {
+    "per_shard": {
+      "cpu": 2,
+      "mem_gb": 4,
+      "gpu": 0,
+      "native_threads_per_worker": 1,
+      "timeout_s": 1800,
+      "priority": -10
+    },
+    "workers_per_shard": 2,
+    "max_clients": 8
+  },
+  "refusals": {
+    "description": "Original ARM request named unavailable python3.14. All eight published rows were positively refused interpreter_not_present, then withdrawn READY with zero token release. A distinct request named the installed python3.12, without changing source or test membership.",
+    "evidence": "/mnt/shared/paperclip-runs/PRI-150/arm-py314-withdrawn.endings.json"
+  },
+  "limits": [
+    "Component qualification only. No runtime publication, generation change, activation, service restart or campaign completion.",
+    "Historical record-compatibility release lane remains unqualified; see docs/measurements/1543-terminal-plan-validation.md.",
+    "Whole-requirement implementation, validation, deployment and workload axes remain unchanged."
+  ]
+}
