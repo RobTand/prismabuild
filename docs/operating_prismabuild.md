@@ -1223,7 +1223,9 @@ history cannot change the current verdict. It never expands attempt history or
 follows older supersessions. Rows without supersession keep their existing shape.
 Archive readers stay owned by the client, outside immutable-verification children.
 `pbstatus` reads archives inside its existing bounded census reader rather than
-spawning a nested child; that reader's existing parent owns any abandonment.
+spawning a nested child; that reader's existing parent owns any abandonment. Other census callers project
+only the retained summary unless they provide an archive reader under their own
+budget, so shared census reads never start implicit archive grandchildren.
 A retained reader emits its identity on stderr and fences subsequent archive reads
 across rows and observations until a nonblocking own-child reap confirms its exit.
 An invalid ownership identity retains its raw evidence and fences archive reads

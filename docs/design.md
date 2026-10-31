@@ -200,7 +200,9 @@ ownership fence or new pidfd.
 Optional superseded-terminal display reads are owned by `action_client` in the
 client process, never inside immutable-verification children. `pbstatus` instead
 reads archive bytes within its existing bounded census reader, so the parent
-owns that reader and no nested archive child can outlive it unnoticed. A process-wide
+owns that reader and no nested archive child can outlive it unnoticed. Other census callers project
+only the retained summary unless they provide an archive reader under their own
+budget, so shared census reads never start implicit archive grandchildren. A process-wide
 serialized archive-read boundary preserves retained-reader faults across census
 rows and detached-key threads, emits ownership evidence on stderr, and starts no
 further archive reader until a nonblocking own-child reap confirms exit. Invalid

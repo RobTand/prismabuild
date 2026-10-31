@@ -78,7 +78,8 @@ def test_status_ending_rows_share_the_bounded_display(
     tmp_path, monkeypatch, prior_status, returncode, classification,
 ):
     queue, path, record = _rerun(tmp_path, monkeypatch, prior_status, returncode)
-    row = census.endings(queue.root)[0]
+    row = census.endings(
+        queue.root, superseded_reader=action_client._read_superseded_archive)[0]
     summary = action_client.outcome_summary(queue, path, record)["superseded"]
     assert row["superseded"] == summary
     text = "\n".join(pbstatus.ending_lines([row]))
@@ -101,7 +102,8 @@ def test_status_jobs_display_history_only_when_the_record_carries_it(tmp_path, m
     ready.write_text(json.dumps(current))
     if claimed:
         assert queue.claim(owner="next-display-worker") is not None
-    row = census.action_rows(queue.root).value["jobs"][0]
+    row = census.action_rows(
+        queue.root, superseded_reader=action_client._read_superseded_archive).value["jobs"][0]
     assert row["superseded"]["classification"] == "infrastructure_rerun"
     assert "infrastructure_rerun" in "\n".join(pbstatus.pool_job_lines([row], {"empty": False}))
 
@@ -256,7 +258,8 @@ def test_census_archive_ownership_fault_is_visible_and_fences_later_reads(
     state["unknown"] = fault == "unknown"
     state["status"] = "error" if fault == "failed" else "timed_out"
     for _iteration in range(2):
-        row = census.endings(queue.root)[0]
+        row = census.endings(
+            queue.root, superseded_reader=action_client._read_superseded_archive)[0]
         assert row["status"] == "executed"
         assert row["superseded"]["classification"] is None
     assert calls == [os.getpid()]
@@ -266,7 +269,8 @@ def test_census_archive_ownership_fault_is_visible_and_fences_later_reads(
     if fault != "unknown":
         assert str(identity["starttime_ticks"]) in diagnostic
     state.update(alive=False, fault=False)
-    recovered = census.endings(queue.root)[0]
+    recovered = census.endings(
+        queue.root, superseded_reader=action_client._read_superseded_archive)[0]
     if fault == "unknown":
         assert len(calls) == 1
         assert recovered["superseded"]["classification"] is None

@@ -612,6 +612,11 @@ def offers(queue_root: str | Path, *, reader=None,
                         if isinstance(value, Exception))])
 
 
+def _unrequested_superseded_archive(path):
+    """Shared census callers opt into archive I/O under their own reader budget."""
+    return None
+
+
 def action_rows(queue_root: str | Path, *, reader=None,
                 authoritative_holds: bool = False, superseded_reader=None) -> Section[dict]:
     """Read worker offers, active records and existing admission evidence.
@@ -674,7 +679,7 @@ def action_rows(queue_root: str | Path, *, reader=None,
                     raise sidecar
                 row.update(resources=queue.demand_of(record), constraint=record.get('tags'),
                            **action_client.superseded_summary(
-                               queue, record, archive_reader=superseded_reader),
+                               queue, record, archive_reader=superseded_reader or _unrequested_superseded_archive),
                            priority=record.get('priority', 0),
                            priority_reason=pool.normalize_priority_reason(record.get('priority_reason')),
                            submitted_host=record.get('published_by'),
@@ -2145,7 +2150,7 @@ def ending_row(entry: os.DirEntry, queue_root: str | Path, *, superseded_reader=
         # is not evidence of when execution finished.
         "timing_finished_unix": finished,
         **action_client.superseded_summary(
-            pool.PoolQueue(queue_root), record, archive_reader=superseded_reader),
+            pool.PoolQueue(queue_root), record, archive_reader=superseded_reader or _unrequested_superseded_archive),
         "published_unix": record.get("published_unix"),
         "claimed_unix": record.get("claimed_unix"),
         "path": entry.path,
