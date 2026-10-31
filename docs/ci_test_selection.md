@@ -38,6 +38,9 @@ JSON contains a sorted function table, integer function IDs per test, file
 SHA-256 hashes, the source commit, and observed Python versions. Sorted tables,
 compact JSON, and a zero gzip timestamp make repeated merges byte-identical.
 Mixed source commits or conflicting file hashes are refused.
+Functions executed outside test boundaries are recorded separately, without
+attributing module execution to tests. A change to one of those functions
+takes module fallback, even when other tests also called it directly.
 
 The nightly refresh must run the complete gate population with both
 `tools.ci.tia_record` and `tools.ci.tia_population` in `PYTEST_PLUGINS`.
@@ -73,6 +76,7 @@ individual recorded nodes. Fallbacks select complete files.
 | --- | --- |
 | Recorded function | Tests that executed that function |
 | Module code | Every observed consumer of the module, plus its static rule |
+| Function used outside tests | Static rule and observed module consumers |
 | Missing function | Static rule for the module, plus observed module consumers |
 | Map hash differs from the base file | Static rule, plus observed module consumers |
 | Non-Python path | Gate's static path rules |

@@ -3,9 +3,16 @@
 Load alongside tia_record through PYTEST_PLUGINS. No test discovery or admission
 is done here. PB's own file partitioner owns the submitted population.
 """
+from dataclasses import replace
 import importlib.util
+import sys
 import json
 from pathlib import Path
+
+
+def pytest_configure(config):
+    name = config.pluginmanager.get_name(sys.modules[__name__])
+    config.invocation_params = replace(config.invocation_params, args=('-p', name, *config.invocation_params.args))
 
 
 def pytest_collection_modifyitems(config, items):

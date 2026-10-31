@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import atexit
 import base64
+from dataclasses import replace
 import gzip
 import hashlib
 import json
@@ -110,6 +111,8 @@ class Recorder:
         temporary.replace(target)
 
     def close(self):
+        if self.tool is None:
+            return
         if self.tool is not None:
             sys.monitoring.set_events(self.tool, 0)
             sys.monitoring.register_callback(self.tool, sys.monitoring.events.PY_START, None)
@@ -131,6 +134,16 @@ def bootstrap():
 
 
 def pytest_configure(config):
+    # Workers need an explicit plugin argument; unrelated child pytest invocations do not.
+    name = config.pluginmanager.get_name(sys.modules[__name__])
+    config.invocation_params = replace(config.invocation_params, args=('-p', name, *config.invocation_params.args))
+    plugins = os.environ.get('PYTEST_PLUGINS', '').split(',')
+    plugins = [entry for entry in plugins if entry not in {'tia_record', 'tools.ci.tia_record',
+                                                          'tia_population', 'tools.ci.tia_population', ''}]
+    if plugins:
+        os.environ['PYTEST_PLUGINS'] = ','.join(plugins)
+    else:
+        os.environ.pop('PYTEST_PLUGINS', None)
     state = bootstrap()
     if state is None:
         raise RuntimeError('TIA needs PB_TIA_ROOT, PB_TIA_OUTPUT and PB_TIA_COMMIT')
@@ -139,7 +152,7 @@ def pytest_configure(config):
     # The file has an opt-in environment check, even when PYTHONPATH leaks to another invocation.
     target = boot / 'sitecustomize.py'
     temporary = boot / f'sitecustomize-{os.getpid()}.tmp'
-    temporary.write_text('import os\nif os.environ.get("PB_TIA_OUTPUT"):\n import tia_record\n tia_record.bootstrap()\n')
+    temporary.write_text('import os, sys\nif os.environ.get("PB_TIA_OUTPUT"):\n import tia_record\n sys.modules["tools.ci.tia_record"] = tia_record\n tia_record.bootstrap()\n')
     temporary.replace(target)
     entries = [str(boot), str(Path(__file__).resolve().parent)]
     if os.environ.get('PYTHONPATH'):

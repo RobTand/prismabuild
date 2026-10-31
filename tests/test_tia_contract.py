@@ -132,8 +132,8 @@ def test_two(shared):
 def test_nested_pytest(tmp_path):
  nested = tmp_path / 'nested'
  nested.mkdir()
- (nested / 'test_child.py').write_text('def test_ok(): assert 1 == 1')
- env = dict(os.environ, PYTHONPATH=str(nested))
+ (nested / 'test_child.py').write_text('from example import child\\n' + 'def test_ok(): assert child() == 9')
+ env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / 'src'))
  run = subprocess.run([sys.executable, '-m', 'pytest', '-q', str(nested)], cwd=nested, env=env, capture_output=True, text=True)
  assert run.returncode == 0, run.stdout + run.stderr
 ''')
