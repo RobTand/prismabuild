@@ -134,7 +134,7 @@ def test_nested_pytest(tmp_path):
  nested.mkdir()
  (nested / 'test_child.py').write_text('from example import child\\n' + 'def test_ok(): assert child() == 9')
  env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / 'src'))
- run = subprocess.run([sys.executable, '-m', 'pytest', '-q', str(nested)], cwd=nested, env=env, capture_output=True, text=True)
+ run = subprocess.run([sys.executable, '-m', 'pytest', '-q', '--basetemp=.pytest-basetemp', str(nested)], cwd=nested, env=env, capture_output=True, text=True)
  assert run.returncode == 0, run.stdout + run.stderr
 ''')
     output = tmp_path / 'records'
@@ -142,7 +142,7 @@ def test_nested_pytest(tmp_path):
                PB_TIA_ROOT=str(root), PB_TIA_OUTPUT=str(output), PB_TIA_COMMIT='a' * 40,
                PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', PYTEST_PLUGINS='tia_record')
     env.pop('PB_TIA_NODE', None)
-    result = subprocess.run([sys.executable, '-m', 'pytest', '-p', 'tia_record', '-q', '--rootdir=' + str(root), str(root / 'tests')],
+    result = subprocess.run([sys.executable, '-m', 'pytest', '-p', 'tia_record', '-q', '--basetemp=.pytest-basetemp', '--rootdir=' + str(root), str(root / 'tests')],
                             cwd=root, env=env, text=True, capture_output=True, timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr
     records = [json.loads(path.read_text()) for path in output.glob('*.json')]

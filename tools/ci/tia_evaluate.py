@@ -13,6 +13,7 @@ import copy
 import gzip
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -34,7 +35,7 @@ except ImportError:
 
 def extract(reports: list[Path], output: Path):
     """Extract raw records only from complete pbtest shard verdicts."""
-    with tempfile.TemporaryDirectory() as scratch:
+    with tempfile.TemporaryDirectory(dir=Path.cwd()) as scratch:
         paths = []
         for report in reports:
             for row in json.loads(report.read_text()):
@@ -55,7 +56,7 @@ def extract(reports: list[Path], output: Path):
 
 
 def extract_cas(inputs: list[dict], output: Path):
-    with tempfile.TemporaryDirectory() as temporary:
+    with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
         paths = []
         for entry in inputs:
             payload = Path(entry['blob_path']).read_bytes()
@@ -237,13 +238,26 @@ def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Pat
         if key.startswith('PB_TIA_') or key == 'PYTEST_PLUGINS':
             env.pop(key, None)
     command = [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider',
-               '--junitxml=' + str(xml), *['--deselect=' + node for node in deselect], *files]
+               '--basetemp=.pytest-basetemp', '--junitxml=' + str(xml),
+               *['--deselect=' + node for node in deselect], *files]
     start = time.monotonic()
-    try:
-        run = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=1000)
-    except subprocess.TimeoutExpired:
-        return {'returncode': 124, 'complete': False, 'failures': [], 'files': len(files)}
-    (directory / (label + '.log')).write_text(run.stdout + run.stderr)
+    complete = True
+    with tempfile.TemporaryDirectory(prefix=label + '-', dir=directory) as scratch:
+        temporary = Path(scratch) / 'tmp'
+        temporary.mkdir()
+        env['TMPDIR'] = str(temporary)
+        try:
+            try:
+                run = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=1000)
+                code, output = run.returncode, run.stdout + run.stderr
+            except subprocess.TimeoutExpired as error:
+                code, complete = 124, False
+                output = ''.join(value.decode(errors='replace') if isinstance(value, bytes) else value
+                                 for value in (error.stdout, error.stderr) if value)
+            (directory / (label + '.log')).write_text(output)
+        finally:
+            # This path belongs to this action's materialized checkout, never a shared temp root.
+            shutil.rmtree(root / '.pytest-basetemp', ignore_errors=True)
     failures, errors, tests, skips = [], [], 0, 0
     if xml.exists():
         for case in ET.parse(xml).iter('testcase'):
@@ -254,10 +268,13 @@ def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Pat
             if case.find('error') is not None:
                 errors.append(node)
             skips += case.find('skipped') is not None
-    return {'returncode': run.returncode, 'complete': run.returncode in (0, 1, 2) and xml.exists(),
-            'failures': sorted(failures), 'errors': sorted(errors), 'tests': tests, 'skipped': skips,
-            'files': len({target.split('::', 1)[0] for target in files}), 'targets': len(files), 'elapsed_s': time.monotonic() - start,
-            'tail': (run.stdout + run.stderr)[-4000:] if run.returncode else ''}
+    result = {'returncode': code, 'complete': complete and code in (0, 1, 2) and xml.exists(),
+              'failures': sorted(failures), 'errors': sorted(errors), 'tests': tests, 'skipped': skips,
+              'files': len({target.split('::', 1)[0] for target in files}), 'targets': len(files),
+              'elapsed_s': time.monotonic() - start, 'tail': output[-4000:] if code else ''}
+    print('tia-arm: ' + sorted_json({'label': label, **{key: result[key] for key in
+          ('returncode', 'complete', 'tests', 'elapsed_s')}}), flush=True)
+    return result
 
 
 def run_mutation(root: Path, gate_dir: Path, mutation: dict) -> dict:
@@ -275,9 +292,23 @@ def run_mutation(root: Path, gate_dir: Path, mutation: dict) -> dict:
     tia_files = [row['path'] for row in selected['selected'] if row['path'] not in excluded]
     static_files = [row['path'] for row in static['selected'] if row['path'] not in excluded]
     tia_targets = [target for target in selected['targets'] if target.split('::', 1)[0] not in excluded]
-    with tempfile.TemporaryDirectory() as temporary:
+    with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
         directory = Path(temporary)
         baseline = pytest_run(root, sorted(set(tia_files + static_files)), static['deselect'], directory, 'baseline')
+        baseline_bad = set(baseline['failures'] + baseline['errors'])
+        known_baseline = set()
+        for entry in mapping.get('baseline_failures', []):
+            file, name = entry['nodeid'].split('::', 1)
+            known_baseline.add(file.removesuffix('.py').replace('/', '.') + '::' + name)
+        baseline_valid = (baseline['complete'] and baseline['returncode'] in (0, 1)
+                          and baseline_bad <= known_baseline)
+        if not baseline_valid:
+            skipped = {'returncode': None, 'complete': False, 'failures': [], 'errors': [],
+                       'tests': 0, 'skipped': 0, 'files': 0, 'reason': 'invalid baseline'}
+            return {'mutation': mutation, 'baseline': baseline, 'tia': skipped, 'static': skipped,
+                    'tia_killed': False, 'static_killed': False, 'valid': False,
+                    'known_baseline_failures': sorted(baseline_bad & known_baseline),
+                    'tia_plan': selected, 'evaluation_excluded': mapping.get('unmapped', {})}
         changed = original[:mutation['start']] + mutation['replacement'].encode() + original[mutation['end']:]
         try:
             (root / path).write_bytes(changed)
@@ -288,13 +319,6 @@ def run_mutation(root: Path, gate_dir: Path, mutation: dict) -> dict:
             full = pytest_run(root, static_files, static['deselect'], directory, 'static')
         finally:
             (root / path).write_bytes(original)
-    baseline_bad = set(baseline['failures'] + baseline['errors'])
-    known_baseline = set()
-    for entry in mapping.get('baseline_failures', []):
-        file, name = entry['nodeid'].split('::', 1)
-        known_baseline.add(file.removesuffix('.py').replace('/', '.') + '::' + name)
-    baseline_valid = (baseline['complete'] and baseline['returncode'] in (0, 1)
-                      and baseline_bad <= known_baseline)
     def killed(result):
         return result['complete'] and bool(set(result['failures'] + result['errors']) - baseline_bad)
     return {'mutation': mutation, 'baseline': baseline, 'tia': tia, 'static': full,
@@ -308,7 +332,7 @@ def overhead(root: Path, gate_dir: Path) -> dict:
     gate = load_tia_module(gate_dir / 'gate_select.py', 'tia_overhead_gate')
     fast, _ = gate.tier_declarations(root)
     arms = []
-    with tempfile.TemporaryDirectory() as temporary:
+    with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
         for repeat in range(5):
             for recorded in (False, True):
                 output = Path(temporary) / f'{repeat}-{int(recorded)}'
@@ -317,7 +341,8 @@ def overhead(root: Path, gate_dir: Path) -> dict:
                 for key in list(env):
                     if key.startswith('PB_TIA_'):
                         env.pop(key)
-                command = [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', *sorted(fast)]
+                command = [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider',
+                           '--basetemp=.pytest-basetemp', *sorted(fast)]
                 if recorded:
                     env.update(PB_TIA_ROOT=str(root), PB_TIA_OUTPUT=str(output),
                                PB_TIA_COMMIT=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip())
@@ -326,6 +351,7 @@ def overhead(root: Path, gate_dir: Path) -> dict:
                 start = time.monotonic()
                 run = subprocess.run(command, env=env, cwd=root, capture_output=True, text=True, timeout=1000)
                 elapsed = time.monotonic() - start
+                shutil.rmtree(root / '.pytest-basetemp', ignore_errors=True)
                 arms.append({'repeat': repeat, 'recorded': recorded, 'elapsed_s': elapsed,
                              'returncode': run.returncode, 'load_before': load_before, 'load_after': os.getloadavg(),
                              'summary': run.stdout.splitlines()[-1:]})
