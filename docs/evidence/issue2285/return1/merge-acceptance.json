@@ -1,0 +1,317 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "18e3324d3d6f9a113a0b9f5f65e48e918794bc23",
+  "scope": [
+    "SC-01",
+    "SC-03",
+    "ID-08",
+    "ID-09",
+    "VER-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-2285",
+    "issue": "https://github.com/RobTand/prismabuild/issues/2285",
+    "source_commit": "2fb78badae2326a5da497b08a3764f65c1ec21dc",
+    "acceptance_status": "source-component validated; Engineer 10 changed-head review and batch merge pending",
+    "validated_repairs": [
+      {
+        "id": "SC-01",
+        "actions": [
+          "764e4edfa52fe7c08ebbeaafd296b474cdc3eaea25085f985339d53ed0f6f416",
+          "04b2d8790133b2535d4076867419469dce9de2bf024b43c87f265b9aaeeb952f",
+          "49209be07754329fbd76038532275c98f39b398327fb073a342e56bf8a54c91f",
+          "2fadbcb507e8770b26840ca4b116a5b36c6e8ccb780bb8f0dc9b3e040acf2f67",
+          "06a1449ac12437a9d9f3d68e3e31bfcffda10dbb064b3a9e8363f4002dddbabd",
+          "dfb4be26fec4fca2669d19ec763824df9ab2a511c1fb57f816cd4d2f77d08bf9",
+          "c8a4709e484ce87ee5473a439adc006d84f64bf575c6a204c5ba07ace3c604da",
+          "d2cde733a955e62b9e30a2c5b2eae058f317af0d43601deedfe227ce7fc96898",
+          "9ad0766496bfea39d14061d886e25262109727cfd5c2f746db51b11977ec39f5",
+          "886f6142c9bf0d9308cf3f2be4d6a05de6b06763646fd34e0af37e6179486236",
+          "beccf13cd2239c8fd5dc23e77e55fda2f677c36a5c06acba35d5fc8181f9ba65",
+          "32114c852133850072e6283c6d16b3492587a27439cc79fea228b529e1558c3d",
+          "b4d4f28fe6b01200ee44c5e99d46b9626d400fdfa33d7f812114d8624a24b6ee",
+          "1482cd5593a6428e118a378ad86069b1b40b0e558b25ad32fb7cdbcce4d12dc5",
+          "0b02abf9a8a3bb3d8773b67c6e911fc02b353a8f2f308313e654f414ee36a403",
+          "2b1a7f874dee5433b47924d4d9304082048530516230f04cc1abd66efcabb2f1",
+          "c2c771600b5d5ab0d4935c16b6e7316c5618ae11a66043e0f8eb936e6ccd2401",
+          "bffa621198f2f676eaf569ae8dfe2de5b0f634b15162f4a2d9590f70c38b94ae",
+          "acc49746fd3185e1c50df1c4af37c22d58fb45288d75ea0253940185d9d982e1",
+          "ef4505e39b09bc821c5fe52e9387b6738ddaad3f17dd3993dbca7186c031d65c",
+          "97014a43ef99910dd1c2b7dd5c853054d48105000c18a042b61f4b9e5eb67335",
+          "87761d97cfef32bcece9e8b7fed85228f2b86ef8cf38118389ba113c3bf6811b",
+          "89e5dcf434e679dfbf1d7b5f0b2ac8948a1f1db97c90c014fbe915ea4582d39d",
+          "3fd865a39799484b5a43092b9dfa0c0ea885b8bbe326d9305528181c0229ca0d",
+          "9b93d632d358a796aacaa53e83c7bae5bca57c5dd6a9d156a2c19ffb2fa432c2",
+          "705aecc9835032b4729a2aa1434a4bc46d0c553e4ae7b4d3ff8bfdc71d3911c3",
+          "ee96be7bf3c9ff03f98db993f2c2d43477cff8afb244cccbbfbd2602c351fdd8",
+          "33fe36194f52e7e60698e1eaeb6115946545b29b147586a51b68e155b80d2971",
+          "4ef467593a085c53c95446011721684d512a4fdf3aa3c60995ff23122519de2f",
+          "aa493af70b2e9f6d9b184b1bfd9c4ab06ff5cbbe2437db1e9b85f27a584b73e2",
+          "5a76704c19367dbf1a52c36186c71e3e2cd726c4e00da102327baae27d1bb5f4"
+        ],
+        "outcome": "The existing PB driver still owns recorded-offer feasibility and placement; dry-run imports do not create bytecode files."
+      },
+      {
+        "id": "SC-03",
+        "actions": [
+          "764e4edfa52fe7c08ebbeaafd296b474cdc3eaea25085f985339d53ed0f6f416",
+          "04b2d8790133b2535d4076867419469dce9de2bf024b43c87f265b9aaeeb952f",
+          "49209be07754329fbd76038532275c98f39b398327fb073a342e56bf8a54c91f",
+          "2fadbcb507e8770b26840ca4b116a5b36c6e8ccb780bb8f0dc9b3e040acf2f67",
+          "06a1449ac12437a9d9f3d68e3e31bfcffda10dbb064b3a9e8363f4002dddbabd",
+          "dfb4be26fec4fca2669d19ec763824df9ab2a511c1fb57f816cd4d2f77d08bf9",
+          "c8a4709e484ce87ee5473a439adc006d84f64bf575c6a204c5ba07ace3c604da",
+          "d2cde733a955e62b9e30a2c5b2eae058f317af0d43601deedfe227ce7fc96898",
+          "9ad0766496bfea39d14061d886e25262109727cfd5c2f746db51b11977ec39f5",
+          "886f6142c9bf0d9308cf3f2be4d6a05de6b06763646fd34e0af37e6179486236",
+          "beccf13cd2239c8fd5dc23e77e55fda2f677c36a5c06acba35d5fc8181f9ba65",
+          "32114c852133850072e6283c6d16b3492587a27439cc79fea228b529e1558c3d",
+          "b4d4f28fe6b01200ee44c5e99d46b9626d400fdfa33d7f812114d8624a24b6ee",
+          "1482cd5593a6428e118a378ad86069b1b40b0e558b25ad32fb7cdbcce4d12dc5",
+          "0b02abf9a8a3bb3d8773b67c6e911fc02b353a8f2f308313e654f414ee36a403",
+          "2b1a7f874dee5433b47924d4d9304082048530516230f04cc1abd66efcabb2f1",
+          "c2c771600b5d5ab0d4935c16b6e7316c5618ae11a66043e0f8eb936e6ccd2401",
+          "bffa621198f2f676eaf569ae8dfe2de5b0f634b15162f4a2d9590f70c38b94ae",
+          "acc49746fd3185e1c50df1c4af37c22d58fb45288d75ea0253940185d9d982e1",
+          "ef4505e39b09bc821c5fe52e9387b6738ddaad3f17dd3993dbca7186c031d65c",
+          "97014a43ef99910dd1c2b7dd5c853054d48105000c18a042b61f4b9e5eb67335",
+          "87761d97cfef32bcece9e8b7fed85228f2b86ef8cf38118389ba113c3bf6811b",
+          "89e5dcf434e679dfbf1d7b5f0b2ac8948a1f1db97c90c014fbe915ea4582d39d",
+          "3fd865a39799484b5a43092b9dfa0c0ea885b8bbe326d9305528181c0229ca0d",
+          "9b93d632d358a796aacaa53e83c7bae5bca57c5dd6a9d156a2c19ffb2fa432c2",
+          "705aecc9835032b4729a2aa1434a4bc46d0c553e4ae7b4d3ff8bfdc71d3911c3",
+          "ee96be7bf3c9ff03f98db993f2c2d43477cff8afb244cccbbfbd2602c351fdd8",
+          "33fe36194f52e7e60698e1eaeb6115946545b29b147586a51b68e155b80d2971",
+          "4ef467593a085c53c95446011721684d512a4fdf3aa3c60995ff23122519de2f",
+          "aa493af70b2e9f6d9b184b1bfd9c4ab06ff5cbbe2437db1e9b85f27a584b73e2",
+          "5a76704c19367dbf1a52c36186c71e3e2cd726c4e00da102327baae27d1bb5f4"
+        ],
+        "outcome": "Source validation is scoped to this repair. Whole-requirement ledger axes and proposed work remain unchanged."
+      },
+      {
+        "id": "ID-08",
+        "actions": [
+          "764e4edfa52fe7c08ebbeaafd296b474cdc3eaea25085f985339d53ed0f6f416",
+          "04b2d8790133b2535d4076867419469dce9de2bf024b43c87f265b9aaeeb952f",
+          "49209be07754329fbd76038532275c98f39b398327fb073a342e56bf8a54c91f",
+          "2fadbcb507e8770b26840ca4b116a5b36c6e8ccb780bb8f0dc9b3e040acf2f67",
+          "06a1449ac12437a9d9f3d68e3e31bfcffda10dbb064b3a9e8363f4002dddbabd",
+          "dfb4be26fec4fca2669d19ec763824df9ab2a511c1fb57f816cd4d2f77d08bf9",
+          "c8a4709e484ce87ee5473a439adc006d84f64bf575c6a204c5ba07ace3c604da",
+          "d2cde733a955e62b9e30a2c5b2eae058f317af0d43601deedfe227ce7fc96898",
+          "9ad0766496bfea39d14061d886e25262109727cfd5c2f746db51b11977ec39f5",
+          "886f6142c9bf0d9308cf3f2be4d6a05de6b06763646fd34e0af37e6179486236",
+          "beccf13cd2239c8fd5dc23e77e55fda2f677c36a5c06acba35d5fc8181f9ba65",
+          "32114c852133850072e6283c6d16b3492587a27439cc79fea228b529e1558c3d",
+          "b4d4f28fe6b01200ee44c5e99d46b9626d400fdfa33d7f812114d8624a24b6ee",
+          "1482cd5593a6428e118a378ad86069b1b40b0e558b25ad32fb7cdbcce4d12dc5",
+          "0b02abf9a8a3bb3d8773b67c6e911fc02b353a8f2f308313e654f414ee36a403",
+          "2b1a7f874dee5433b47924d4d9304082048530516230f04cc1abd66efcabb2f1",
+          "c2c771600b5d5ab0d4935c16b6e7316c5618ae11a66043e0f8eb936e6ccd2401",
+          "bffa621198f2f676eaf569ae8dfe2de5b0f634b15162f4a2d9590f70c38b94ae",
+          "acc49746fd3185e1c50df1c4af37c22d58fb45288d75ea0253940185d9d982e1",
+          "ef4505e39b09bc821c5fe52e9387b6738ddaad3f17dd3993dbca7186c031d65c",
+          "97014a43ef99910dd1c2b7dd5c853054d48105000c18a042b61f4b9e5eb67335",
+          "87761d97cfef32bcece9e8b7fed85228f2b86ef8cf38118389ba113c3bf6811b",
+          "89e5dcf434e679dfbf1d7b5f0b2ac8948a1f1db97c90c014fbe915ea4582d39d",
+          "3fd865a39799484b5a43092b9dfa0c0ea885b8bbe326d9305528181c0229ca0d",
+          "9b93d632d358a796aacaa53e83c7bae5bca57c5dd6a9d156a2c19ffb2fa432c2",
+          "705aecc9835032b4729a2aa1434a4bc46d0c553e4ae7b4d3ff8bfdc71d3911c3",
+          "ee96be7bf3c9ff03f98db993f2c2d43477cff8afb244cccbbfbd2602c351fdd8",
+          "33fe36194f52e7e60698e1eaeb6115946545b29b147586a51b68e155b80d2971",
+          "4ef467593a085c53c95446011721684d512a4fdf3aa3c60995ff23122519de2f",
+          "aa493af70b2e9f6d9b184b1bfd9c4ab06ff5cbbe2437db1e9b85f27a584b73e2",
+          "5a76704c19367dbf1a52c36186c71e3e2cd726c4e00da102327baae27d1bb5f4"
+        ],
+        "outcome": "Each action is attributed to its sealed checkout parent and published worker-script generation. The current intent golden names the real compiled-source-verified publisher hash; historical bytes and strict provenance guards remain unchanged."
+      },
+      {
+        "id": "ID-09",
+        "actions": [
+          "764e4edfa52fe7c08ebbeaafd296b474cdc3eaea25085f985339d53ed0f6f416",
+          "04b2d8790133b2535d4076867419469dce9de2bf024b43c87f265b9aaeeb952f",
+          "49209be07754329fbd76038532275c98f39b398327fb073a342e56bf8a54c91f",
+          "2fadbcb507e8770b26840ca4b116a5b36c6e8ccb780bb8f0dc9b3e040acf2f67",
+          "06a1449ac12437a9d9f3d68e3e31bfcffda10dbb064b3a9e8363f4002dddbabd",
+          "dfb4be26fec4fca2669d19ec763824df9ab2a511c1fb57f816cd4d2f77d08bf9",
+          "c8a4709e484ce87ee5473a439adc006d84f64bf575c6a204c5ba07ace3c604da",
+          "d2cde733a955e62b9e30a2c5b2eae058f317af0d43601deedfe227ce7fc96898",
+          "9ad0766496bfea39d14061d886e25262109727cfd5c2f746db51b11977ec39f5",
+          "886f6142c9bf0d9308cf3f2be4d6a05de6b06763646fd34e0af37e6179486236",
+          "beccf13cd2239c8fd5dc23e77e55fda2f677c36a5c06acba35d5fc8181f9ba65",
+          "32114c852133850072e6283c6d16b3492587a27439cc79fea228b529e1558c3d",
+          "b4d4f28fe6b01200ee44c5e99d46b9626d400fdfa33d7f812114d8624a24b6ee",
+          "1482cd5593a6428e118a378ad86069b1b40b0e558b25ad32fb7cdbcce4d12dc5",
+          "0b02abf9a8a3bb3d8773b67c6e911fc02b353a8f2f308313e654f414ee36a403",
+          "2b1a7f874dee5433b47924d4d9304082048530516230f04cc1abd66efcabb2f1",
+          "c2c771600b5d5ab0d4935c16b6e7316c5618ae11a66043e0f8eb936e6ccd2401",
+          "bffa621198f2f676eaf569ae8dfe2de5b0f634b15162f4a2d9590f70c38b94ae",
+          "acc49746fd3185e1c50df1c4af37c22d58fb45288d75ea0253940185d9d982e1",
+          "ef4505e39b09bc821c5fe52e9387b6738ddaad3f17dd3993dbca7186c031d65c",
+          "97014a43ef99910dd1c2b7dd5c853054d48105000c18a042b61f4b9e5eb67335",
+          "87761d97cfef32bcece9e8b7fed85228f2b86ef8cf38118389ba113c3bf6811b",
+          "89e5dcf434e679dfbf1d7b5f0b2ac8948a1f1db97c90c014fbe915ea4582d39d",
+          "3fd865a39799484b5a43092b9dfa0c0ea885b8bbe326d9305528181c0229ca0d",
+          "9b93d632d358a796aacaa53e83c7bae5bca57c5dd6a9d156a2c19ffb2fa432c2",
+          "705aecc9835032b4729a2aa1434a4bc46d0c553e4ae7b4d3ff8bfdc71d3911c3",
+          "ee96be7bf3c9ff03f98db993f2c2d43477cff8afb244cccbbfbd2602c351fdd8",
+          "33fe36194f52e7e60698e1eaeb6115946545b29b147586a51b68e155b80d2971",
+          "4ef467593a085c53c95446011721684d512a4fdf3aa3c60995ff23122519de2f",
+          "aa493af70b2e9f6d9b184b1bfd9c4ab06ff5cbbe2437db1e9b85f27a584b73e2",
+          "5a76704c19367dbf1a52c36186c71e3e2cd726c4e00da102327baae27d1bb5f4"
+        ],
+        "outcome": "Native test completion, terminal outcome, cleanup, CAS receipt and payload were checked separately. The full-file timeout is retained as non-green without a receipt."
+      },
+      {
+        "id": "VER-01",
+        "actions": [
+          "764e4edfa52fe7c08ebbeaafd296b474cdc3eaea25085f985339d53ed0f6f416",
+          "04b2d8790133b2535d4076867419469dce9de2bf024b43c87f265b9aaeeb952f",
+          "49209be07754329fbd76038532275c98f39b398327fb073a342e56bf8a54c91f",
+          "2fadbcb507e8770b26840ca4b116a5b36c6e8ccb780bb8f0dc9b3e040acf2f67",
+          "06a1449ac12437a9d9f3d68e3e31bfcffda10dbb064b3a9e8363f4002dddbabd",
+          "dfb4be26fec4fca2669d19ec763824df9ab2a511c1fb57f816cd4d2f77d08bf9",
+          "c8a4709e484ce87ee5473a439adc006d84f64bf575c6a204c5ba07ace3c604da",
+          "d2cde733a955e62b9e30a2c5b2eae058f317af0d43601deedfe227ce7fc96898",
+          "9ad0766496bfea39d14061d886e25262109727cfd5c2f746db51b11977ec39f5",
+          "886f6142c9bf0d9308cf3f2be4d6a05de6b06763646fd34e0af37e6179486236",
+          "beccf13cd2239c8fd5dc23e77e55fda2f677c36a5c06acba35d5fc8181f9ba65",
+          "32114c852133850072e6283c6d16b3492587a27439cc79fea228b529e1558c3d",
+          "b4d4f28fe6b01200ee44c5e99d46b9626d400fdfa33d7f812114d8624a24b6ee",
+          "1482cd5593a6428e118a378ad86069b1b40b0e558b25ad32fb7cdbcce4d12dc5",
+          "0b02abf9a8a3bb3d8773b67c6e911fc02b353a8f2f308313e654f414ee36a403",
+          "2b1a7f874dee5433b47924d4d9304082048530516230f04cc1abd66efcabb2f1",
+          "c2c771600b5d5ab0d4935c16b6e7316c5618ae11a66043e0f8eb936e6ccd2401",
+          "bffa621198f2f676eaf569ae8dfe2de5b0f634b15162f4a2d9590f70c38b94ae",
+          "acc49746fd3185e1c50df1c4af37c22d58fb45288d75ea0253940185d9d982e1",
+          "ef4505e39b09bc821c5fe52e9387b6738ddaad3f17dd3993dbca7186c031d65c",
+          "97014a43ef99910dd1c2b7dd5c853054d48105000c18a042b61f4b9e5eb67335",
+          "87761d97cfef32bcece9e8b7fed85228f2b86ef8cf38118389ba113c3bf6811b",
+          "89e5dcf434e679dfbf1d7b5f0b2ac8948a1f1db97c90c014fbe915ea4582d39d",
+          "3fd865a39799484b5a43092b9dfa0c0ea885b8bbe326d9305528181c0229ca0d",
+          "9b93d632d358a796aacaa53e83c7bae5bca57c5dd6a9d156a2c19ffb2fa432c2",
+          "705aecc9835032b4729a2aa1434a4bc46d0c553e4ae7b4d3ff8bfdc71d3911c3",
+          "ee96be7bf3c9ff03f98db993f2c2d43477cff8afb244cccbbfbd2602c351fdd8",
+          "33fe36194f52e7e60698e1eaeb6115946545b29b147586a51b68e155b80d2971",
+          "4ef467593a085c53c95446011721684d512a4fdf3aa3c60995ff23122519de2f",
+          "aa493af70b2e9f6d9b184b1bfd9c4ab06ff5cbbe2437db1e9b85f27a584b73e2",
+          "5a76704c19367dbf1a52c36186c71e3e2cd726c4e00da102327baae27d1bb5f4"
+        ],
+        "outcome": "Readback queried exactly the 35 test keys, capture key and timeout key. Complete, unambiguous published-MCP responses and retained bytes support these claims only."
+      }
+    ],
+    "remaining_gaps": [
+      "Full compatibility-file action timed out at its sealed 300-second bound; no verified native completion or successful receipt. All three affected upgrade-intent IDs passed in a separate bounded selection. No full compatibility-suite claim.",
+      "No runtime publication, activation, restart, worker-attestation verification, role convergence, live canary, staged-only workload or power-loss durability proof.",
+      "Recorded-offer feasibility creates no reservation or guarantee of future free capacity. Ordinary postactivation checks remain required."
+    ],
+    "note": "481 passing test executions in 30 green actions, five expected failures, one verified capture and one retained non-green timeout. Earlier original-head validation is historical."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "requirement_status": [
+    {
+      "id": "SC-01",
+      "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+      "ledger_axes_at_review": {
+        "implementation": "yes",
+        "validation": "unknown",
+        "deployment": "unknown",
+        "workload_proof": "unknown"
+      },
+      "scoped_implementation": "The existing PB driver still owns recorded-offer feasibility and placement; dry-run imports do not create bytecode files.",
+      "scoped_validation": "Source-component evidence in actions.jsonl, capture-action.json and timeout.json.",
+      "deployment": "not deployed by this task",
+      "workload_proof": "not established by this task",
+      "remaining_target": "Whole-requirement implementation, validation, deployment and workload axes remain unchanged."
+    },
+    {
+      "id": "SC-03",
+      "target": "Contract is target plus ledger; unknown axes are owed work, never claims.",
+      "ledger_axes_at_review": {
+        "implementation": "no",
+        "validation": "unknown",
+        "deployment": "unknown",
+        "workload_proof": "unknown"
+      },
+      "scoped_implementation": "Source validation is scoped to this repair. Whole-requirement ledger axes and proposed work remain unchanged.",
+      "scoped_validation": "Source-component evidence in actions.jsonl, capture-action.json and timeout.json.",
+      "deployment": "not deployed by this task",
+      "workload_proof": "not established by this task",
+      "remaining_target": "Whole-requirement implementation, validation, deployment and workload axes remain unchanged."
+    },
+    {
+      "id": "ID-08",
+      "target": "Behavior attributed per (runtime_commit, generation_id).",
+      "ledger_axes_at_review": {
+        "implementation": "yes",
+        "validation": "partial",
+        "deployment": "partial",
+        "workload_proof": "unknown"
+      },
+      "scoped_implementation": "Each action is attributed to its sealed checkout parent and published worker-script generation. The current intent golden names the real compiled-source-verified publisher hash; historical bytes and strict provenance guards remain unchanged.",
+      "scoped_validation": "Source-component evidence in actions.jsonl, capture-action.json and timeout.json.",
+      "deployment": "not deployed by this task",
+      "workload_proof": "not established by this task",
+      "remaining_target": "Whole-requirement implementation, validation, deployment and workload axes remain unchanged."
+    },
+    {
+      "id": "ID-09",
+      "target": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
+      "ledger_axes_at_review": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "unknown"
+      },
+      "scoped_implementation": "Native test completion, terminal outcome, cleanup, CAS receipt and payload were checked separately. The full-file timeout is retained as non-green without a receipt.",
+      "scoped_validation": "Source-component evidence in actions.jsonl, capture-action.json and timeout.json.",
+      "deployment": "not deployed by this task",
+      "workload_proof": "not established by this task",
+      "remaining_target": "Whole-requirement implementation, validation, deployment and workload axes remain unchanged."
+    },
+    {
+      "id": "VER-01",
+      "target": "Bounded search completeness: state index, filters, window, truncation before declaring missing; authoritative indexes first; counts/timings alone are not verification.",
+      "ledger_axes_at_review": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "unknown"
+      },
+      "scoped_implementation": "Readback queried exactly the 35 test keys, capture key and timeout key. Complete, unambiguous published-MCP responses and retained bytes support these claims only.",
+      "scoped_validation": "Source-component evidence in actions.jsonl, capture-action.json and timeout.json.",
+      "deployment": "not deployed by this task",
+      "workload_proof": "not established by this task",
+      "remaining_target": "Whole-requirement implementation, validation, deployment and workload axes remain unchanged."
+    }
+  ],
+  "evidence": {
+    "manifest": "actions.jsonl",
+    "capture": "capture-action.json",
+    "timeout": "timeout.json",
+    "fixtures": "fixtures.json",
+    "retained_root": "/mnt/shared/paperclip-runs/PRI-173/return1",
+    "readback_bounds": {
+      "action_keys": 37,
+      "per_call_deadline_s": 10,
+      "stdout_tail_lines": 1000,
+      "stdout_byte_cap": 131072,
+      "timed_out": false,
+      "unavailable": false,
+      "terminal_ambiguous": false
+    },
+    "checks_passed": true,
+    "attestation_verified": null
+  }
+}

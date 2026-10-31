@@ -223,7 +223,7 @@ def _checkout(path: Path) -> Path:
     # driver-absent refusal keeps its own coverage there.
     driver = path / "tools" / "fleet" / "pbcanary.py"
     driver.parent.mkdir(parents=True, exist_ok=True)
-    driver.write_text("def run_canary(*, generation):\n    return 0\n")
+    driver.write_text("def preflight_publication(*, fleet_root):\n    pass\ndef run_canary(*, generation):\n    return 0\n")
     return path
 
 

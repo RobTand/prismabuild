@@ -1,0 +1,31 @@
+{
+  "action_key": "516e127695a73cac9b6d57c249968e71ffd06d45b0ee319fca3520c6b76b8d2d",
+  "report": "writer-integrated-x86.json",
+  "source_parent": "2fb78badae2326a5da497b08a3764f65c1ec21dc",
+  "state": "failed",
+  "status": "timeout",
+  "expected_returncode": null,
+  "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/failed/516e127695a73cac9b6d57c249968e71ffd06d45b0ee319fca3520c6b76b8d2d.json",
+  "terminal_sha256": "aaa08f3bb67c50ebf2fd04b7a2add8ca8e86a5b0ba34906e36e32e5c6758e433",
+  "stdout_path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/516e127695a73cac9b6d57c249968e71ffd06d45b0ee319fca3520c6b76b8d2d/25ed491630722e523c14de238223831632a0679b8de320ce4211aefe19753c5b/00000001.stdout.b1efa59f0b8f52af937387e5dbdf0d826131fba20938e79fdc1c16d46e5cf3e6.log",
+  "stdout_sha256": "b1efa59f0b8f52af937387e5dbdf0d826131fba20938e79fdc1c16d46e5cf3e6",
+  "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/51/516e127695a73cac9b6d57c249968e71ffd06d45b0ee319fca3520c6b76b8d2d.json",
+  "receipt_present": false,
+  "cleanup_complete": true,
+  "reason": "full compatibility-file scope exceeded its sealed 300-second execution budget; no verified native completion; excluded from pass counts",
+  "files": [
+    "tests/test_record_compatibility_controller.py"
+  ],
+  "source_snapshot": {
+    "commit": "712b379ba4efdebed37165bd2c2653520af7bf69",
+    "input": {
+      "bytes": 45973928,
+      "id": "pbrun.checkout-snapshot",
+      "sha256": "bed3ed06cf5bb422dcef75056f33363ffc6a567d257bd956b9c1fc9cfc495681"
+    },
+    "parent": "2fb78badae2326a5da497b08a3764f65c1ec21dc",
+    "refs": {},
+    "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+    "subdirectory": "."
+  }
+}

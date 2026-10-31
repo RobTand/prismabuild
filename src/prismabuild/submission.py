@@ -5325,7 +5325,7 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
         from ._gpu_submission_policy import _require_gb10_memory_subset
         _require_gb10_memory_subset(
             demand=demand, gpu_memory_gb=args.gpu_memory_gb,
-            tags=args.tag or (), host_class=args.host_class,
+            tags=tags, host_class=args.host_class, roster_path=store.roster_path,
         )
     except ValueError as exc:
         args.refuse_argument(str(exc))
@@ -6360,6 +6360,15 @@ def _publish_sealed(action, prepared, *, args: SubmissionRequest, store: FleetSt
     demand = dict(producer.resources) if producer is not None else template["params"]["demand"]
     cas = template["cas"]
     key = str(action["action_key"])
+    from ._gpu_submission_policy import _require_gb10_memory_subset
+    try:
+        _require_gb10_memory_subset(
+            demand=demand, gpu_memory_gb=action.get("params", {}).get("gpu_memory_gb"),
+            tags=tags, host_class=action.get("execution_scope", {}).get("host_class"),
+            roster_path=store.roster_path,
+        )
+    except ValueError as exc:
+        raise SubmissionRefused(f"pbrun: {exc}") from None
     if args.as_sealed_by is not None and key != args.as_sealed_by:
         raise SubmissionRefused(
             f"pbrun: --as-sealed-by expected {args.as_sealed_by}, but current "

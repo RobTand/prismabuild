@@ -225,6 +225,7 @@ import io
 import json
 import math
 import os
+import socket
 from dataclasses import replace
 from pathlib import Path
 import posixpath
@@ -569,12 +570,38 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
             transport=transport,
         )
         from prismabuild._gpu_submission_policy import _require_gb10_memory_subset
+        store = store_for(__file__)
+        placement_tags = list(row.get("tags") or ())
+        if row.get("gpu_memory_gb") is not None:
+            cwd = Path(row.get("cwd") or ".").resolve()
+            variables = {name: str(value) for name, value in (row.get("env") or {}).items()}
+            pool_measurement = row.get("measurement") and transport == "pool"
+            pool_measurement_class = pool_measurement and row.get("host_class") is not None
+            command = list(row["argv"])
+            if command and command[0] == "--":
+                command = command[1:]
+            placement_tags, _, _, _ = submission.placement_contract(
+                cwd,
+                explicit=[*placement_tags, *([row["host_class"]] if pool_measurement_class else [])],
+                here=bool(row.get("here") or (pool_measurement and not pool_measurement_class)),
+                hostname=socket.gethostname(), portable_checkout=True,
+                command=command, repository_root=submission.git_repository_root(cwd),
+                environment={**variables, "PATH":
+                    f"{store.wrapper_dir}:{variables.get('PATH') or '/usr/local/bin:/usr/bin:/bin'}"},
+                caller_environment=variables, anywhere=bool(row.get("anywhere")),
+                needs_gpu=bool(row.get("gpu") or row.get("exclusive")
+                               or int(normalized_demand.get("gpu", 0))),
+                offer_queue=(lambda: submission.bounded_offer_snapshot(
+                    submission.pool.PoolQueue(store.queue_root))) if transport == "pool" else None,
+                store=store,
+            )
         _require_gb10_memory_subset(
             demand=normalized_demand, gpu_memory_gb=row.get("gpu_memory_gb"),
-            tags=row.get("tags") or (), host_class=row.get("host_class"),
+            tags=placement_tags, host_class=row.get("host_class"),
             gpu=bool(row.get("gpu")), exclusive=bool(row.get("exclusive")),
+            roster_path=store.roster_path,
         )
-    except ValueError as exc:
+    except (ValueError, SubmissionRefused) as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     try:
         # Parsed here rather than trusted, so a row whose phases pbrun would
