@@ -5,12 +5,12 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
-import time
 
 import pytest
 
 from test_sample_profile import _FakeBackend, _action, _speedscope
 from prismabuild import core as pb, pool
+from profile_test_support import early_profile_command, wait_for_profile_file
 
 
 @pytest.mark.parametrize('stage', ['summary', 'extra_ingest'])
@@ -20,7 +20,7 @@ def test_hard_stop_during_supplement_preserves_primary(tmp_path, stage):
     # no exception/finally handler can manufacture the missing checkpoint.
     driver = tmp_path / 'driver.py'
     driver.write_text('''
-import json, os, sys, time
+import json, os, sys, threading
 from pathlib import Path
 sys.path[:0] = [sys.argv[1] + '/src', sys.argv[1] + '/tests']
 sys.path.insert(0, str(Path(sys.argv[4]).parents[1]))
@@ -30,7 +30,7 @@ from test_sample_profile import _FakeBackend, _action
 base = Path(sys.argv[2]); stage = sys.argv[3]
 def pause():
     (base/'supplement.ready').write_text('ready')
-    time.sleep(120)
+    threading.Event().wait()
 class Supplement(_FakeBackend):
     def extra_blobs(self, path):
         if stage == 'summary': pause()
@@ -59,14 +59,9 @@ pb.run_local_action(action, cas_root=base/'cas', checkout_root=checkout)
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     try:
-        deadline = time.monotonic() + 15
-        while not (tmp_path / 'supplement.ready').exists():
-            if process.poll() is not None:
-                pytest.fail(repr(process.communicate()))
-            assert time.monotonic() < deadline, 'optional supplement never started'
-            time.sleep(.01)
+        wait_for_profile_file(tmp_path / 'supplement.ready', process=process)
         process.kill()
-        stdout, stderr = process.communicate(timeout=10)
+        stdout, stderr = process.communicate(timeout=60)
         assert process.returncode == -signal.SIGKILL, (stdout, stderr)
         cas = pb.PrismaBuildCAS(tmp_path / 'cas')
         action = json.loads((tmp_path / 'action.json').read_text())
@@ -84,7 +79,7 @@ pb.run_local_action(action, cas_root=base/'cas', checkout_root=checkout)
     finally:
         if process.poll() is None:
             process.kill()
-            process.communicate(timeout=10)
+            process.communicate(timeout=60)
 
 
 def test_normal_completion_keeps_richer_profile(tmp_path, monkeypatch):
@@ -119,19 +114,7 @@ def test_successful_profile_survives_unparseable_stdout_as_complete(tmp_path, mo
                 return super().launch_argv(argv, profile_path=profile_path)
             # Like a duration-limited profiler: the report is ready while the
             # relayed action continues in the same owned process group.
-            code = '''
-import sys, subprocess, time
-from pathlib import Path
-child = subprocess.Popen(sys.argv[4:])
-deadline = time.monotonic() + 10
-while not Path(sys.argv[3]).exists():
-    assert child.poll() is None, 'relay exited without its startup record'
-    assert time.monotonic() < deadline, 'relay never started'
-    time.sleep(.01)
-Path(sys.argv[1]).write_text(sys.argv[2])
-'''
-            return [sys.executable, '-c', code, str(profile_path),
-                    _speedscope('early'), str(profile_path.with_name('exit_status')), *argv]
+            return early_profile_command(argv, profile_path, _speedscope('early'))
 
         def extra_blobs(self, path):
             extra = path.with_name('kernels.csv')

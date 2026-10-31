@@ -1,0 +1,20 @@
+{
+  "run": "v2-main-baseline",
+  "source_head": "88b1a5108799040c4dbd87bfd628a82e44bf739b",
+  "population": {
+    "collected": 7,
+    "passed": 7,
+    "failed": 0,
+    "skipped": 0
+  },
+  "snapshots": [
+    {
+      "commit": "2d379b788ad5775f14952a763bb33b054942c620",
+      "bundle_sha256": "0c3f69b24d3db63d47dcbb500e0f8a170a68c75973350ec755b6cc07212e83b9",
+      "source_tools_tests_equal": true
+    }
+  ],
+  "architecture": "portable",
+  "reports_and_resources_match": true,
+  "unique_population_sha256": "cc892bd95ecfb7d4840bf2891459ed327c84c154c8f63134af6c8352369ce0f4"
+}

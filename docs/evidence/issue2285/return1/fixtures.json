@@ -1,0 +1,27 @@
+{
+  "archive": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54",
+  "publisher_sha256": "e1f50c3197e7b26ed56741b7cef7dc23a47072d923f84cc5c32c403bb0593d68",
+  "prior_publisher_sha256": "43dc9a0fbf8f25a8ee8040bf6c3154b3983f3e36ac7fea82b4c5534a6d3d7287",
+  "sha256": {
+    "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/goldens-rollout.jsonl": "f1d6ce6052c13d5487310f1614592a9e00936d3613f8ca3205f5d667342d8983",
+    "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/capture-rollout.json": "8b728f4f20e12bde1fe597c6e86bf0fd5bed6beae89374be70a77aa071bc4b62",
+    "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/provenance.json": "1a2df2072cc35a50cfd9321bb7ba514e18edf2d57916315e879681beda7c4164",
+    "tests/compat/goldens-rollout.jsonl": "17b358c93459631952268e0a3f47d68498a2df51d26c8166eb08c7ecbbfc4c45",
+    "tests/compat/capture-rollout.json": "b7f6033be2f46dca63a58b74a0541303b4427bd33dc0b3394524e98c69ef1654",
+    "tests/compat/historical-rollout.jsonl": "21747cd531def42bc9faef0384861e1195d24b8d62d2fc3f145a27df9c3bc401",
+    "tests/compat/support/record_compat.py": "e9a59d4a9cd8fa8f7c70d56754f535288374ccf25077327e83160e134998ae67",
+    "tests/compat/support/adopt_compat_capture.py": "2e11f0c92eee4bfb13c21b9b0d5b42613d71e6f5d188d6a3735a6f7c2dd45813",
+    "tests/record_compat_contract.py": "086fdb212369183c51edda459ae1f70b417335ffbb6243323c7eaa7808b58dc4",
+    "tests/test_record_compatibility_controller.py": "25c7c05ed80799d005ef3dee5a21b476005fefd601d775185ce8dc62ea3c0fba",
+    "tools/maintenance/refresh_compat_runtime.py": "aa94ebbef642bfdec3861c43e64c7450a04d9cfcb37b65f2c31132ae98768fc3"
+  },
+  "unchanged_guards": [
+    "tests/compat/support/record_compat.py",
+    "tests/compat/support/adopt_compat_capture.py",
+    "tests/record_compat_contract.py",
+    "tests/test_record_compatibility_controller.py",
+    "tools/maintenance/refresh_compat_runtime.py"
+  ],
+  "historical_rollout_unchanged_from": "be2072047ab16d7c32651ca8d922096605f90a3a",
+  "archived_files_byte_exact_from": "18741a0e090db54e4e5e59e711932d8e43010e49"
+}

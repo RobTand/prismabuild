@@ -1,5 +1,6 @@
 """Concrete source locations for the modules selected by the isolated loader."""
 import ast
+from functools import lru_cache
 
 
 def module_paths(module):
@@ -20,6 +21,7 @@ CURRENT_PRIOR_ENTRIES = {'prismabuild.submission:snapshot_checkout': 'pbrun:buil
 
 
 CURRENT_PRIOR_ENTRIES.update({
+    "prismabuild.filesystem_floor:LedgerGate.reserve": "prismabuild.filesystem_floor:LedgerGate.granted",
     'prismabuild.pbtest_capabilities:load_config': 'pbtest_capabilities:load_config',
     'prismabuild.tier_cycle:_cycle': 'tier_loop:_cycle',
     'prismabuild.tier_cycle:publish_landing_expectations': 'tier_loop:publish_landing_expectations',
@@ -37,11 +39,9 @@ def absence_module_paths(root, reference):
     return paths
 
 
-def _has_definition(root, reference):
-    module, name = reference.split(":")
-    path = next((root / item for item in module_paths(module) if (root / item).is_file()), None)
-    if path is None:
-        return False
+@lru_cache(maxsize=128)
+def source_definitions(raw):
+    """Index exact source bytes; paths are read again before every lookup."""
     names = set()
 
     def visit(node, prefix=""):
@@ -52,8 +52,14 @@ def _has_definition(root, reference):
         for child in ast.iter_child_nodes(node):
             visit(child, prefix)
 
-    visit(ast.parse(path.read_bytes()))
-    return name in names
+    visit(ast.parse(raw))
+    return frozenset(names)
+
+
+def _has_definition(root, reference):
+    module, name = reference.split(":")
+    path = next((root / item for item in module_paths(module) if (root / item).is_file()), None)
+    return path is not None and name in source_definitions(path.read_bytes())
 
 
 def generation_reference(root, reference):

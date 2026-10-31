@@ -190,7 +190,7 @@ def test_backfill_without_a_finite_pre_point_finish_stays_ready(fleet, bound_kin
     candidate = publish(f"unsafe-{bound_kind}-backfill", priority=-10, timeout_s=timeout)
     item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, candidate))
     assert isinstance(item, dict)
-    assert pool._declared_run_bound(item) == ("deadline", timeout)
+    assert pool._declared_run_bound(item) == ("stall" if timeout is None else "deadline", timeout)
     _observe_real_sharing_permission(fleet, candidate)
     assert claim() is None, f"{bound_kind} backfill consumed the reserved host"
     assert queue.records.item_path(pool.record_store.READY, candidate).exists()

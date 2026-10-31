@@ -1,0 +1,7 @@
+time	decision	why	evidence	result
+2026-10-27T12:22:04.970923+00:00	retain component tests	source behavior is already approved	PRI-173 source/evidence	No new test source or component repeat campaign
+2026-10-27T12:22:04.970940+00:00	retain both parents	same old golden identity, distinct provenance	merge-tree.txt + parent-preservation-after-adoption.json	No capture evidence union
+2026-10-27T12:22:04.970943+00:00	strict current refresh	integrated publisher source hash changed	capture action b65406dd + capture-audit.json + adoption.json	Only /coordinator_sha256 refreshed
+2026-10-27T12:22:04.970944+00:00	authoritative inventory	avoid hand-editing line/field policy evidence	inventory/field_sets.json	All 592 policies match; optional full-completeness verdict unqualified
+2026-10-27T12:52:36.515304+00:00	audit native outcomes	wrapper exits alone do not qualify work	qualification-audit.json	156 passes;9 verified chains;18 streams;cleanup released
+2026-10-27T12:52:36.515304+00:00	account for generated closure	PB adds its sealed code-closure file to snapshots	request code_closure bytes and Git diff	Only manifest-bound added closure is allowed;all tracked source equals frozen head

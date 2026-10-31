@@ -1,61 +1,17 @@
-"""The all-used-filesystem physical floor (#1483), behind a default-off mode.
+"""Physical filesystem floor through existing host and tier reservation owners.
 
-**The predicate.**  For every physical filesystem PrismaBuild writes, a
-sample must satisfy ``free >= ceil(size / 20) + charge``, where ``charge`` is
-every byte allowance PrismaBuild has granted on that filesystem and not yet
-taken back.  An allowance is a held token of a byte kind (:data:`BYTE_KINDS`)
-in a ledger *bound* to the filesystem.  No materialization credit is taken:
-a held token is charged whole, even after its bytes are written, so the
-charge is an upper bound on the bytes still to come.
+The default mode is off. Enforce requires an authority-supplied, versioned
+mapping, closed population and complete growth bounds in each binding.
+Unknown evidence or incomplete token custody is a HOLD. Every held byte
+reservation, including local_gib, is charged whole; materialization grants
+no credit. Used paths share the same guard and authenticated backing keys.
 
-**Bindings, and who samples.**  A ledger's byte kind is bound to the
-filesystem its bytes land on by :func:`register`, run on the host where that
-filesystem is local.  The binding is keyed by a *stable* identity -- the
-filesystem UUID of a block device, or the ZFS pool GUID -- so a reboot or a
-remount of the same disk keeps it; boot and mount ids are recorded but never
-compared.  The owning host's worker and tier loops call :func:`refresh_local`,
-which, under the filesystem's floor lock, counts every bound ledger's held
-bytes (the census), *then* samples the filesystem, and publishes both with
-the grant counter's value at that moment.  Census-before-sample is what makes
-the published triple sound: a byte written after the sample belongs to a
-token held at the census or to a grant made after it, and every grant made
-after it is in the counter.
-
-**Admission.**  :meth:`ResourceLedger.begin_acquire` asks :func:`ledger_gate`
-before it takes byte tokens.  The gate runs inside the ledger's own mutation
-section and takes only the floor locks of the filesystems the demand is bound
-to, sorted, each with a bounded wait; a floor section takes no other lock,
-so floor locks are innermost everywhere and cannot form a cycle with ledger,
-tier-mint or admission locks.  Under the locks it reads two small files --
-the published sample and the grant counter -- and does no name resolution,
-no ``statvfs`` and no subprocess.  It charges ``census + (granted_now -
-granted_at_sample) + demand``.  A refusal is the ledger's ordinary shortage
-(``begin_acquire`` returns ``None`` with ``last_token_shortage`` naming
-``filesystem_floor``), so every caller that already handles a shortage --
-claim, tier advance, fence top-up, produced-output funding -- handles this
-one without change.  A filesystem whose owner is down stops being freshly
-sampled and refuses only the byte acquisitions bound to it.
-
-**Used paths.**  :func:`check_paths` checks filesystems that are written but
-carry no allowance of their own (checkouts, logs, the queue).  A local
-unregistered filesystem is sampled fresh with zero charge.  A path on an NFS
-mount is matched, conservatively, to *every* binding registered by the
-server whose address the mount names: the client's fresh sample must clear
-the largest of their floors plus the sum of their charges, and each binding
-must clear its own published check.  No server file handle or export table
-is read.  An NFS server with no binding is unattributed and refuses.
-
-**Coordinator growth.**  :func:`operation` reserves ``filesystem_gib`` tokens
-from the ledger bound to a filesystem (minted by ``register
---filesystem-gib``) for a coordinator's writes, records the owner beside the
-holder, and releases in ``finally`` whatever ended the body.
-:func:`reap_operations` returns the tokens of an owner that was killed.
-
-**Mode.**  ``off`` (the default: no file reads, no locks, no change),
-``observe`` (every verdict computed and refusals logged, nothing refused) or
-``enforce``.  The mode is the content of ``<queue>/filesystem-floor/mode``,
-written by ``python -m prismabuild.filesystem_floor mode``; the environment
-variable :data:`MODE_ENV` overrides it for one process.
+Refresh snapshots each ledger under its actual owner lock between two floor
+sections. Grants since the first section remain charged, even if the owner
+snapshot also saw them. Owner locks are never acquired under a floor lock.
+A pending or failed refresh leaves a refusal sample. Admission persists its
+counter charge before taking tokens, so partial failures cannot admit an
+uncharged reservation. Release authority remains with the existing owners.
 """
 from __future__ import annotations
 
@@ -64,11 +20,13 @@ from collections.abc import Iterable, Mapping
 from contextlib import ExitStack, contextmanager
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
 import shutil
 import socket
+from stat import S_ISDIR, S_ISREG
 import subprocess
 import sys
 import time
@@ -81,7 +39,7 @@ GIB = 1 << 30
 FLOOR_DIVISOR = 20
 #: Token kinds whose tokens are bytes on a filesystem, with each one's unit.
 #: ``ram_gib`` and ``arc_gib`` are memory and the ``*_mb_s`` kinds are rates.
-BYTE_KINDS: dict[str, int] = {"spool_gb": GIB, "stage_gib": GIB,
+BYTE_KINDS: dict[str, int] = {"spool_gb": GIB, "stage_gib": GIB, "local_gib": GIB,
                               "filesystem_gib": GIB}
 FILESYSTEM_KIND = "filesystem_gib"
 FLOOR_DIR = "filesystem-floor"
@@ -116,6 +74,10 @@ NFS_TYPES = frozenset({"nfs", "nfs4"})
 
 class FloorError(RuntimeError):
     """An identity, record or census that cannot be read or trusted."""
+
+    def __init__(self, message: str, *, reason: str = "unreadable"):
+        self.reason = reason
+        super().__init__(message)
 
 
 class FloorRefused(RuntimeError):
@@ -181,17 +143,43 @@ def _floor_boot_id() -> str:
     return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 
 
-def _mount_row(fd: int) -> tuple[str, str, str]:
+def _owner_incarnation() -> dict[str, object]:
+    return {"machine_id": _machine_id(), "boot_id": _floor_boot_id(),
+            "mount_namespace": os.stat("/proc/self/ns/mnt").st_ino}
+
+
+def _statx_mount_id(fd: int) -> int:
+    import ctypes
+
+    # Linux statx UAPI: stx_mask at 0x00, stx_mnt_id at 0x90, 256 bytes.
+    class MountStat(ctypes.Structure):
+        _fields_ = [("mask", ctypes.c_uint32), ("before_mount", ctypes.c_byte * 140),
+                    ("mount", ctypes.c_uint64), ("after_mount", ctypes.c_byte * 104)]
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        statx = libc.statx
+    except AttributeError:
+        raise FloorError("descriptor mount identity unavailable") from None
+    statx.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                     ctypes.c_uint, ctypes.POINTER(MountStat)]
+    statx.restype = ctypes.c_int
+    value = MountStat()
+    if statx(fd, b"", 0x1000, 0x1000, ctypes.byref(value)) != 0:
+        raise FloorError(f"descriptor mount identity failed: errno {ctypes.get_errno()}")
+    if not value.mask & 0x1000 or not value.mount:
+        raise FloorError("descriptor mount identity unknown")
+    return int(value.mount)
+
+
+def _mount_row(fd: int, *, mount_id: int | None = None) -> tuple[str, str, str]:
     """``(type, source, super options)`` of the mount the descriptor is on."""
 
-    ids = [line.split(":", 1)[1].strip() for line in
-           Path(f"/proc/self/fdinfo/{fd}").read_text().splitlines()
-           if line.startswith("mnt_id:")]
-    if len(ids) != 1:
-        raise FloorError("mount id unknown")
+    if mount_id is None:
+        mount_id = _statx_mount_id(fd)
     rows = [line.split(" - ", 1) for line in
             Path("/proc/self/mountinfo").read_text().splitlines()
-            if line.split(" ", 1)[0] == ids[0]]
+            if line.split(" ", 1)[0] == str(mount_id)]
     if len(rows) != 1 or len(rows[0]) != 2 or len(rows[0][1].split()) < 3:
         raise FloorError("mount row unknown")
     fstype, source, options = rows[0][1].split()[:3]
@@ -245,9 +233,9 @@ def identify(path: str | os.PathLike) -> dict[str, object]:
     """The filesystem ``path`` is on, its stable key and a fresh sample.
 
     Symlinks are resolved first (an interpreter path is usually one).  A
-    path that is not a directory is identified by its directory, and one
-    that does not exist yet by its nearest existing ancestor, where it would
-    be created.  Every error is a :class:`FloorError`: an unreadable
+    existing file is identified by its own descriptor. A path that does not
+    exist yet uses its nearest existing ancestor, where it would be created.
+    Every error is a :class:`FloorError`: an unreadable
     identity is never a pass.
     """
 
@@ -261,19 +249,21 @@ def identify(path: str | os.PathLike) -> dict[str, object]:
                 if real == real.parent:
                     raise
                 real = real.parent
-        if not real.is_dir():
-            real = real.parent
-        fd = os.open(real, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        fd = os.open(real, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as exc:
         raise FloorError(f"{path}: {exc}") from exc
     try:
-        fstype, source, options = _mount_row(fd)
         stat = os.fstat(fd)
+        if not (S_ISDIR(stat.st_mode) or S_ISREG(stat.st_mode)):
+            raise FloorError(f"{real}: not a regular file or directory")
+        mount_id = _statx_mount_id(fd)
+        fstype, source, options = _mount_row(fd, mount_id=mount_id)
         space = os.fstatvfs(fd)
         room = filesystem_capacity.local_disk_room(real, 5, statvfs=lambda path: space)
         size, free = room["size_bytes"], room["free_bytes"]
         found: dict[str, object] = {"path": str(real), "fstype": fstype,
-                                    "source": source, "device": stat.st_dev}
+                                    "source": source, "device": stat.st_dev,
+                                    "mount_id": mount_id}
         if fstype in NFS_TYPES:
             servers = [o[5:] for o in options.split(",") if o.startswith("addr=")]
             if len(servers) != 1:
@@ -286,6 +276,10 @@ def identify(path: str | os.PathLike) -> dict[str, object]:
                 raise FloorError(f"zfs pool {pool} guid unreadable")
             size, free = _zfs_space(pool)
             found.update(key=f"zfs:{guid}", pool=pool)
+            if source != pool:
+                dataset_size, dataset_free = _zfs_space(source)
+                found["capacity_constraints"] = [{"filesystem": f"zfs:{guid}:{source}",
+                    "size_bytes": dataset_size, "free_bytes": dataset_free}]
         else:
             # The mount's source device, not st_dev: btrfs reports an
             # anonymous st_dev that names no block device.
@@ -329,8 +323,13 @@ def _sample(found: Mapping[str, object]) -> dict:
         room["size_bytes"], room["free_bytes"] = _zfs_space(str(found["pool"]))
     if room["size_bytes"] <= 0 or not 0 <= room["free_bytes"] <= room["size_bytes"]:
         raise FloorError(f"{found['path']}: space sample invalid")
-    return {name: room[name] for name in ("size_bytes", "free_bytes",
-            "size_inodes", "free_inodes", "floor_inodes", "inode_refusal")}
+    sampled = {name: room[name] for name in ("size_bytes", "free_bytes",
+               "size_inodes", "free_inodes", "floor_inodes", "inode_refusal")}
+    if found["fstype"] == "zfs" and found.get("source", found["pool"]) != found["pool"]:
+        size, free = _zfs_space(str(found["source"]))
+        sampled["capacity_constraints"] = [{"filesystem": str(found["source"]),
+                                             "size_bytes": size, "free_bytes": free}]
+    return sampled
 
 
 def _host_addresses() -> list[str]:
@@ -400,6 +399,11 @@ def _floor_write(path: Path, value: Mapping) -> None:
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, path)
+    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(parent)
+    finally:
+        os.close(parent)
 
 
 def bindings(queue_root) -> list[dict]:
@@ -454,37 +458,6 @@ def _log(message: str) -> None:
 
 # -- census ------------------------------------------------------------------
 
-def held_bytes(queue_root, ledger_root: str, ledger: str, kind: str) -> int:
-    """Bytes held in one ledger's byte kind, read without the ledger's lock.
-
-    Names are collected over two passes and united, so a token moving
-    between two holders (a commit, a transfer) is seen unless it moves during
-    both passes.  Acquisitions of a bound kind cannot run meanwhile: they
-    take the floor lock this census is taken under.  An unreadable holder
-    makes the census unknown, never smaller.
-    """
-
-    held = Path(queue_root) / ledger_root / ledger / "held"
-    prefix = f"{kind}-"
-    names: set[str] = set()
-    for _pass in range(2):
-        try:
-            holders = os.listdir(held)
-        except FileNotFoundError:
-            holders = []
-        except OSError as exc:
-            raise FloorError(f"{held}: {exc}") from exc
-        for holder in holders:
-            try:
-                tokens = os.listdir(held / holder)
-            except (FileNotFoundError, NotADirectoryError):
-                continue
-            except OSError as exc:
-                raise FloorError(f"{held / holder}: {exc}") from exc
-            names.update(t for t in tokens if t.startswith(prefix))
-    return len(names) * BYTE_KINDS[kind]
-
-
 _RECORDS: dict[str, tuple[float, dict[str, dict]]] = {}
 _LOCK_PATHS: dict[str, Path] = {}
 
@@ -513,8 +486,13 @@ def member_bindings(queue_root, *, max_age_s: float = GATE_CACHE_S) -> dict[str,
     if cached is not None and now - cached[0] < max_age_s:
         return cached[1]
     found = bindings(queue_root)
-    table = {member_id(m["ledger_root"], m["ledger"], m["kind"]): b
-             for b in found for m in b.get("members", [])}
+    table = {}
+    for b in found:
+        for m in b.get("members", []):
+            mid = member_id(m["ledger_root"], m["ledger"], m["kind"])
+            if mid in table:
+                raise FloorError(f"conflicting member mapping: {mid}", reason="mapping_unknown")
+            table[mid] = b
     for b in found:
         try:
             _lock_path(fs_dir(queue_root, str(b["key"])))
@@ -525,14 +503,73 @@ def member_bindings(queue_root, *, max_age_s: float = GATE_CACHE_S) -> dict[str,
 
 
 def census(queue_root, binding: Mapping) -> dict[str, int]:
-    return {member_id(m["ledger_root"], m["ledger"], m["kind"]):
-            held_bytes(queue_root, m["ledger_root"], m["ledger"], m["kind"])
-            for m in binding.get("members", [])}
+    from .pool import PoolQueue, ResourceLedger
+
+    coverage = _coverage(binding)
+    owners: dict[tuple[str, str], set[str]] = {}
+    for m in binding["members"]:
+        owners.setdefault((m["ledger_root"], m["ledger"]), set()).add(m["kind"])
+    counted = {}
+    for (root, name), kinds in owners.items():
+        owner = (PoolQueue(queue_root).tier(name) if root == "tier-reservations"
+                 else ResourceLedger(Path(queue_root) / root, host=name))
+        try:
+            snapshot = owner.floor_snapshot(kinds)
+        except (OSError, RuntimeError) as exc:
+            raise FloorError(f"{root}/{name}: {exc}", reason="population_unknown") from exc
+        for kind, count in snapshot.items():
+            mid = member_id(root, name, kind)
+            counted[mid] = count * coverage["bytes_per_token"][mid]
+    return counted
+
+
+def coverage_identity(binding: Mapping) -> str:
+    """Scope an authority's coverage to this exact mapping and member version."""
+
+    from .digest_primitives import canonical_sha256
+
+    return canonical_sha256({
+        name: binding.get(name) for name in
+        ("key", "root", "fstype", "pool", "source", "owner_host", "machine_id",
+         "boot_id", "mount_namespace", "registered_unix", "members", "destinations")})
+
+
+def _coverage(binding: Mapping, *, now: float | None = None) -> dict:
+    """Read closure and bounds supplied by the existing release authority."""
+
+    coverage = binding.get("coverage")
+    if not isinstance(coverage, dict):
+        raise FloorError("no authoritative closed population", reason="population_unknown")
+    for field in ("version", "mapping_version", "population_version", "bounds_version",
+                  "writer_fence", "authority", "configuration_version"):
+        if not isinstance(coverage.get(field), str) or not coverage[field].strip():
+            raise FloorError(f"coverage missing {field}", reason="population_unknown")
+    if coverage.get("scope_sha256") != coverage_identity(binding):
+        raise FloorError("coverage scope changed", reason="mapping_unknown")
+    evidence = coverage.get("evidence")
+    if not isinstance(evidence, list) or not evidence or any(
+            not isinstance(ref, str) or not ref.strip() for ref in evidence):
+        raise FloorError("coverage has no authority evidence", reason="population_unknown")
+    start, end = coverage.get("valid_from_unix"), coverage.get("valid_until_unix")
+    if any(type(n) not in (int, float) or not math.isfinite(n) for n in (start, end)):
+        raise FloorError("coverage interval unknown", reason="population_unknown")
+    if not start <= (time.time() if now is None else now) < end:
+        raise FloorError("coverage outside its effective interval", reason="population_unknown")
+    units = coverage.get("bytes_per_token")
+    expected = {member_id(m["ledger_root"], m["ledger"], m["kind"]): BYTE_KINDS[m["kind"]]
+                for m in binding["members"]}
+    if not isinstance(units, dict) or units.keys() != expected.keys() or any(
+            type(units[mid]) is not int or units[mid] < unit for mid, unit in expected.items()):
+        raise FloorError("whole-reservation bounds incomplete", reason="bounds_unknown")
+    extra = coverage.get("additional_bytes")
+    if type(extra) is not int or extra < 0:
+        raise FloorError("other writer and residue bounds unknown", reason="bounds_unknown")
+    return coverage
 
 
 def _granted(directory: Path) -> int:
     record = _floor_read(directory / "granted.json")
-    value = 0 if record is None else record.get("granted_bytes")
+    value = None if record is None else record.get("granted_bytes")
     if type(value) is not int or value < 0:
         raise FloorError(f"{directory}: grant counter malformed")
     return value
@@ -573,29 +610,75 @@ def published_verdict(queue_root, binding: Mapping, *, demand_bytes: int = 0,
     if binding.get("status") != "active":
         return floor_refusal(key, "binding_" + str(binding.get("status")),
                        detail=binding.get("status_detail"))
+    current = _floor_read(directory / "binding.json")
+    if current is None or coverage_identity(current) != coverage_identity(binding):
+        return floor_refusal(key, "mapping_unknown")
+    binding = current
+    try:
+        owner = _owner_incarnation()
+        if binding.get("machine_id") == owner["machine_id"] and any(
+                binding.get(field) != value for field, value in owner.items()):
+            return floor_refusal(key, "mapping_unknown", detail="local owner incarnation changed")
+        coverage = _coverage(binding, now=now)
+    except (FloorError, OSError) as exc:
+        return floor_refusal(key, getattr(exc, "reason", "mapping_unknown"), detail=str(exc))
     sample = _floor_read(directory / "sample.json")
     if sample is None or sample.get("key") != key:
         return floor_refusal(key, "no_sample")
+    if sample.get("refusal"):
+        return floor_refusal(key, sample["refusal"], detail=sample.get("detail"))
+    from .digest_primitives import canonical_sha256
+    if (sample.get("coverage_sha256") != canonical_sha256(coverage)
+            or sample.get("binding_sha256") != coverage_identity(binding)):
+        return floor_refusal(key, "population_unknown", detail="sample coverage changed")
     if any(name not in sample for name in
            ("size_inodes", "free_inodes", "floor_inodes", "inode_refusal")):
         return floor_refusal(key, "inode_sample_missing")
-    age = (time.time() if now is None else now) - float(sample["sampled_unix"])
+    sampled_at = sample.get("sampled_unix")
+    grant_position = sample.get("granted_at")
+    if (type(sampled_at) not in (int, float) or not math.isfinite(sampled_at)
+            or type(grant_position) is not int or grant_position < 0):
+        return floor_refusal(key, "population_unknown", detail="invalid sample position")
+    age = (time.time() if now is None else now) - sampled_at
     if not -CLOCK_SKEW_S <= age <= SAMPLE_MAX_AGE_S:
         return floor_refusal(key, "sample_stale", detail=f"age {age:.0f}s")
-    since = _granted(directory) - int(sample["granted_at"])
-    return floor_verdict(key, size_bytes=int(sample["size_bytes"]),
-                   free_bytes=int(sample["free_bytes"]),
-                   charge_bytes=int(sample["census_bytes"]) + max(0, since),
+    since = _granted(directory) - grant_position
+    if since < 0:
+        return floor_refusal(key, "population_unknown", detail="grant counter regressed")
+    try:
+        return _sample_verdict(key, sample, demand_bytes=demand_bytes,
+                               since=since, age=age)
+    except (FloorError, KeyError, TypeError, ValueError) as exc:
+        return floor_refusal(key, "population_unknown", detail=str(exc))
+
+
+def _sample_verdict(key: str, sample: Mapping, *, demand_bytes: int,
+                    since: int, age: float) -> dict[str, object]:
+    """Calculate the verdict independently of the shared record reads."""
+
+    if type(sample["census_bytes"]) is not int or sample["census_bytes"] < 0:
+        raise FloorError("invalid census byte count", reason="population_unknown")
+    verdict = floor_verdict(key, size_bytes=sample["size_bytes"],
+                   free_bytes=sample["free_bytes"],
+                   charge_bytes=sample["census_bytes"] + since,
                    demand_bytes=demand_bytes, sample_age_s=round(age, 1),
                    **{name: sample[name] for name in
                       ("size_inodes", "free_inodes", "floor_inodes", "inode_refusal")})
+    constraints = [floor_verdict(str(c["filesystem"]), size_bytes=c["size_bytes"],
+                    free_bytes=c["free_bytes"], charge_bytes=verdict["charge_bytes"],
+                    demand_bytes=demand_bytes) for c in sample.get("capacity_constraints", [])]
+    if constraints:
+        verdict["constraints"] = constraints
+        if any(not c["allowed"] for c in constraints):
+            verdict.update(allowed=False, reason="below_dataset_floor")
+    return verdict
 
 
 # -- registration and refresh ------------------------------------------------
 
 def register(queue_root, root, *, members: Iterable[tuple[str, str, str]] = (),
              filesystem_gib: int | None = None, filesystem_ledger: str | None = None,
-             now: float | None = None) -> dict:
+             now: float | None = None, coverage: Mapping | None = None) -> dict:
     """Bind ``root``'s filesystem, and the named ledger kinds, on this host.
 
     Must run where ``root`` is local.  Idempotent: an existing binding of the
@@ -608,7 +691,7 @@ def register(queue_root, root, *, members: Iterable[tuple[str, str, str]] = (),
     found = identify(root)
     if found["key"] is None:
         raise FloorError(f"{root}: register on the NFS server, where it is local")
-    if str(found["key"]).startswith("volatile:"):
+    if str(found["key"]).startswith("volatile:") and found["fstype"] != "tmpfs":
         raise FloorError(f"{root}: {found['fstype']} has no stable identity to bind")
     members = [tuple(m) for m in members]
     for ledger_root, _ledger, kind in members:
@@ -634,7 +717,10 @@ def register(queue_root, root, *, members: Iterable[tuple[str, str, str]] = (),
             if existing is not None and existing["key"] != key:
                 raise FloorError(f"{member_id(ledger_root, ledger, kind)} is bound to "
                                  f"{existing['key']}; unbind it first")
-        binding = _floor_read(directory / "binding.json") or {
+        binding = _floor_read(directory / "binding.json")
+        if binding is None:
+            _floor_write(directory / "granted.json", {"granted_bytes": 0})
+        binding = binding or {
             "schema": BINDING_SCHEMA, "key": key, "members": [],
             "registered_unix": time.time() if now is None else now}
         listed = {(m["ledger_root"], m["ledger"], m["kind"]) for m in binding["members"]}
@@ -645,8 +731,15 @@ def register(queue_root, root, *, members: Iterable[tuple[str, str, str]] = (),
         binding.update(
             status="active", status_detail=None, root=found["path"],
             fstype=found["fstype"], pool=found.get("pool"),
-            owner_host=socket.gethostname(), machine_id=_machine_id(),
+            source=found.get("source"), **_owner_incarnation(),
+            owner_host=socket.gethostname(),
             size_bytes=found["size_bytes"], server_addresses=_host_addresses())
+        destination = {"root": found["path"], "source": found.get("source"),
+                       "device": found["device"], "mount_id": found.get("mount_id")}
+        if destination not in binding.setdefault("destinations", []):
+            binding["destinations"].append(destination)
+        if coverage is not None:
+            binding["coverage"] = dict(coverage)
         _floor_write(directory / "binding.json", binding)
         for m in binding["members"]:
             _floor_write(member_path(queue_root, m["ledger_root"], m["ledger"], m["kind"]),
@@ -679,45 +772,91 @@ def unbind(queue_root, ledger_root: str, ledger: str, kind: str) -> dict | None:
 
 
 def refresh_binding(queue_root, binding: Mapping, *, now: float | None = None) -> dict:
-    """Census, then sample, then publish -- all under the floor lock.
-
-    A different stable key at the bound root marks the binding ``moved``,
-    which refuses its acquisitions until an operator registers again; a
-    different boot or mount of the same filesystem is the same binding.
-    """
+    """Capture owners outside the floor lock, retaining intervening grants."""
 
     key = str(binding["key"])
     directory = fs_dir(queue_root, key)
-    found = identify(binding["root"])
-    if found["key"] != key:
-        record = {**binding, "status": "moved",
-                  "status_detail": f"{binding['root']} is now {found['key']}"}
-        _floor_write(directory / "binding.json", record)
-        # No sample, so every gate refuses at once, whatever it has cached.
-        (directory / "sample.json").unlink(missing_ok=True)
-        return floor_refusal(key, "binding_moved", detail=record["status_detail"])
+    identified_binding = coverage_identity(binding)
     with floor_locked(directory) as acquired:
         if not acquired:
             return floor_refusal(key, "floor_lock_busy")
-        # The members as they are now: a register that added one since this
-        # caller read the binding is counted, not missed for an interval.
-        binding = _floor_read(directory / "binding.json") or binding
+        binding = _floor_read(directory / "binding.json")
+        if binding is None:
+            return floor_refusal(key, "mapping_unknown")
+        if coverage_identity(binding) != identified_binding:
+            return floor_refusal(key, "mapping_unknown", detail="binding changed during identity capture")
         if binding.get("status") != "active":
             return floor_refusal(key, "binding_" + str(binding.get("status")))
-        granted = _granted(directory)
+        # A crash or incomplete census leaves dependent admission on HOLD.
+        pending = {"schema": SAMPLE_SCHEMA, "key": key, "refusal": "population_unknown",
+                   "detail": "refresh incomplete", "refresh_id": uuid.uuid4().hex}
+        _floor_write(directory / "sample.json", pending)
+        try:
+            coverage = _coverage(binding, now=now)
+            granted_before = _granted(directory)
+        except FloorError as exc:
+            return floor_refusal(key, exc.reason, detail=str(exc))
+    from .digest_primitives import canonical_sha256
+
+    identity = coverage_identity(binding)
+    coverage_hash = canonical_sha256(coverage)
+    try:
+        found = identify(binding["root"])
+    except (FloorError, OSError) as exc:
+        return floor_refusal(key, "mapping_unknown", detail=str(exc))
+    if (found["key"] != key or binding.get("source") != found.get("source")
+            or any(binding.get(field) != value
+                   for field, value in _owner_incarnation().items())):
+        detail = f"{binding['root']} is now {found['key']}"
+        with floor_locked(directory) as acquired:
+            current = _floor_read(directory / "binding.json") if acquired else None
+            if (current is not None and coverage_identity(current) == identity
+                    and _floor_read(directory / "sample.json") == pending):
+                _floor_write(directory / "binding.json",
+                             {**binding, "status": "moved", "status_detail": detail})
+                _floor_write(directory / "sample.json",
+                             {**pending, "refusal": "binding_moved", "detail": detail})
+        return floor_refusal(key, "binding_moved", detail=detail)
+    try:
         counted = census(queue_root, binding)
+    except FloorError as exc:
+        return floor_refusal(key, exc.reason, detail=str(exc))
+    with floor_locked(directory) as acquired:
+        if not acquired:
+            return floor_refusal(key, "floor_lock_busy")
+        if _floor_read(directory / "sample.json") != pending:
+            return floor_refusal(key, "population_unknown", detail="refresh superseded")
+        current = _floor_read(directory / "binding.json")
+        if (current is None or coverage_identity(current) != identity
+                or canonical_sha256(_coverage(current, now=now)) != coverage_hash):
+            return floor_refusal(key, "population_unknown", detail="coverage changed during census")
+        granted = _granted(directory)
+        if granted < granted_before:
+            return floor_refusal(key, "population_unknown", detail="grant counter regressed")
         space = _sample(found)
+        constraints = {str(c["filesystem"]): c for c in space.get("capacity_constraints", [])}
+        for destination in binding["destinations"]:
+            actual = identify(destination["root"])
+            if (actual["key"] != key or actual.get("source") != destination["source"]
+                    or actual.get("mount_id") != destination.get("mount_id")
+                    or actual["device"] != destination["device"]):
+                return floor_refusal(key, "mapping_unknown", detail="destination mapping changed")
+            if actual["fstype"] == "zfs":
+                for constraint in _sample(actual).get("capacity_constraints", []):
+                    constraints[str(constraint["filesystem"])] = constraint
+        if constraints:
+            space["capacity_constraints"] = list(constraints.values())
         sample = {"schema": SAMPLE_SCHEMA, "key": key, "host": socket.gethostname(),
                   "boot_id": _floor_boot_id(),
                   "sampled_unix": time.time() if now is None else now,
                   **space,
-                  "census": counted, "census_bytes": sum(counted.values()),
+                  "census": counted,
+                  "census_bytes": (sum(counted.values()) + granted - granted_before
+                                   + coverage["additional_bytes"]),
+                  "binding_sha256": identity, "coverage_sha256": coverage_hash,
                   "granted_at": granted}
         _floor_write(directory / "sample.json", sample)
-    return floor_verdict(key, size_bytes=sample["size_bytes"], free_bytes=sample["free_bytes"],
-                   charge_bytes=sample["census_bytes"],
-                   **{name: sample[name] for name in
-                      ("size_inodes", "free_inodes", "floor_inodes", "inode_refusal")})
+    return _sample_verdict(key, sample, demand_bytes=0, since=0, age=0)
 
 
 _LAST_REFRESH: dict[str, float] = {}
@@ -766,7 +905,7 @@ class LedgerGate:
     def admitted(self):
         """Yield whether the acquisition may proceed, holding the floor locks.
 
-        Call :meth:`granted` inside the block once the tokens are taken.
+        Call :meth:`reserve` before taking tokens, still inside the block.
         """
 
         self.verdicts = [floor_refusal(m, "unbound_byte_ledger") for m in self.unbound]
@@ -784,22 +923,24 @@ class LedgerGate:
                     continue
                 self.locked.add(key)
                 try:
+                    current = _floor_read(fs_dir(self.queue_root, key) / "binding.json")
+                    if current is None or coverage_identity(current) != coverage_identity(group["binding"]):
+                        raise FloorError("binding changed", reason="mapping_unknown")
+                    coverage = _coverage(current)
+                    group["bytes"] = sum(count * coverage["bytes_per_token"][mid]
+                                         for mid, count in group["members"].items())
                     self.verdicts.append(published_verdict(
-                        self.queue_root, group["binding"], demand_bytes=group["bytes"]))
+                        self.queue_root, current, demand_bytes=group["bytes"]))
                 except (FloorError, OSError, KeyError, ValueError, TypeError) as exc:
-                    self.verdicts.append(floor_refusal(key, "unreadable", detail=str(exc)))
+                    self.verdicts.append(floor_refusal(key, getattr(exc, "reason", "unreadable"), detail=str(exc)))
             refused = [v for v in self.verdicts if not v["allowed"]]
             if refused:
                 _log(("refused " if self.mode == "enforce" else "would refuse ")
                      + "; ".join(describe_verdict(v) for v in refused))
             yield self.mode != "enforce" or not refused
 
-    def granted(self) -> None:
-        """Advance each locked filesystem's grant counter, under its lock.
-
-        Under ``observe`` a group whose lock could not be taken was admitted
-        anyway; its counter is left alone rather than written unlocked.
-        """
+    def reserve(self) -> bool:
+        """Persist charges before token mutation; partial writes overcharge."""
 
         for key, group in self.groups.items():
             if key not in self.locked:
@@ -809,9 +950,11 @@ class LedgerGate:
                 _floor_write(directory / "granted.json",
                        {"granted_bytes": _granted(directory) + group["bytes"]})
             except (FloorError, OSError) as exc:
-                # The tokens are taken; a lost increment under-charges until
-                # the owner's next census counts them.  Said loudly.
+                self.verdicts.append(floor_refusal(key, "grant_persistence_failed", detail=str(exc)))
                 _log(f"grant counter for {key} not advanced: {exc}")
+                if self.mode == "enforce":
+                    return False
+        return True
 
     def shortage(self) -> dict[str, object]:
         refused = [v for v in self.verdicts if not v["allowed"]]
@@ -856,12 +999,22 @@ def ledger_gate(ledger, demand: Mapping[str, int]) -> LedgerGate | None:
         if binding is None:
             unbound.append(mid)
             continue
-        group = groups.setdefault(binding["key"], {"binding": binding, "bytes": 0})
+        group = groups.setdefault(binding["key"], {"binding": binding, "bytes": 0,
+                                                   "members": {}})
         group["bytes"] += amount
+        group["members"][mid] = amount // BYTE_KINDS[kind]
     return LedgerGate(queue_root, floor_mode, wanted, groups, unbound)
 
 
 # -- used paths ----------------------------------------------------------------
+
+def _local_mapping_matches(found, binding) -> bool:
+    return (all(binding.get(field) == value for field, value in _owner_incarnation().items())
+        and found["key"] == binding["key"] and any(
+        all(found.get(field) == destination.get(field)
+            for field in ("source", "device", "mount_id"))
+        for destination in binding.get("destinations", [])))
+
 
 def check_paths(queue_root, paths: Iterable, *, now: float | None = None
                 ) -> list[dict[str, object]]:
@@ -872,7 +1025,7 @@ def check_paths(queue_root, paths: Iterable, *, now: float | None = None
     except FloorError as exc:
         return [floor_refusal("bindings", "unreadable", detail=str(exc))]
     by_key = {b["key"]: b for b in known}
-    seen: set[str] = set()
+    seen = set()
     verdicts: list[dict[str, object]] = []
     for path in paths:
         try:
@@ -880,43 +1033,60 @@ def check_paths(queue_root, paths: Iterable, *, now: float | None = None
         except FloorError as exc:
             verdicts.append(floor_refusal(str(path), "identity_unknown", detail=str(exc)))
             continue
-        name = f"nfs:{found['server']}" if found["key"] is None else str(found["key"])
-        if name in seen:
+        name = (f"nfs:{found['server']}:{found.get('source')}" if found["key"] is None
+                else str(found["key"]))
+        destination = (name, found.get("source"), found.get("device"), found.get("mount_id"))
+        if destination in seen:
             continue
-        seen.add(name)
+        seen.add(destination)
         try:
             if found["key"] is None:
                 verdicts.extend(_nfs_verdicts(queue_root, found, name, known, now))
             elif found["key"] in by_key:
                 binding = by_key[found["key"]]
+                if not _local_mapping_matches(found, binding):
+                    verdicts.append(floor_refusal(name, "mapping_unknown", path=str(path)))
+                    continue
                 published = published_verdict(queue_root, binding, now=now)
                 verdicts.append(published)
                 if published.get("required_bytes") is not None:
                     # The fresh local sample may be lower than the published one.
-                    verdicts.append(floor_verdict(
-                        name, size_bytes=int(found["size_bytes"]),
-                        free_bytes=int(found["free_bytes"]),
-                        charge_bytes=int(published["charge_bytes"]), path=str(path),
-                        sample="fresh-local", **{field: found[field] for field in
-                            ("size_inodes", "free_inodes", "floor_inodes", "inode_refusal")}))
+                    fresh = _sample_verdict(name, {**found,
+                            "census_bytes": published["charge_bytes"]},
+                            demand_bytes=0, since=0, age=0)
+                    verdicts.append({**fresh, "path": str(path), "sample": "fresh-local"})
             else:
-                verdicts.append(floor_verdict(name, size_bytes=int(found["size_bytes"]),
-                                        free_bytes=int(found["free_bytes"]),
-                                        path=str(path), sample="fresh-unbound",
-                                        **{field: found[field] for field in
-                            ("size_inodes", "free_inodes", "floor_inodes", "inode_refusal")}))
+                verdicts.append(floor_refusal(name, "mapping_unknown", path=str(path)))
         except (FloorError, OSError, KeyError, ValueError, TypeError) as exc:
             verdicts.append(floor_refusal(name, "unreadable", detail=str(exc)))
     return verdicts
 
 
-def _nfs_verdicts(queue_root, found, name, known, now) -> list[dict[str, object]]:
-    """An NFS view against every binding its server registered, summed."""
+def _nfs_bindings(found, known, now=None) -> list[dict]:
+    """Resolve exact, effective export aliases from the binding authority."""
+    identity = {"server": found["server"], "source": found.get("source"),
+                **_owner_incarnation(),
+                "device": found.get("device"), "mount_id": found.get("mount_id")}
+    if not identity["mount_id"] or identity["device"] is None:
+        return []
+    matched = []
+    for b in known:
+        try:
+            coverage = _coverage(b, now=now)
+        except FloorError:
+            continue
+        if identity in coverage.get("nfs_aliases", []):
+            matched.append(b)
+    return matched
 
-    matched = [b for b in known if found["server"] in b.get("server_addresses", ())]
-    if not matched:
-        return [floor_refusal(name, "unattributed_nfs", path=found["path"],
-                        detail="no binding registered by this server")]
+
+def _nfs_verdicts(queue_root, found, name, known, now) -> list[dict[str, object]]:
+    """Use an authority's exact export mapping; an address alone is unknown."""
+
+    matched = _nfs_bindings(found, known, now)
+    if len(matched) != 1:
+        return [floor_refusal(name, "mapping_unknown", path=found["path"],
+                             detail="no unique authenticated export mapping")]
     published = [published_verdict(queue_root, b, now=now) for b in matched]
     if any("required_bytes" not in v for v in published):
         return published
@@ -966,15 +1136,19 @@ def _growth_ledger(queue_root, path):
     found = identify(path)
     known = bindings(queue_root)
     if found["key"] is None:
-        candidates = [b for b in known if found["server"] in b.get("server_addresses", ())]
+        candidates = _nfs_bindings(found, known)
     else:
-        candidates = [b for b in known if b["key"] == found["key"]]
-    ledgers = [m["ledger"] for b in candidates for m in b.get("members", [])
+        candidates = [b for b in known if _local_mapping_matches(found, b)]
+    if len(candidates) != 1:
+        raise FloorError(f"{path}: no unique authenticated filesystem mapping",
+                         reason="mapping_unknown")
+    ledgers = [m for b in candidates for m in b.get("members", [])
                if m["kind"] == FILESYSTEM_KIND]
     if len(ledgers) != 1:
         raise FloorError(f"{path}: {len(ledgers)} filesystem_gib ledgers bound to "
                          f"{found['key'] or 'nfs:' + str(found['server'])}; need exactly one")
-    return ResourceLedger(Path(queue_root) / FILESYSTEM_RESERVATIONS, host=ledgers[0])
+    member = ledgers[0]
+    return ResourceLedger(Path(queue_root) / member["ledger_root"], host=member["ledger"])
 
 
 @contextmanager
@@ -1004,7 +1178,7 @@ def operation(queue_root, *, used_paths: Iterable = (), growth_gib: Mapping | No
         member_bindings(queue_root, max_age_s=0.0)
     except (FloorError, OSError) as exc:
         refuse(floor_refusal("bindings", "unreadable", detail=str(exc)), exc)
-    verdicts.extend(enforce_paths(queue_root, used_paths, label=label))
+    verdicts.extend(enforce_paths(queue_root, [*used_paths, *(growth_gib or {})], label=label))
     taken: list[tuple[object, str, Path]] = []
     try:
         for path, gib in sorted((growth_gib or {}).items(), key=lambda i: str(i[0])):
@@ -1180,6 +1354,8 @@ def main(argv: list[str] | None = None) -> int:
     reg.add_argument("--filesystem-gib", type=int, default=None,
                      help="mint this filesystem's filesystem_gib growth ledger to N GiB")
     reg.add_argument("--filesystem-ledger", default=None)
+    reg.add_argument("--coverage-json", type=Path, default=None,
+                     help="authority-supplied versioned mapping, population and whole-growth bounds")
     unb = sub.add_parser("unbind", help="remove one member from its binding")
     unb.add_argument("member", type=_member)
     sub.add_parser("refresh", help="refresh this machine's bindings now")
@@ -1194,7 +1370,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "register":
         result = register(queue, args.root, members=args.member,
                           filesystem_gib=args.filesystem_gib,
-                          filesystem_ledger=args.filesystem_ledger)
+                          filesystem_ledger=args.filesystem_ledger,
+                          coverage=_floor_read(args.coverage_json) if args.coverage_json else None)
     elif args.command == "unbind":
         result = unbind(queue, *args.member)
     elif args.command == "refresh":

@@ -20,6 +20,7 @@ from . import contracts, core as pb, posix_lock
 
 CAPABILITY = contracts.PUBLICATION_CANARY_TAG
 SCHEMA = "prismabuild.publication_canary_slot.v1"
+RESOURCE_DEMAND = {"cpu": 1, "gpu": 1, "mem_gb": 16}
 # Verified same-image leg2 action 4ae5bc61d25fa5c5de7fcfc40b5e40430f5c137b6dce3eb8430ac944f3c0aa33:
 # elapsed execution 3.93170428276062s, excluding queue wait. Eightfold margin.
 EXECUTION_TIMEOUT_S = math.ceil(8 * 3.93170428276062)
@@ -104,7 +105,7 @@ def check_envelope(value: Mapping[str, str], *, tags, needs_gpu, resources,
     required = {CAPABILITY, value["host"], f"runtime-generation:{value['generation']}"}
     if (not required.issubset(tags) or needs_gpu is not True
             # pbrun --exclusive preserves its existing 16-GiB minimum.
-            or resources != {"cpu": 1, "gpu": 1, "mem_gb": 16}
+            or resources != RESOURCE_DEMAND
             or priority != -10 or retry_safe is not False or max_attempts != 1):
         raise ValueError("publication canary envelope lacks fenced single-attempt GPU demand")
 

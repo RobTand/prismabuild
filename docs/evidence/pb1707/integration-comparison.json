@@ -1,0 +1,109 @@
+{
+  "schema": "pb.1707_integration_comparison.v1",
+  "qualified_source": "b530faad8d8218fe7e9bb805cc94f399a81dfda1",
+  "source_checkpoint": "c2d936953b1746cc0f2f0cf1df4ad8089aeaf293",
+  "source_tree": "76530683da5a7f3960435b519869b4e6d9993ea5",
+  "main_integrated": "defc5bd8467f009c9ea7935678e31e282e46d7a1",
+  "remote_integrated_checkpoint": "21d1f0dbb964ed7a2ca64a1bd4ed0853ae591abc",
+  "full_trees_equal": true,
+  "later_main_change": "#2309 canary receipt returncode decoding, seven paths disjoint from the PR-owned supervision paths",
+  "unchanged_product_test_and_compatibility_paths": [
+    {
+      "path": "src/prismabuild/_measurement_reservation.py",
+      "blob": "a2a154fd0f953fe45032f2b6da3e9a7e2a8d3d1b"
+    },
+    {
+      "path": "src/prismabuild/census.py",
+      "blob": "86eef56d7220d0577012269d027a366173c27ca8"
+    },
+    {
+      "path": "src/prismabuild/contracts.py",
+      "blob": "43d60c472496c274d9fb37a6f03e51614013fc52"
+    },
+    {
+      "path": "src/prismabuild/core.py",
+      "blob": "0c9b60974e63942bd0b49ed5d3c6edb11b64cc52"
+    },
+    {
+      "path": "src/prismabuild/pool.py",
+      "blob": "7b079c1f458a117dd8ee4294bb8ef352cf674be3"
+    },
+    {
+      "path": "src/prismabuild/record_store.py",
+      "blob": "20f280cf163e187b34506df09ae08b5067e43c8b"
+    },
+    {
+      "path": "src/prismabuild/submission.py",
+      "blob": "d1cc7de37773b476f66b805e0c854082a1832ca6"
+    },
+    {
+      "path": "src/prismabuild/submission_types.py",
+      "blob": "98ba9675ace68568f0dff96fdc03a8ad4dfa8c95"
+    },
+    {
+      "path": "tests/compat/capture-receipt.json",
+      "blob": "6171a64bad2027770f219ed394e712b4e0f27a9e"
+    },
+    {
+      "path": "tests/compat/goldens-receipt.jsonl",
+      "blob": "fc6a2933bc534201decb11890f63cafe9dfc83be"
+    },
+    {
+      "path": "tests/compat/history-controls/superseded-runtime-54a45eeafcdd8d67/capture-receipt.json",
+      "blob": "ee86df6a3f33fa816d7880687539777e9a14eef2"
+    },
+    {
+      "path": "tests/compat/history-controls/superseded-runtime-54a45eeafcdd8d67/goldens-receipt.jsonl",
+      "blob": "f14b7b6f999692f9d63752afdb70d14e71134f26"
+    },
+    {
+      "path": "tests/compat/history-controls/superseded-runtime-54a45eeafcdd8d67/provenance.json",
+      "blob": "bee27ac097b3a767c6e33a569ef839268ac68acf"
+    },
+    {
+      "path": "tests/test_1707_activity_signal_boundary.py",
+      "blob": "0106f18d87290b6738d1083fef10d23a510b1922"
+    },
+    {
+      "path": "tests/test_1707_default_stall_repro.py",
+      "blob": "5bc5b817e4a9b578b1ecc0cc870320c930de82cc"
+    },
+    {
+      "path": "tests/test_1707_progress_supervision_by_stall.py",
+      "blob": "82d8096a752b5dfd21b2a90c061869ff7c453c31"
+    },
+    {
+      "path": "tests/test_a_ready_gpu_action_is_not_starved_by_cpu_shards.py",
+      "blob": "66c0c5ad67a817ad57785e762a01d9a4ae2e149a"
+    },
+    {
+      "path": "tests/test_contained_deadline_profile.py",
+      "blob": "ad40adb856b3e0aad832caf2e17acbc8b1c42a51"
+    },
+    {
+      "path": "tests/test_contract_registry_publication.py",
+      "blob": "d342c789604026107ce01c168878a1e1e9ecb0b6"
+    },
+    {
+      "path": "tests/test_execution_budget_is_stated_not_silent.py",
+      "blob": "c5a767d089a29579593f005c4fa08725836d4eff"
+    },
+    {
+      "path": "tests/test_measurement_reservation_backfill_1419.py",
+      "blob": "1f1ec523753868f7d10d5f401a3abbceb2708d05"
+    },
+    {
+      "path": "tests/test_progress_keeps_a_working_action_alive.py",
+      "blob": "ebc1cc42e5b10ff05a2d807a00847c10399b0b73"
+    },
+    {
+      "path": "tools/fleet/pbrun.py",
+      "blob": "7fc52d5b383560432a78bce032d7f03c3003c17f"
+    },
+    {
+      "path": "tools/fleet/worker_loop.py",
+      "blob": "e8a04d7b563a34cdfe13c86ca9ca1f93e0200d5c"
+    }
+  ],
+  "qualification_limit": "Fresh fleet receipts qualify b530faad. Later upstream canary code was integrated without additional test execution here; no current-head canary runtime proof is claimed."
+}

@@ -1,0 +1,1624 @@
+{
+  "source_head": "abfb073bf1923ef6c05f5f450d75acb65306e011",
+  "source_tree": "2ea67727835ebc45939382c5876fcc3a8c350f64",
+  "plan_sha256": "24a6313c5e516d0c80ebd5c14b63707e0d10645076a7dc28cb72f240a841e9de",
+  "actions": 123,
+  "passed": 2419,
+  "failed": 0,
+  "skipped": 0,
+  "receipts": 123,
+  "scope": "Source/component validation only. Native archival compatibility is x86-only; portable repeats and integration cover both architectures.",
+  "attestation_limit": "No worker signing keys checked; no cryptographic attestation or power-loss durability claim.",
+  "schema": "pb.1707_pe2_final_qualification.v1",
+  "rows": [
+    {
+      "id": "corrected-checkpoint",
+      "files": [
+        "tests/test_1707_default_stall_repro.py",
+        "tests/test_a_measurement_admits_its_own_spool_exports.py",
+        "tests/test_candidate_refusals.py"
+      ],
+      "xdist_workers": null,
+      "actions": 3,
+      "passed": 35,
+      "audit_sha256": "15ea6598da72c114fec377c99e7f54c59d070f443c11b991df15de5cb7dcfcb4"
+    },
+    {
+      "id": "x86_64-qlease",
+      "files": [
+        "tests/test_record_compatibility_queue.py"
+      ],
+      "xdist_workers": null,
+      "actions": 1,
+      "passed": 5,
+      "audit_sha256": "409cde98a145c4506bfa8fbb5b0c9e1f2d3638e201bdb4ebc9c9543e39e7ee17"
+    },
+    {
+      "id": "x86_64-1",
+      "files": [
+        "tests/test_1707_default_stall_repro.py",
+        "tests/test_a_measurement_admits_its_own_spool_exports.py",
+        "tests/test_a_producers_export_rates_are_learned_per_family.py",
+        "tests/test_a_producers_exports_run_on_its_allowance.py",
+        "tests/test_candidate_refusals.py",
+        "tests/test_gpu_runtime_integration.py",
+        "tests/test_pool_action_timeout.py",
+        "tests/test_pool_resource_scope.py"
+      ],
+      "xdist_workers": 1,
+      "actions": 8,
+      "passed": 131,
+      "audit_sha256": "4d9f839d6ae34fed37eb4e1ff82848638eb4da3add63b0409fb417b2e0dcfde7"
+    },
+    {
+      "id": "x86_64-2",
+      "files": [
+        "tests/test_1707_default_stall_repro.py",
+        "tests/test_a_measurement_admits_its_own_spool_exports.py",
+        "tests/test_a_producers_export_rates_are_learned_per_family.py",
+        "tests/test_a_producers_exports_run_on_its_allowance.py",
+        "tests/test_candidate_refusals.py",
+        "tests/test_gpu_runtime_integration.py",
+        "tests/test_pool_action_timeout.py",
+        "tests/test_pool_resource_scope.py"
+      ],
+      "xdist_workers": 2,
+      "actions": 8,
+      "passed": 131,
+      "audit_sha256": "fe64a789392800f880d289ea2b9fade39d91596dec77d7f7ec95d935c099a408"
+    },
+    {
+      "id": "x86_64-3",
+      "files": [
+        "tests/test_1707_default_stall_repro.py",
+        "tests/test_a_measurement_admits_its_own_spool_exports.py",
+        "tests/test_a_producers_export_rates_are_learned_per_family.py",
+        "tests/test_a_producers_exports_run_on_its_allowance.py",
+        "tests/test_candidate_refusals.py",
+        "tests/test_gpu_runtime_integration.py",
+        "tests/test_pool_action_timeout.py",
+        "tests/test_pool_resource_scope.py"
+      ],
+      "xdist_workers": 1,
+      "actions": 8,
+      "passed": 131,
+      "audit_sha256": "b23b7af9ee4367994a5e8873d430b12e7f06bf5b744438601a7a07840e2b1ca4"
+    },
+    {
+      "id": "x86_64-4",
+      "files": [
+        "tests/test_1707_default_stall_repro.py",
+        "tests/test_a_measurement_admits_its_own_spool_exports.py",
+        "tests/test_a_producers_export_rates_are_learned_per_family.py",
+        "tests/test_a_producers_exports_run_on_its_allowance.py",
+        "tests/test_candidate_refusals.py",
+        "tests/test_gpu_runtime_integration.py",
+        "tests/test_pool_action_timeout.py",
+        "tests/test_pool_resource_scope.py"
+      ],
+      "xdist_workers": 2,
+      "actions": 8,
+      "passed": 131,
+      "audit_sha256": "f4c876d49be9e10a69d09d37978a68ec6428bd9d11f71b423ab1073c59ee9b63"
+    },
+    {
+      "id": "x86_64-5",
+      "files": [
+        "tests/test_1707_default_stall_repro.py",
+        "tests/test_a_measurement_admits_its_own_spool_exports.py",
+        "tests/test_a_producers_export_rates_are_learned_per_family.py",
+        "tests/test_a_producers_exports_run_on_its_allowance.py",
+        "tests/test_candidate_refusals.py",
+        "tests/test_gpu_runtime_integration.py",
+        "tests/test_pool_action_timeout.py",
+        "tests/test_pool_resource_scope.py"
+      ],
+      "xdist_workers": 1,
+      "actions": 8,
+      "passed": 131,
+      "audit_sha256": "af420d026cd16c22064a645c2b0647391b811017ece74f13db51e93e9608be4f"
+    },
+    {
+      "id": "x86_64-integration",
+      "files": [
+        "tests/test_1707_activity_signal_boundary.py",
+        "tests/test_1707_default_stall_repro.py",
+        "tests/test_1707_progress_supervision_by_stall.py",
+        "tests/test_a_measurement_admits_its_own_spool_exports.py",
+        "tests/test_a_producers_export_rates_are_learned_per_family.py",
+        "tests/test_a_producers_exports_run_on_its_allowance.py",
+        "tests/test_a_ready_gpu_action_is_not_starved_by_cpu_shards.py",
+        "tests/test_a_released_gpu_box_goes_to_the_ready_gpu_row.py",
+        "tests/test_allowance_suite_filesystem_isolation.py",
+        "tests/test_an_egress_declares_the_cpu_it_owns.py",
+        "tests/test_candidate_refusals.py",
+        "tests/test_census_sections.py",
+        "tests/test_contained_deadline_profile.py",
+        "tests/test_execution_budget_is_stated_not_silent.py",
+        "tests/test_gpu_runtime_integration.py",
+        "tests/test_measurement_drains_gpu_backfill.py",
+        "tests/test_measurement_reservation_backfill_1419.py",
+        "tests/test_pbstatus_pool.py",
+        "tests/test_pool_action_timeout.py",
+        "tests/test_pool_resource_scope.py",
+        "tests/test_prepaid_writer_integration.py",
+        "tests/test_progress_keeps_a_working_action_alive.py",
+        "tests/test_record_compatibility_queue.py"
+      ],
+      "xdist_workers": null,
+      "actions": 19,
+      "passed": 627,
+      "audit_sha256": "06da42df78464de2a63b693b546f10c06ec6072a27afafe9d215bc5e4e12fe89"
+    },
+    {
+      "id": "aarch64-1",
+      "files": [
+        "tests/test_1707_default_stall_repro.py",
+        "tests/test_a_measurement_admits_its_own_spool_exports.py",
+        "tests/test_a_producers_export_rates_are_learned_per_family.py",
+        "tests/test_a_producers_exports_run_on_its_allowance.py",
+        "tests/test_candidate_refusals.py",
+        "tests/test_gpu_runtime_integration.py",
+        "tests/test_pool_action_timeout.py",
+        "tests/test_pool_resource_scope.py"
+      ],
+      "xdist_workers": 1,
+      "actions": 8,
+      "passed": 131,
+      "audit_sha256": "ae8e1fb8c9f73a271ff29e2a9e62d7357f26d7d2e8d028326a684962a56c7c63"
+    },
+    {
+      "id": "aarch64-2",
+      "files": [
+        "tests/test_1707_default_stall_repro.py",
+        "tests/test_a_measurement_admits_its_own_spool_exports.py",
+        "tests/test_a_producers_export_rates_are_learned_per_family.py",
+        "tests/test_a_producers_exports_run_on_its_allowance.py",
+        "tests/test_candidate_refusals.py",
+        "tests/test_gpu_runtime_integration.py",
+        "tests/test_pool_action_timeout.py",
+        "tests/test_pool_resource_scope.py"
+      ],
+      "xdist_workers": 2,
+      "actions": 8,
+      "passed": 131,
+      "audit_sha256": "6706cc5f9cb9131dea8d9dd9595f6c51c9ab2dac094ae0366ef2f653ae7975af"
+    },
+    {
+      "id": "aarch64-3",
+      "files": [
+        "tests/test_1707_default_stall_repro.py",
+        "tests/test_a_measurement_admits_its_own_spool_exports.py",
+        "tests/test_a_producers_export_rates_are_learned_per_family.py",
+        "tests/test_a_producers_exports_run_on_its_allowance.py",
+        "tests/test_candidate_refusals.py",
+        "tests/test_gpu_runtime_integration.py",
+        "tests/test_pool_action_timeout.py",
+        "tests/test_pool_resource_scope.py"
+      ],
+      "xdist_workers": 1,
+      "actions": 8,
+      "passed": 131,
+      "audit_sha256": "c84fef5b45d7054ad1274b239acd19d3f4fd123694a4878d9e85b3988663bbdd"
+    },
+    {
+      "id": "aarch64-4",
+      "files": [
+        "tests/test_1707_default_stall_repro.py",
+        "tests/test_a_measurement_admits_its_own_spool_exports.py",
+        "tests/test_a_producers_export_rates_are_learned_per_family.py",
+        "tests/test_a_producers_exports_run_on_its_allowance.py",
+        "tests/test_candidate_refusals.py",
+        "tests/test_gpu_runtime_integration.py",
+        "tests/test_pool_action_timeout.py",
+        "tests/test_pool_resource_scope.py"
+      ],
+      "xdist_workers": 2,
+      "actions": 8,
+      "passed": 131,
+      "audit_sha256": "0613ee73adef920aa99587a6e09997f1aa53519d91fca6f668f6f1950fc170bc"
+    },
+    {
+      "id": "aarch64-5",
+      "files": [
+        "tests/test_1707_default_stall_repro.py",
+        "tests/test_a_measurement_admits_its_own_spool_exports.py",
+        "tests/test_a_producers_export_rates_are_learned_per_family.py",
+        "tests/test_a_producers_exports_run_on_its_allowance.py",
+        "tests/test_candidate_refusals.py",
+        "tests/test_gpu_runtime_integration.py",
+        "tests/test_pool_action_timeout.py",
+        "tests/test_pool_resource_scope.py"
+      ],
+      "xdist_workers": 1,
+      "actions": 8,
+      "passed": 131,
+      "audit_sha256": "e2f6ebe2475a88128802878856d6818bab4220ccd9ed50aa35ee3b60360ecdf1"
+    },
+    {
+      "id": "aarch64-integration",
+      "files": [
+        "tests/test_1707_activity_signal_boundary.py",
+        "tests/test_1707_default_stall_repro.py",
+        "tests/test_1707_progress_supervision_by_stall.py",
+        "tests/test_a_measurement_admits_its_own_spool_exports.py",
+        "tests/test_a_producers_export_rates_are_learned_per_family.py",
+        "tests/test_a_producers_exports_run_on_its_allowance.py",
+        "tests/test_a_ready_gpu_action_is_not_starved_by_cpu_shards.py",
+        "tests/test_a_released_gpu_box_goes_to_the_ready_gpu_row.py",
+        "tests/test_allowance_suite_filesystem_isolation.py",
+        "tests/test_an_egress_declares_the_cpu_it_owns.py",
+        "tests/test_candidate_refusals.py",
+        "tests/test_census_sections.py",
+        "tests/test_contained_deadline_profile.py",
+        "tests/test_execution_budget_is_stated_not_silent.py",
+        "tests/test_gpu_runtime_integration.py",
+        "tests/test_measurement_drains_gpu_backfill.py",
+        "tests/test_measurement_reservation_backfill_1419.py",
+        "tests/test_pbstatus_pool.py",
+        "tests/test_pool_action_timeout.py",
+        "tests/test_pool_resource_scope.py",
+        "tests/test_prepaid_writer_integration.py",
+        "tests/test_progress_keeps_a_working_action_alive.py"
+      ],
+      "xdist_workers": null,
+      "actions": 20,
+      "passed": 442,
+      "audit_sha256": "4687f90492946772f14855582f97b3c32b946a09a0a1892f16cd3de2b95d1bbc"
+    }
+  ],
+  "qualified_subtrees": {
+    "src": "fe7427df0ab808edbd05b2a15b49c0b14d97661a",
+    "tools": "10ba3df63be2db3aed3fbf457fb5d38389051f84",
+    "tests": "af7cb5e19ce4b1f2e22965b547023d19f970d09b"
+  },
+  "evidence_root": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4",
+  "requirement_scope": [
+    {
+      "id": "SC-03",
+      "target": "ledger plus AGENTS hook reviewed per change",
+      "whole_requirement_axes": {
+        "implementation": "no",
+        "validation": "unknown",
+        "deployment": "unknown",
+        "workload_proof": "unknown"
+      },
+      "candidate": {
+        "implementation": "scoped component implemented",
+        "validation": "scoped component qualified; independent review pending",
+        "deployment": "not deployed",
+        "workload_proof": "not established"
+      }
+    },
+    {
+      "id": "SM-01",
+      "target": "new gated transitions (lease-gated running, publication-success terminal, policy withdrawal)",
+      "whole_requirement_axes": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "partial"
+      },
+      "candidate": {
+        "implementation": "scoped component implemented",
+        "validation": "scoped component qualified; independent review pending",
+        "deployment": "not deployed",
+        "workload_proof": "not established"
+      }
+    },
+    {
+      "id": "PRG-03",
+      "target": "mid-phase grace and stall-terminal semantics observed",
+      "whole_requirement_axes": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "no"
+      },
+      "candidate": {
+        "implementation": "scoped component implemented",
+        "validation": "scoped component qualified; independent review pending",
+        "deployment": "not deployed",
+        "workload_proof": "not established"
+      }
+    },
+    {
+      "id": "LIVE-01",
+      "target": "fairness/finite-IO premises plus ACC-05/ACC-06 live proof",
+      "whole_requirement_axes": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "unknown",
+        "workload_proof": "no"
+      },
+      "candidate": {
+        "implementation": "scoped component implemented",
+        "validation": "scoped component qualified; independent review pending",
+        "deployment": "not deployed",
+        "workload_proof": "not established"
+      }
+    }
+  ],
+  "unsupported": [
+    {
+      "scope": "ARM archival record compatibility",
+      "source": "tests/pbtest_capabilities.json capabilities.archival-replay",
+      "requirements": [
+        "x86",
+        "/home/rob/venvs/pb-cpu/bin/python3.14 at pinned digest"
+      ],
+      "observed": "V3 ARM qlease refused before any action publication; no ARM compatibility evidence is claimed. All portable changed-file repeats and 22-file ARM integration remain required.",
+      "disposition": "x86 qlease plus full x86 queue file; independent Principal to assess this documented native-harness scope limit"
+    }
+  ],
+  "unchanged_controls": {
+    "before": "c8743b3798ce092d1f46759374737259249ae480",
+    "after": "abfb073bf1923ef6c05f5f450d75acb65306e011",
+    "unchanged_controls": [
+      {
+        "path": "tests/test_record_compatibility_queue.py",
+        "sha256": "d3d0787d0abbecd99c71df0d76079f168cece79fb304d18c30f309ea6d0f9883",
+        "identical": true
+      },
+      {
+        "path": "tests/compat/support/compat_pool_wire_adapters.py",
+        "sha256": "ae74f2340ba52013382f1bc5463d3d8a458ec952db139ecbd16ba5ff93a01413",
+        "identical": true
+      },
+      {
+        "path": "tests/test_a_measurement_admits_its_own_spool_exports.py",
+        "sha256": "61a45257f8050b8e460faf4da2b6df030cc4abef2a66ebaf6841db44d65c3957",
+        "identical": true
+      },
+      {
+        "path": "tests/test_allowance_suite_filesystem_isolation.py",
+        "sha256": "847d5764751e54c7f9b473aea4aaee7fe29d6e27eff5beec8c8cfa9fc086514f",
+        "identical": true
+      }
+    ]
+  },
+  "historical_timeout": {
+    "action_key": "0f159f34da6adcaa583963a84a2c94ad0e01e472283c9c9f58543a3726a93470",
+    "status": "timeout",
+    "qualification_credit": false,
+    "reason": "sealed 1200s execution deadline; no native completion or success receipt"
+  },
+  "earlier_source": {
+    "head": "c8743b3798ce092d1f46759374737259249ae480",
+    "passed": 1941,
+    "actions": 97,
+    "scope": "historical source, before supplemental measurement and legacy diagnostics corrections"
+  },
+  "entries": [
+    {
+      "action_key": "6a0c9481566f6a0efd308b57e922261f46f82890cea70a0bc6b6e300b976a209",
+      "host": "dl380g10",
+      "snapshot_commit": "38825e39215cccfeb12c85db4fd213182ff25044",
+      "request_sha256": "97680c5022e4d36797dee9bf6f996c81a0ac7ba83dbb020cf032d36898df4de8",
+      "receipt_sha256": "98678533584092558c14255ca9eb67ef9debc5df81375be3fe553fa31b8d2820",
+      "outcome_counts": {
+        "call:passed": 8
+      }
+    },
+    {
+      "action_key": "f2a1ad5ad6fdd97575234e8e77c68f8543d099142b93043d241631adf06df922",
+      "host": "dl380g10",
+      "snapshot_commit": "38825e39215cccfeb12c85db4fd213182ff25044",
+      "request_sha256": "2210a6a4e08d2fb1833e40a58b52335d80566d562048de31c132217ab7a4f3ba",
+      "receipt_sha256": "4a502933f47c910bf766b01d2511e8ecba1bf45285641505e2fee2054fca33fe",
+      "outcome_counts": {
+        "call:passed": 4
+      }
+    },
+    {
+      "action_key": "1c1c155a2afe409b14a8f5b01e2fee5bc411252dd0842fe44d6031d6c7fef153",
+      "host": "dl380g10",
+      "snapshot_commit": "38825e39215cccfeb12c85db4fd213182ff25044",
+      "request_sha256": "141d52f4b30d1476ca65e7c4434619be841b6aa22aae4452a23ddeb2312fc64c",
+      "receipt_sha256": "53e30e661accbfb5b4480a96ef2043cf8bad553244a49fb6e96d1d119edca86a",
+      "outcome_counts": {
+        "call:passed": 23
+      }
+    },
+    {
+      "action_key": "f0a5bcaa18b712a276b1e17466ee41bc8d39baf69099a2d50da5e26430640bdd",
+      "host": "dl380g10",
+      "snapshot_commit": "04f4fdb546c928f56db9492f7ae11a6ff5f9b197",
+      "request_sha256": "abcac0a54d16b3f8f46d7c592c53e76d31f6bb1fc034aed3fe204f506ef58f04",
+      "receipt_sha256": "9f8dd4e0d215fddbc88e499d64d035f426cb3efa0a07f98eed2cfab7e29be94d",
+      "outcome_counts": {
+        "call:passed": 5
+      }
+    },
+    {
+      "action_key": "7c22561b06e3d6b1fcec2d28ea3d4e342c3a3f30816bea1fbfa4cdba8921be02",
+      "host": "dl380g10",
+      "snapshot_commit": "cdcdd483fa8d1696f9a9d81832b9c75d77f9098f",
+      "request_sha256": "3673ccd9fff93ae13b3db0a01e7a1484f853e79a505f282394deebaa97cd19fd",
+      "receipt_sha256": "5c946aa8b1ee4c8c87016b6dafaa4b7aa16f086bef5240571a9b0e304ef52267",
+      "outcome_counts": {
+        "call:passed": 5
+      }
+    },
+    {
+      "action_key": "b85fd96ef5f7bec7ed170651f300cd051e3500bd3754bcce5c366c430551ec86",
+      "host": "dl380g10",
+      "snapshot_commit": "cdcdd483fa8d1696f9a9d81832b9c75d77f9098f",
+      "request_sha256": "8d8e1bf35c392794b822fd3336b76b77f8688cfb313d418d5693556cd4d053e6",
+      "receipt_sha256": "e1915a41d4ba8f272e9533caccd0f66d58bf69fde55c783a5a3dcec5103ffe8d",
+      "outcome_counts": {
+        "call:passed": 10
+      }
+    },
+    {
+      "action_key": "cee466166a8d63f7ffc624dedbfe6362b985ac97e02b99b1f87d3c47a70702ff",
+      "host": "dl380g10",
+      "snapshot_commit": "cdcdd483fa8d1696f9a9d81832b9c75d77f9098f",
+      "request_sha256": "e4e93b308a5eeaddbd3ff6a928e5208ee1361691f05a45f4116106b7f0dfec57",
+      "receipt_sha256": "8e8682204c4e6898ab78c28e584aee2fee720fd48ab2394c9557eae86368c039",
+      "outcome_counts": {
+        "call:passed": 33
+      }
+    },
+    {
+      "action_key": "d05b3d6f9055bc5bfbc3057768f4f794972bd7d4af19329c4fe1420f5624e874",
+      "host": "dl380g10",
+      "snapshot_commit": "cdcdd483fa8d1696f9a9d81832b9c75d77f9098f",
+      "request_sha256": "a2ff62465fb186c39fccd23884454fe1adc1a492309ea15ecba5c994086f009b",
+      "receipt_sha256": "00ab0a1d41597ee30f50b3de6def7ce250f780451288ec35f08f5f86b053df46",
+      "outcome_counts": {
+        "call:passed": 29
+      }
+    },
+    {
+      "action_key": "d684860f485dc49f741c15123041413c41dc8998f0e335752cea244d4432c971",
+      "host": "dl380g10",
+      "snapshot_commit": "cdcdd483fa8d1696f9a9d81832b9c75d77f9098f",
+      "request_sha256": "17339d2ad773cfa14c2bc750b36f63184c1716a749b24ba72d478892e2c75899",
+      "receipt_sha256": "a2121f7c673aad5d42523790a73a24bb2663cef859347ad06d14333e34a6991b",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "cea8d801982023b72ffc964dac6ac8382675a50443bc972745899c6b882c4ddb",
+      "host": "dl380g10",
+      "snapshot_commit": "cdcdd483fa8d1696f9a9d81832b9c75d77f9098f",
+      "request_sha256": "313dfb9ad75409a1c7201ceeb0746d6985ce3b0c61b3318f787b8d02ba57d2b3",
+      "receipt_sha256": "b3ca256a1fd54724f4b5e10092029a2b6a802c62c18473215a030f919869b802",
+      "outcome_counts": {
+        "call:passed": 8
+      }
+    },
+    {
+      "action_key": "6b95b0b0044931a2e245d92c80b11a0f83d3c92bba1b45b8c4edff7e3389b922",
+      "host": "dl380g10",
+      "snapshot_commit": "cdcdd483fa8d1696f9a9d81832b9c75d77f9098f",
+      "request_sha256": "d97cbbdd17ac5bda10522f704b80820b99a77fab0fd71f5ad5ec86d159ed0fb9",
+      "receipt_sha256": "465361c2895eb2f24be32efc0781efcbc196e0add5bc734e0fbe925e39f02dfb",
+      "outcome_counts": {
+        "call:passed": 23
+      }
+    },
+    {
+      "action_key": "d3d6a617d5f652d22a9d2e53a3ebdc8d59af5ecc209443b949ade0ea9903b36b",
+      "host": "dl380g10",
+      "snapshot_commit": "cdcdd483fa8d1696f9a9d81832b9c75d77f9098f",
+      "request_sha256": "950c05904da0031c667b61a6af5ebcdea04528ace3883998c4f5a3fb76800a7b",
+      "receipt_sha256": "d60c4ca37227566704de8c56cc1fcebbcca76d655a41dbb89004c51243765e02",
+      "outcome_counts": {
+        "call:passed": 4
+      }
+    },
+    {
+      "action_key": "9e554d8b49e9dd35b8467b4087ff5ab66360179aa0cb29e0c79e771cecb2478a",
+      "host": "dl380g10",
+      "snapshot_commit": "78284ed7ad1eef38be527867efed82cd32397a8b",
+      "request_sha256": "21cb9dcbbcc74ceec29d551c2241c540555cc2c10dc4b47e20bd72711922c8de",
+      "receipt_sha256": "91dfc2dc2402f51be11a2e01e26bffdebbe16ed394718ca3da22f54666ea6b15",
+      "outcome_counts": {
+        "call:passed": 5
+      }
+    },
+    {
+      "action_key": "e5d6e17bdc87891476fdf2f736c4facab880627e57d3988920d92edff69ab1fb",
+      "host": "dl380g10",
+      "snapshot_commit": "78284ed7ad1eef38be527867efed82cd32397a8b",
+      "request_sha256": "55758bc279d4e80aaa09f7bfc8b0b2475084274962d2cac7e702d8cd3bddb947",
+      "receipt_sha256": "658a18a6fdf74c87100f9101e32e1ae59f45c09851483fb88bc16a26fd96e816",
+      "outcome_counts": {
+        "call:passed": 10
+      }
+    },
+    {
+      "action_key": "ecd14fe31d60c564e45b035c7ce47c8a037858efbb051f879a2aab7da48fce62",
+      "host": "dl380g10",
+      "snapshot_commit": "78284ed7ad1eef38be527867efed82cd32397a8b",
+      "request_sha256": "62724c6a6b8e307162be8b7ceaa4428363600ddc62bde30004d8bfeec00699c4",
+      "receipt_sha256": "0688a24234ceafa4722ebabdcb66e2973da40834ed14f5c8a69b4759712759ec",
+      "outcome_counts": {
+        "call:passed": 33
+      }
+    },
+    {
+      "action_key": "0c85e2f4ce74f8db25899171f5367a45350b827e30148f8cca97c1c55696600f",
+      "host": "dl380g10",
+      "snapshot_commit": "78284ed7ad1eef38be527867efed82cd32397a8b",
+      "request_sha256": "26ebf060ecc9bdfc7d72565f9bb9590a2682622c57aa36061162043947eabd6c",
+      "receipt_sha256": "a287b4b91a7d393ff6c6d58488746753b899b58d0912f6d35fd467fa55856611",
+      "outcome_counts": {
+        "call:passed": 29
+      }
+    },
+    {
+      "action_key": "d5e37d7f81d274b0c85aed16b35b6ed22284402144e1fa512ae27bcede874ceb",
+      "host": "dl380g10",
+      "snapshot_commit": "78284ed7ad1eef38be527867efed82cd32397a8b",
+      "request_sha256": "464730a7c6d8cbb3206ac26b76977934a8e83e4342ecca08f50739e2961731bd",
+      "receipt_sha256": "e7672fd746b317fac7b08a05f4710e453851638f6d7e663d418aece61154cf5d",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "7ad092a609ea0f0151e2b46eb53e64e8727833af39d5002f263abbf7aa613c68",
+      "host": "dl380g10",
+      "snapshot_commit": "78284ed7ad1eef38be527867efed82cd32397a8b",
+      "request_sha256": "9d247bcb0e2ad50f7d63ae6a11dac229d696a9a9d1f2fe010c583e336e6abbd9",
+      "receipt_sha256": "eff9d60b80e91c6c5a6e73d59a16f612ce1ec41781fa5753322c7af2e91e5878",
+      "outcome_counts": {
+        "call:passed": 8
+      }
+    },
+    {
+      "action_key": "87a2fce517b0da6d929e6be32978fd868268bd929b9f76fe76900b482d55bdaa",
+      "host": "dl380g10",
+      "snapshot_commit": "78284ed7ad1eef38be527867efed82cd32397a8b",
+      "request_sha256": "fdef1902425c86f4fe149a75f29497993065420e094d2e99fe303094958fd0df",
+      "receipt_sha256": "f9ae2110a7a9f797466fe91b2a18c63e3dd419264cf40dc504df86df61cf6089",
+      "outcome_counts": {
+        "call:passed": 23
+      }
+    },
+    {
+      "action_key": "075608c22678da1a5e89a51db97824bfaec1bbabf00427c6835e4bb2911adb84",
+      "host": "dl380g10",
+      "snapshot_commit": "78284ed7ad1eef38be527867efed82cd32397a8b",
+      "request_sha256": "1ff01ac4676aed8c2cca79710c8620c8caffe406be11202ef56986e443401ef0",
+      "receipt_sha256": "dc4dc0a7ce71f53bb2340b0295d09f5561ba5b93c427b919e056340085c3c21d",
+      "outcome_counts": {
+        "call:passed": 4
+      }
+    },
+    {
+      "action_key": "91a7b4e4669c76a91c27013a207d6c1df2470e19ff3ac1b8af9296ebb18d1c91",
+      "host": "dl380g10",
+      "snapshot_commit": "ba7cb3f9c639d001cef79941dcd7bf5263176f7a",
+      "request_sha256": "dcc54c092294b6718779359d723d39cf3af4c5b7fd5215dcfccdeb08ad2ac094",
+      "receipt_sha256": "42c0eb1222dbac77340776d268650465287ddcf83b4d49193ba01bb013f65d71",
+      "outcome_counts": {
+        "call:passed": 5
+      }
+    },
+    {
+      "action_key": "927e88970d7dc6d4904b48aa094bd6fd2efd26a2d7c916b547bb3550cd4e6fd0",
+      "host": "dl380g10",
+      "snapshot_commit": "ba7cb3f9c639d001cef79941dcd7bf5263176f7a",
+      "request_sha256": "2d74ade42017cb59d46a4aaa0243972ff5386b67b4aeae52d2e33ff54c63f0a2",
+      "receipt_sha256": "8a676471b5af77e4ec691b5ebb7bc5ae48175f9d46897aad7de98e52b4544a80",
+      "outcome_counts": {
+        "call:passed": 10
+      }
+    },
+    {
+      "action_key": "3cde00f602db67b4d38c325bf003a5687d436f998f7f12c45e74c92ff13c76e4",
+      "host": "dl380g10",
+      "snapshot_commit": "ba7cb3f9c639d001cef79941dcd7bf5263176f7a",
+      "request_sha256": "e9daec5c9f8896602926f1da117fe2eefea487a513f73fa693f31d73e7eb26fe",
+      "receipt_sha256": "bf1833a19e29a994c4b68c9f9c6d32210821a2139ba5b97a2b5f7a24cf82eb25",
+      "outcome_counts": {
+        "call:passed": 33
+      }
+    },
+    {
+      "action_key": "5c2deb72439e2d6706bb1b5b4c1b3b19e424ef46be94ffc8bfc75fb024fcdb0e",
+      "host": "dl380g10",
+      "snapshot_commit": "ba7cb3f9c639d001cef79941dcd7bf5263176f7a",
+      "request_sha256": "9367628bc224a68a8d6091b6be509fd6bee1c2ac02e2e62ea30461120cb032a1",
+      "receipt_sha256": "b077a9bc9103fa24977cee1a5743530585a486b8b78fb1102d98e00b016107f8",
+      "outcome_counts": {
+        "call:passed": 29
+      }
+    },
+    {
+      "action_key": "c5be1346115fca81dc6b9a7864160e0700f0ed1e466dca22649cd49c3ed7cf60",
+      "host": "dl380g10",
+      "snapshot_commit": "ba7cb3f9c639d001cef79941dcd7bf5263176f7a",
+      "request_sha256": "f555f49af4e58b60ad6aa19bbea3e80cb71fc4f959e39506d8cb1120f7bcfdc8",
+      "receipt_sha256": "a1e4f0a3f0a383aaa4930e1e069fc333e8d1fe5f4fd2009fa0593d1d21cf51b6",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "5490827973c4c7bb44e2a6509b11757b48b85e546e808f9a11b3b30599c67cbe",
+      "host": "dl380g10",
+      "snapshot_commit": "ba7cb3f9c639d001cef79941dcd7bf5263176f7a",
+      "request_sha256": "06a92de5dea2efb46e956bf7e76e80bffe6b266848f630e8f9c135bd29fcd150",
+      "receipt_sha256": "ca862c53bcdd2fe0ec2aacd46b6257eadac1332034af65c3a3021355e39370bd",
+      "outcome_counts": {
+        "call:passed": 8
+      }
+    },
+    {
+      "action_key": "b885e7fe09f87a1e61e28f22fda4316584dd9d4156ae8cf53f70146f646e4045",
+      "host": "dl380g10",
+      "snapshot_commit": "ba7cb3f9c639d001cef79941dcd7bf5263176f7a",
+      "request_sha256": "8f1a10390da102b7a2570fbdaedccac4f391a82954ab7f483ce6082f6839d7cc",
+      "receipt_sha256": "dcdf40b007986a7f5679f78429cf1ed5fc786d5ae695bd35e7443bf25a0a006d",
+      "outcome_counts": {
+        "call:passed": 23
+      }
+    },
+    {
+      "action_key": "d3489d51fab6164fc811acfe5c96ce57776a7f9bc9f29cf34dc6b6ef2d3a7d02",
+      "host": "dl380g10",
+      "snapshot_commit": "ba7cb3f9c639d001cef79941dcd7bf5263176f7a",
+      "request_sha256": "6e0f93a8f1aa3e732d3bbde471dd0b307cd03d42b6a951cd02cae0a32b09458c",
+      "receipt_sha256": "d60247cad502066af3f7a75f967e77cf2fb2c81bc4706f950da085b79a0170fb",
+      "outcome_counts": {
+        "call:passed": 4
+      }
+    },
+    {
+      "action_key": "813fcd71d804af22c1e56ef131c91148a944ac76c171bd0a678e232e9fac0160",
+      "host": "dl380g10",
+      "snapshot_commit": "b54c6d160c5df226a20fe0aab9ada9123cc8d301",
+      "request_sha256": "1f5a25d232688e6b875c9259e567f4e32c75d1b26fbf57bad0847a8b5acf5656",
+      "receipt_sha256": "7cad1e4db78607d8e93a18e48f4599415e902e2a3f483a7de89a1b473fad5734",
+      "outcome_counts": {
+        "call:passed": 5
+      }
+    },
+    {
+      "action_key": "d87e2eb9936bfaf7ae2dd4f1b1d040dc230dbd7d378cce73c4e024f38ce45d7a",
+      "host": "dl380g10",
+      "snapshot_commit": "b54c6d160c5df226a20fe0aab9ada9123cc8d301",
+      "request_sha256": "4641f54c2d063b44525b0ef51195440e3d0a10d38253e6f56b25de56ec07be72",
+      "receipt_sha256": "c8f6e9f562bb25ef2b41519a112b5ab4b42c518ebcd3a76777e7fbea0907ea5c",
+      "outcome_counts": {
+        "call:passed": 10
+      }
+    },
+    {
+      "action_key": "f0b6793bab6dc2428d1a240d72d0aece20d26c2302b3741bf28858df9ef3f1af",
+      "host": "dl380g10",
+      "snapshot_commit": "b54c6d160c5df226a20fe0aab9ada9123cc8d301",
+      "request_sha256": "986c9ba2e1a70bb60e04e618baddf37dea7cf0bd23364a5f5569f988010b5826",
+      "receipt_sha256": "c21490c5ed05f26eba0f43e2b5e0b4c60f0ed191ca88c5d266acc70f752b94ab",
+      "outcome_counts": {
+        "call:passed": 33
+      }
+    },
+    {
+      "action_key": "4a6e0ece95081e53590847292c40926533d8a4fef59ced9dab5e724ba006d6aa",
+      "host": "dl380g10",
+      "snapshot_commit": "b54c6d160c5df226a20fe0aab9ada9123cc8d301",
+      "request_sha256": "e0ea60311088c4a4fcfcc1506d3b6feeb785e0a95e8db9139875aa2e18fc67ef",
+      "receipt_sha256": "82d21146809b267eb757c06f81d82393b8dfc4b6e33e8e8e9d825ef479c79144",
+      "outcome_counts": {
+        "call:passed": 29
+      }
+    },
+    {
+      "action_key": "c28e023c5d48ba5d276e3e1f86dba313f60ca9d2031bb6fc955a21094c65f008",
+      "host": "dl380g10",
+      "snapshot_commit": "b54c6d160c5df226a20fe0aab9ada9123cc8d301",
+      "request_sha256": "8a0d6d64828b2817b95800a43eb8c0be08888b579804df7c26bbf2b58f258026",
+      "receipt_sha256": "b19ef8d3d6b73ca22637ecd4fcd9e8d2aad5df1dbbdcb06b8f22be47224d95c4",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "f5915341538e63cf7b384357ea2e41d5f76363419b5afa51d68442bf9f153eb6",
+      "host": "dl380g10",
+      "snapshot_commit": "b54c6d160c5df226a20fe0aab9ada9123cc8d301",
+      "request_sha256": "cb61f2f8676adc36b22b5908e65c92fe149413833e801954fc365e04135112f9",
+      "receipt_sha256": "75f46b4a83d9608e2d1228494446d589cea0bad171c6e1701b88e26ab52ba5fb",
+      "outcome_counts": {
+        "call:passed": 8
+      }
+    },
+    {
+      "action_key": "8c58519f6894be73a345ef05e69ac0259aa0b29a45d05366095968475f378ea5",
+      "host": "dl380g10",
+      "snapshot_commit": "b54c6d160c5df226a20fe0aab9ada9123cc8d301",
+      "request_sha256": "de52acdbd94d2d0e4761ccbb48a913dd1917fd311473800262eb80c016970058",
+      "receipt_sha256": "d9926d9d4ed9b7dbc0a5853d57d35e15c7e31e69d508fa0a2756fe8f84fe2bea",
+      "outcome_counts": {
+        "call:passed": 23
+      }
+    },
+    {
+      "action_key": "32de00b69ca58a8f44892bca5642c4f05da1e1e2df8e5c9899a251565f984b24",
+      "host": "dl380g10",
+      "snapshot_commit": "b54c6d160c5df226a20fe0aab9ada9123cc8d301",
+      "request_sha256": "e9c8bc2746f63ed38d2ee809d75c6766fff320c678c82375673107b95ff86693",
+      "receipt_sha256": "0835a77cf8b658f4c74eac7ee6c4addfde27426f19ce1703ffaca2ee33b29fa1",
+      "outcome_counts": {
+        "call:passed": 4
+      }
+    },
+    {
+      "action_key": "7498864f27f7047aa6f180adb2ad0e8d806b3cc97b880a7d1e86d4e62e00b262",
+      "host": "dl380g10",
+      "snapshot_commit": "cca9433355452b1919e6c69515c6de95cccce696",
+      "request_sha256": "28d9c246f40ef6f9850120ee0cc4ac73863a95573c81d12e646fc4c800334161",
+      "receipt_sha256": "6151e6ec371774148fef45484768ee17c9d272b06ad5dfa8b2b4d5d9b6108d3b",
+      "outcome_counts": {
+        "call:passed": 5
+      }
+    },
+    {
+      "action_key": "155df582895ba04917897afeac2e743dd8be1c46d3511c853a8dc62dc0809af2",
+      "host": "dl380g10",
+      "snapshot_commit": "cca9433355452b1919e6c69515c6de95cccce696",
+      "request_sha256": "8f8f9ac0be0cf7a6c4bed2bf87cdccff4fce43f9490d7135a17d63964ed800df",
+      "receipt_sha256": "3d4db7e45ac6fb56fd77f61a6a6ef2dc8bd3d7cfee08fc8607446745e7f2b1fb",
+      "outcome_counts": {
+        "call:passed": 10
+      }
+    },
+    {
+      "action_key": "b9874c000ad9ef36fdab5f1d6588ef688a2516e05bb3d6fa8bcb0a2b18591c4b",
+      "host": "dl380g10",
+      "snapshot_commit": "cca9433355452b1919e6c69515c6de95cccce696",
+      "request_sha256": "905b2565e501950cfe22e90c876e4192be7ce79b747547862b346c049b6a49ad",
+      "receipt_sha256": "281d41ff7a924ca0ec1951937e86f30a2d94827bdd3f11ac386fa8035b7a5462",
+      "outcome_counts": {
+        "call:passed": 33
+      }
+    },
+    {
+      "action_key": "0347a2fe8f031f6657f841f14f30b72cb752f07d3830f4ccea34032cb58f5a62",
+      "host": "dl380g10",
+      "snapshot_commit": "cca9433355452b1919e6c69515c6de95cccce696",
+      "request_sha256": "de0222416a9112e4825264133eeb7a8cd0650fb524251d132f69e7e7077c1293",
+      "receipt_sha256": "492a2d145eefa257f89494ea0266e9f4318866b795d87bcd8b38ff0e458a273f",
+      "outcome_counts": {
+        "call:passed": 29
+      }
+    },
+    {
+      "action_key": "fc30c9dbbf076b6a11193fe35e6db838b568ffd2cd2bd651d39dd85b3437a710",
+      "host": "dl380g10",
+      "snapshot_commit": "cca9433355452b1919e6c69515c6de95cccce696",
+      "request_sha256": "406e6b128000d1627b1b654f7e71beab1b686dcce11e8a646e12e7a81d57319b",
+      "receipt_sha256": "e383fa4f04b8214cc81557677be04faee7e9a2dc2863945282cb2ed6d55ef0d9",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "9c2ff59a0f2ed3b427adcba4a9710f98ea1d245ec7621770cec835d7779c7a7b",
+      "host": "dl380g10",
+      "snapshot_commit": "cca9433355452b1919e6c69515c6de95cccce696",
+      "request_sha256": "01cdcacc96e36d387259fce5d7329a0bbfa6de7d8274543b3b1221ffb5e01e3d",
+      "receipt_sha256": "06d6ba3b03e5fb7940a45e154dd04ee004e1a1bb94825644e51d104e57c9e75b",
+      "outcome_counts": {
+        "call:passed": 8
+      }
+    },
+    {
+      "action_key": "72773b0d4d25860b8b3e3298cef24d12b2d6b52b7f3f2163b816bf50e6eb93ca",
+      "host": "dl380g10",
+      "snapshot_commit": "cca9433355452b1919e6c69515c6de95cccce696",
+      "request_sha256": "3f4ea649d31c22f2f2585416a5feefa77bbc55391087647f329e9249c60f8c6e",
+      "receipt_sha256": "be4262d189885d1d6a8338a151b6cb46a918a53d37383d4d16adb4cab0d36a20",
+      "outcome_counts": {
+        "call:passed": 23
+      }
+    },
+    {
+      "action_key": "deeea5f00808da1ac825569e175bae645e3aba52a104853c97ccc7596c603186",
+      "host": "dl380g10",
+      "snapshot_commit": "cca9433355452b1919e6c69515c6de95cccce696",
+      "request_sha256": "a225a43d65aa900eee7ebd427d3791db0a3f0cf44a1860a82cb62f0f97b68474",
+      "receipt_sha256": "d2f35a939abbbfe0ffb1547c13b0c498949f7f7b1884e29a6ed627270ed63d8e",
+      "outcome_counts": {
+        "call:passed": 4
+      }
+    },
+    {
+      "action_key": "8179d52c8d8d4dd7aa6996f8f2806e28606ecea62929759e046e83ea589fe0d7",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "4939c5d9226e37e23423c2c817e38c25427dc96fa2bd9e11aae1b5281a09662b",
+      "receipt_sha256": "d74ec2baddc2ac71feb30fa479ba5a020d0b01ad953f3994dbfb30b8b2f1f332",
+      "outcome_counts": {
+        "call:passed": 37
+      }
+    },
+    {
+      "action_key": "38b19cf4ae5b8abb54eb5839d0c366433fca497b81364fd4b924ec7a50eee84a",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "39770ae8858c5f10d83c6b340f4038dc521d8dd0c2f67c354399e7ec7c7a3b8d",
+      "receipt_sha256": "4d3a5327f38b6d25b9fdfbd263eee40a205263e6eae9006dff1b0c58bc91d215",
+      "outcome_counts": {
+        "call:passed": 33
+      }
+    },
+    {
+      "action_key": "c3153dfd298d79218c84a728dc1a0e2b9a3c0e82ae0dc1b2fafbf533ccd943fa",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "30babc1c8b9782ad128512756c83c684c2f690b5c5e66b18e037e193c3660b06",
+      "receipt_sha256": "a7afd438b261806f367189fe71123ed2a22d0db17587187caee292bb065dd313",
+      "outcome_counts": {
+        "call:passed": 37
+      }
+    },
+    {
+      "action_key": "41a9d671da0b79de4c34fd410b066c97e7a94ee4bddc681e89e2137f30793e6c",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "14e34ed7e689304ad33c8dc2af141c1e91849c44c202156c595cd73e86683645",
+      "receipt_sha256": "ecb507b5cba4f0d4bfd3805be9844fdbe61d8d2e1e9ca4397a3cd50d6a901816",
+      "outcome_counts": {
+        "call:passed": 30
+      }
+    },
+    {
+      "action_key": "9eedf600dc3387adefcb8a4548c41403db3082967490ce031b6b18e9e04204b3",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "18966952943752604cc71a8572de9fd377e71ca80cdcf1ea0a54383120e897fa",
+      "receipt_sha256": "c6d6844c806ffd2e45eaa01ccc3208c95f57e56c39a2a0b9bf940f69c031d966",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "3da4ede9947e8b13940048bbf238ad5088ce6c1f49e854585f311c01b240e94b",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "fa45d987f7b4b68e05bbbda828c7a9517fb15addd5266f79e478085fe9ad640d",
+      "receipt_sha256": "e0eb9a401dca714e1d1586dcfcf7a8e7a74a1761cac87bb20fa2825a213d6305",
+      "outcome_counts": {
+        "call:passed": 8
+      }
+    },
+    {
+      "action_key": "e276fc72a0bd55e7a8bf14e51c6d12d5f031091643f0e9d793a39f4db2b619e3",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "7a554a4925b3e08746f6a414f7741730c51e050f2f7f8d91f5735ca853376b74",
+      "receipt_sha256": "ea06bac35b04afecc417ab7090fc185148fa9092d763c16cce32fbcb16e8d5bc",
+      "outcome_counts": {
+        "call:passed": 27
+      }
+    },
+    {
+      "action_key": "01fe5091e3b016d68d4d3491828cfe74bb21747ef879a1b54882547f5be117bc",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "22f0e8656a69ab0899f27b4d046601d15b2f5561c5c158756b9a92e74cf6f182",
+      "receipt_sha256": "84428085591622bc5cc89502c1566e1ba634a57e2e75c94887b00963e05c57aa",
+      "outcome_counts": {
+        "call:passed": 53
+      }
+    },
+    {
+      "action_key": "fbdc074ec6f67a62d09ec21b6d8687562d7bd23406d2f4b9753044d49e6ee6cd",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "fd3f0388f0fa12c52b8ee828ac9f0f450ccee40e9afdc204d17d7522572bf455",
+      "receipt_sha256": "18615da2a6e3f844f31d5d6abc9e323e808329a3151163d08ca35fb49457206e",
+      "outcome_counts": {
+        "call:passed": 20
+      }
+    },
+    {
+      "action_key": "f0e70841e927cffbe3e23a69723c82666e5e55517c2a2a3fc74239f76129b445",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "84639a271801f2fa955e3f0097ebd07dbc08ddf2d75af4d6a4b13fa7163bcc5b",
+      "receipt_sha256": "e0da6c0ab1eac4232289ce39d58b0b72325efdd4c9aeaacf614a5afd533b3bb9",
+      "outcome_counts": {
+        "call:passed": 4
+      }
+    },
+    {
+      "action_key": "0d18bf992fa04e134d5508bde15822c7a3d7e091ccca9b360cbe36c37b8b6116",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "53a393fc5e7b240439763afd29c7fd1f3326543c94b7b918ee442227e8a3ad20",
+      "receipt_sha256": "80149dda73673b02ba12c24235c800de1e9db3426cae495f4f73ec0ba06da264",
+      "outcome_counts": {
+        "call:passed": 9
+      }
+    },
+    {
+      "action_key": "acc0e6a5bd0e281fad111b75a9dd75b4c03fe05a63943c58534334df8c414e84",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "d9cd854d9070c740e4460ef40aac6156dcf005d306a9061c6285ac3528358874",
+      "receipt_sha256": "42ac0ccb08f52d0a144ab6033cb796021ed4ffa648078d3d6b3167bdb01050d8",
+      "outcome_counts": {
+        "call:passed": 25
+      }
+    },
+    {
+      "action_key": "d3a5070e9f1bc05d60daf6c0a82d26f4bbc7972ae0718e543debcc445a546de0",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "a11a13a80dd47037f158bcaef4ef9df7ddbb1a40436bffdf077cb4cd656df91f",
+      "receipt_sha256": "99d32dd7ee642fe87cf3243720ea1eef0d82f10bad3dba8ad62763fa988d6849",
+      "outcome_counts": {
+        "call:passed": 6
+      }
+    },
+    {
+      "action_key": "26e69399e68066c5796294c5c665f6ef9d9853aebb69052834492c74462f894b",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "8b3cc8226a97fb67810543c5660785678230cb8fca8f95b67f717d4d75523a13",
+      "receipt_sha256": "4e32e16a211c8b4ef739c7fd851b8503107d53e1c583f5c3378c8c892e82193f",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "c4f606359f58044ddebe8c4357731b9db3fdcdecd2125dbf0be8f65b6a768cc2",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "5e57fec511c53c74b9bbb489a515002f3cdaaf6fa0cd7591eed7cf8e727187fe",
+      "receipt_sha256": "640de2995acec9e180ce8871128ae49e8a4def0ed0a31b75b383788f8ee398f3",
+      "outcome_counts": {
+        "call:passed": 50
+      }
+    },
+    {
+      "action_key": "d8aa28ab4a84c5247ed02436eb5c3dffa945ae694307235ce20084f33b897e83",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "38534a02a16de4e078760ac3383e62fda30357cb47de5380c938d6dd01183631",
+      "receipt_sha256": "8c066670cc0a9ae8b864eff5a508ef20082e36528346fb4ea7bf6c131cb05070",
+      "outcome_counts": {
+        "call:passed": 18
+      }
+    },
+    {
+      "action_key": "0bcceee498e2724f8426a8ee22e8c3582a7ce22f529d21537b96d8085dc081bb",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "52a7b72293a490f5c42b731eb16976e28e3abff28f332d4ec8edbb5aa86b0f03",
+      "receipt_sha256": "e2fff25fcd53438515572098c57a685ff792e36090edfa1c4409d0eda7f441b8",
+      "outcome_counts": {
+        "call:passed": 28
+      }
+    },
+    {
+      "action_key": "ab4349477c00ca1520c9e835cd3cbb5cf03f2ca11f19dc2850c21309a4d7e393",
+      "host": "dl380g10",
+      "snapshot_commit": "067bc398b822b52f1b135e04685828b645f5f02c",
+      "request_sha256": "769acd898ae182b7295e71b62729dea4daee06a312731dee33efd00264451111",
+      "receipt_sha256": "7c76881cb510c494cb8392e44db4607e057fca29e73ae53eb23a7a3021d8aff4",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "66e7890113d357e039a6b52259c86235252b3b6b48a90f46fdf8e76fab73eb2b",
+      "host": "dl380g10",
+      "snapshot_commit": "3fb6462b3470d4b6b4c9b04c54b28297bc148b17",
+      "request_sha256": "afcb01cceba31a8dbd2ac694710491f20d8a189ecaddb712d1cb5b0f0856fb3f",
+      "receipt_sha256": "a354732c04cbc3bb76a74b4ea9ace3adc494636e471b9e26a8b8a214e2a7c28a",
+      "outcome_counts": {
+        "call:passed": 185
+      }
+    },
+    {
+      "action_key": "5f67ea38b00b96f3015181742d3e50b325d36ef686990aab705e8f8dc4a63665",
+      "host": "sparky",
+      "snapshot_commit": "fa2680cec86281d5a4506cae00530854ea37bf75",
+      "request_sha256": "fcf1ad64b7c345ef7aac2483450199bd2906a9ba08aa5ded7c2f43ac1a6e9a75",
+      "receipt_sha256": "2e72f4ba75bb90bd1ac81054cd3907f36f0489d017c10241017b6250bf1c63cb",
+      "outcome_counts": {
+        "call:passed": 5
+      }
+    },
+    {
+      "action_key": "ce1b63384f42c2e6c339dabd3bcf8837158bf2acc93a08ec0c92801f9e9f5231",
+      "host": "sparky",
+      "snapshot_commit": "fa2680cec86281d5a4506cae00530854ea37bf75",
+      "request_sha256": "e21e2aaf360e97d22334ed14a5c776b3562524b220b4a79f2c3d39284e4b011d",
+      "receipt_sha256": "662fea5780f654ff213cae4c8a06355885d35f14d9a37b3c9a04f3146f46a882",
+      "outcome_counts": {
+        "call:passed": 10
+      }
+    },
+    {
+      "action_key": "103894a29905b8c47fe710ae40b830686d3b024279afc4b768de4989ba5d9597",
+      "host": "sparky",
+      "snapshot_commit": "fa2680cec86281d5a4506cae00530854ea37bf75",
+      "request_sha256": "3dfcf5cd8104e236119dafbac8307bc85c911a73f8c4ea5c4e6b31aac3662045",
+      "receipt_sha256": "90d1c423237f3a13f5dfcb3f5eee1cee50cfff23040b5b493c626b7bf5734a64",
+      "outcome_counts": {
+        "call:passed": 33
+      }
+    },
+    {
+      "action_key": "e7ba75c76ea9c64492486885f38f818f4555764d7fd259c21b1c03850480da26",
+      "host": "sparklina",
+      "snapshot_commit": "fa2680cec86281d5a4506cae00530854ea37bf75",
+      "request_sha256": "d3e6f14cb544af435a2860d2ec6b82dea40321bc8e42ac613da5ccd9b54359c9",
+      "receipt_sha256": "44b899867bb7a2f0ad00e1f8214b4ba2ca10136dc9ef2f4e18f2497866b6a96c",
+      "outcome_counts": {
+        "call:passed": 29
+      }
+    },
+    {
+      "action_key": "c24706999f772b03c011324a25ccb34366caa192cd1914932db3a91d5e5ae662",
+      "host": "sparky",
+      "snapshot_commit": "fa2680cec86281d5a4506cae00530854ea37bf75",
+      "request_sha256": "0fbdade3e871ae3dd14d4364bd87a6ff495fb698ad79d0d7e7edfd347d63539f",
+      "receipt_sha256": "337ff1e8f7891b9465e6c85eedb6c187626bb04b0708d6843128d0a0955e1889",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "6ef98324a79d095ca3e8bdff34b88b672d398986b96cf369dbcbf8fde0e1f621",
+      "host": "sparky",
+      "snapshot_commit": "fa2680cec86281d5a4506cae00530854ea37bf75",
+      "request_sha256": "ad5c7bed7fa5df9c5c9c503748f2c704aadd52bb72fc94ab2ef9d23fab14d4cc",
+      "receipt_sha256": "3e120c2f3a97ba4c40f3fbbf102dcc7d89f40c6c0a8e0e94a0bec7076545949f",
+      "outcome_counts": {
+        "call:passed": 8
+      }
+    },
+    {
+      "action_key": "0133283dd4f4bb4a5ac12bd0b29fbf2c7cb5345f582c8cc593b197da66aa9b57",
+      "host": "sparklina",
+      "snapshot_commit": "fa2680cec86281d5a4506cae00530854ea37bf75",
+      "request_sha256": "2f2054e7ec6d9dc418d0b828d935abcb1a80f0c8717330d2663bdf92f8f01ca7",
+      "receipt_sha256": "324b2307ba7c4322533cbac5ecc79254a536e1100dc5053b151a10ea013da505",
+      "outcome_counts": {
+        "call:passed": 23
+      }
+    },
+    {
+      "action_key": "f156fd828007bb3f9f7dfe5acad3a654fec099e5620e4c1e7d4ba7e9cefafa19",
+      "host": "sparky",
+      "snapshot_commit": "fa2680cec86281d5a4506cae00530854ea37bf75",
+      "request_sha256": "60596340299498385546b11dad662161a81ce05f75f093fa7881249587adb958",
+      "receipt_sha256": "3acea97c4d84c10ae2a590f92055b8268dae135bfc1ce9df7166476ae71916b4",
+      "outcome_counts": {
+        "call:passed": 4
+      }
+    },
+    {
+      "action_key": "6972f33a47890f98334057226579b03fabf17609263f37463f316d4896106e75",
+      "host": "sparklina",
+      "snapshot_commit": "b6b40979ff17030d4dc9d94540597a130931b86d",
+      "request_sha256": "3db204f8ce6e94c1e38ea8d83d058cbf938514e1fb125485de17fdfe00934dfe",
+      "receipt_sha256": "53627678445fd2b02e69545c110866262b08db2c87caba6c9f4b68c0e57913d0",
+      "outcome_counts": {
+        "call:passed": 5
+      }
+    },
+    {
+      "action_key": "208bf6c8d9ac6a1dc339a6cb0539c3a3fc1f3a0dbcf5e75ff26196e10ac82077",
+      "host": "sparklina",
+      "snapshot_commit": "b6b40979ff17030d4dc9d94540597a130931b86d",
+      "request_sha256": "5eb6079c278e56ce552c04728cab6be8c37ba103b1416608d2bf3ac41080b282",
+      "receipt_sha256": "b76ac5660a3d500822bd92900661a3d18a1308df7051e51c4eaaefdd6729e1f4",
+      "outcome_counts": {
+        "call:passed": 10
+      }
+    },
+    {
+      "action_key": "0052be8e51c6452fe5f139324af30e4ea12ca1e04f8435b492ae20d9f0adc3a9",
+      "host": "sparky",
+      "snapshot_commit": "b6b40979ff17030d4dc9d94540597a130931b86d",
+      "request_sha256": "851fdfea8259b8cf9a8141cdbf1a6296bf4efaf94416a0dd8fc9e66e99b7a987",
+      "receipt_sha256": "41bebf4b7aae4ec91ea068b759e8d4b5a30f7c84ab6df9d35e967934769d3b72",
+      "outcome_counts": {
+        "call:passed": 33
+      }
+    },
+    {
+      "action_key": "8e91fa8e80d03f4b2b06d4823c957e496ada20ca25a119df6059fb8ea4ff5ed8",
+      "host": "sparky",
+      "snapshot_commit": "b6b40979ff17030d4dc9d94540597a130931b86d",
+      "request_sha256": "c088414a91e97f729291a591cb96be1ebdb3f09104788b6d0351a9dfb91633bf",
+      "receipt_sha256": "0fe101a1deadb5768c298f00c2cac0afda1bd7db23619c9bd18f525fd8385f5a",
+      "outcome_counts": {
+        "call:passed": 29
+      }
+    },
+    {
+      "action_key": "18ffeea80f5fca2ff8629d9f0a0d61f5a76bbe0c3a4d7e0460141dd5df6760d1",
+      "host": "sparky",
+      "snapshot_commit": "b6b40979ff17030d4dc9d94540597a130931b86d",
+      "request_sha256": "2c056973e6154c6dcdb5b49187545395c82faa42289ff9fd866a5e45245286f3",
+      "receipt_sha256": "b6f5cbe7e81ebc6ef39dae0fe33cac33843052ea27723367261874e378fdf4a6",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "ab5a57d49511b023a0667eb44ce9e4f545ddb9e197015a2e6aacaff2a3c93672",
+      "host": "sparklina",
+      "snapshot_commit": "b6b40979ff17030d4dc9d94540597a130931b86d",
+      "request_sha256": "7caa878501a476ae62dcef0ac49cd7a66ed797b2edcbca26a5d7a7fb1f4d2bcb",
+      "receipt_sha256": "415f44f3e03d49c5aa72815d0d65028a5df8643911d1d92ed45d3f1018e99585",
+      "outcome_counts": {
+        "call:passed": 8
+      }
+    },
+    {
+      "action_key": "0c25536aa570487f23b6bd05f0b7f9e4a086870576683fef02d4e4d4272adfbe",
+      "host": "sparky",
+      "snapshot_commit": "b6b40979ff17030d4dc9d94540597a130931b86d",
+      "request_sha256": "9b79f8f0c08b7882cde77220f1fbecbb7e9701c2930c97266c9184fb642a189a",
+      "receipt_sha256": "e221f138332d8fa6b643ade7597e6e630fdecc418363aed26cf09d30782e58f0",
+      "outcome_counts": {
+        "call:passed": 23
+      }
+    },
+    {
+      "action_key": "dc176d047eb0fc4793080f14776d09e49e189dc17e8db630a6bca6f804695c0b",
+      "host": "sparky",
+      "snapshot_commit": "b6b40979ff17030d4dc9d94540597a130931b86d",
+      "request_sha256": "99f6fc48b3fb8906c1086c6622439587f68c166719454f8a81dd23c2a9ccf5a3",
+      "receipt_sha256": "3207306e95ef4f169e1d1f56e52b5767220a0ff93d9ca9675e2aa6750f6cf46a",
+      "outcome_counts": {
+        "call:passed": 4
+      }
+    },
+    {
+      "action_key": "33108aee5fdbdf78c30f87cfbf2d994d920a56b2954b2581497d056bdbaf3da3",
+      "host": "sparklina",
+      "snapshot_commit": "383acaa5c68e6c2bc2b82bec4b9adfd8e02518a8",
+      "request_sha256": "242bce83b447fee5fb6df23d929ecd2f6dfc3663a8e892429504f705849f3cef",
+      "receipt_sha256": "6b7635ee10eb5e6e4f97fadfd4692da44a6c61196d0428d8d47886fff8dd6501",
+      "outcome_counts": {
+        "call:passed": 5
+      }
+    },
+    {
+      "action_key": "759e89747ced166093ed427b1dd227c35606be87b6ded7d6d3ec71e9e13e3b60",
+      "host": "sparklina",
+      "snapshot_commit": "383acaa5c68e6c2bc2b82bec4b9adfd8e02518a8",
+      "request_sha256": "c0678f268152ab9773874acb26be65de50013558cc741e4aeaeb691fd1d6f94f",
+      "receipt_sha256": "0f0c206afc28eb046efbffd2fd653e5d187edb149cb2e8f811c9d67b652de9f9",
+      "outcome_counts": {
+        "call:passed": 10
+      }
+    },
+    {
+      "action_key": "5d931f7452214df3543cbb85d5eb6e015c5bf47d89cffa2cb74aabbb2174e07b",
+      "host": "sparklina",
+      "snapshot_commit": "383acaa5c68e6c2bc2b82bec4b9adfd8e02518a8",
+      "request_sha256": "8fb0d925378ac0aa9f960254eb2541387554438525952a1258ce77ebf776f8eb",
+      "receipt_sha256": "ddb5b9574eff27347921a361bf785cf115f793b0fc9357ae452e7e7f1c739d34",
+      "outcome_counts": {
+        "call:passed": 33
+      }
+    },
+    {
+      "action_key": "e54bcda3abfd7e2401166719c8efacce3f19bceb4204db4a3018b1715e4ca1b5",
+      "host": "sparky",
+      "snapshot_commit": "383acaa5c68e6c2bc2b82bec4b9adfd8e02518a8",
+      "request_sha256": "af8c9e00b97ef7debdf6e524ac44eb7bfae36e91394c4e003e9cc32c39e1302f",
+      "receipt_sha256": "c7d3ecb5cfb5d314f0b9809367eadbf2f5527978369f4c35afbd1424c5507830",
+      "outcome_counts": {
+        "call:passed": 29
+      }
+    },
+    {
+      "action_key": "4fe23ae415bfe5292fb28d47a07134401d253c32fbcc18402bcb0bdee303cc77",
+      "host": "sparky",
+      "snapshot_commit": "383acaa5c68e6c2bc2b82bec4b9adfd8e02518a8",
+      "request_sha256": "bc78993eba8f048870d687bdeac95cd78ffb813d1d981e374c6e0bc5e33932df",
+      "receipt_sha256": "0231a0a1ee3c4a9e3194a8b84428b5bed64d2c15f7b84bd94b3e8df9629c935c",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "4b3eaef23a59fbb1447cd5b1109c4e7f16d04fca48e479af8880add13cf4b62f",
+      "host": "sparky",
+      "snapshot_commit": "383acaa5c68e6c2bc2b82bec4b9adfd8e02518a8",
+      "request_sha256": "b27be5f6d3abb285da25959f0c0fbc2424d387283579fdf0171fba3783231d49",
+      "receipt_sha256": "9a74758893dc50ce9012d4a7cf42de249cfc4c76a4903c5e5d38b0bbefc8e8e5",
+      "outcome_counts": {
+        "call:passed": 8
+      }
+    },
+    {
+      "action_key": "48a7fc8ef95c924d367640a393fc0168fb151a3f8b1adaf5438b61a119bf75d4",
+      "host": "sparklina",
+      "snapshot_commit": "383acaa5c68e6c2bc2b82bec4b9adfd8e02518a8",
+      "request_sha256": "b141f7101a76973b072e6582c62d6fe2a5dc3960100b232d9e99c5ce7823375b",
+      "receipt_sha256": "08d5e1730588cdb6a16d7b1d573cfcbefa6240f0eedf66e78d6b5ab75d1e9a17",
+      "outcome_counts": {
+        "call:passed": 23
+      }
+    },
+    {
+      "action_key": "2ce0ba32efef2d786436422386e810eb3125095d9b8f0c59ef12109e89ec1f91",
+      "host": "sparklina",
+      "snapshot_commit": "383acaa5c68e6c2bc2b82bec4b9adfd8e02518a8",
+      "request_sha256": "2b92edac0e6d664635b4f4621951a95731640f9c82c5c21644a33581dce0f64c",
+      "receipt_sha256": "9eb9731c40eca0ea1115ca64b6074ff8a0200791a5db68de4bf545ea8e2e6132",
+      "outcome_counts": {
+        "call:passed": 4
+      }
+    },
+    {
+      "action_key": "32faf5e981a24fad0d6b5d2d31b3302a411860f3c4f8a4b95573b309c5fa0fa7",
+      "host": "sparklina",
+      "snapshot_commit": "2c1391c3f0f140fbcdc40993b1c644f035394f2d",
+      "request_sha256": "e33a0abe4844aa857b50071ca23962cc63202b0d397752224155f8903342a051",
+      "receipt_sha256": "144a9b4c291427dda73c6108ccd256da05428dfad5ebff77b4365b316d0f554d",
+      "outcome_counts": {
+        "call:passed": 5
+      }
+    },
+    {
+      "action_key": "9f4b62a014e48c91ee91c133f5f44cc290db958e494b9715ab248092f62cc913",
+      "host": "sparklina",
+      "snapshot_commit": "2c1391c3f0f140fbcdc40993b1c644f035394f2d",
+      "request_sha256": "ba87cb4b30b0e87b30748b754fae1bc2fb70317f062c6f2f88710984403290ee",
+      "receipt_sha256": "afe0dad6fd74f4568941e6cd6e0dc10f488205140a3e106bcc259bc11ee32eea",
+      "outcome_counts": {
+        "call:passed": 10
+      }
+    },
+    {
+      "action_key": "51d826da5491f174f6705ee2b7fc474f70e0e382615698b0d11cb8da496842ff",
+      "host": "sparky",
+      "snapshot_commit": "2c1391c3f0f140fbcdc40993b1c644f035394f2d",
+      "request_sha256": "bcda8cd342a3bdee6e6638d7d4836eeccc4ac0bd309573e68392bc15e9dc6fff",
+      "receipt_sha256": "511e3715080e0cfb98420d38642664cfda4af0434054308abe13e4cc191a5887",
+      "outcome_counts": {
+        "call:passed": 33
+      }
+    },
+    {
+      "action_key": "452141bd198d0f3e7c372e82e830bd81f6591a765c80c080d86667ada3e5ef6c",
+      "host": "sparky",
+      "snapshot_commit": "2c1391c3f0f140fbcdc40993b1c644f035394f2d",
+      "request_sha256": "e03b9f656d05ad7d1fd195d816eb4c5198d345a60e86d65777f4f30ba4164e2c",
+      "receipt_sha256": "6081a731a52cfc159ad6a79921c23d19356e971c60c2d0eab7f53e5037f408ae",
+      "outcome_counts": {
+        "call:passed": 29
+      }
+    },
+    {
+      "action_key": "de321f9e97024d573122613092a65859727d0761eece7a0b42963b12f109373a",
+      "host": "sparky",
+      "snapshot_commit": "2c1391c3f0f140fbcdc40993b1c644f035394f2d",
+      "request_sha256": "0f7aadf91a30d6fa1e7c3eb344f15863491bb05d90390b9093c3a1fe5bd21d4d",
+      "receipt_sha256": "74d3a45def8d47ac4bfde0fe7363f543b83723e71ff8f5ed0e8bca27785cde28",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "1f1a8d5c89a336571c0e60bdeebaffd1279e50c96ed47bbb86e6f84706f1a38c",
+      "host": "sparklina",
+      "snapshot_commit": "2c1391c3f0f140fbcdc40993b1c644f035394f2d",
+      "request_sha256": "9b547a7bbc8274e1bb2dfce7aea2738f853a33e3de79909dd0beda19edb73d3e",
+      "receipt_sha256": "2f8540837484f1c8a73ced0d37757d2fb4d236c37b1a1d9633663a67f0640694",
+      "outcome_counts": {
+        "call:passed": 8
+      }
+    },
+    {
+      "action_key": "f6f658de3f8896530dd5eea27d493c65ad66cc9a2a3e2ea906cf95f3fe0ae4d5",
+      "host": "sparklina",
+      "snapshot_commit": "2c1391c3f0f140fbcdc40993b1c644f035394f2d",
+      "request_sha256": "023fc86511e752d469ace09e705a7183e4f54596e23270097457e0d37c1b3184",
+      "receipt_sha256": "19a7e189cdfea882cb0f0f091bbef47fe49ea9cb7a9311b1973cabc3d549beed",
+      "outcome_counts": {
+        "call:passed": 23
+      }
+    },
+    {
+      "action_key": "e4c67f4f407a0850b708031df20b8812896d872ca11576b17902fd90505e19bb",
+      "host": "sparklina",
+      "snapshot_commit": "2c1391c3f0f140fbcdc40993b1c644f035394f2d",
+      "request_sha256": "14acaa3da6a458963d2904027d314a5a25033d98c4da17c8ef0ca5f75a4ed7c3",
+      "receipt_sha256": "698408b7c7604906f00ff9225d0b6d74c8c4efe14727c9405a4bf1ebcaa64dd1",
+      "outcome_counts": {
+        "call:passed": 4
+      }
+    },
+    {
+      "action_key": "132643c0acd4d0e84dd35371b903661e2552a484c10bbd2d100f115b98dcb759",
+      "host": "sparky",
+      "snapshot_commit": "b58cd56dc2656792f2207421e91a663707992cbe",
+      "request_sha256": "2452f142b6a3ed390ff1a46e2cfc26ce442b6b34c0ec33e57e32d9b1d68ee0a1",
+      "receipt_sha256": "b59ec4a2ea6e72934294dfccd2ed53ad360d11c87a9772123a8ead66516576be",
+      "outcome_counts": {
+        "call:passed": 5
+      }
+    },
+    {
+      "action_key": "2ce750392137ee6fe082d11dec5a966b71f8d322a1525bfa7a6c0062036d55af",
+      "host": "sparky",
+      "snapshot_commit": "b58cd56dc2656792f2207421e91a663707992cbe",
+      "request_sha256": "7834f623f79fd9dc66bddf5620ecc2a2988ebfdd6c7a2f1ce73f4ee06740d4bb",
+      "receipt_sha256": "fcaccd66273687077347a68c48a9da939406d8ea9148bb845dd21cae90b3e304",
+      "outcome_counts": {
+        "call:passed": 10
+      }
+    },
+    {
+      "action_key": "5df970c134b7e894da5c44bc0336ba2b376791dbb6006021ffbd1109850dca1f",
+      "host": "sparky",
+      "snapshot_commit": "b58cd56dc2656792f2207421e91a663707992cbe",
+      "request_sha256": "1e072a30a36d1a1d99df0559d0873fba5b9017f58e32b068368a5d2654b39d80",
+      "receipt_sha256": "591c4ca1cba9719d2fce4e1a27ef00c6810d8bf002e46bbbb462b8cc45c2b89d",
+      "outcome_counts": {
+        "call:passed": 33
+      }
+    },
+    {
+      "action_key": "f6695925d14a9a1f0fbe375a82a8a3cdcd229cd7575b75a1aec29a4e6036c24c",
+      "host": "sparklina",
+      "snapshot_commit": "b58cd56dc2656792f2207421e91a663707992cbe",
+      "request_sha256": "bd07cc08c867d385296a5b615ddd003285c6b6d987511a9c963e08925a385823",
+      "receipt_sha256": "fd9a84107205bc2d3b5284601b0b9f235c27d2a96518410c20aa9c04bf907da3",
+      "outcome_counts": {
+        "call:passed": 29
+      }
+    },
+    {
+      "action_key": "da7189198acb568eaa9bb1da5fd1c1e0c5ae8d074cbb4f3660319dffaee8e4e9",
+      "host": "sparklina",
+      "snapshot_commit": "b58cd56dc2656792f2207421e91a663707992cbe",
+      "request_sha256": "b9e4ec6a7f650efc8589d5c83e853b851be5daa3d75095691dc4522a9cdfe9eb",
+      "receipt_sha256": "b5e67112c47b78e10635a516fae4b02122baba0268661458c694b36ff2b92682",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "7e2e4409fb9729ce6defc36c704014acdf83c497de1a91da3f3e3d7ab1e8df25",
+      "host": "sparky",
+      "snapshot_commit": "b58cd56dc2656792f2207421e91a663707992cbe",
+      "request_sha256": "903dcc725f721578d97e3d198ee844dedd33a9dff83d42a7371a52b299b3a97d",
+      "receipt_sha256": "ebd150918240014f5a92c63004b186d284ed3c09e3fa6b4e33311edf7f429ef3",
+      "outcome_counts": {
+        "call:passed": 8
+      }
+    },
+    {
+      "action_key": "a64022109fa256360d69e30f37cee264b3e7e44abd5207db67294cc1fdf3d218",
+      "host": "sparklina",
+      "snapshot_commit": "b58cd56dc2656792f2207421e91a663707992cbe",
+      "request_sha256": "c344cbf7fb226c1a926052b818a34bef92c416fa79aa369003b22571d9852af0",
+      "receipt_sha256": "c8b08bee8625bc65a950dc6c8ccaf68200f59ebc213d02aacbc67a1fea1f5bec",
+      "outcome_counts": {
+        "call:passed": 23
+      }
+    },
+    {
+      "action_key": "f5b1524d39cc050a239e3a664e0ce4a508c6a7618c215bda49cb3c89da701c35",
+      "host": "sparklina",
+      "snapshot_commit": "b58cd56dc2656792f2207421e91a663707992cbe",
+      "request_sha256": "0a396754e6d6991aaa4f1aedf3be678963002fcacf577fa81fe8b4186f5e99b3",
+      "receipt_sha256": "365da11f69935b3b97ca94612d0463ef476d3d9e76d185c2373038378ee9f338",
+      "outcome_counts": {
+        "call:passed": 4
+      }
+    },
+    {
+      "action_key": "52bcd2b32f71acdf2005a7ae090aae34fa3e8e5c3200f5311049cc30b8d9a7f3",
+      "host": "sparky",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "bdc21eaeec5ae25d59c979396dd9a8a92d8084a942a990eaa9ae2d0e0f5c3067",
+      "receipt_sha256": "8763b9c297a2f8d915f09e5bc080e486456992e7fb6bf3c21516d031496bff06",
+      "outcome_counts": {
+        "call:passed": 9
+      }
+    },
+    {
+      "action_key": "4896f31e36de446489e5e26f1e3ce311187f7b83bc3850d8e1a4e3cc34e8f098",
+      "host": "sparky",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "c0e55650de7984afa7f50fb271bc65bcf224bc39d02f72abae76f4d48414480e",
+      "receipt_sha256": "7a3659d19881b647c830197e1edcd72b7629b2a1c71d841d9def5d324c1e3e8d",
+      "outcome_counts": {
+        "call:passed": 11
+      }
+    },
+    {
+      "action_key": "1b85166657f67f380eafa83dedcacf5cf621495319745121ff351c0e70ee99f2",
+      "host": "sparky",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "6667c6223684c9d64a8f0ac539819f75921ba76155d49ba8e4abb978b90fd50c",
+      "receipt_sha256": "57a9b35fed78db483391c604dffda384263f0a970acf6d961040e24fd0e67a4f",
+      "outcome_counts": {
+        "call:passed": 33
+      }
+    },
+    {
+      "action_key": "6e412c399bb22dd22028ab873bc494f58607d86dc1ef09e7a3d39980b14c1325",
+      "host": "sparky",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "2ad6a8373473449f3f7a17a418bd3c6620b3a43655800b4b06a35fc09ebdabb7",
+      "receipt_sha256": "5894b83c81c7af2adedd9fd3e88a1e10ddb081a83f5fc7062d6725d041d7a0c6",
+      "outcome_counts": {
+        "call:passed": 29
+      }
+    },
+    {
+      "action_key": "9ccab4b92fbe6c12179f3aaac465cddbc8dac63c609405f9519cab4520005b71",
+      "host": "sparky",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "68cd6096aa389481dd16ff306e366538b625e0fa2d0ce475e882a10dec156818",
+      "receipt_sha256": "170336cc6eb31dd988adc311824a8e7581f05de29b17a4903f8491e1ede0bc94",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "c47f41b74a371b84430729ccc0ac616b4414eb61c8852176d4c90712cd793378",
+      "host": "sparklina",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "2353a8be57bd5e6413b2d21cd370954bda74229e623b2e15192c08c11ccd9703",
+      "receipt_sha256": "1e693fd620e5f81bc1d2e3f945c9aa48421115ac03be2d8616a384b594dc2663",
+      "outcome_counts": {
+        "call:passed": 8
+      }
+    },
+    {
+      "action_key": "59149e75503b5e488e68b1a8b5f66eafe5fcc94e7eb1fa652d0c460339e28f7e",
+      "host": "sparky",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "b723ff5d3a3dcd559a74f15e429342775cbccdf1d06e887768589d890cd779c9",
+      "receipt_sha256": "44ff52786ff29f8a44c3ed290c067bdc59111ef56786731b2d6c53e05ae04c39",
+      "outcome_counts": {
+        "call:passed": 27
+      }
+    },
+    {
+      "action_key": "12e83069306574f60cc4220c1222cbcdf0e3a48f285998a15d83f2693e149fbc",
+      "host": "sparklina",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "7a4cdfe92b14e420c5486aba94dc9886026a1a63c4baae2389ecb62f88acf6ee",
+      "receipt_sha256": "e0faa684d2d95fb7a106b157b1d557457c8472ecfadc20065e56653de38dc9c0",
+      "outcome_counts": {
+        "call:passed": 53
+      }
+    },
+    {
+      "action_key": "23dc9b1e1a480dbe54f5d6833a32ef719349c6593ff9010ef2939d25c7dbde9d",
+      "host": "sparklina",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "372f3d4965f1d73fdbdcb36e491fe601c4bcaa2afab22d76d1bc04f868d85c9b",
+      "receipt_sha256": "70b748a871e5d397f33bc08855b3d663c51f0885107835b29d187ba6b1d2dc05",
+      "outcome_counts": {
+        "call:passed": 20
+      }
+    },
+    {
+      "action_key": "9e0b19a40ffc9e0e7b23a402dae1bfe3e985538455ecd3b5a0123d05cc83ee99",
+      "host": "sparky",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "825d4e750f540ba6ba11a99071a23d0d85934e9ba302ee98a8981bf93d8ced65",
+      "receipt_sha256": "d71b9ebe110061bca8819f2c99fd3557d81f1db388ad3eea9ddd8c38b5421cb0",
+      "outcome_counts": {
+        "call:passed": 4
+      }
+    },
+    {
+      "action_key": "e3373c1c654b783b4a963882c0bfb191ad2aa7ea4b9118a1e16fe853736e4c60",
+      "host": "sparklina",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "2223a78bfae83c40ceafe086df563c3eed12f47af4837814e888987693811942",
+      "receipt_sha256": "c46f17091fa1ae72b623901570079e7187f25470d5df3d1ad0530d87e10763b3",
+      "outcome_counts": {
+        "call:passed": 9
+      }
+    },
+    {
+      "action_key": "61b573229f9b6152a92e81b8ee70fd5fb3c58f8282df2eb4ec6f342e64a33198",
+      "host": "sparky",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "4cde5a29e4596f57612b3ffcc4b4b301f5536275f21aeedce5ddcd1e7b331d0b",
+      "receipt_sha256": "6b470661227d2eb853dc99bab819afb965e34d737b10bb2c3e606cd9b383aa47",
+      "outcome_counts": {
+        "call:passed": 25
+      }
+    },
+    {
+      "action_key": "71c9070741c566476f9c6f6f12e236aa53602484eb0c43009530485dc061f2b5",
+      "host": "sparky",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "9635e687994c2df1263f05307dffd31d874f345604e015e282ee2721471d5601",
+      "receipt_sha256": "8c12eec34c8e24c100cd6fe1c5bf0ce3105fdcbdb65d33e7e1fd787de2decd86",
+      "outcome_counts": {
+        "call:passed": 6
+      }
+    },
+    {
+      "action_key": "e036695d2ba5c046043a62cd1aff59754bbec78b9277de4cdba388548edaabbc",
+      "host": "sparklina",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "fdc9e518607d5db243ede7d740fec07f47f381848d1cf74da8b8bba4187e5a16",
+      "receipt_sha256": "c240a8972e5f39a88e372e798c1b4ec6f80706407afd5693b755a8d425d3d7dc",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "7cf7db22793f6e3b3a347acc0c0737800df5e38a1805f44a35b39fff01dd856b",
+      "host": "sparklina",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "66d945d3ff1d7af64d989d40acd53aec870eb75a49f46f951757827600bc3ab6",
+      "receipt_sha256": "20fe9567f9bec1387615b7052c8e171d3ebb65f5aa25970d85a2d0665e81785a",
+      "outcome_counts": {
+        "call:passed": 50
+      }
+    },
+    {
+      "action_key": "f206911612863b915d097d31e667822aed96c2b98ccacf6ca658c5ecc29c1514",
+      "host": "sparky",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "ca1c31b83bd463aad0e0ad463c9b2458ad127f158d740d7f47251acb33b1f1d2",
+      "receipt_sha256": "0b0dc00ac783456fb0368c18906bfed440105c883de5bd0373508ee99122922b",
+      "outcome_counts": {
+        "call:passed": 18
+      }
+    },
+    {
+      "action_key": "ad28f11871454fd69b42b69175436d02faa03764a08e022754b628824d5d2851",
+      "host": "sparklina",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "45e7259f1e9248665a0acf78e2051d4ffeee4acd9b34d0c04fed1d32ff63d844",
+      "receipt_sha256": "f1604d3f8a986c598c50caa61ab8ee3f3ba1b3a24d43aa2bee98b25eb73cf520",
+      "outcome_counts": {
+        "call:passed": 28
+      }
+    },
+    {
+      "action_key": "0705c1100d4f093648f41b61c737e34eca70f7fdaf06f66275a6b2497c22c59e",
+      "host": "sparklina",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "d2a885d11842f5796022f8f8f1c62af3974cba491c2cc0d706dd6892b7cedb18",
+      "receipt_sha256": "22ea548f985d3067eb12f2caee6ad240c6e0c417f94ac3f618f46dbba89c2599",
+      "outcome_counts": {
+        "call:passed": 19
+      }
+    },
+    {
+      "action_key": "afb6ce5a75b9a8c48b8913abecce06491dab9168be7350a1a041e89190580b29",
+      "host": "sparky",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "e5bdea5e54567039e83fd0691c602f87a3fa1962a5c2b6cb45cb354ed57bf142",
+      "receipt_sha256": "1eadea923430b6581b7449719876d12249c3a3bfc081497e829370a2be2594db",
+      "outcome_counts": {
+        "call:passed": 32
+      }
+    },
+    {
+      "action_key": "5fd1054dc1fd10885cd3852198fd0be255e6e019f8fad272714a8b390e375a7f",
+      "host": "sparklina",
+      "snapshot_commit": "fe34c9236743fe525016a43804fea144aded0f43",
+      "request_sha256": "c9c47996c6b80e681d262a2aaf52b12df733ea2d98940311af66cb6bfddbede2",
+      "receipt_sha256": "526ac2be14d273d447adf3aa9a7f17dede0c61919941e54cc190aadf3ad3859e",
+      "outcome_counts": {
+        "call:passed": 23
+      }
+    }
+  ]
+}

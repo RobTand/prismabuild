@@ -29,6 +29,7 @@ RAM_TIER = "ram:dl380g10"
 STAGE_KIND = f"stage_gib@{STAGE_TIER}"
 RAM_KIND = f"ram_gib@{RAM_TIER}"
 GIB = storage_tiers.GIB
+PHASE_BYTES = 1
 EPOCH = "1695052800-1a2b3c4d5e6f7a8b"
 HOST = "dl380g10"
 NOW = 2_000_000.0
@@ -50,7 +51,7 @@ def _plan(queue: pool.PoolQueue, *, stage_root: str) -> dict:
     phases = []
     start = 0
     for ordinal in range(2):
-        end = start + 2 * GIB
+        end = start + PHASE_BYTES
         entry: dict = {
             "name": f"phase-{ordinal:04d}",
             "start_bytes": start, "end_bytes": end, "stage_gib": 2,
@@ -94,7 +95,7 @@ def starved_queue(tmp_path, monkeypatch):
     # its leads are resident, and this census reads the claim, not the gate.
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}, queue), residency={
         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
-        "manifest_sha256": MANIFEST, "manifest_bytes": 4 * GIB,
+        "manifest_sha256": MANIFEST, "manifest_bytes": 2 * PHASE_BYTES,
         "leads": residency_plan.leads_for(plan)})
     ready_path = queue.records.item_path(pool.record_store.READY, CONSUMER)
     record = json.loads(ready_path.read_text())
@@ -137,17 +138,17 @@ def starved_queue(tmp_path, monkeypatch):
         queue, consumer_action_key=CONSUMER, mover_action_key=_hexkey("mover0"),
         tier_id=STAGE_TIER, stage_root=tmp_path / "stage",
         manifest_sha256=MANIFEST, range_start_bytes=0,
-        range_end_bytes=2 * GIB)
+        range_end_bytes=PHASE_BYTES)
     residency_publication.publish_landed_files(
         queue, consumer_action_key=CONSUMER,
         mover_action_key=_hexkey("rampromote0"), tier_id=RAM_TIER,
         stage_root=tmp_path / "ram", manifest_sha256=MANIFEST,
-        range_start_bytes=0, range_end_bytes=2 * GIB, epoch=EPOCH)
+        range_start_bytes=0, range_end_bytes=PHASE_BYTES, epoch=EPOCH)
     queue.publish(**_row(_hexkey("mover1"), {STAGE_KIND: 2, "mem_gb": 1}, queue),
                    residency={
                        "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
-                       "manifest_sha256": MANIFEST, "manifest_bytes": 4 * GIB,
-                       "range_start_bytes": 2 * GIB, "range_end_bytes": 4 * GIB})
+                       "manifest_sha256": MANIFEST, "manifest_bytes": 2 * PHASE_BYTES,
+                       "range_start_bytes": PHASE_BYTES, "range_end_bytes": 2 * PHASE_BYTES})
     queue.announce_tier({
         "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
         "tier_id": STAGE_TIER, "tier": "stage", "host": HOST,
@@ -213,7 +214,7 @@ def test_plan_promotion_state_names_ram_fragments_per_phase(starved_queue):
     assert second["ram"] is None
     gap = plan["cursor_gap"]
     assert gap["stage"]["unstaged_phases"] == ["phase-0001"]
-    assert gap["stage"]["unstaged_bytes"] == 2 * GIB
+    assert gap["stage"]["unstaged_bytes"] == PHASE_BYTES
     assert gap["live_byte_cursor"] == fleet_census.NOT_OBSERVABLE
 
 
