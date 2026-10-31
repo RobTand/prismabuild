@@ -32,7 +32,7 @@ def test_completed_pytest_writes_a_final_verdict(tmp_path, code, verdict):
     assert command[command.index('-n') + 1] == '5'
     assert '--deselect=tests/test_one.py::test_bad' in command
     assert command[-1] == 'tests/test_one.py'
-    assert kwargs['env']['PRISMABUILD_TEST_TIMEOUT_S'] == '60'
+    assert kwargs['env']['PRISMABUILD_TEST_TIMEOUT_S'] == '300'
     assert kwargs['env']['OMP_NUM_THREADS'] == kwargs['env']['OPENBLAS_NUM_THREADS'] == '1'
 
 
