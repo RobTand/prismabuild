@@ -8,13 +8,6 @@ name: Full suite
         description: Classify without filing issues or comments
         type: boolean
         default: false
-  pull_request:
-    types:
-    - opened
-    - synchronize
-    - reopened
-    branches:
-    - main
 permissions:
   contents: read
 concurrency:
@@ -48,8 +41,6 @@ jobs:
       with:
         name: full-suite-plan-${{ github.run_attempt }}
         path: full-suite-plan
-    if: github.event_name != 'pull_request' || (github.head_ref == 'prismabuild-2428-full-suite' && github.event.pull_request.head.repo.full_name
-      == github.repository)
   suite:
     needs:
     - plan
