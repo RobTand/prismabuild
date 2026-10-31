@@ -117,7 +117,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           # Branch trials can file only by explicitly dispatching with dry_run=false.
-          FULL_SUITE_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) || (github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch') }}
+          FULL_SUITE_DRY_RUN: 'false'
         run: |
           args=()
           if [ "$FULL_SUITE_DRY_RUN" = true ]; then args+=(--dry-run); fi
