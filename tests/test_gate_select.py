@@ -212,3 +212,9 @@ def test_readiness_tracker_is_not_a_quarantine_owner(tmp_path):
     with pytest.raises(ValueError, match='owner'):
         select.create_plan(tree(tmp_path), [], durations={'files': {}},
             quarantine={'entries': [{'target': 'tests/test_direct.py', 'reason': 'broken', 'issue': 2428}]})
+
+
+def test_always_fast_tests_do_not_seed_helper_change_propagation(tmp_path):
+    root = tree(tmp_path)
+    (root / 'tests/test_consumer.py').write_text('from test_fast import fixture_builder\n')
+    assert selected(plan(root, ['docs/ci_gate.md'])) == {'tests/test_fast.py'}

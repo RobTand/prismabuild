@@ -16,7 +16,8 @@ def audit(tmp_path, *, failure='tests/test_b.py', verdict='fail', files=None, fi
                 'verdict': verdict}]
     junit = tmp_path / 'junit.xml'
     attr = f'file="{failure}"' if file_attribute else ''
-    junit.write_text(f'<testsuites><testsuite tests="2"><testcase file="tests/test_a.py" name="test_ok"/>'
+    other = 'tests/test_b.py' if failure == 'tests/test_a.py' else 'tests/test_a.py'
+    junit.write_text(f'<testsuites><testsuite tests="2"><testcase file="{other}" name="test_ok"/>'
                      f'<testcase {attr} name="test_bad"><failure>regression</failure></testcase>'
                      '</testsuite></testsuites>')
     return shadow.audit(plan, records, [junit])
@@ -44,3 +45,13 @@ def test_missing_verdict_or_coverage_or_file_identity_is_inconclusive(tmp_path):
 
 def test_actions_workflow_is_removed():
     assert not (ROOT / '.github/workflows/gate.yml').exists()
+
+
+def test_assignment_claims_without_junit_coverage_are_inconclusive(tmp_path):
+    plan = {'mode': 'full', 'population': {'version': 'v1'},
+            'selected': [{'path': 'tests/a.py'}, {'path': 'tests/b.py'}],
+            'shadow_selected': [{'path': 'tests/a.py'}]}
+    records = [{'population_version': 'v1', 'files': ['tests/a.py', 'tests/b.py'], 'verdict': 'pass'}]
+    junit = tmp_path / 'incomplete.xml'
+    junit.write_text('<testsuites><testsuite><testcase file="tests/a.py" name="one"/></testsuite></testsuites>')
+    assert shadow.audit(plan, records, [junit])['exit_code'] == 75

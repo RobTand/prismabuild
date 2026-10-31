@@ -12,8 +12,7 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 
-POLICY = 'direct-imports-v1'
-OWNER = 2428
+POLICY = 'direct-imports-helper-closure-v1'
 
 
 def read_json(path: Path) -> dict:
@@ -39,7 +38,7 @@ def tier_declarations(root: Path) -> tuple[set[str], dict[str, str]]:
     for node in ast.parse((root / 'tools/verify.py').read_text()).body:
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                if isinstance(target, ast.Name) and target.id in {'FAST', 'GPU'}:
+                if isinstance(target, ast.Name) and target.id in {'FAST', 'GPU', 'TWO_CPU'}:
                     declarations[target.id] = set(ast.literal_eval(node.value))
     fast, gpu = declarations['FAST'], declarations['GPU']
     profile = read_json(root / 'tests/proof_execution.json')
@@ -47,18 +46,20 @@ def tier_declarations(root: Path) -> tuple[set[str], dict[str, str]]:
     receipt = root / 'tests/receipt_execution.json'
     if receipt.exists():
         roots.update(read_json(receipt)['root_files'])
-    return fast, {**{name: 'root population requires the pinned proof runtime' for name in roots},
-                  **{name: 'GPU population requires CUDA qualification' for name in gpu}}
+    return fast, {**{name: {'lane': 'root', 'reason': 'root population requires the pinned proof runtime'} for name in roots},
+                  **{name: {'lane': 'gpu', 'reason': 'GPU population requires CUDA qualification'} for name in gpu},
+                  **{name: {'lane': 'two_cpu', 'reason': 'two-CPU population requires dedicated CPU allocations'}
+                     for name in declarations['TWO_CPU']}}
 
 
 def module_names(path: str) -> set[str]:
-    if not path.endswith('.py') or not path.startswith(('src/prismabuild/', 'tools/')):
+    if not path.endswith('.py') or not path.startswith(('src/prismabuild/', 'tools/', 'tests/')):
         return set()
     module = path.removesuffix('.py').removeprefix('src/').replace('/', '.')
     module = module.removesuffix('.__init__')
     names = {module}
-    if path.startswith('tools/'):
-        names.add(module.removeprefix('tools.'))
+    if path.startswith(('tools/', 'tests/')):
+        names.add(module.split('.', 1)[1] if '.' in module else module)
         names.add(module.rsplit('.', 1)[-1])
     return names
 
@@ -86,7 +87,7 @@ def literal_path(node: ast.AST) -> str | None:
     return None
 
 
-def dependencies(source: str) -> tuple[set[str], set[str]]:
+def dependencies(source: str, path: str = '') -> tuple[set[str], set[str]]:
     parsed = ast.parse(source)
     trees = [parsed]
     # Subprocess Python snippets are direct evidence too.
@@ -101,9 +102,15 @@ def dependencies(source: str) -> tuple[set[str], set[str]]:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 modules.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                modules.add(node.module)
-                modules.update(f'{node.module}.{alias.name}' for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                prefix = node.module or ''
+                if node.level and path:
+                    package = list(PurePosixPath(path).parent.parts)
+                    package = package[:len(package) - node.level + 1]
+                    prefix = '.'.join([*package, *([prefix] if prefix else [])])
+                if prefix:
+                    modules.add(prefix)
+                modules.update(f'{prefix}.{alias.name}' if prefix else alias.name for alias in node.names)
             value = literal_path(node)
             if value is not None:
                 paths.add(value.removeprefix('./'))
@@ -113,8 +120,22 @@ def dependencies(source: str) -> tuple[set[str], set[str]]:
 
 
 def dependency_index(root: Path) -> dict[str, tuple[set[str], set[str]]]:
-    return {path.relative_to(root).as_posix(): dependencies(path.read_text())
-            for path in sorted((root / 'tests').rglob('test_*.py'))}
+    return {path.relative_to(root).as_posix(): dependencies(path.read_text(), path.relative_to(root).as_posix())
+            for path in sorted((root / 'tests').rglob('*.py'))}
+
+
+def helper_importers(index: dict, changed: list[str]) -> dict[str, set[str]]:
+    aliases: dict[str, set[str]] = {}
+    for path in set(index) | {name for name in changed if name.startswith('tests/') and name.endswith('.py')}:
+        for alias in module_names(path):
+            aliases.setdefault(alias, set()).add(path)
+    reverse: dict[str, set[str]] = {}
+    for path, (imports, references) in index.items():
+        targets = {target for module in imports for target in aliases.get(module, ())}
+        targets.update(reference for reference in references if reference in index)
+        for target in targets - {path}:
+            reverse.setdefault(target, set()).add(path)
+    return reverse
 
 
 def estimate(files: list[str], durations: dict, workers: int = 5) -> dict:
@@ -144,7 +165,7 @@ def exclusion_entries(quarantine: dict) -> list[dict]:
         issue = row.get('issue')
         if (not target or not str(path).startswith('tests/') or path.is_absolute() or
             '..' in path.parts or not str(path).endswith('.py') or
-            not isinstance(issue, int) or isinstance(issue, bool) or issue <= 0 or
+            not isinstance(issue, int) or isinstance(issue, bool) or issue <= 0 or issue == 2428 or
             not isinstance(row.get('reason'), str) or not row['reason'].strip()):
             raise ValueError(f'invalid or unowned gate exclusion: {target!r}')
         if row['kind'] == 'cost_exclusions' and '::' in target:
@@ -155,10 +176,12 @@ def exclusion_entries(quarantine: dict) -> list[dict]:
 
 
 def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: dict,
-                index: dict | None = None) -> dict:
+                index: dict | None = None, mode: str = 'selection') -> dict:
     root = Path(root)
     index = dependency_index(root) if index is None else index
-    all_tests = set(index)
+    if mode not in {'selection', 'full'}:
+        raise ValueError('mode must be selection or full')
+    all_tests = {path for path in index if Path(path).name.startswith('test_')}
     fast, other_lanes = tier_declarations(root)
     if fast - all_tests:
         raise ValueError(f'fast tier names missing files: {sorted(fast - all_tests)}')
@@ -168,19 +191,10 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
     version_body = {'policy': POLICY, 'files': sorted(population), 'fast': sorted(fast),
                     'other_lanes': other_lanes, 'exclusions': exclusions, 'durations': durations}
     version = hashlib.sha256(json.dumps(version_body, sort_keys=True).encode()).hexdigest()
-    imported_modules = {module for imports, _ in index.values() for module in imports}
-    triggers = []
-    for path in sorted(set(changed)):
-        test_module = path.startswith('tests/') and path.endswith('.py')
-        helper_names = {Path(path).stem, path.removesuffix('.py').replace('/', '.'),
-                        path.removeprefix('tests/').removesuffix('.py').replace('/', '.')}
-        helper = test_module and (not Path(path).name.startswith('test_') or
-                                  bool(helper_names & imported_modules))
-        if (path in {'conftest.py', 'pyproject.toml', 'tools/verify.py',
-                     'tests/proof_execution.json', 'tests/receipt_execution.json',
-                     '.github/workflows/gate.yml', 'docs/ci_gate.md'} or
-            path.startswith(('tools/ci/gate_', 'tests/test_gate_')) or helper):
-            triggers.append(path)
+    triggers = sorted(path for path in set(changed) if
+        path in {'conftest.py', 'tests/conftest.py', 'pyproject.toml', 'tools/verify.py',
+                 'tests/proof_execution.json', 'tests/receipt_execution.json'} or
+        path.startswith(('tools/ci/gate_', 'tests/test_gate_')))
     reasons: dict[str, list[str]] = {}
     for name, (imports, paths) in index.items():
         why = []
@@ -191,7 +205,7 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
         if name in changed:
             why.append('changed test file')
         for path in sorted(set(changed)):
-            modules = module_names(path)
+            modules = module_names(path) if not path.startswith('tests/') else set()
             if modules and any(dependency == module or dependency.startswith(module + '.')
                                for dependency in imports for module in modules):
                 why.append('direct import: ' + path)
@@ -199,11 +213,24 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
                 why.append('literal path reference: ' + path)
         if why:
             reasons[name] = why
-    selected = [{'path': name, 'reasons': reasons[name],
-                 'estimated_seconds': durations['files'].get(name)}
-                for name in sorted(population & reasons.keys())]
-    deferred = [{'path': name, 'reason': reason, 'issue': 1831 if reason.startswith('root') else OWNER, 'lane': True}
-                for name, reason in sorted(other_lanes.items()) if name in all_tests]
+    reverse = helper_importers(index, changed)
+    pending = sorted(set(reasons) | {path for path in changed if path.startswith('tests/')})
+    seen = set(pending)
+    while pending:
+        helper = pending.pop()
+        for importer in sorted(reverse.get(helper, ())):
+            reasons.setdefault(importer, []).append('helper dependency: ' + helper)
+            if importer not in seen:
+                seen.add(importer)
+                pending.append(importer)
+    shadow = [{'path': name, 'reasons': reasons[name],
+               'estimated_seconds': durations['files'].get(name)}
+              for name in sorted(population & reasons.keys())]
+    selected = shadow if mode == 'selection' else [
+        {'path': name, 'reasons': ['full queue population'],
+         'estimated_seconds': durations['files'].get(name)} for name in sorted(population)]
+    deferred = [{'path': name, 'issue': None, **lane}
+                for name, lane in sorted(other_lanes.items()) if name in all_tests]
     deferred += [{'path': row['target'], 'reason': row['reason'], 'issue': row['issue'],
                   'kind': row['kind'], 'selected_by': reasons.get(row['target'].split('::')[0], [])}
                  for row in exclusions]
@@ -213,7 +240,8 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
     return {'schema': 'prismabuild.gate_plan.v1', 'policy': POLICY,
             'population': {'size': len(population), 'version': version,
                            'estimate': estimate(sorted(population), durations)},
-            'changed_files': sorted(set(changed)), 'selected': selected, 'deferred': deferred,
+            'mode': mode, 'changed_files': sorted(set(changed)), 'selected': selected,
+            'shadow_selected': shadow, 'deferred': deferred,
             'deselect': deselect, 'estimate': estimate(files, durations),
             'budget': {'target_wall_seconds': 300, 'maximum_wall_seconds': 600,
                        'includes_pickup': False, 'policy': 'never truncate relevant coverage'}}
@@ -231,7 +259,7 @@ def summary(plan: dict) -> str:
                  for row in plan['selected'])
     lines += ['', '<details><summary>Other lanes and exclusions</summary>', '',
               '| Test | Reason | Owning issue |', '| --- | --- | --- |']
-    lines.extend(f"| {cell(row['path'])} | {cell(row['reason'])} | #{row['issue']} |"
+    lines.extend(f"| {cell(row['path'])} | {cell(row['reason'])} | {('#' + str(row['issue'])) if row['issue'] else 'separate lane'} |"
                  for row in plan['deferred'])
     lines += ['', '</details>', '']
     return '\n'.join(lines)
@@ -242,19 +270,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--root', type=Path, default=Path.cwd())
     parser.add_argument('--base', required=True)
     parser.add_argument('--head', required=True)
+    parser.add_argument('--mode', choices=['selection', 'full'], default='selection')
+    parser.add_argument('--files-output', type=Path, help='newline-separated files for a CI splitter')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--summary', type=Path)
     args = parser.parse_args(argv)
     root = args.root.resolve()
     plan = create_plan(root, changed_files(root, args.base, args.head),
                        durations=read_json(root / 'tools/ci/gate_durations.json'),
-                       quarantine=read_json(root / 'tools/ci/gate_quarantine.json'))
+                       quarantine=read_json(root / 'tools/ci/gate_quarantine.json'), mode=args.mode)
     plan.update(base_sha=args.base, head_sha=args.head)
     output = json.dumps(plan, sort_keys=True, indent=2) + '\n'
     if args.output:
         args.output.write_text(output)
     else:
         print(output, end='')
+    if args.files_output:
+        args.files_output.write_text(''.join(row['path'] + '\n' for row in plan['selected']))
     if args.summary:
         with args.summary.open('a') as handle:
             handle.write(summary(plan))

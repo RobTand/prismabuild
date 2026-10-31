@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from datetime import datetime, timezone
 import importlib.util
 import json
@@ -25,8 +26,49 @@ def summarize(rows: list[dict]) -> dict:
                 for label, fraction in (('p50', 0.5), ('p90', 0.9))}
     return {'prs': len(rows), 'selected_files': quantiles('selected_files'),
             'wall_seconds': quantiles('wall_seconds'),
+            'distribution': {'over_300_files': sum(row['selected_files'] > 300 for row in rows),
+                             'over_600_files': sum(row['selected_files'] > 600 for row in rows)},
             'unknown_cost_prs': [row['number'] for row in rows if row['wall_seconds'] is None]}
 
+
+
+def changed_functions(before: str, after: str) -> dict:
+    """AST-only diagnostic. Includes enclosing functions when nested bodies change."""
+    def definitions(source):
+        found = {}
+        def visit(node, prefix=''):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    name = prefix + child.name
+                    if not isinstance(child, ast.ClassDef):
+                        found.setdefault(name, []).append(ast.dump(child, include_attributes=False))
+                    visit(child, name + '.')
+                else:
+                    visit(child, prefix)
+        visit(ast.parse(source))
+        return found
+    old, new = definitions(before), definitions(after)
+    changed = sorted(name for name in old.keys() & new.keys() if old[name] != new[name])
+    added, removed = sorted(new.keys() - old.keys()), sorted(old.keys() - new.keys())
+    return {'changed': changed, 'added': added, 'removed': removed,
+            'count': len(changed) + len(added) + len(removed),
+            'before_functions': len(old), 'after_functions': len(new)}
+
+
+def pool_function_report(captured: dict) -> dict:
+    rows = []
+    for pull in captured['pulls']:
+        diff = changed_functions(pull['before'], pull['after'])
+        rows.append({key: value for key, value in pull.items() if key not in {'before', 'after'}} | diff)
+    counts = sorted(row['count'] for row in rows)
+    return {'schema': 'prismabuild.pool_changed_functions.v1',
+            'source': {key: value for key, value in captured.items() if key != 'pulls'},
+            'method': 'AST function and method definitions, including enclosing functions for nested-body changes; '
+                      'ignores formatting and comments; diagnostic only, no function-level test selection',
+            'prs': len(rows), 'counts': {'min': min(counts) if counts else None,
+                'p50': counts[math.ceil(len(counts) * .5) - 1] if counts else None,
+                'p90': counts[math.ceil(len(counts) * .9) - 1] if counts else None,
+                'max': max(counts) if counts else None}, 'pulls': rows}
 
 def api(endpoint: str):
     """Only GET endpoints in this repository. Never load credentials as data."""
@@ -106,13 +148,15 @@ def main(argv: list[str] | None = None) -> int:
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument('--fetch-history', type=Path, help='fresh empty destination, REST GET only')
     inputs.add_argument('--history', type=Path, help='captured history.json to replay')
+    inputs.add_argument('--pool-functions', type=Path, help='captured base/head pool sources for AST diagnostics')
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument('--output', type=Path)
     args = parser.parse_args(argv)
     if args.fetch_history:
         print(capture_history(args.fetch_history))
         return 0
-    report = replay(args.root.resolve(), json.loads(args.history.read_text()))
+    report = (pool_function_report(json.loads(args.pool_functions.read_text())) if args.pool_functions
+              else replay(args.root.resolve(), json.loads(args.history.read_text())))
     rendered = json.dumps(report, sort_keys=True, indent=2) + '\n'
     if args.output:
         args.output.write_text(rendered)
