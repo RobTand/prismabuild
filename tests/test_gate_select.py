@@ -275,3 +275,13 @@ def test_unresolved_fixture_names_cover_the_known_directory(tmp_path, tail):
     result = plan(root, ['tests/fixtures/container_images/sparky_image_ls.txt'])
     assert 'tests/test_bound.py' in selected(result)
     assert 'tests/test_bound.py' not in selected(plan(root, ['tests/fixtures/other/input.txt']))
+
+
+def test_computed_descendant_of_a_directory_with_unresolved_base(tmp_path):
+    root = tree(tmp_path)
+    (root / 'tests/test_bound.py').write_text(
+        'from pathlib import Path as _P\n'
+        'FIXTURES = _P(__file__).parent / "fixtures" / "images"\n'
+        'def fixture(name):\n    return (FIXTURES / name).read_bytes()\n')
+    assert 'tests/test_bound.py' in selected(plan(root, ['tests/fixtures/images/captured.txt']))
+    assert 'tests/test_bound.py' not in selected(plan(root, ['tests/fixtures/other/captured.txt']))
