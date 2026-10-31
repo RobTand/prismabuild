@@ -331,3 +331,28 @@ def test_wait_preserves_verdict_and_archive_ownership_across_observations(
     assert history.complete is not unknown
     assert len(history.identities) == (0 if unknown else 1)
     assert calls == [os.getpid()]
+
+
+@pytest.mark.parametrize("surface", ["jobs", "endings"])
+def test_shared_census_does_not_start_an_implicit_archive_reader(
+    tmp_path, monkeypatch, surface,
+):
+    queue, path, record = _rerun(tmp_path, monkeypatch, "failed", 37)
+    if surface == "jobs":
+        path.unlink()
+        queue.publish(action_key=record["action_key"], cas_root=str(tmp_path / "cas"),
+                      checkout_root="/checkout", worker_script="/worker.py", max_attempts=1)
+        ready = queue.records.item_path(pool.record_store.READY, record["action_key"])
+        current = json.loads(ready.read_text())
+        current["supersedes_terminal"] = record["supersedes_terminal"]
+        ready.write_text(json.dumps(current))
+
+    def implicit_reader(path):
+        pytest.fail("shared census must not spawn an archive grandchild")
+
+    monkeypatch.setattr(action_client, "_read_superseded_archive", implicit_reader)
+    rows = (census.action_rows(queue.root).value["jobs"] if surface == "jobs"
+            else census.endings(queue.root))
+    assert rows[0]["superseded"]["status"] == "failed"
+    assert rows[0]["superseded"]["classification"] is None
+    assert "returncode" not in rows[0]["superseded"]
