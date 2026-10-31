@@ -52,12 +52,12 @@ The second plugin applies the gate's unchanged node quarantine. PB's `pbtest`
 partitions development map runs, with at least 4 GiB per shard. CI's nightly
 refresh runs on GitHub Actions and does not submit through PB.
 
-A refresh is usable only after every shard has a complete passing test verdict
+A refresh records only shards with a complete passing test verdict
 and a verified CAS receipt for development evidence, or the equivalent complete
 CI artifact. `tia_evaluate.py extract` refuses incomplete development reports.
 `extract-cas` verifies result blob hashes and merges records inside an admitted
-action. Missing test files remain whole-file selections until a complete refresh
-records them.
+action. Unmapped test files retain the static rule until a refresh records them.
+Their metadata names the reason, observed hosts, and action keys.
 
 ## AST changes and targets
 
@@ -86,7 +86,7 @@ individual recorded nodes. Fallbacks select complete files.
 | Non-Python path | Gate's static path rules |
 | Test helper | Gate's transitive helper rules |
 | Selection infrastructure or test configuration | Complete population |
-| Test file absent from the map | Complete test file |
+| Test file absent from the map | Complete file whenever its static rule selects it |
 
 Hashes are compared with the changed file's **base** content. Comparing with
 its changed head would invalidate every useful function match. The source
@@ -153,3 +153,15 @@ supports. Keep static fallback for missing functions and hash mismatches. Run
 full population shadow comparisons before using TIA as a required selection
 gate. The mutation sample covers the stated operators and selected cheap
 modules; it does not establish universal completeness.
+
+The readiness lead explicitly excluded these files from development map builds
+and mutation evaluation after exit-78 refusals on dl380g10:
+
+- `tests/test_record_compatibility.py`
+- `tests/test_current_receipt_compat_composition.py`
+
+Their map metadata records the reason, "bubblewrap cannot mount /proc in
+admitted PrismaBuild actions; exit 78". The selector still picks either file
+when the static import or literal-path rule selects it. Evaluation excludes
+them from both arms. The gate agent owns their classification on GitHub-hosted
+runners; this change does not alter the gate's population files.

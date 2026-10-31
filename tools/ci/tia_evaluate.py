@@ -42,7 +42,7 @@ def extract(reports: list[Path], output: Path):
                             path = Path(scratch) / f'{len(paths)}.json'
                             path.write_text(json.dumps(record))
                             paths.append(path)
-        result = write_map(paths, output)
+        result = write_map(paths, output, unmapped=json.loads(os.environ.get('PB_TIA_UNMAPPED', '{}')))
     print(json.dumps({'tests': len(result['tests']), 'functions': len(result['functions']),
                       'bytes': output.stat().st_size, 'source_commit': result['source_commit']}))
 
@@ -65,7 +65,7 @@ def extract_cas(inputs: list[dict], output: Path):
                         paths.append(path)
             if not found:
                 raise ValueError(f"missing recorder output: {entry['action_key']}")
-        result = write_map(paths, output)
+        result = write_map(paths, output, unmapped=json.loads(os.environ.get('PB_TIA_UNMAPPED', '{}')))
     print('tia-map: ' + base64.b64encode(output.read_bytes()).decode(), flush=True)
     print(json.dumps({'tests': len(result['tests']), 'functions': len(result['functions']),
                       'bytes': output.stat().st_size, 'source_commit': result['source_commit']}), flush=True)
@@ -245,8 +245,10 @@ def run_mutation(root: Path, gate_dir: Path, mutation: dict) -> dict:
     gate = load(gate_dir / 'gate_select.py', 'tia_mutation_gate')
     static = gate.create_plan(root, [path], durations=gate.read_json(gate_dir / 'gate_durations.json'),
                               quarantine=gate.read_json(gate_dir / 'gate_quarantine.json'))
-    tia_files = [row['path'] for row in selected['selected']]
-    static_files = [row['path'] for row in static['selected']]
+    excluded = set(mapping.get('unmapped', {}))
+    tia_files = [row['path'] for row in selected['selected'] if row['path'] not in excluded]
+    static_files = [row['path'] for row in static['selected'] if row['path'] not in excluded]
+    tia_targets = [target for target in selected['targets'] if target.split('::', 1)[0] not in excluded]
     with tempfile.TemporaryDirectory() as temporary:
         directory = Path(temporary)
         baseline = pytest_run(root, sorted(set(tia_files + static_files)), static['deselect'], directory, 'baseline')
@@ -256,7 +258,7 @@ def run_mutation(root: Path, gate_dir: Path, mutation: dict) -> dict:
             # Avoid reading a same-size, same-second bytecode cache after mutating a comparison.
             for cache in (root / path).parent.glob('__pycache__/' + Path(path).stem + '.*.pyc'):
                 cache.unlink()
-            tia = pytest_run(root, selected['targets'], static['deselect'], directory, 'tia')
+            tia = pytest_run(root, tia_targets, static['deselect'], directory, 'tia')
             full = pytest_run(root, static_files, static['deselect'], directory, 'static')
         finally:
             (root / path).write_bytes(original)
@@ -266,7 +268,7 @@ def run_mutation(root: Path, gate_dir: Path, mutation: dict) -> dict:
     return {'mutation': mutation, 'baseline': baseline, 'tia': tia, 'static': full,
             'tia_killed': killed(tia), 'static_killed': killed(full),
             'valid': baseline['returncode'] == 0 and tia['complete'] and full['complete'],
-            'tia_plan': selected}
+            'tia_plan': selected, 'evaluation_excluded': mapping.get('unmapped', {})}
 
 
 def overhead(root: Path, gate_dir: Path) -> dict:

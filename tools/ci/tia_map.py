@@ -10,7 +10,7 @@ from pathlib import Path
 SCHEMA = 'prismabuild.tia_map.v1'
 
 
-def write_map(records: list[Path], destination: Path) -> dict:
+def write_map(records: list[Path], destination: Path, *, unmapped: dict | None = None) -> dict:
     if not records:
         raise ValueError('no recorder output')
     tests: dict[str, set[str]] = {}
@@ -33,7 +33,7 @@ def write_map(records: list[Path], destination: Path) -> dict:
     functions = sorted({function for values in tests.values() for function in values})
     ids = {name: index for index, name in enumerate(functions)}
     result = {'schema': SCHEMA, 'source_commit': commits.pop(), 'python': sorted(versions),
-              'files': dict(sorted(hashes.items())), 'functions': functions, 'unattributed': sorted(unattributed),
+              'unmapped': dict(sorted((unmapped or {}).items())), 'files': dict(sorted(hashes.items())), 'functions': functions, 'unattributed': sorted(unattributed),
               'tests': {node: sorted(ids[name] for name in values) for node, values in sorted(tests.items())}}
     encoded = (json.dumps(result, sort_keys=True, separators=(',', ':')) + '\n').encode()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -56,9 +56,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('records', type=Path, nargs='+', help='record files or directories')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--unmapped', type=Path, help='JSON test-file reasons and execution evidence')
     args = parser.parse_args()
     paths = [record for path in args.records for record in (sorted(path.glob('*.json')) if path.is_dir() else [path])]
-    result = write_map(paths, args.output)
+    result = write_map(paths, args.output, unmapped=json.loads(args.unmapped.read_text()) if args.unmapped else None)
     print(json.dumps({'functions': len(result['functions']), 'tests': len(result['tests']),
                       'bytes': args.output.stat().st_size, 'source_commit': result['source_commit']}, sort_keys=True))
 

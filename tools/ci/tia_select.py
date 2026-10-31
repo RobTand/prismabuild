@@ -77,6 +77,15 @@ def select(mapping: dict, diff: dict, *, file_hashes: dict, fast: list[str],
             if function.startswith(path + '::'):
                 for test in tests:
                     pick(test.split('::', 1)[0], f'{reason}: {path}; observed module')
+    unmapped = mapping.get('unmapped', {})
+    if unmapped:
+        changed_paths = sorted([*diff['python'], *diff['non_python']])
+        for row in static(changed_paths)['selected']:
+            if row['path'] in unmapped:
+                detail = unmapped[row['path']]
+                reason = detail.get('reason') if isinstance(detail, dict) else detail
+                for why in row['reasons']:
+                    pick(row['path'], f'unmapped test: {reason}; {why}')
     return {'schema': 'prismabuild.tia_plan.v1', 'map_commit': mapping['source_commit'],
             'selected': [{'path': path, 'reasons': sorted(why),
                           'nodeids': None if path in whole else sorted(nodes[path])}
@@ -106,16 +115,13 @@ def plan(root: Path, gate_dir: Path, mapping: dict, diff: dict, *, context: dict
     population, fast = prepared['population'], prepared['fast']
     durations, gate = prepared['durations'], prepared['gate']
     changed = [*diff['python'], *diff['non_python']]
-    result = select(mapping, diff, file_hashes=diff['base_hashes'], fast=sorted(fast),
+    recorded = {node.split('::', 1)[0] for node in mapping['tests']}
+    unmapped = {path: 'test file absent from map' for path in set(population) - recorded}
+    unmapped.update(mapping.get('unmapped', {}))
+    result = select(dict(mapping, unmapped=unmapped), diff, file_hashes=diff['base_hashes'], fast=sorted(fast),
                     changed_tests=[name for name in changed if name.startswith('tests/')],
                     population=population, static=static)
-    # Missing test records are never evidence that a file is unaffected.
-    recorded = {node.split('::', 1)[0] for node in mapping['tests']}
     selected = {row['path']: row for row in result['selected']}
-    for path in sorted(set(population) - recorded):
-        selected.setdefault(path, {'path': path, 'reasons': ['test file absent from map'], 'nodeids': None})
-    result['selected'] = [selected[path] for path in sorted(selected)]
-    result['targets'] = sorted(target for row in result['selected'] for target in ([row['path']] if row['nodeids'] is None else row['nodeids']))
     result.update(estimate=gate.estimate(sorted(selected), durations), population=full['population'],
                   deferred=full['deferred'], deselect=full['deselect'])
     return result
