@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture merged PRs through REST or replay their files against the current population."""
+"""Capture merged PRs through REST or replay_selection their files against the current population."""
 from __future__ import annotations
 
 import argparse
@@ -16,7 +16,7 @@ select = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(select)
 
 
-def summarize(rows: list[dict]) -> dict:
+def summarize_replay(rows: list[dict]) -> dict:
     def quantiles(key):
         values = [row[key] for row in rows]
         if not values or any(value is None for value in values):
@@ -112,7 +112,7 @@ def capture_history(destination: Path, count: int = 150) -> Path:
         row = {key: pull[key] for key in ('number', 'merged_at', 'merge_commit_sha', 'html_url')}
         row.update(files_count=len(files), changed_files=sorted({
             path for file in files for path in (file['filename'], file.get('previous_filename', file['filename']))}))
-        (destination / f"pr-{pull['number']}.json").write_text(json.dumps(row, sort_keys=True) + '\n')
+        (destination / f"pr-{pull['number']}.json").write_text(json.dumps(row) + '\n')
         rows.append(row)
     output = destination / 'history.json'
     output.write_text(json.dumps({'repository': 'RobTand/prismabuild',
@@ -121,11 +121,11 @@ def capture_history(destination: Path, count: int = 150) -> Path:
     return output
 
 
-def replay(root: Path, history: dict) -> dict:
+def replay_selection(root: Path, history: dict) -> dict:
     index = select.dependency_index(root)
     helper_graph = select.helper_importers(index, [])
-    durations = select.read_json(root / 'tools/ci/gate_durations.json')
-    quarantine = select.read_json(root / 'tools/ci/gate_quarantine.json')
+    durations = select.load_gate_json(root / 'tools/ci/gate_durations.json')
+    quarantine = select.load_gate_json(root / 'tools/ci/gate_quarantine.json')
     def plan(paths):
         return select.create_plan(root, paths, durations=durations, quarantine=quarantine, index=index, helper_graph=helper_graph)
     rows = []
@@ -147,14 +147,14 @@ def replay(root: Path, history: dict) -> dict:
             'population': population,
             'method': 'latest merged PR files against current population, nearest-rank percentiles, '
                       'five-worker file-level longest-first packing, excluding pickup and setup',
-            'summary': summarize(rows), 'large_modules': modules, 'pulls': rows}
+            'summary': summarize_replay(rows), 'large_modules': modules, 'pulls': rows}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument('--fetch-history', type=Path, help='fresh empty destination, REST GET only')
-    inputs.add_argument('--history', type=Path, help='captured history.json to replay')
+    inputs.add_argument('--history', type=Path, help='captured history.json to replay_selection')
     inputs.add_argument('--pool-functions', type=Path, help='captured base/head pool sources for AST diagnostics')
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument('--output', type=Path)
@@ -163,8 +163,8 @@ def main(argv: list[str] | None = None) -> int:
         print(capture_history(args.fetch_history))
         return 0
     report = (pool_function_report(json.loads(args.pool_functions.read_text()), args.root.resolve()) if args.pool_functions
-              else replay(args.root.resolve(), json.loads(args.history.read_text())))
-    rendered = json.dumps(report, sort_keys=True, indent=2) + '\n'
+              else replay_selection(args.root.resolve(), json.loads(args.history.read_text())))
+    rendered = json.dumps(report, indent=2) + '\n'
     if args.output:
         args.output.write_text(rendered)
     else:

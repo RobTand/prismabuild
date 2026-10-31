@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
                        [json.loads(path.read_text()) for path in args.results], args.junitxml)
     except (OSError, ValueError, KeyError, TypeError) as error:
         report = {'verdict': 'inconclusive', 'exit_code': 75, 'problems': [str(error)]}
-    args.output.write_text(json.dumps(report, sort_keys=True, indent=2) + '\n')
+    args.output.write_text(json.dumps(report, indent=2) + '\n')
     return report['exit_code']
 
 

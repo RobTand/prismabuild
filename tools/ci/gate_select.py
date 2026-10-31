@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import hashlib
 import importlib.util
 import heapq
 import json
@@ -13,6 +12,10 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 
+DIGEST_SPEC = importlib.util.spec_from_file_location('gate_digest', Path(__file__).resolve().parents[2] / 'src/prismabuild/digest_primitives.py')
+digest = importlib.util.module_from_spec(DIGEST_SPEC)
+DIGEST_SPEC.loader.exec_module(digest)
+
 PATH_SPEC = importlib.util.spec_from_file_location('gate_paths', Path(__file__).with_name('gate_paths.py'))
 gate_paths = importlib.util.module_from_spec(PATH_SPEC)
 PATH_SPEC.loader.exec_module(gate_paths)
@@ -20,7 +23,7 @@ PATH_SPEC.loader.exec_module(gate_paths)
 POLICY = 'direct-imports-bound-paths-helper-closure-v2'
 
 
-def read_json(path: Path) -> dict:
+def load_gate_json(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
@@ -46,11 +49,11 @@ def tier_declarations(root: Path) -> tuple[set[str], dict[str, str]]:
                 if isinstance(target, ast.Name) and target.id in {'FAST', 'GPU', 'TWO_CPU'}:
                     declarations[target.id] = set(ast.literal_eval(node.value))
     fast, gpu = declarations['FAST'], declarations['GPU']
-    profile = read_json(root / 'tests/proof_execution.json')
+    profile = load_gate_json(root / 'tests/proof_execution.json')
     roots = set(profile['root']['files'])
     receipt = root / 'tests/receipt_execution.json'
     if receipt.exists():
-        roots.update(read_json(receipt)['root_files'])
+        roots.update(load_gate_json(receipt)['root_files'])
     return fast, {**{name: {'lane': 'root', 'reason': 'root population requires the pinned proof runtime'} for name in roots},
                   **{name: {'lane': 'gpu', 'reason': 'GPU population requires CUDA qualification'} for name in gpu},
                   **{name: {'lane': 'two_cpu', 'reason': 'two-CPU population requires dedicated CPU allocations'}
@@ -146,7 +149,7 @@ def estimate(files: list[str], durations: dict, workers: int = 5) -> dict:
 
 
 def exclusion_entries(quarantine: dict) -> list[dict]:
-    entries = [dict(row, kind=kind) for kind in ('entries', 'cost_exclusions')
+    entries = [dict(row, kind=kind) for kind in ('entries', 'cost_exclusions', 'environment_lanes')
                for row in quarantine.get(kind, [])]
     for row in entries:
         target = row.get('target', '')
@@ -157,6 +160,8 @@ def exclusion_entries(quarantine: dict) -> list[dict]:
             not isinstance(issue, int) or isinstance(issue, bool) or issue <= 0 or issue == 2428 or
             not isinstance(row.get('reason'), str) or not row['reason'].strip()):
             raise ValueError(f'invalid gate exclusion or missing owner: {target!r}')
+        if row['kind'] == 'environment_lanes' and (not isinstance(row.get('lane'), str) or not row['lane'].strip()):
+            raise ValueError('environment lane needs a named capability')
         if row['kind'] == 'cost_exclusions' and '::' in target:
             raise ValueError('cost exclusions must name complete files')
     if len({row['target'] for row in entries}) != len(entries):
@@ -179,10 +184,10 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
     population = all_tests - other_lanes.keys() - by_file.keys()
     version_body = {'policy': POLICY, 'files': sorted(population), 'fast': sorted(fast),
                     'other_lanes': other_lanes, 'exclusions': exclusions, 'durations': durations}
-    version = hashlib.sha256(json.dumps(version_body, sort_keys=True).encode()).hexdigest()
+    version = digest.canonical_sha256(version_body)
     triggers = sorted(path for path in set(changed) if
         path in {'conftest.py', 'tests/conftest.py', 'pyproject.toml', 'tools/verify.py',
-                 'tests/proof_execution.json', 'tests/receipt_execution.json', '.circleci/config.yml'} or
+                 'tests/proof_execution.json', 'tests/receipt_execution.json', '.github/workflows/gate.yml'} or
         path.startswith(('tools/ci/gate_', 'tests/test_gate_')))
     reasons: dict[str, list[str]] = {}
     for name, (imports, paths) in index.items():
@@ -222,7 +227,7 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
     deferred = [{'path': name, 'issue': None, **lane}
                 for name, lane in sorted(other_lanes.items()) if name in all_tests]
     deferred += [{'path': row['target'], 'reason': row['reason'], 'issue': row['issue'],
-                  'kind': row['kind'], 'selected_by': reasons.get(row['target'].split('::')[0], [])}
+                  'kind': row['kind'], **({'lane': row['lane']} if row['kind'] == 'environment_lanes' else {}), 'selected_by': reasons.get(row['target'].split('::')[0], [])}
                  for row in exclusions]
     deselect = sorted(row['target'] for row in exclusions if '::' in row['target'] and
                       row['target'].split('::')[0] in {item['path'] for item in selected})
@@ -267,10 +272,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = args.root.resolve()
     plan = create_plan(root, changed_files(root, args.base, args.head),
-                       durations=read_json(root / 'tools/ci/gate_durations.json'),
-                       quarantine=read_json(root / 'tools/ci/gate_quarantine.json'), mode=args.mode)
+                       durations=load_gate_json(root / 'tools/ci/gate_durations.json'),
+                       quarantine=load_gate_json(root / 'tools/ci/gate_quarantine.json'), mode=args.mode)
     plan.update(base_sha=args.base, head_sha=args.head)
-    output = json.dumps(plan, sort_keys=True, indent=2) + '\n'
+    output = json.dumps(plan, indent=2) + '\n'
     if args.output:
         args.output.write_text(output)
     else:
