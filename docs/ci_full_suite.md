@@ -5,9 +5,12 @@ GitHub Actions runs the full CPU suite nightly at 03:17 UTC and on manual
 the merge queue. This PR stacks on #2433 and reuses its population declarations,
 duration partitioner and `gate_run.py`; it does not change the gate's files.
 
-The CPU population includes quarantined tests and the two-CPU population. Only the root and GPU populations declared by
-`tools/verify.py` and its proof profiles are excluded. The initial matrix has
-16 duration-balanced shards assigned round-robin across `ubuntu-latest` and
+The CPU population includes quarantined tests and the two-CPU population. The root and GPU populations stay in their pinned lanes. Capability-only
+controls recorded by the gate also stay out: fleet broker/runtime and archival
+replay inputs are unavailable on hosted runners. Precise node exclusions retain
+portable cases in mixed files. The plan records every such exclusion with its
+owning issue. Ordinary quarantine never removes nightly coverage. The initial matrix has
+16 duration-balanced shards assigned round-robin across `ubuntu-24.04` and
 `ubuntu-24.04-arm`, with four xdist workers per job and bounded native threads.
 Sixteen jobs leave capacity within the public repository's approximate
 20-job allowance. The inventory's roughly 4,000 CPU-seconds
@@ -16,9 +19,11 @@ Hosted measurements, rather than that estimate, determine later adjustments.
 
 One concurrency group permits one active run and one pending run, with
 `cancel-in-progress: false`. A pytest test failure is never retried. The runner
-retries a shard once only when it ends without a complete test verdict, using
-the same exit-code contract as the gate. Dependency installation also gets one
-infrastructure retry. Missing runner or setup output leaves reporting incomplete.
+retries a shard once in a fresh job only when it ends without a complete test
+verdict, using the gate attempt planner and aggregator. This covers checkout,
+setup and runner loss. The first definite test verdict is final. Missing output
+after retry leaves reporting incomplete. `FULL_SUITE_SHARDS` is the single
+workflow shard-count setting.
 
 ## Artifacts and reporting
 
@@ -80,3 +85,7 @@ invalid reporting input.
 Development tests use the published PrismaBuild client at priority -10 from
 clean committed worktrees. Their verdicts, terminal logs and CAS receipts are
 verified separately from hosted CI evidence. Suite pruning is tracked in #2328.
+
+Hosted setup matches the gate, including bubblewrap, the Ubuntu user-namespace
+setting, a root-owned copy of the selected interpreter under `/usr/local`, and
+short private test scratch outside the checkout. No fleet service is installed.

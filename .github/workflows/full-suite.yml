@@ -1,7 +1,7 @@
 name: Full suite
-on:
+'on':
   schedule:
-    - cron: '17 3 * * *'
+  - cron: 17 3 * * *
   workflow_dispatch:
     inputs:
       dry_run:
@@ -14,109 +14,296 @@ concurrency:
   group: full-suite-main
   cancel-in-progress: false
 env:
+  FULL_SUITE_SHARDS: '16'
   OMP_NUM_THREADS: '1'
   MKL_NUM_THREADS: '1'
   OPENBLAS_NUM_THREADS: '1'
+  GIT_AUTHOR_NAME: PrismaBuild CI
+  GIT_AUTHOR_EMAIL: ci@example.invalid
+  GIT_COMMITTER_NAME: PrismaBuild CI
+  GIT_COMMITTER_EMAIL: ci@example.invalid
 jobs:
   plan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      shards: ${{ steps.plan.outputs.shards }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - id: plan
-        run: |
-          python3 -I tools/ci/full_suite_workflow.py plan --output full-suite-plan \
-            --sha "$(git rev-parse HEAD)" --shards 16
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: full-suite-plan
-          path: full-suite-plan
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - id: plan
+      run: python3 -I tools/ci/full_suite_workflow.py plan --output full-suite-plan --sha "$(git rev-parse HEAD)" --shards "$FULL_SUITE_SHARDS"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: full-suite-plan-${{ github.run_attempt }}
+        path: full-suite-plan
   suite:
-    needs: plan
+    needs:
+    - plan
+    if: ${{ needs.plan.result == 'success' }}
+    continue-on-error: true
     strategy:
       fail-fast: false
-      max-parallel: 16
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with:
-          python-version: '3.14'
-      - name: Prepare dependencies with infrastructure retry
-        run: |
-          python -m pip install pytest==9.1.1 pytest-xdist==3.8.0 PyYAML==6.0.3 || \
-            python -m pip install pytest==9.1.1 pytest-xdist==3.8.0 PyYAML==6.0.3
-      - name: Run assigned CPU tests, retry only without a verdict
-        env:
-          SHARD_INDEX: ${{ matrix.index }}
-        run: |
-          python -I tools/ci/full_suite_workflow.py plan --population-only \
-            --sha "$(git rev-parse HEAD)" --output full-suite-local
-          python tools/ci/gate_partition.py shard --files-from full-suite-local/files.txt \
-            --durations tools/ci/gate_durations.json --shards 16 --index "$SHARD_INDEX" \
-            --output-files full-suite-local/assigned.txt
-          mkdir -p full-suite-shard
-          code=75
-          for attempt in 1 2; do
-            rm -f full-suite-shard/junit.xml full-suite-shard/result.json
-            if python tools/ci/gate_run.py --plan full-suite-local/plan.json \
-              --files-from full-suite-local/assigned.txt --workers 4 \
-              --result full-suite-shard/result.json --junitxml full-suite-shard/junit.xml; then
-              code=0
-            else
-              code=$?
-            fi
-            if [ "$code" -ne 75 ]; then break; fi
-          done
-          exit "$code"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
-        with:
-          name: full-suite-shard-${{ matrix.index }}
-          path: full-suite-shard
-          if-no-files-found: warn
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.14'
+        cache: pip
+        cache-dependency-path: tools/ci/gate_requirements.txt
+    - name: Install pinned test dependencies
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        trap 'echo "NO_VERDICT: dependency setup failed"; exit 75' ERR
+        python -m pip install --retries 3 --timeout 30 -r tools/ci/gate_requirements.txt
+        # Compatibility sandboxes intentionally hide /opt. Relocate the actual
+        # installed runtime, preserving bytes, to their visible /usr tree.
+        gate_python_prefix=$(python -c 'import sys; print(sys.base_prefix)')
+        sudo install -d /usr/local/pb-gate-python
+        sudo cp -a "$gate_python_prefix"/. /usr/local/pb-gate-python/
+        sudo chown -R root:root /usr/local/pb-gate-python
+        printf '%s\n' /usr/local/pb-gate-python/lib | sudo tee /etc/ld.so.conf.d/pb-gate-python.conf >/dev/null
+        sudo ldconfig
+        # Update installation metadata to the real copied stdlib location.
+        # Isolated consumers use DESTSHARED after hiding the original /opt.
+        sudo env GATE_ORIGINAL_PREFIX="$gate_python_prefix" /usr/local/pb-gate-python/bin/python - <<'PYTHON'
+        import os, sys, sysconfig
+        from pathlib import Path
+        for config in Path(sysconfig.get_path('stdlib')).glob('_sysconfigdata_*.py'):
+            config.write_text(config.read_text().replace(os.environ['GATE_ORIGINAL_PREFIX'], sys.base_prefix))
+        PYTHON
+        env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/local/pb-gate-python/bin/python --version
+        echo /usr/local/pb-gate-python/bin >> "$GITHUB_PATH"
+        sudo apt-get -o Acquire::Retries=3 update -qq
+        sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends bubblewrap
+        sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        # These fixtures seal the roster's real worker-visible scratch path.
+        gate_scratch=$(python -c 'import json; print(json.load(open("tools/fleet/fleet_boxes.json"))["action_tmpdir"])')
+        sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" "$gate_scratch"
+        echo "TMPDIR=$gate_scratch" >> "$GITHUB_ENV"
+        bwrap --version
+        env -u LD_LIBRARY_PATH -u LD_PRELOAD python --version
+        python -m pip --version
+        python -c 'import pytest, xdist, yaml; print("pytest", pytest.__version__, "xdist", xdist.__version__, "PyYAML", yaml.__version__)'
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: full-suite-plan-${{ github.run_attempt }}
+        path: gate-artifacts
+    - name: Compute assignment and run tests
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        trap 'echo "NO_VERDICT: assignment or execution infrastructure failed"; exit 75' ERR
+        python -I tools/ci/full_suite_workflow.py plan --population-only --output full-suite-local --sha "$(git rev-parse HEAD)"
+        python tools/ci/gate_partition.py shard --files-from full-suite-local/files.txt    --durations tools/ci/gate_durations.json --shards "${{ needs.plan.outputs.shards }}"    --index "${{ matrix.index }}" --output-files gate-artifacts/assigned.txt
+        printf '## Shard %s, attempt 1\n\n' '${{ matrix.index }}' >> "$GITHUB_STEP_SUMMARY"
+        wc -l gate-artifacts/assigned.txt >> "$GITHUB_STEP_SUMMARY"
+        if python tools/ci/gate_run.py --plan full-suite-local/plan.json    --files-from gate-artifacts/assigned.txt --workers 4    --result gate-artifacts/result.json --junitxml gate-artifacts/junit.xml; then
+          code=0
+        else
+          code=$?
+        fi
+        case "$code" in
+          0) marker=GATE_PASS;;
+          1) marker=GATE_TEST_FAILURE;;
+          *) marker=NO_VERDICT; code=75;;
+        esac
+        echo "$marker: shard ${{ matrix.index }}, attempt 1" | tee -a "$GITHUB_STEP_SUMMARY"
+        exit "$code"
+    - name: Upload verdict and JUnit
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: full-suite-result-${{ github.run_attempt }}-a1-${{ matrix.index }}
+        path: |
+          gate-artifacts/result.json
+          gate-artifacts/junit.xml
+        if-no-files-found: warn
+        retention-days: 7
+  retry-suite:
+    if: ${{ always() && needs.retry-plan.result == 'success' && needs.retry-plan.outputs.retry == 'true' }}
+    needs:
+    - plan
+    - retry-plan
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.retry-plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.14'
+        cache: pip
+        cache-dependency-path: tools/ci/gate_requirements.txt
+    - name: Install pinned test dependencies
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        trap 'echo "NO_VERDICT: dependency setup failed"; exit 75' ERR
+        python -m pip install --retries 3 --timeout 30 -r tools/ci/gate_requirements.txt
+        # Compatibility sandboxes intentionally hide /opt. Relocate the actual
+        # installed runtime, preserving bytes, to their visible /usr tree.
+        gate_python_prefix=$(python -c 'import sys; print(sys.base_prefix)')
+        sudo install -d /usr/local/pb-gate-python
+        sudo cp -a "$gate_python_prefix"/. /usr/local/pb-gate-python/
+        sudo chown -R root:root /usr/local/pb-gate-python
+        printf '%s\n' /usr/local/pb-gate-python/lib | sudo tee /etc/ld.so.conf.d/pb-gate-python.conf >/dev/null
+        sudo ldconfig
+        # Update installation metadata to the real copied stdlib location.
+        # Isolated consumers use DESTSHARED after hiding the original /opt.
+        sudo env GATE_ORIGINAL_PREFIX="$gate_python_prefix" /usr/local/pb-gate-python/bin/python - <<'PYTHON'
+        import os, sys, sysconfig
+        from pathlib import Path
+        for config in Path(sysconfig.get_path('stdlib')).glob('_sysconfigdata_*.py'):
+            config.write_text(config.read_text().replace(os.environ['GATE_ORIGINAL_PREFIX'], sys.base_prefix))
+        PYTHON
+        env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/local/pb-gate-python/bin/python --version
+        echo /usr/local/pb-gate-python/bin >> "$GITHUB_PATH"
+        sudo apt-get -o Acquire::Retries=3 update -qq
+        sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends bubblewrap
+        sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        # These fixtures seal the roster's real worker-visible scratch path.
+        gate_scratch=$(python -c 'import json; print(json.load(open("tools/fleet/fleet_boxes.json"))["action_tmpdir"])')
+        sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" "$gate_scratch"
+        echo "TMPDIR=$gate_scratch" >> "$GITHUB_ENV"
+        bwrap --version
+        env -u LD_LIBRARY_PATH -u LD_PRELOAD python --version
+        python -m pip --version
+        python -c 'import pytest, xdist, yaml; print("pytest", pytest.__version__, "xdist", xdist.__version__, "PyYAML", yaml.__version__)'
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: full-suite-plan-${{ github.run_attempt }}
+        path: gate-artifacts
+    - name: Compute assignment and run tests
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        trap 'echo "NO_VERDICT: assignment or execution infrastructure failed"; exit 75' ERR
+        python -I tools/ci/full_suite_workflow.py plan --population-only --output full-suite-local --sha "$(git rev-parse HEAD)"
+        python tools/ci/gate_partition.py shard --files-from full-suite-local/files.txt    --durations tools/ci/gate_durations.json --shards "${{ needs.plan.outputs.shards }}"    --index "${{ matrix.index }}" --output-files gate-artifacts/assigned.txt
+        printf '## Shard %s, attempt 2\n\n' '${{ matrix.index }}' >> "$GITHUB_STEP_SUMMARY"
+        wc -l gate-artifacts/assigned.txt >> "$GITHUB_STEP_SUMMARY"
+        if python tools/ci/gate_run.py --plan full-suite-local/plan.json    --files-from gate-artifacts/assigned.txt --workers 4    --result gate-artifacts/result.json --junitxml gate-artifacts/junit.xml; then
+          code=0
+        else
+          code=$?
+        fi
+        case "$code" in
+          0) marker=GATE_PASS;;
+          1) marker=GATE_TEST_FAILURE;;
+          *) marker=NO_VERDICT; code=75;;
+        esac
+        echo "$marker: shard ${{ matrix.index }}, attempt 2" | tee -a "$GITHUB_STEP_SUMMARY"
+        exit "$code"
+    - name: Upload verdict and JUnit
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: full-suite-result-${{ github.run_attempt }}-a2-${{ matrix.index }}
+        path: |
+          gate-artifacts/result.json
+          gate-artifacts/junit.xml
+        if-no-files-found: warn
+        retention-days: 7
+  retry-plan:
+    if: ${{ always() && needs.plan.result == 'success' }}
+    needs:
+    - plan
+    - suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      retry: ${{ steps.retry.outputs.retry }}
+      matrix: ${{ steps.retry.outputs.matrix }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.14'
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: full-suite-plan-${{ github.run_attempt }}
+        path: gate-artifacts
+    - name: Download first attempt verdicts
+      continue-on-error: true
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        pattern: full-suite-result-${{ github.run_attempt }}-a1-*
+        path: verdicts
+    - name: Retry only missing verdicts
+      id: retry
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        trap 'echo "NO_VERDICT: retry planning infrastructure failed"; exit 75' ERR
+        python tools/ci/gate_actions.py retries --plan gate-artifacts/plan.json             --matrix gate-artifacts/matrix.json --artifacts verdicts             --prefix full-suite-result-${{ github.run_attempt }} --output gate-artifacts/retry-matrix.json             >> "$GITHUB_OUTPUT"
   report:
-    needs: [plan, suite]
+    needs:
+    - plan
+    - suite
+    - retry-plan
+    - retry-suite
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
       actions: read
       issues: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: full-suite-plan
-          path: full-suite-plan
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          pattern: full-suite-shard-*
-          path: full-suite-input
-      - name: Classify and report through GitHub REST
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          DRY_RUN: ${{ inputs.dry_run || github.ref != 'refs/heads/main' }}
-        run: |
-          args=()
-          if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
-          python3 -I tools/ci/full_suite_workflow.py report --input full-suite-input \
-            --manifest full-suite-plan/manifest.json --output full-suite-results/results.json "${args[@]}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
-        with:
-          name: full-suite-results
-          path: full-suite-results/results.json
-          if-no-files-found: warn
-          retention-days: 90
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: full-suite-plan-${{ github.run_attempt }}
+        path: gate-artifacts
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      continue-on-error: true
+      with:
+        pattern: full-suite-result-${{ github.run_attempt }}-*
+        path: verdicts
+    - name: Select complete verdicts after infrastructure retry
+      continue-on-error: true
+      run: python3 tools/ci/gate_actions.py finish --plan gate-artifacts/plan.json --matrix gate-artifacts/matrix.json --artifacts verdicts --prefix full-suite-result-${{
+        github.run_attempt }} --output gate-artifacts/final.json --effective-output full-suite-effective --summary "$GITHUB_STEP_SUMMARY"
+    - name: Classify and report through GitHub REST
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        DRY_RUN: ${{ inputs.dry_run || github.ref != 'refs/heads/main' }}
+      run: |-
+        args=()
+        if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
+        python3 -I tools/ci/full_suite_workflow.py report --input full-suite-effective --manifest gate-artifacts/manifest.json --output full-suite-results/results.json "${args[@]}"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: full-suite-results
+        path: full-suite-results/results.json
+        if-no-files-found: warn
+        retention-days: 90

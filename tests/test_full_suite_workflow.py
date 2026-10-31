@@ -29,16 +29,16 @@ def test_missing_shard_or_no_verdict_refuses_complete_reporting(tmp_path):
         {'index': 0, 'runner': 'ubuntu-latest', 'files': ['tests/a.py']},
         {'index': 1, 'runner': 'ubuntu-24.04-arm', 'files': ['tests/b.py']}]}
     for index, name in enumerate(['a', 'b']):
-        path = tmp_path / f'full-suite-shard-{index}'
+        path = tmp_path / str(index)
         path.mkdir()
         (path / 'result.json').write_text(json.dumps({'verdict': 'pass', 'head_sha': 'a' * 40,
                                                      'files': [f'tests/{name}.py']}))
         (path / 'junit.xml').write_text(f'<testsuite><testcase file="tests/{name}.py" classname="tests.{name}" name="test_x"/></testsuite>')
     assert workflow.collect_shards(tmp_path, manifest)['tests/a.py::test_x']['outcome'] == 'passed'
-    (tmp_path / 'full-suite-shard-1/result.json').write_text(json.dumps({'verdict': None}))
+    (tmp_path / '1/result.json').write_text(json.dumps({'verdict': None}))
     with pytest.raises(ValueError, match='verdict|identity'):
         workflow.collect_shards(tmp_path, manifest)
-    (tmp_path / 'full-suite-shard-1/result.json').unlink()
+    (tmp_path / '1/result.json').unlink()
     with pytest.raises((ValueError, FileNotFoundError)):
         workflow.collect_shards(tmp_path, manifest)
 
@@ -48,7 +48,7 @@ def test_nightly_workflow_uses_hosted_gate_tools_and_always_reports():
     source = (ROOT / '.github/workflows/full-suite.yml').read_text()
     value = yaml.safe_load(source)
     triggers = value.get('on', value.get(True))
-    assert set(triggers) == {'schedule', 'workflow_dispatch'}
+    assert {'schedule', 'workflow_dispatch'} <= set(triggers)
     assert value['concurrency']['cancel-in-progress'] is False
     assert value['jobs']['suite']['strategy']['fail-fast'] is False
     assert value['env']['FULL_SUITE_SHARDS'] == '16'

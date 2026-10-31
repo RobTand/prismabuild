@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 import urllib.error
 import urllib.request
 import zipfile
@@ -24,22 +25,26 @@ def sibling(name):
 report = sibling('full_suite_report')
 gate_select = sibling('gate_select')
 gate_partition = sibling('gate_partition')
-ARCHITECTURES = {'x64': 'ubuntu-latest', 'arm64': 'ubuntu-24.04-arm'}
+RUNNERS = 'ubuntu-24.04,ubuntu-24.04-arm'
 
 
-def cpu_plan(root: Path, lanes: dict, sha: str) -> dict:
+def cpu_plan(root: Path, lanes: dict, sha: str, *, environment_lanes=()) -> dict:
     excluded = {name for name, lane in lanes.items() if lane['lane'] in {'root', 'gpu'}}
+    deferred = list(environment_lanes)
+    excluded.update(row['target'] for row in deferred if '::' not in row['target'])
     files = sorted(p.relative_to(root).as_posix() for p in (root / 'tests').rglob('test_*.py')
                    if p.relative_to(root).as_posix() not in excluded)
     return {'schema': 'prismabuild.gate_plan.v1', 'mode': 'full-suite',
-            'base_sha': sha, 'head_sha': sha, 'deselect': [],
+            'base_sha': sha, 'head_sha': sha,
+            'deselect': sorted(row['target'] for row in deferred if '::' in row['target']),
+            'deferred': deferred,
             'population': {'version': sha}, 'selected': [{'path': name} for name in files]}
 
 
 def collect_shards(directory: Path, manifest: dict) -> dict:
     tests = {}
     for entry in manifest['include']:
-        folder = directory / f"full-suite-shard-{entry['index']}"
+        folder = directory / str(entry['index'])
         result = json.loads((folder / 'result.json').read_text())
         if (result.get('verdict') not in {'pass', 'fail'} or result.get('head_sha') != manifest['sha']
                 or sorted(result.get('files', [])) != sorted(entry['files'])):
@@ -140,7 +145,7 @@ def main(argv=None):
     plan = commands.add_parser('plan')
     plan.add_argument('--output', type=Path, required=True)
     plan.add_argument('--sha', required=True)
-    plan.add_argument('--shards', type=int, default=16)
+    plan.add_argument('--shards', type=int)
     plan.add_argument('--population-only', action='store_true')
     collect = commands.add_parser('report')
     collect.add_argument('--input', type=Path, required=True)
@@ -152,25 +157,36 @@ def main(argv=None):
         return write_report(args.input, json.loads(args.manifest.read_text()), args.output, args.dry_run)
     root = Path.cwd()
     _, lanes = gate_select.tier_declarations(root)
-    population = cpu_plan(root, lanes, args.sha)
+    quarantine = json.loads((root / 'tools/ci/gate_quarantine.json').read_text()) if (root / 'tools/ci/gate_quarantine.json').exists() else {}
+    capabilities = quarantine.get('environment_lanes', []) + [dict(row, lane='archival_replay')
+        for row in quarantine.get('entries', []) if row.get('issue') == 1997]
+    population = cpu_plan(root, lanes, args.sha, environment_lanes=capabilities)
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / 'plan.json').write_text(json.dumps(population) + '\n')
     files = [row['path'] for row in population['selected']]
     (args.output / 'files.txt').write_text('\n'.join(files) + '\n')
     if args.population_only:
         return 0
-    # The gate owns the duration-balancing implementation shared by both workflows.
-    durations = gate_select.read_json(root / 'tools/ci/gate_durations.json')['files']
-    assignments = gate_partition.shards(files, durations, args.shards,
-        unknown_seconds=gate_partition.default_unknown_seconds(durations))
-    runners = list(ARCHITECTURES.values())
-    include = [dict(row, runner=runners[row['index'] % len(runners)])
-               for row in assignments if row['files']]
-    manifest = {'sha': args.sha, 'include': include}
-    (args.output / 'manifest.json').write_text(json.dumps(manifest) + '\n')
-    matrix = {'include': [{k: row[k] for k in ['index', 'runner']} for row in include]}
+    if not args.shards:
+        parser.error('--shards is required for matrix planning')
+    partition = Path(__file__).with_name('gate_partition.py')
+    common = ['--files-from', str(args.output / 'files.txt'), '--durations',
+              str(root / 'tools/ci/gate_durations.json'), '--shards', str(args.shards)]
+    matrix_path = args.output / 'matrix.json'
+    subprocess.run([sys.executable, str(partition), 'matrix', *common,
+                    '--runners', RUNNERS, '--output', str(matrix_path)], check=True)
+    matrix = json.loads(matrix_path.read_text())
+    include = []
+    for row in matrix['include']:
+        assigned = args.output / 'assignment.txt'
+        subprocess.run([sys.executable, str(partition), 'shard', *common,
+                        '--index', str(row['index']), '--output-files', str(assigned)], check=True)
+        include.append(dict(row, files=assigned.read_text().splitlines()))
+        assigned.unlink()
+    (args.output / 'manifest.json').write_text(json.dumps({'sha': args.sha, 'include': include}) + '\n')
     with open(os.environ['GITHUB_OUTPUT'], 'a') as handle:
-        handle.write('matrix=' + json.dumps(matrix) + '\n')
+        handle.write('matrix=' + json.dumps({'include': matrix['include']}) + '\n')
+        handle.write('shards=' + str(matrix['shards']) + '\n')
 
 
 if __name__ == '__main__':
