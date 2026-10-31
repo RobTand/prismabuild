@@ -9,8 +9,9 @@ gave up on a test's read-only directory, leaving the tree behind.
 These tests drive real shard programs and look only at the filesystem, so
 they say the same thing about any layout: a passing attempt leaves nothing,
 an explicitly sealed failed attempt stays for its retention window and then
-goes. Default scratch leaves with the action checkout (#2449). "Ageing" an attempt backdates every entry in
-its directory, which is where an attempt keeps its retention clock.
+goes. Default scratch leaves with the action checkout (#2449). "Ageing" an
+attempt backdates every entry in its directory, which is where an attempt
+keeps its retention clock.
 """
 from __future__ import annotations
 

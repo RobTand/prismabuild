@@ -237,14 +237,15 @@ def test_default_shard_socket_path_fits_linux_limit(tmp_path, monkeypatch, worke
 def test_real_shard_binds_socket_and_cleans_its_base_temp(tmp_path, workers, short_scratch):
     # The shard prefix preserves the alias, but pytest resolves --basetemp
     # before deriving tmp_path, so a real shard must fit the resolved base.
-    resolved = (short_scratch / "co").resolve()
+    resolved = short_scratch.resolve()
     size = len(os.fsencode(resolved / SOCKET_SUFFIX))
     if size > 100:
         pytest.skip(
             f"pytest resolves socket scratch to {resolved} "
             f"(base {len(os.fsencode(resolved))} bytes), "
             f"socket path {size} bytes, limit 100")
-    checkout = _checkout(short_scratch, "assert True")
+    checkout = short_scratch
+    (checkout / "tests").mkdir()
     (checkout / "tests" / "test_one.py").write_text(
         "import json, os, socket\n"
         "from pathlib import Path\n"

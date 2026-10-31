@@ -2417,8 +2417,8 @@ vocabulary does not grow.
 The worker removes the derived `root/<action-key>/<attempt>` namespace of a
 sealed `--basetemp` after pytest exits 0, and the `<action-key>` directory
 when that leaves it empty. Any other ending keeps the namespace for 24 hours
-after the attempt ended, by the same owner lock and clock as the default
-attempt directory, and a later attempt or owning supervisor then removes it.
+after the attempt ended, using its owner lock and retention clock. A later
+attempt or owning supervisor then removes it.
 The root itself is never removed or changed. A sealed root is still not
 PrismaBuild-admitted scratch: the attempt lifetime contract (#1463, refs
 #1360) owns declared, registered ephemeral roots, not a caller-provisioned

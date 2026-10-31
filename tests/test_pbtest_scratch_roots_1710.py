@@ -163,9 +163,9 @@ def test_registration_refusal_precedes_attempt_creation(registry, tmp_path):
     os.chmod(registry, 0o755)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    result = _shard(_checkout(tmp_path, ""), scratch)
+    result = _shard(_checkout(tmp_path, ""), scratch, basetemp=scratch)
     assert result.returncode != 0
-    assert "cannot use the attempt base temp" in result.stderr
+    assert "cannot use requested --basetemp" in result.stderr
     assert list(scratch.iterdir()) == []
 
 

@@ -3132,7 +3132,7 @@ refused attempts took.
 
 PrismaBuild makes three kinds of directory for a single owner, and takes each
 back even when the owner is killed: a pbtest attempt's base temp
-(`<tmpdir>/pb-<mkdtemp suffix>`, or a sealed `<root>/<key>/<attempt>`), a
+(`<checkout>/pb-<mkdtemp suffix>`, or a sealed `<root>/<key>/<attempt>`), a
 worker's private checkout (`<checkout root>/<key12>.<mkdtemp suffix>`) and a
 pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
 `src/prismabuild/owned_tree.py` owns locking, retention and removal for all three.
@@ -3140,8 +3140,10 @@ pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
 `pbtest_owned_temp` owns the carried worker programs, and
 `worker_log_retention` owns the supervisor's bounded log pruning.
 
-`pbtest_scratch_roots` registers the worker's opened pbtest root before its
-attempt directory becomes visible (#1710). The executing uid's passwd home,
+`pbtest_scratch_roots` registers an explicit pbtest root before its attempt
+directory becomes visible (#1710). Default scratch stays inside the checkout
+and needs no separate registration (#2449). Older registered `TMPDIR` roots
+remain eligible for expiry. The executing uid's passwd home,
 independent of sealed `HOME`, holds the private mode-0700 registry
 `.local/state/prismabuild/pbtest-roots-v1`. Each atomic symlink entry is named
 `<layout>-<device>-<inode>`, where layout is `tmpdir` or `basetemp`, and points
@@ -3176,8 +3178,9 @@ space-freed measurement on real scratch.
   removal that cannot finish keeps the lock and restarts the clock, so it is
   retried a window later.
 - **Trees are reaped where they are made, and the work is bounded.** Each new
-  pbtest attempt reaps its `TMPDIR` (or the `<key>/<attempt>` leaves of its
-  sealed root), as does the owning supervisor for registered pbtest roots.
+  explicit pbtest root reaps its `<key>/<attempt>` leaves, as does the owning
+  supervisor for registered pbtest roots, including legacy `TMPDIR` roots.
+  Default scratch leaves with its checkout.
   Each new checkout reaps its checkout root, and each pbrun
   snapshot reaps its `TMPDIR`. One call inspects at most 256 candidates and
   removes at most 4, in random order, so a crowded directory never holds up an
