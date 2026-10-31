@@ -69,8 +69,16 @@ jobs:
           set -Eeuo pipefail
           trap 'echo "NO_VERDICT: dependency setup failed"; exit 75' ERR
           python -m pip install --retries 3 --timeout 30 -r tools/ci/gate_requirements.txt
+          # Compatibility sandboxes intentionally hide /opt. Relocate the actual
+          # installed runtime, preserving bytes, to their visible /usr tree.
+          gate_python_prefix=$(python -c 'import sys; print(sys.base_prefix)')
+          sudo install -d /usr/local/pb-gate-python
+          sudo cp -a "$gate_python_prefix"/. /usr/local/pb-gate-python/
+          env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/local/pb-gate-python/bin/python --version
+          echo /usr/local/pb-gate-python/bin >> "$GITHUB_PATH"
           sudo apt-get -o Acquire::Retries=3 update -qq
           sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends bubblewrap
+          sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           # These fixtures seal the roster's real worker-visible scratch path.
           gate_scratch=$(python -c 'import json; print(json.load(open("tools/fleet/fleet_boxes.json"))["action_tmpdir"])')
           sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" "$gate_scratch"
@@ -193,8 +201,16 @@ jobs:
           set -Eeuo pipefail
           trap 'echo "NO_VERDICT: dependency setup failed"; exit 75' ERR
           python -m pip install --retries 3 --timeout 30 -r tools/ci/gate_requirements.txt
+          # Compatibility sandboxes intentionally hide /opt. Relocate the actual
+          # installed runtime, preserving bytes, to their visible /usr tree.
+          gate_python_prefix=$(python -c 'import sys; print(sys.base_prefix)')
+          sudo install -d /usr/local/pb-gate-python
+          sudo cp -a "$gate_python_prefix"/. /usr/local/pb-gate-python/
+          env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/local/pb-gate-python/bin/python --version
+          echo /usr/local/pb-gate-python/bin >> "$GITHUB_PATH"
           sudo apt-get -o Acquire::Retries=3 update -qq
           sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends bubblewrap
+          sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           # These fixtures seal the roster's real worker-visible scratch path.
           gate_scratch=$(python -c 'import json; print(json.load(open("tools/fleet/fleet_boxes.json"))["action_tmpdir"])')
           sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" "$gate_scratch"
@@ -266,6 +282,13 @@ jobs:
           set -Eeuo pipefail
           trap 'echo "NO_VERDICT: capability setup failed"; exit 75' ERR
           python -m pip install --retries 3 --timeout 30 -r tools/ci/gate_requirements.txt
+          # Compatibility sandboxes intentionally hide /opt. Relocate the actual
+          # installed runtime, preserving bytes, to their visible /usr tree.
+          gate_python_prefix=$(python -c 'import sys; print(sys.base_prefix)')
+          sudo install -d /usr/local/pb-gate-python
+          sudo cp -a "$gate_python_prefix"/. /usr/local/pb-gate-python/
+          env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/local/pb-gate-python/bin/python --version
+          echo /usr/local/pb-gate-python/bin >> "$GITHUB_PATH"
           sudo apt-get -o Acquire::Retries=3 update -qq
           sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends bubblewrap
           mkdir -p capability-artifacts
@@ -375,8 +398,16 @@ jobs:
           set -Eeuo pipefail
           trap 'echo "NO_VERDICT: dependency setup failed"; exit 75' ERR
           python -m pip install --retries 3 --timeout 30 -r tools/ci/gate_requirements.txt
+          # Compatibility sandboxes intentionally hide /opt. Relocate the actual
+          # installed runtime, preserving bytes, to their visible /usr tree.
+          gate_python_prefix=$(python -c 'import sys; print(sys.base_prefix)')
+          sudo install -d /usr/local/pb-gate-python
+          sudo cp -a "$gate_python_prefix"/. /usr/local/pb-gate-python/
+          env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/local/pb-gate-python/bin/python --version
+          echo /usr/local/pb-gate-python/bin >> "$GITHUB_PATH"
           sudo apt-get -o Acquire::Retries=3 update -qq
           sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends bubblewrap
+          sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           # These fixtures seal the roster's real worker-visible scratch path.
           gate_scratch=$(python -c 'import json; print(json.load(open("tools/fleet/fleet_boxes.json"))["action_tmpdir"])')
           sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" "$gate_scratch"
