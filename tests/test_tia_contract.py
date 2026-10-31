@@ -293,15 +293,17 @@ def test_evaluation_arm_scratch_is_local_and_removed(tmp_path, monkeypatch):
         observed.append((command, options['env']))
         xml = next(arg.split('=', 1)[1] for arg in command if arg.startswith('--junitxml='))
         Path(xml).write_text('<testsuite><testcase classname="tests.test_example" name="test_ok"/></testsuite>')
+        (tmp_path / '.pytest-basetemp').mkdir()
+        (tmp_path / '.pytest-basetemp' / 'retained-fixture').write_text('fixture bytes')
         return subprocess.CompletedProcess(command, 0, 'one passed', '')
     monkeypatch.setattr(mod.subprocess, 'run', fake_pytest)
     result = mod.pytest_run(tmp_path, ['tests/test_example.py'], [], output, 'baseline')
     command, env = observed[0]
     scratch = Path(env['TMPDIR'])
     assert output in scratch.parents
-    basetemp = Path(next(arg.split('=', 1)[1] for arg in command if arg.startswith('--basetemp=')))
-    assert scratch.parent == basetemp.parent
+    assert '--basetemp=.pytest-basetemp' in command
     assert not scratch.parent.exists()
+    assert not (tmp_path / '.pytest-basetemp').exists()
     assert result['tests'] == 1
 
 
