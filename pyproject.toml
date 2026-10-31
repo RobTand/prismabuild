@@ -28,3 +28,10 @@ testpaths = ["tests"]
 # or none) and refuses every other -o key, so the default lives in the sealed
 # checkout.
 tmp_path_retention_policy = "failed"
+
+# TL3 runs checks by pytest node ID with this command (RobTand/trustladderiii
+# harness). Test edits are the Python files under tests/; conftest.py files are
+# test configuration, and the harness refuses to carry them into a check.
+[tool.tl3.harness]
+command = ["python", "-m", "pytest"]
+test-files = ["tests/**/*.py"]
