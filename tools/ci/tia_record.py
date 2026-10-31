@@ -25,6 +25,7 @@ class Recorder:
         self.output = output.resolve()
         self.commit = commit
         self.tests: dict[str, set[str]] = {}
+        self.unattributed: set[str] = set()
         self.files: dict[str, str] = {}
         self.codes: dict[object, str | None] = {}
         self.catalog = {}
@@ -55,6 +56,7 @@ class Recorder:
 
     def after_fork(self):
         self.tests = {}
+        self.unattributed = set()
         self.codes = {}
         self.files = {}
         self.pid = os.getpid()
@@ -62,8 +64,9 @@ class Recorder:
         sys.monitoring.restart_events()
 
     def key(self, code):
-        if code in self.codes:
-            return self.codes[code]
+        identity = (code.co_filename, code.co_qualname)
+        if identity in self.codes:
+            return self.codes[identity]
         result = None
         if code.co_name != '<module>':
             filename = code.co_filename
@@ -74,16 +77,18 @@ class Recorder:
                 relative, content_hash = entry
                 result = relative + '::' + code.co_qualname
                 self.files[relative] = content_hash
-        self.codes[code] = result
+        self.codes[identity] = result
         return result
 
     def start(self, code, offset):
-        if self.node:
-            key = self.key(code)
-            if key:
+        key = self.key(code)
+        if key:
+            if self.node:
                 self.tests.setdefault(self.node, set()).add(key)
                 for calls in self.fixture_calls:
                     calls.add(key)
+            else:
+                self.unattributed.add(key)
         return sys.monitoring.DISABLE
 
     def boundary(self, node: str):
@@ -97,7 +102,7 @@ class Recorder:
 
     def flush(self):
         record = {'schema': 'prismabuild.tia_record.v1', 'source_commit': self.commit,
-                  'python': platform.python_version(), 'files': dict(sorted(self.files.items())),
+                  'python': platform.python_version(), 'unattributed': sorted(self.unattributed), 'files': dict(sorted(self.files.items())),
                   'tests': {node: sorted(values) for node, values in sorted(self.tests.items())}}
         target = self.output / f'{self.pid}-{self.token}.json'
         temporary = target.with_suffix('.tmp')

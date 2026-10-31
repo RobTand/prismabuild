@@ -50,6 +50,10 @@ def select(mapping: dict, diff: dict, *, file_hashes: dict, fast: list[str],
             fallbacks[path] = 'stale source'
         elif changes['module_changed']:
             fallbacks[path] = 'module change'
+        elif 'unattributed' not in mapping:
+            fallbacks[path] = 'map lacks outside test evidence'
+        elif any(path + '::' + name in mapping['unattributed'] for name in names):
+            fallbacks[path] = 'function executed outside test'
         elif any(path + '::' + name not in known for name in names):
             fallbacks[path] = 'unmapped function'
         for function, tests in reverse.items():

@@ -52,7 +52,7 @@ def test_definition_time_changes_use_module_fallback(before, after):
 def test_map_reproducible_and_rejects_mixed_sources(tmp_path):
     mod = load('tia_map')
     record = {'schema': 'prismabuild.tia_record.v1', 'source_commit': 'a' * 40,
-              'python': '3.12.8', 'files': {'src/a.py': 'abc'},
+              'python': '3.12.8', 'unattributed': [], 'files': {'src/a.py': 'abc'},
               'tests': {'tests/test_a.py::test_a': ['src/a.py::f', 'src/a.py::f']}}
     source = tmp_path / 'record.json'
     source.write_text(json.dumps(record))

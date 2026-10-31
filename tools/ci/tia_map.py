@@ -14,11 +14,12 @@ def write_map(records: list[Path], destination: Path) -> dict:
     if not records:
         raise ValueError('no recorder output')
     tests: dict[str, set[str]] = {}
-    hashes, versions, commits = {}, set(), set()
+    hashes, versions, commits, unattributed = {}, set(), set(), set()
     for path in sorted(records):
         record = json.loads(path.read_text())
         if record['schema'] != 'prismabuild.tia_record.v1':
             raise ValueError(f'unsupported record: {path}')
+        unattributed.update(record['unattributed'])
         commits.add(record['source_commit'])
         versions.add(record['python'])
         for name, content_hash in record['files'].items():
@@ -32,7 +33,7 @@ def write_map(records: list[Path], destination: Path) -> dict:
     functions = sorted({function for values in tests.values() for function in values})
     ids = {name: index for index, name in enumerate(functions)}
     result = {'schema': SCHEMA, 'source_commit': commits.pop(), 'python': sorted(versions),
-              'files': dict(sorted(hashes.items())), 'functions': functions,
+              'files': dict(sorted(hashes.items())), 'functions': functions, 'unattributed': sorted(unattributed),
               'tests': {node: sorted(ids[name] for name in values) for node, values in sorted(tests.items())}}
     encoded = (json.dumps(result, sort_keys=True, separators=(',', ':')) + '\n').encode()
     destination.parent.mkdir(parents=True, exist_ok=True)
