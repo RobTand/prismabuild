@@ -250,3 +250,22 @@ def test_rest_payload_scrubs_runtime_token(monkeypatch):
         'issues', {'body': 'failure contained unit-test-secret'})
     assert result['number'] == 7
     assert payloads == [{'body': 'failure contained [REDACTED]'}]
+
+
+def test_main_dry_run_cannot_hide_an_unreported_failure_in_next_baseline():
+    class History:
+        def pages(self, path, field):
+            if 'workflows/' in path:
+                return [{'id': n, 'run_number': n, 'head_branch': 'main', 'status': 'completed'}
+                        for n in (3, 2)]
+            return [{'id': int(path.split('/')[2]), 'name': 'full-suite-results', 'expired': False}]
+        def artifact(self, artifact_id):
+            return {'complete': True, 'dry_run': artifact_id == 3,
+                    'sha': f'sha{artifact_id}', 'tests': {}}
+    assert report.load_history(History(), 4, 4)['sha'] == 'sha2'
+
+
+def test_pull_request_cannot_own_a_test_failure():
+    issue = {'number': 8, 'body': '<!-- full-suite: tests/a.py::test_x -->',
+             'labels': [{'name': 'full-suite'}], 'pull_request': {'url': 'example'}}
+    assert report.owners([issue]) == {}
