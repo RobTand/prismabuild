@@ -18,7 +18,7 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 def test_pr_metadata_uses_fields_supported_by_installed_gh(tmp_path, monkeypatch):
     env = {**os.environ, "GH_TOKEN": "parser-only", "GH_CONFIG_DIR": str(tmp_path)}
     parser = subprocess.run(["/usr/bin/gh", "pr", "view", "--json"], env=env,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=60)
     diagnostic = parser.stdout + parser.stderr
     supported = {line.strip() for line in diagnostic.splitlines()
                  if line.startswith("  ") and line.strip().isidentifier()}

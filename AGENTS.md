@@ -4,9 +4,10 @@ Agents and subagents run their tests and computational work through
 PrismaBuild (Rob, 2026-09-05, amended 2026-10-29): targeted tests, full suites,
 GPU jobs, benchmarks, and large or long-running compute. Use the published
 `pbrun.py`, `pbtest.py` or `pbcampaign.py` entrypoints for that work.
-PrismaBuild is not the CI system. CI runs on CircleCI, and pull requests merge
-through the Mergify queue, which gates on CircleCI's checks of the integrated
-SHA. Do not route CI through PrismaBuild. A PrismaBuild run is development
+PrismaBuild is not the CI system. CI runs as GitHub Actions checks on
+GitHub-hosted runners, and pull requests merge through the Mergify queue,
+which gates on those checks of the integrated SHA. Do not route CI through
+PrismaBuild. A PrismaBuild run is development
 evidence, not the merge gate. Merge only through the Mergify queue; never
 bypass required checks, reviews or branch protections.
 Read [the execution policy](docs/agent_execution_policy.md) and

@@ -5,7 +5,7 @@ from urllib.error import HTTPError
 
 import pytest
 
-from tools.ci.issue_link import check_pull_request
+from tools.ci.issue_link import issue_link_verdict
 
 REPO = 'RobTand/prismabuild'
 
@@ -34,7 +34,7 @@ def batch(body=None):
 def check(subject, *, issues=None, members=None, sidebar=()):
     issues = {2406: {'number': 2406}} if issues is None else issues
     members = {11: pull(number=11), 12: pull('prismabuild-2406-tl3-2', number=12)} if members is None else members
-    return check_pull_request(subject, REPO, issues.get, members.get, lambda number: sidebar)
+    return issue_link_verdict(subject, REPO, issues.get, members.get, lambda number: sidebar)
 
 
 @pytest.mark.parametrize('branch', [
@@ -193,7 +193,7 @@ def test_api_errors_do_not_turn_into_acceptance():
     def unavailable(number):
         raise RuntimeError('API unavailable')
     with pytest.raises(RuntimeError, match='API unavailable'):
-        check_pull_request(pull(), REPO, unavailable, lambda number: None, lambda number: ())
+        issue_link_verdict(pull(), REPO, unavailable, lambda number: None, lambda number: ())
 
 
 @pytest.mark.parametrize('branch', ['ig/x', 'pg/x', 'pg-train/x', 'tl/x', 'release'])

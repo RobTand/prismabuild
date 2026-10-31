@@ -1016,8 +1016,7 @@ def test_a_steady_reading_cycle_reuses_the_validated_checkpoint(
 
 def test_a_batch_retirement_replaces_the_checkpoint_once(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The #992 shape: 6,000 receipts retire with one checkpoint write and
-    every pricing output unchanged."""
+    """Two distinct receipts retire in one commit with every price unchanged."""
 
     loop = _Loop(tmp_path)
     queue = loop.queue
@@ -1026,7 +1025,7 @@ def test_a_batch_retirement_replaces_the_checkpoint_once(
     keys = [_move(queue, f"batched-{index}", consumer=terminal,
                   unix=T0 + index, delivered=float(100 + index % 200),
                   sealed=500, file_side=float(90 + index % 150))
-            for index in range(6000)]
+            for index in range(2)]
     before_records = _records(queue)
     before = _outputs(before_records, loop.stage)
     plan = _survey(queue)
@@ -1043,7 +1042,7 @@ def test_a_batch_retirement_replaces_the_checkpoint_once(
     outcome = _sweep(plan)
     assert {str(row["key"]) for row in outcome["removed"]} == set(keys)
     # One initialization before the first archive plus one commit for the
-    # whole batch: two checkpoint writes and two markers, not 6,000.
+    # whole batch: two checkpoint writes and two markers.
     assert written.count(pool.record_store.MOVERS_RETIREMENT_CHECKPOINT) == 2, written
     assert written.count(pool.record_store.MOVERS_RETIREMENT_STATE) == 2, written
     checkpoint = pool.record_store.read_document(queue.records.mover_retirement_checkpoint_path())

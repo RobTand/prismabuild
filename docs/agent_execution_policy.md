@@ -7,9 +7,10 @@ projects and hosts, including work inside containers. The coordinator
 submits; a worker executes after admission. Tests and subprocesses already
 inside an admitted action do not submit themselves recursively.
 
-PrismaBuild is not the CI system. CI runs on CircleCI, and pull requests merge
-through the Mergify queue, which gates on CircleCI's checks of the integrated
-SHA. Do not route CI through PrismaBuild. A PrismaBuild run is development
+PrismaBuild is not the CI system. CI runs as GitHub Actions checks on
+GitHub-hosted runners, and pull requests merge through the Mergify queue,
+which gates on those checks of the integrated SHA. Do not route CI through
+PrismaBuild. A PrismaBuild run is development
 evidence, not the merge gate. Merge only through the Mergify queue; never
 bypass required checks, reviews or branch protections.
 

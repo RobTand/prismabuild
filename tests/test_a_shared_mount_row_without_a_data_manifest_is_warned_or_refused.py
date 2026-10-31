@@ -27,7 +27,6 @@ import json
 from pathlib import Path
 import socket
 import sys
-import threading
 
 import pytest
 
@@ -44,7 +43,7 @@ from test_a_decomposed_campaign_closes_on_an_exact_cover import _request as _cov
 from test_decomposition_refuses_before_it_publishes_anything import (  # noqa: E402
     _common as _logical_common, _request as _logical_request,
 )
-from test_pbcampaign import _drain  # noqa: E402
+from test_pbcampaign import CAPACITY  # noqa: E402
 from test_pbrun_detach import _checkout, _queue  # noqa: E402
 
 
@@ -144,15 +143,12 @@ def test_a_cache_hit_is_not_warned_about_repeating_a_cold_read(
         _row(work, f"printf ok {shared}/inputs/x.pt"),
     ])
 
-    stop = threading.Event()
-    worker = threading.Thread(target=_drain, args=(queue, 1, stop))
-    worker.start()
-    try:
-        assert pbcampaign.main(["--transport", "pool", manifest]) == 0
-    finally:
-        stop.set()
-        worker.join(timeout=60)
+    assert pbcampaign.main(["--transport", "pool", "--detach", manifest]) == 0
     assert "WARNING" in capsys.readouterr().err
+    outcome = queue.serve_once(
+        tags=["sparky", "gb10"], python=sys.executable, timeout_s=120.0,
+        capacity=dict(CAPACITY))
+    assert outcome is not None and outcome["status"] == "executed"
 
     assert pbcampaign.main(["--transport", "pool", "--detach", manifest]) == 0
     printed = capsys.readouterr()

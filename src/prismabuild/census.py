@@ -16,6 +16,7 @@ from typing import Generic, Literal, TypeVar
 from . import (box_capacity, core as pb, pool, produced_output, output_contract, residency_map, residency_plan,
                storage_tiers, tier_holdings, window_credit, slurm_lane as sl)
 from . import kept_reads
+from . import action_client
 from . import host_hold
 read_cache = kept_reads
 
@@ -611,8 +612,13 @@ def offers(queue_root: str | Path, *, reader=None,
                         if isinstance(value, Exception))])
 
 
+def _unrequested_superseded_archive(path):
+    """Shared census callers opt into archive I/O under their own reader budget."""
+    return None
+
+
 def action_rows(queue_root: str | Path, *, reader=None,
-                authoritative_holds: bool = False) -> Section[dict]:
+                authoritative_holds: bool = False, superseded_reader=None) -> Section[dict]:
     """Read worker offers, active records and existing admission evidence.
 
     This is a non-atomic diagnostic census, never a new admission decision.
@@ -672,6 +678,8 @@ def action_rows(queue_root: str | Path, *, reader=None,
                 if isinstance(sidecar, Exception):
                     raise sidecar
                 row.update(resources=queue.demand_of(record), constraint=record.get('tags'),
+                           **action_client.superseded_summary(
+                               queue, record, archive_reader=superseded_reader or _unrequested_superseded_archive),
                            priority=record.get('priority', 0),
                            priority_reason=pool.normalize_priority_reason(record.get('priority_reason')),
                            submitted_host=record.get('published_by'),
@@ -1948,7 +1956,8 @@ def _unreadable_reason(exc: Exception) -> str:
         return str(exc.strerror or type(exc).__name__).lower()
     return "not valid JSON"
 
-def endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT, reader=None) -> list[dict]:
+def endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT, reader=None,
+            superseded_reader=None) -> list[dict]:
     """Describe how the newest actions ended, under either transport.
 
     Args:
@@ -1978,7 +1987,8 @@ def endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT, reader=None)
 
     if reader is not None:
         return reader.endings(Path(queue_root), limit)
-    rows = [ending_row(entry, queue_root)
+    ending_options = {} if superseded_reader is None else {"superseded_reader": superseded_reader}
+    rows = [ending_row(entry, queue_root, **ending_options)
             for entry in recent_ending_paths(queue_root, limit)]
     _annotate_current_endings(rows, queue_root)
     rows.sort(key=lambda row: row["finished_unix"], reverse=True)
@@ -2052,7 +2062,7 @@ def _annotate_current_endings(rows: Sequence[dict], queue_root: str | Path) -> N
             "generation": answer["generation"],
         }
 
-def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
+def ending_row(entry: os.DirEntry, queue_root: str | Path, *, superseded_reader=None) -> dict:
     """One selected terminal record as :func:`endings` reports it.
 
     ``entry`` is anything with the ``path``, ``name`` and ``stat()`` of an
@@ -2139,6 +2149,8 @@ def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
         # fallback above. The fallback orders and selects status rows; it
         # is not evidence of when execution finished.
         "timing_finished_unix": finished,
+        **action_client.superseded_summary(
+            pool.PoolQueue(queue_root), record, archive_reader=superseded_reader or _unrequested_superseded_archive),
         "published_unix": record.get("published_unix"),
         "claimed_unix": record.get("claimed_unix"),
         "path": entry.path,

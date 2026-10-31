@@ -197,6 +197,18 @@ those values on serialization. Malformed reader identities retain their raw
 records, refuse recovery and start no second reader. The existing own-child
 waitpid and SIGCHLD behavior is preserved; ordinary waits acquire no persistent
 ownership fence or new pidfd.
+Optional superseded-terminal display reads are owned by `action_client` in the
+client process, never inside immutable-verification children. `pbstatus` instead
+reads archive bytes within its existing bounded census reader, so the parent
+owns that reader and no nested archive child can outlive it unnoticed. Other census callers project
+only the retained summary unless they provide an archive reader under their own
+budget, so shared census reads never start implicit archive grandchildren. A process-wide
+serialized archive-read boundary preserves retained-reader faults across census
+rows and detached-key threads, emits ownership evidence on stderr, and starts no
+further archive reader until a nonblocking own-child reap confirms exit. Invalid
+ownership identities retain their raw fault and fence archive reads for the
+client lifetime. Missing history and reaped timeouts do not install this fence;
+historical availability never changes the current execution or CAS verdict.
 `action_client.await_pool_outcome` returns the observed ending, typed client
 verdict and whole-client reader history. Its renderer consumes those captured
 facts without reading the queue again. `report_pool_outcome` is the integer

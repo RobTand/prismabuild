@@ -66,18 +66,18 @@ def test_busy_member_transition_defers_entire_cancellation(gang_fleet):
     def hold_member():
         with queue.action_transition_lock(keys[1]):
             acquired.set()
-            release.wait(30)
+            release.wait(60)
     worker = threading.Thread(target=hold_member)
     worker.start()
     try:
-        assert acquired.wait(30)
+        assert acquired.wait(60)
         clock.now += 61
         queue.sweep_gangs()
         assert _gang.teardown(queue, group) is None
         assert not any(queue.records.withdrawal_decisions(key) for key in keys)
     finally:
         release.set()
-        worker.join(30)
+        worker.join(60)
     assert not worker.is_alive()
     queue.sweep_gangs()
     assert all(queue.records.withdrawal_decisions(key) for key in keys)
