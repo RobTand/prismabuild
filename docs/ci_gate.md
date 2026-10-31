@@ -8,8 +8,8 @@ with the `gate-canary` label also runs the full gate, without duplicating the
 single-job PR selection run. No CI job uses the fleet.
 Mergify requires `pr-gate` to queue and the final job `gate` to merge.
 
-The full plan records a shadow selection while coverage stays full. The initial
-matrix has ten shards, alternating `ubuntu-latest` and `ubuntu-24.04-arm`.
+The full plan records a shadow selection while coverage stays full. The qualified
+matrix has twelve shards, alternating `ubuntu-latest` and `ubuntu-24.04-arm`.
 Workflow reruns swap the architectures by shard index, so qualification exercises
 each file on both architectures.
 Each shard uses four pytest-xdist workers within inherited CPU affinity.
@@ -43,10 +43,10 @@ retains empty shards when there are fewer files than shards.
 python tools/ci/gate_select.py --base "$BASE_SHA" --head "$HEAD_SHA" --mode full \
   --output plan.json --files-output files.txt
 python tools/ci/gate_partition.py matrix --files-from files.txt \
-  --durations tools/ci/gate_durations.json --shards 10 \
+  --durations tools/ci/gate_durations.json --shards 12 \
   --runners ubuntu-latest,ubuntu-24.04-arm --output matrix.json
 python tools/ci/gate_partition.py shard --files-from files.txt \
-  --durations tools/ci/gate_durations.json --shards 10 --index 0 \
+  --durations tools/ci/gate_durations.json --shards 12 --index 0 \
   --output-files assigned.txt
 python tools/ci/gate_run.py --plan plan.json --files-from assigned.txt --workers 4 \
   --result result.json --junitxml junit.xml
@@ -54,8 +54,9 @@ python tools/ci/gate_run.py --plan plan.json --files-from assigned.txt --workers
 
 Each shard recomputes its assignment from the same population, duration table
 and shard count. No test-file list passes through matrix entries. Coverage is
-never truncated to meet a time budget. The initial count and timeout estimates
-must be assessed against live hosted-runner timings, including pickup/setup.
+never truncated to meet a time budget. Two ten-shard trials took 6m20s and 6m21s from workflow start to the final
+gate. Twelve shards reduce the longest assignments while retaining half on
+each architecture. Timeouts include setup margin and never truncate coverage.
 
 ## Verdicts and retries
 
@@ -107,12 +108,15 @@ the hosted trial failed representative cleanup/scratch controls. The gate does
 not install a fleet supervisor or broker, fabricate a shared runtime, or relax
 production containment to make those controls pass.
 
-The first hosted arm64 trial found no bubblewrap executable for
-`test_record_compatibility.py` and `test_current_receipt_compat_composition.py`.
-Qualification after installing bubblewrap must establish their behavior on both
-hosted architectures before either admission or a separate environment lane. Historical entries remain provisional under
-#2434; archival replay stays with #1997. Filesystem-floor skip/pass variation
-is not called flaky.
+Both `test_record_compatibility.py` and
+`test_current_receipt_compat_composition.py` were tested on hosted x64 and arm64
+with bubblewrap installed. Both fail namespace entry with `setting up uid map:
+Permission denied`, before executing or attesting the retained consumer. They
+now belong to the separate `namespace_compatibility` lane, owner #2447. The
+PrismaBuild refusal reported by the selection agent is different, exit 78
+because bubblewrap cannot mount /proc. Neither refusal is classified as flaky.
+The three flaky bundle-cache cases under #2435 exhaust their file's collection,
+so the quarantine names that complete file.
 
 Remove an entry after root repair or five fresh passing repeats on each
 architecture in the CI environment, as the owning issue requires. Quarantine
