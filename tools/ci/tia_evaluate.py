@@ -41,8 +41,8 @@ def extract(reports: list[Path], output: Path):
                 if not row['verdict']['green'] or not row.get('receipt_path'):
                     raise ValueError(f"map shard not green: {row['action_key']}")
                 for line in row['output'].splitlines():
-                    if line.startswith('tia-record: '):
-                        records = json.loads(gzip.decompress(base64.b64decode(line.split(': ', 1)[1])))
+                    if 'tia-record: ' in line:
+                        records = json.loads(gzip.decompress(base64.b64decode(line.split('tia-record: ', 1)[1])))
                         for record in records:
                             path = Path(scratch) / f'{len(paths)}.json'
                             path.write_text(json.dumps(record))
@@ -63,9 +63,9 @@ def extract_cas(inputs: list[dict], output: Path):
                 raise ValueError('recorded result or terminal-log hash mismatch')
             found = False
             for line in payload.decode().splitlines():
-                if line.startswith('tia-record: '):
+                if 'tia-record: ' in line:
                     found = True
-                    records = json.loads(gzip.decompress(base64.b64decode(line.split(': ', 1)[1])))
+                    records = json.loads(gzip.decompress(base64.b64decode(line.split('tia-record: ', 1)[1])))
                     for record in records:
                         path = Path(temporary) / f'{len(paths)}.json'
                         path.write_text(json.dumps(record))
