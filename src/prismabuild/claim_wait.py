@@ -84,7 +84,7 @@ _FAMILIES = (
     """),
     ((SourceKind.PEER, SourceKind.HOST_LEDGER, SourceKind.RESOURCE), """
         deferred_for_preferred_cpu deferred_for_cross_resource_placement
-        deferred_for_idle_gpu_host deferred_for_cpu_only_host guest_retry_budget_exhausted
+        deferred_for_idle_gpu_host deferred_for_cpu_only_host deferred_for_cpu_load guest_retry_budget_exhausted
         deferred_for_local_scratch_io
     """),
     ((SourceKind.HOST_LEDGER, SourceKind.OWNERSHIP), """

@@ -7023,7 +7023,7 @@ from rounded `yielding_s` or `wait_remaining_s` diagnostics.
 
 | Deadline | Source and bound | Reevaluation or cancellation |
 |---|---|---|
-| Preferred CPU, cross-resource, idle GPU preference | Existing `PlacementHistory` monotonic start plus 20 s | Original start survives hints and pass handoff; existing generation retirement clears it |
+| Preferred CPU, cross-resource, idle GPU and CPU-load preference | Existing `PlacementHistory` monotonic start plus 20 s | Original start survives hints and pass handoff; existing generation retirement clears it |
 | Resident copy | Row publication time plus 30 s | Copy, fit, election, or publication changes; never restarted by a hint |
 | CPU baseline | Counter writer or cached baseline stamp plus `MIN_INTERVAL_S`, currently 1 s | Next usable counter delta or the claim interest ends |
 | CPU and GPU observation | Next numeric sample within 1 s; consulted sample stamp plus 5 s freshness | New sample or the claim interest ends; counters lack complete callbacks |

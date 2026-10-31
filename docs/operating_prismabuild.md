@@ -1228,7 +1228,7 @@ second. A report schedules no work itself and grants no resource credit.
 
 The [claim refusal contract](design.md#claim-refusal-reports-1947) lists each
 timer's source, bound, and cancellation condition. In particular, #1262 has no
-yield timer, while the three bounded preferences retain their original 20 s
+yield timer, while the four bounded preferences retain their original 20 s
 starts and resident-copy preference retains publication plus 30 s.
 
 Report completeness does not establish deployed notification coverage. This

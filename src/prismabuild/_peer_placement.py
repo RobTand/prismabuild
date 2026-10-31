@@ -18,7 +18,8 @@ class CpuLoad:
         return self.preferred - self.load1
 
 
-def cpu_load(offer: Mapping, *, now: float, max_age_s: float) -> CpuLoad | None:
+def cpu_load(offer: Mapping, *, now: float, max_age_s: float,
+             on_expiry: Callable[[str, float], None] | None = None) -> CpuLoad | None:
     detail = offer.get("observed_detail")
     tiers = offer.get("cpu_tiers")
     if not isinstance(detail, Mapping) or not isinstance(tiers, Mapping):
@@ -32,6 +33,8 @@ def cpu_load(offer: Mapping, *, now: float, max_age_s: float) -> CpuLoad | None:
             or any(type(cpu) is not int or cpu < 0 for cpu in preferred)
             or len(set(preferred)) != len(preferred)):
         return None
+    if on_expiry is not None:
+        on_expiry(f"peer_observation_freshness:{offer.get('host', '?')}", stamp + max_age_s)
     return CpuLoad(float(load), len(preferred))
 
 
