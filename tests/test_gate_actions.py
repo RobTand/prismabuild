@@ -56,7 +56,7 @@ def test_no_verdict_after_retry_cannot_pass():
 @pytest.mark.parametrize('changes', [
     {'head_sha': 'stale'}, {'base_sha': 'other'}, {'population_version': 'other'},
     {'files': ['a.py', 'a.py']}, {'files': ['b.py']}, {'mode': 'selection'},
-    {'pytest_exit_code': 1}, {'pytest_exit_code': False},
+    {'pytest_exit_code': 1}, {'pytest_exit_code': False}, {'files': [None]}, {'verdict': []},
 ])
 def test_invalid_or_stale_result_is_not_a_verdict(changes):
     result = actions.assess(PLAN, ASSIGNMENTS, {
@@ -73,3 +73,58 @@ def test_invalid_or_stale_result_is_not_a_verdict(changes):
 def test_incomplete_or_duplicate_assignments_are_refused(assignments):
     with pytest.raises(ValueError):
         actions.assess(PLAN, assignments, {1: {}, 2: {}})
+
+
+def cli_fixture(tmp_path):
+    import json
+    plan = tmp_path / 'plan.json'; plan.write_text(json.dumps(PLAN))
+    durations = tmp_path / 'durations.json'; durations.write_text('{"files":{"a.py":3,"b.py":1}}')
+    matrix = tmp_path / 'matrix.json'; matrix.write_text(json.dumps({'shards': 2, 'include': [
+        {'index': 0, 'runner': 'ubuntu-latest', 'files': 1, 'estimated_seconds': 3},
+        {'index': 1, 'runner': 'ubuntu-24.04-arm', 'files': 1, 'estimated_seconds': 1}]}))
+    return ['--plan', str(plan), '--matrix', str(matrix), '--durations', str(durations),
+            '--artifacts', str(tmp_path / 'artifacts'), '--prefix', 'run-7',
+            '--output', str(tmp_path / 'output.json')]
+
+
+def cli(*arguments):
+    import subprocess
+    import sys
+    return subprocess.run([sys.executable, str(ROOT / 'tools/ci/gate_actions.py'), *arguments],
+                          text=True, capture_output=True, check=False)
+
+
+def save_result(tmp_path, index, verdict='pass', attempt=1):
+    import json
+    directory = tmp_path / 'artifacts' / f'run-7-a{attempt}-{index}'
+    directory.mkdir(parents=True)
+    directory.joinpath('result.json').write_text(json.dumps(record('a.py' if index == 0 else 'b.py', verdict)))
+    directory.joinpath('junit.xml').write_text('<testsuites/>')
+
+
+def test_retry_cli_uses_artifact_prefix_and_never_retries_recorded_failure(tmp_path):
+    import json
+    arguments = cli_fixture(tmp_path)
+    save_result(tmp_path, 0, 'fail')
+    run = cli('retries', *arguments)
+    assert run.returncode == 0, run.stderr
+    assert 'retry=true' in run.stdout
+    assert [row['index'] for row in json.loads((tmp_path / 'output.json').read_text())['include']] == [1]
+
+
+def test_finish_cli_fails_without_records_instead_of_accepting_an_empty_download(tmp_path):
+    run = cli('finish', *cli_fixture(tmp_path))
+    assert run.returncode == 75
+    assert 'NO_VERDICT' in run.stdout
+
+
+def test_finish_cli_exports_only_effective_results(tmp_path):
+    import json
+    arguments = cli_fixture(tmp_path)
+    save_result(tmp_path, 0)
+    save_result(tmp_path, 1, attempt=2)
+    run = cli('finish', *arguments, '--effective-output', str(tmp_path / 'effective'))
+    assert run.returncode == 0, run.stderr
+    assert json.loads((tmp_path / 'output.json').read_text())['effective_attempts'] == {'0': 1, '1': 2}
+    assert (tmp_path / 'effective/0/junit.xml').is_file()
+    assert json.loads((tmp_path / 'effective/1/result.json').read_text())['files'] == ['b.py']

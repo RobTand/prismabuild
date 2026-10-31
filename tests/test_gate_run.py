@@ -92,3 +92,17 @@ def test_runner_rejects_files_outside_the_plan_before_launch(tmp_path):
         files=['tests/test_other.py'], root=tmp_path, output=tmp_path / 'output',
         junit=tmp_path / 'junit.xml', execute=lambda *a, **k: pytest.fail('must not launch'))
     assert result == 75
+
+
+def test_newline_assignment_preserves_a_path_containing_spaces(tmp_path):
+    (tmp_path / 'tests').mkdir()
+    (tmp_path / 'pytest.ini').write_text('[pytest]\n')
+    filename = 'tests/test with spaces.py'
+    (tmp_path / filename).write_text('def test_value(): assert 7 * 6 == 42\n')
+    (tmp_path / 'plan.json').write_text(json.dumps({'selected': [{'path': filename}], 'deselect': []}))
+    (tmp_path / 'assigned.txt').write_text(filename + '\n')
+    result = runner.main(['--plan', str(tmp_path / 'plan.json'), '--root', str(tmp_path),
+        '--files-from', str(tmp_path / 'assigned.txt'), '--workers', '1',
+        '--result', str(tmp_path / 'result.json'), '--junitxml', str(tmp_path / 'junit.xml')])
+    assert result == 0
+    assert json.loads((tmp_path / 'result.json').read_text())['files'] == [filename]

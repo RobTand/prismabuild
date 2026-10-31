@@ -83,6 +83,7 @@ def test_changed_tests_and_non_python_path_references(tmp_path):
 @pytest.mark.parametrize('changed', ['conftest.py', 'tests/conftest.py', 'pyproject.toml',
                                     'tools/verify.py', 'tests/proof_execution.json',
                                     'tests/receipt_execution.json',
+                                    '.github/workflows/gate.yml',
                                     'tools/ci/gate_select.py',
                                     'tests/test_gate_select.py'])
 def test_shared_configuration_and_helpers_select_whole_population(tmp_path, changed):
