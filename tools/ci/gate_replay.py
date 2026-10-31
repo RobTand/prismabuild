@@ -123,10 +123,11 @@ def capture_history(destination: Path, count: int = 150) -> Path:
 
 def replay(root: Path, history: dict) -> dict:
     index = select.dependency_index(root)
+    helper_graph = select.helper_importers(index, [])
     durations = select.read_json(root / 'tools/ci/gate_durations.json')
     quarantine = select.read_json(root / 'tools/ci/gate_quarantine.json')
     def plan(paths):
-        return select.create_plan(root, paths, durations=durations, quarantine=quarantine, index=index)
+        return select.create_plan(root, paths, durations=durations, quarantine=quarantine, index=index, helper_graph=helper_graph)
     rows = []
     for pull in history['pulls']:
         selected = plan(pull['changed_files'])

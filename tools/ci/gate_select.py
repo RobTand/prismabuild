@@ -106,18 +106,22 @@ def dependency_index(root: Path) -> dict[str, tuple[set[str], set[str]]]:
             for path in sorted((root / 'tests').rglob('*.py'))}
 
 
-def helper_importers(index: dict, changed: list[str]) -> dict[str, set[str]]:
+def helper_importers(index: dict, changed: list[str], existing: dict | None = None) -> dict[str, set[str]]:
+    targets_to_index = {name for name in changed if name.startswith('tests/') and name.endswith('.py')}
+    targets_to_index = (set(index) | targets_to_index) if existing is None else targets_to_index - index.keys()
+    if not targets_to_index:
+        return existing if existing is not None else {}
     aliases: dict[str, set[str]] = {}
-    for path in set(index) | {name for name in changed if name.startswith('tests/') and name.endswith('.py')}:
+    for path in targets_to_index:
         for alias in module_names(path):
             aliases.setdefault(alias, set()).add(path)
-    reverse: dict[str, set[str]] = {}
+    reverse: dict[str, set[str]] = {} if existing is None else dict(existing)
     for path, (imports, references) in index.items():
         targets = {target for module in imports for target in aliases.get(module, ())}
-        targets.update(references & index.keys())
+        targets.update(references & targets_to_index)
         patterns = {reference for reference in references if '**' in reference}
         if patterns:
-            targets.update(target for target in index if gate_paths.matches(target, patterns))
+            targets.update(target for target in targets_to_index if gate_paths.matches(target, patterns))
         for target in targets - {path}:
             reverse.setdefault(target, set()).add(path)
     return reverse
@@ -161,7 +165,7 @@ def exclusion_entries(quarantine: dict) -> list[dict]:
 
 
 def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: dict,
-                index: dict | None = None, mode: str = 'selection') -> dict:
+                index: dict | None = None, mode: str = 'selection', helper_graph: dict | None = None) -> dict:
     root = Path(root)
     index = dependency_index(root) if index is None else index
     if mode not in {'selection', 'full'}:
@@ -198,7 +202,7 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
                 why.append('literal path reference: ' + path)
         if why:
             reasons[name] = why
-    reverse = helper_importers(index, changed)
+    reverse = helper_importers(index, changed, existing=helper_graph)
     pending = sorted({name for name, why in reasons.items() if any(reason != 'fast tier' for reason in why)} |
                      {path for path in changed if path.startswith('tests/')})
     seen = set(pending)
