@@ -199,6 +199,7 @@ def test_workflow_keeps_suite_off_gate_and_privileges_in_report():
     workflow = yaml.safe_load((ROOT / '.github/workflows/full-suite.yml').read_text())
     triggers = workflow.get('on', workflow.get(True))
     assert set(triggers) == {'push', 'schedule', 'workflow_dispatch'}
+    assert triggers['push'] == {'branches': ['main']}
     assert triggers['schedule'] == [{'cron': '23 2 * * *'}]
     assert workflow['concurrency'] == {'group': 'full-suite-main', 'cancel-in-progress': False}
     for name in ('shards', 'retry'):
