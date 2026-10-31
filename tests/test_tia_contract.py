@@ -291,26 +291,43 @@ def test_source_readers_and_their_consumers_keep_static_coverage():
     assert any('source reader' in reason for row in result['selected'] for reason in row['reasons'])
 
 
-def test_evaluation_arm_scratch_is_local_and_removed(tmp_path, monkeypatch):
+@pytest.mark.parametrize('configured', [False, True])
+def test_evaluation_arm_scratch_is_local_and_removed(tmp_path, monkeypatch, configured):
     mod = load_tia_module('tia_evaluate')
-    output = tmp_path / 'evaluation'
-    output.mkdir()
+    checkout = tmp_path / 'checkout'
+    output = checkout / 'evaluation'
+    output.mkdir(parents=True)
+    short = tmp_path / 'short'
+    short.mkdir()
+    monkeypatch.delenv('PB_TIA_SCRATCH_ROOT', raising=False)
+    if configured:
+        monkeypatch.setenv('PB_TIA_SCRATCH_ROOT', str(short))
     observed = []
     def fake_pytest(command, **options):
         observed.append((command, options['env']))
         xml = next(arg.split('=', 1)[1] for arg in command if arg.startswith('--junitxml='))
         Path(xml).write_text('<testsuite><testcase classname="tests.test_example" name="test_ok"/></testsuite>')
-        (tmp_path / '.pytest-basetemp').mkdir()
-        (tmp_path / '.pytest-basetemp' / 'retained-fixture').write_text('fixture bytes')
+        base = Path(next(arg.split('=', 1)[1] for arg in command if arg.startswith('--basetemp=')))
+        if not base.is_absolute():
+            base = checkout / base
+        base.mkdir()
+        (base / 'retained-fixture').write_text('fixture bytes')
         return subprocess.CompletedProcess(command, 0, 'one passed', '')
     monkeypatch.setattr(mod.subprocess, 'run', fake_pytest)
-    result = mod.pytest_run(tmp_path, ['tests/test_example.py'], [], output, 'baseline')
+    result = mod.pytest_run(checkout, ['tests/test_example.py'], [], output, 'baseline')
     command, env = observed[0]
     scratch = Path(env['TMPDIR'])
-    assert output in scratch.parents
-    assert '--basetemp=.pytest-basetemp' in command
+    if configured:
+        assert short in scratch.parents
+        assert checkout not in scratch.parents
+        base = Path(next(arg.split('=', 1)[1] for arg in command if arg.startswith('--basetemp=')))
+        assert scratch.parent in base.parents
+        assert not base.exists()
+    else:
+        assert output in scratch.parents
+        assert '--basetemp=.pytest-basetemp' in command
     assert not scratch.parent.exists()
-    assert not (tmp_path / '.pytest-basetemp').exists()
+    assert not (checkout / '.pytest-basetemp').exists()
     assert result['tests'] == 1
 
 
