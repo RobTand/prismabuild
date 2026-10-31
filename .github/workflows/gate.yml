@@ -1,0 +1,92 @@
+name: Merge gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  attempt_1:
+    name: Gate attempt 1
+    if: >-
+      ${{ github.event.pull_request.head.repo.full_name == github.repository &&
+          ((startsWith(github.head_ref, 'mergify/merge-queue/') &&
+            github.event.pull_request.user.login == 'mergify[bot]' &&
+            github.event.pull_request.user.id == 37929162 &&
+            github.event.pull_request.user.type == 'Bot' &&
+            github.event.pull_request.draft == true) ||
+           contains(github.event.pull_request.labels.*.name, 'gate-canary')) }}
+    runs-on: [self-hosted, pb-fleet, pb-gate]
+    timeout-minutes: 10
+    outputs:
+      verdict: ${{ steps.tests.outputs.verdict }}
+    steps: &attempt_steps
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Select tests from the event's integrated SHA
+        id: selection
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          mkdir -p gate-artifacts
+          python tools/ci/gate_select.py --root . --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --output gate-artifacts/plan.json --summary "$GITHUB_STEP_SUMMARY"
+      - name: Run selected tests
+        id: tests
+        run: |
+          python tools/ci/gate_run.py --root . --plan gate-artifacts/plan.json \
+            --output "$GITHUB_OUTPUT" --junit gate-artifacts/junit.xml
+      - name: Publish plan and JUnit
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gate-${{ github.job }}-${{ github.run_attempt }}
+          path: gate-artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
+  attempt_2:
+    name: Gate infrastructure retry
+    needs: attempt_1
+    if: >-
+      ${{ always() && !cancelled() && needs.attempt_1.result != 'skipped' &&
+          needs.attempt_1.outputs.verdict == '' }}
+    runs-on: [self-hosted, pb-fleet, pb-gate]
+    timeout-minutes: 10
+    outputs:
+      verdict: ${{ steps.tests.outputs.verdict }}
+    steps: *attempt_steps
+
+  gate:
+    name: gate
+    needs: [attempt_1, attempt_2]
+    if: ${{ always() && needs.attempt_1.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Report final verdict
+        env:
+          FIRST: ${{ needs.attempt_1.outputs.verdict }}
+          SECOND: ${{ needs.attempt_2.outputs.verdict }}
+        run: |
+          verdict="${FIRST:-$SECOND}"
+          if [ "$verdict" = pass ]; then
+            echo 'Gate passed. See the attempt summary and JUnit artifact.' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$verdict" = fail ]; then
+            echo 'Gate failed in pytest. Test failures are never retried.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          else
+            echo 'Gate infrastructure failed twice without a test verdict.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi

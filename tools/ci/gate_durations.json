@@ -1,0 +1,13 @@
+{
+  "schema": "prismabuild.gate_durations.v1",
+  "status": "pending",
+  "source": {
+    "commit": "22e9d75298608078c91d331a646f6446352577f6",
+    "inventory": "inventory-22e9d752/inventory.json",
+    "repeats": 3,
+    "available": false,
+    "issue": 2428,
+    "note": "Inventory was still running. Empty values are unknown, never zero estimates."
+  },
+  "files": {}
+}
