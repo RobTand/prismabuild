@@ -419,8 +419,7 @@ def test_a_fenced_shard_runs_its_real_preflight_before_pytest(
     checkout = _checkout(tmp_path, marked=1, plain=1)
     _config(checkout, tmp_path)
     _stub_queue(tmp_path, monkeypatch, answers=[_dependency(tmp_path)["path"]])
-    code, calls = _dispatch(tmp_path, monkeypatch, checkout, [], shards=2,
-                            real=True)
+    code, calls = _dispatch(tmp_path, monkeypatch, checkout, [], shards=2)
     assert code == 0
     fenced = [command for command in calls if _requires(command) is not None]
     assert len(fenced) == 1
@@ -430,8 +429,7 @@ def test_a_fenced_shard_runs_its_real_preflight_before_pytest(
     assert "1 passed" in done.stdout
     # The same fence, drifted: the shard refuses before pytest.
     _config(checkout, tmp_path, sha="c" * 64)
-    code, calls = _dispatch(tmp_path, monkeypatch, checkout, [], shards=2,
-                            real=True)
+    code, calls = _dispatch(tmp_path, monkeypatch, checkout, [], shards=2)
     fenced = [command for command in calls if _requires(command) is not None]
     done = _run_child(fenced[0], checkout)
     assert done.returncode != 0
