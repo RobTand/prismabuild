@@ -10,23 +10,6 @@ From a task checkout, run the tier that matches the change:
 
 The commands use the published PrismaBuild `pbtest.py`. PB selects shard membership, placement, and concurrency. Each CPU shard reserves one CPU and four GiB RAM, except the two-CPU lane below. Each GPU shard reserves one CPU, eight GiB host RAM and two GiB GPU memory. Native threads are one per worker, and validation runs at priority -10.
 
-Each pbtest shard defaults to a private `./pb-<random suffix>/pytest` base temp
-inside its materialized checkout. The worker removes that checkout at action
-end, including failed tests' temporary files. Compiler `TMPDIR` stays separate.
-An explicit `--basetemp` keeps its existing root and retention behavior; a
-relative root must already exist in the checkout. The new default takes effect
-on the fleet only after the next runtime publication and changes action keys
-for shards using the default.
-
-The same default covers `tools/verify.py`'s fast, ordinary integration,
-two-CPU, and GPU pbtest lanes, plus the runtime inventory and legacy pbmergeq
-callers. Both root container runners already pass
-`--basetemp=/var/lib/pb-proof-qualification` inside a `docker run --rm`
-container, so their pytest temp disappears with that container. Maintenance
-repeat, mutation, submission-control, collection, and time-isolation helpers
-pass relative pytest base temps inside their action checkouts or managed
-throwaway checkouts.
-
 The default worker Python paths are `/home/rob/venvs/pb-cpu/bin/python` and `/home/rob/venvs/pq-cu130/bin/python`. Pass `--python /absolute/worker/python` for another qualified pbtest environment. The root lane uses its profile's exact interpreter. No coordinator installation is needed.
 
 Run `python3 tools/verify.py TIER --plan` to inspect each lane's file population and command without execution. Fast, GPU and two-CPU membership lives in `tools/verify.py`. The root lane reads its files from `tests/proof_execution.json` and `tests/receipt_execution.json`. The one-CPU integration lane is the complement. New CPU tests therefore enter a tier automatically. Removing a declared test refuses the gate instead of silently reducing coverage, and so does declaring one file in two lanes.

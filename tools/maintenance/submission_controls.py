@@ -30,7 +30,7 @@ def compare_submission_sources(repo: Path, output: Path):
                 str(checkout / path) for path in ('src', 'tools/fleet', 'tests')))
             command = [sys.executable, '-c',
                 'import pbtest_outcomes; raise SystemExit(pbtest_outcomes.main())',
-                '-q', '--tb=short', '--basetemp=.pytest-submission-controls', *selected]
+                '-q', '--tb=short', *selected]
             run = subprocess.run(command, cwd=checkout, env=environment, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, text=True)
             (output / f'controls-{name}.log').write_text(run.stdout)

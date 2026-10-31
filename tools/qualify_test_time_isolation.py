@@ -74,7 +74,7 @@ def main():
                 for label, tree in arms:
                     junit = evidence / f"{label}-{repeat}.xml"
                     command = [sys.executable, "-m", "pytest", "-q",
-                               "--basetemp=.pytest-time-isolation", f"--junitxml={junit}", *args.files]
+                               f"--junitxml={junit}", *args.files]
                     if args.xdist:
                         command.extend(["-n", str(args.xdist)])
                     environment = dict(os.environ, PYTHONPATH=str(tree / "src"),

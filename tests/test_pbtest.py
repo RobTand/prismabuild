@@ -232,7 +232,7 @@ def test_relative_tmpdir_refuses_before_submission(
         assert "--tmpdir must be an absolute worker-visible path" in capsys.readouterr().err
 
 
-def test_two_shards_have_distinct_checkout_children_and_output(
+def test_two_shards_have_distinct_tmpdir_children_and_output(
     tmp_path: Path, monkeypatch,
 ) -> None:
     import json
@@ -249,12 +249,10 @@ def test_two_shards_have_distinct_checkout_children_and_output(
             "from pathlib import Path\n"
             "def test_one(tmp_path):\n"
             "    root = Path(os.environ['TMPDIR'])\n"
-            "    assert tmp_path.is_relative_to(Path.cwd())\n"
-            "    assert not tmp_path.is_relative_to(root)\n"
+            "    assert tmp_path.is_relative_to(root)\n"
             "    (tmp_path / 'owned.txt').write_text('owned')\n"
             f"    (root / 'shard-{name}.json').write_text(json.dumps({{\n"
             "        'tmp_path': str(tmp_path), 'pid': os.getpid(),\n"
-            "        'owned': (tmp_path / 'owned.txt').read_text(),\n"
             "    }))\n"
         )
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
@@ -284,8 +282,8 @@ def test_two_shards_have_distinct_checkout_children_and_output(
                for name in ("a", "b")]
     assert records[0]["pid"] != records[1]["pid"]
     assert records[0]["tmp_path"] != records[1]["tmp_path"]
-    assert all(record["owned"] == "owned" for record in records)
-    assert all(not Path(record["tmp_path"]).exists() for record in records)
+    assert all((Path(record["tmp_path"]) / "owned.txt").read_text() == "owned"
+               for record in records)
     submitted_files = [
         [part for part in command[command.index("--") + 1:]
          if part.startswith("tests/") and part.endswith(".py")]

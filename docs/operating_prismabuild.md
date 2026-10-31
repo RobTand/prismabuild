@@ -2372,29 +2372,42 @@ unchanged; descriptor-based temporary-directory cleanup can therefore finish
 under the failed-only retention policy instead of failing in the fixture itself.
 Only `tmp_path` is removed per test. A directory made with `tmp_path_factory.mktemp`,
 and the directory of any failing test, lasts as long as the session's base temporary
-directory. Without `--basetemp`, each shard seals a relative default into
-its command (#2449): `./pb-<mkdtemp suffix>/pytest`, inside the attempt's
-materialized checkout. `mkdtemp` creates each directory exclusively with mode
-0700, even when no launcher action key or nonce is available. Pytest never
-falls back to the shared `pytest-of-<user>` directory.
-
-After pytest exits 0, the shard removes its attempt directory, including
-read-only test directories. Failed tests' files remain inside the checkout
-until the worker's checkout cleanup runs at action end. That cleanup also runs
-after payload deadlines and interruptions. A killed worker leaves a checkout
-for the materializer's existing owned-tree recovery; cleanup failures produce
-cleanup-failure records. The default needs no separate scratch-root registry
-or 24-hour pytest retention outside the checkout.
-
-`TMPDIR` and `--tmpdir` continue to select compiler and process scratch.
-They do not move the default pytest base temp. The short `pb-` prefix avoids
-adding full action identities, but a long checkout path can still exceed
-AF_UNIX socket limits. Tests that need short socket paths must provide suitable
-scratch explicitly.
-
-This default changes shard action keys. Existing sealed actions keep their
-original behavior. The published client and fleet receive the change only with
-the next runtime publication; merging the source does not deploy it.
+directory. Without `--basetemp` each attempt owns its base temp (#1542):
+`<tmpdir>/pb-<mkdtemp suffix>/pytest`, where `tmpdir` is the
+default `/home/rob/tmp` or the `--tmpdir` directory when one is given.
+`mkdtemp` creates each directory exclusively with mode 0700. It retries name
+collisions; it does not truncate an action key or an attempt identity.
+The standard eight-character suffix leaves an 86-byte socket path under
+`/home/rob/tmp`, with `popen-gw0`, a 30-character test name plus its counter,
+and a 12-character file name (#1709).
+After pytest exits 0 the worker removes that attempt's directory, including
+any read-only directory a test left in it. Any other ending (a failure, a
+deadline, SIGKILL, OOM) keeps the directory, as the failed-only retention
+policy does, for 24 hours (`owned_tree.RETENTION_S`) after the attempt ended;
+a killed attempt's 24 hours start when a reaper first finds it dead.
+A later attempt in the same `TMPDIR`, or the owning worker supervisor,
+then removes it, a few per pass.
+Liveness is the attempt's owner lock, `pb-owner.lock`, which the shard holds
+for its whole life, never the directory's age, so a long shard is never
+reaped. Only directories that carry PrismaBuild's lock for this host are
+removed: others of the same name shape, and attempts made before the lock
+existed, are left alone. The xdist plugin roster lives inside the attempt
+directory, not beside it. See "Owned trees" in `docs/design.md`.
+New carried shard programs register the root before creating scratch (#1710).
+The worker supervisor sweeps registered roots at startup and hourly, so an idle
+root no longer depends on another pbtest run for expiry. Its existing box claim
+owns this work; `--once` and one-shot stale cycling do not sweep. Each pass
+selects at most 64 roots and uses the existing 256-inspection, 4-removal limit
+per root. A backlog can require several passes. Unreadable, missing, replaced,
+or symlinked roots are preserved and reported. The private registry lives at
+`.local/state/prismabuild/pbtest-roots-v1` under the executing uid's passwd home,
+not the shard's sealed `HOME`. Its symlink names pin layout, device and inode;
+the targets locate the real roots. It is discovery state, not an owner lock.
+Old unregistered roots require a new pbtest attempt before the supervisor
+discovers them. Legacy attempts without owner locks still require operator
+custody. A source merge does not deploy this sweep or report real space freed.
+pytest itself removes no `--basetemp` at the end of a session: it deletes and
+recreates the directory at the start of the next session that uses that path.
 
 `--basetemp root` seals a separate scratch root for pytest's own temporary
 files (#1469), so selecting real test scratch no longer moves the process
@@ -2417,8 +2430,8 @@ vocabulary does not grow.
 The worker removes the derived `root/<action-key>/<attempt>` namespace of a
 sealed `--basetemp` after pytest exits 0, and the `<action-key>` directory
 when that leaves it empty. Any other ending keeps the namespace for 24 hours
-after the attempt ended, using its owner lock and retention clock. A later
-attempt or owning supervisor then removes it.
+after the attempt ended, by the same owner lock and clock as the default
+attempt directory, and a later attempt or owning supervisor then removes it.
 The root itself is never removed or changed. A sealed root is still not
 PrismaBuild-admitted scratch: the attempt lifetime contract (#1463, refs
 #1360) owns declared, registered ephemeral roots, not a caller-provisioned

@@ -1,7 +1,7 @@
 """Each pbtest attempt owns its base temp; success removes it (#1542).
 
-A passing shard removes its base temp from the checkout. A failing shard
-keeps its ``tmp_path`` there until the action removes the checkout. An
+A passing shard leaves no ``pytest-N`` or attempt base temp under its
+``TMPDIR``. A failing shard keeps the failed test's ``tmp_path``. An
 explicit sealed ``--basetemp`` keeps its existing meaning, and the
 compiler ``TMPDIR`` stays sealed.
 """
@@ -109,7 +109,6 @@ def test_a_passing_shard_removes_its_attempt_base_temp(tmp_path):
     result = _run(checkout, scratch)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout
-    assert list(checkout.glob("pb-*")) == []
     assert list(scratch.rglob("*")) == [], sorted(
         path.relative_to(scratch).as_posix() for path in scratch.rglob("*"))
 
@@ -120,7 +119,7 @@ def test_a_failing_shard_keeps_the_failed_tests_tmp_path(tmp_path):
     checkout = _checkout(tmp_path, "assert False, 'kept for diagnosis'")
     result = _run(checkout, scratch)
     assert result.returncode == 1, result.stdout + result.stderr
-    markers = list(checkout.rglob("marker"))
+    markers = list(scratch.rglob("marker"))
     assert markers, "the failed test's tmp_path is gone"
     assert all(marker.read_text() == "x" for marker in markers)
 
@@ -132,15 +131,14 @@ def test_success_removes_only_its_directory_and_keeps_failed_attempts(tmp_path):
     for _ in range(2):
         result = _run(checkout, scratch)
         assert result.returncode == 1, result.stdout + result.stderr
-    retained = set(checkout.glob("pb-*"))
+    retained = set(scratch.iterdir())
     assert len(retained) == 2
-    markers = set(checkout.rglob("marker"))
+    markers = set(scratch.rglob("marker"))
     assert len(markers) == 2
     (checkout / "tests" / "test_one.py").write_text("def test_one():\n    assert True\n")
     result = _run(checkout, scratch)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert set(checkout.glob("pb-*")) == retained
-    assert list(scratch.iterdir()) == []
+    assert set(scratch.iterdir()) == retained
     assert all(marker.read_text() == "x" for marker in markers)
 
 
@@ -214,7 +212,6 @@ def test_attempt_namespaces_do_not_overlap_without_a_launcher_nonce(tmp_path, mo
 def test_default_shard_socket_path_fits_linux_limit(tmp_path, monkeypatch, worker, short_scratch):
     program = pbtest.shard_entry(sys.executable, tmp_path, collection=True)[2]
     monkeypatch.setenv("TMPDIR", str(short_scratch))
-    monkeypatch.chdir(short_scratch)
     monkeypatch.setenv("PRISMABUILD_ACTION_KEY", uuid.uuid4().hex * 2)
     monkeypatch.setenv("PRISMABUILD_ACTION_NONCE", uuid.uuid4().hex)
     monkeypatch.setattr(sys, "argv", ["-c", "{}", "-q", "tests/test_one.py"])
@@ -244,8 +241,7 @@ def test_real_shard_binds_socket_and_cleans_its_base_temp(tmp_path, workers, sho
             f"pytest resolves socket scratch to {resolved} "
             f"(base {len(os.fsencode(resolved))} bytes), "
             f"socket path {size} bytes, limit 100")
-    checkout = short_scratch
-    (checkout / "tests").mkdir()
+    checkout = _checkout(tmp_path, "assert True")
     (checkout / "tests" / "test_one.py").write_text(
         "import json, os, socket\n"
         "from pathlib import Path\n"

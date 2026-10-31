@@ -52,36 +52,27 @@ def _future_reap(parent, pattern, **options):
                                      now=time.time() + 90000, **options)
 
 
+@pytest.mark.parametrize("basetemp", [False, True])
 def test_real_failed_shard_registers_root_and_expires_without_later_shard(
-        registry, tmp_path, monkeypatch):
+        registry, tmp_path, monkeypatch, basetemp):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    base = tmp_path / "base"
-    base.mkdir()
+    base = tmp_path / "base" if basetemp else None
+    if base is not None:
+        base.mkdir()
     monkeypatch.setenv("HOME", str(tmp_path / "sealed-home"))
     checkout = _checkout(tmp_path, "    assert False\n")
     result = _shard(checkout, scratch, base)
     assert result.returncode == 1, result.stdout + result.stderr
-    root = base
+    root = base if basetemp else scratch
     assert list(root.rglob("marker"))
     entry, = registry.iterdir()
     assert entry.is_symlink() and entry.readlink() == root
-    assert entry.name.startswith("basetemp-")
+    assert entry.name.startswith("basetemp-" if basetemp else "tmpdir-")
     assert roots.sweep_pbtest_roots(owned_tree.reap_dead_trees) == [(entry.name, [], None)]
     reports = roots.sweep_pbtest_roots(_future_reap)
     assert reports[0][1] and reports[0][2] is None
     assert root.exists() and list(root.iterdir()) == []
-
-
-def test_default_checkout_scratch_needs_no_supervisor_registry(registry, tmp_path):
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    checkout = _checkout(tmp_path, "    assert False\n")
-    result = _shard(checkout, scratch)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert list(checkout.rglob("marker"))
-    assert not registry.exists()
-    assert list(scratch.iterdir()) == []
 
 
 @pytest.mark.parametrize("basetemp", [False, True])
@@ -163,9 +154,9 @@ def test_registration_refusal_precedes_attempt_creation(registry, tmp_path):
     os.chmod(registry, 0o755)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    result = _shard(_checkout(tmp_path, ""), scratch, basetemp=scratch)
+    result = _shard(_checkout(tmp_path, ""), scratch)
     assert result.returncode != 0
-    assert "cannot use requested --basetemp" in result.stderr
+    assert "cannot use the attempt base temp" in result.stderr
     assert list(scratch.iterdir()) == []
 
 

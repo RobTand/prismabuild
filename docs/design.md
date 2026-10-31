@@ -2933,23 +2933,20 @@ Surface report names expand `{shard}` or receive `.shard-N` before the final
 suffix. Expanded arguments and GPU budgets enter the ordinary sealed action
 identity through `pbrun`; no second dispatcher or placement policy is added.
 
-Without an explicit `--basetemp`, each shard creates an exclusive attempt
-directory with `tempfile.mkdtemp(prefix="pb-", dir=".")` (#2449).
-Pytest receives its `pytest` child as the base temp. The relative parent is
-sealed into the shard program. It lives inside the attempt's materialized
-checkout, so `materialize._execution_checkout` removes it in its `finally`
-cleanup after success, failure, or payload interruption. A killed worker's
-checkout follows the materializer's existing owned-tree recovery. Cleanup
-failures retain the existing observable cleanup-failure records.
-The default never changes compiler `TMPDIR` and needs no separate supervisor
-scratch registration. Exclusive creation works without a launcher action key
-or nonce and never falls back to pytest's shared user temp. The short `pb-`
-name avoids adding full action identities to socket paths, though a long
-materialized checkout path can still exceed AF_UNIX limits.
-Exit 0 also removes the base temp immediately, including read-only directories.
-An explicit `--basetemp` retains its existing `<root>/<key>/<attempt>` layout,
-owner lock, 24-hour failed-attempt retention, and supervisor registration.
-The caller's root and compiler `TMPDIR` are never removed or changed.
+Without a sealed `--basetemp`, each shard creates an exclusive attempt directory
+with `tempfile.mkdtemp(prefix="pb-", dir=TMPDIR)` (#1709).
+pytest receives its `pytest` child as the base temp.
+The short name leaves room for xdist worker directories and AF_UNIX sockets.
+No action key or attempt identity is truncated to create this namespace.
+The attempt directory is an owned tree (see "Owned trees" below). It holds
+the owner lock `pb-owner.lock` beside `pytest`, and the plugin roster that
+`pbtest_outcomes` writes for xdist workers, so a killed shard leaves nothing
+directly in `TMPDIR`. Exit 0 removes the attempt directory, read-only test
+directories included. Any other ending keeps it for diagnosis and starts its
+24-hour retention clock; a later attempt or owning worker supervisor then removes it.
+A sealed `--basetemp` attempt `<root>/<key>/<attempt>` follows the same rule
+under its root, and exit 0 also removes the key directory it empties. The
+sealed root and `TMPDIR` themselves are never removed or changed.
 
 `--pytest-args '["--pbtest-trace"]'` opts into interrupted-shard diagnostics
 (#1455, Refs #1421). The existing outcome controller flushes one
@@ -3132,7 +3129,7 @@ refused attempts took.
 
 PrismaBuild makes three kinds of directory for a single owner, and takes each
 back even when the owner is killed: a pbtest attempt's base temp
-(`<checkout>/pb-<mkdtemp suffix>`, or a sealed `<root>/<key>/<attempt>`), a
+(`<tmpdir>/pb-<mkdtemp suffix>`, or a sealed `<root>/<key>/<attempt>`), a
 worker's private checkout (`<checkout root>/<key12>.<mkdtemp suffix>`) and a
 pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
 `src/prismabuild/owned_tree.py` owns locking, retention and removal for all three.
@@ -3140,10 +3137,8 @@ pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
 `pbtest_owned_temp` owns the carried worker programs, and
 `worker_log_retention` owns the supervisor's bounded log pruning.
 
-`pbtest_scratch_roots` registers an explicit pbtest root before its attempt
-directory becomes visible (#1710). Default scratch stays inside the checkout
-and needs no separate registration (#2449). Older registered `TMPDIR` roots
-remain eligible for expiry. The executing uid's passwd home,
+`pbtest_scratch_roots` registers the worker's opened pbtest root before its
+attempt directory becomes visible (#1710). The executing uid's passwd home,
 independent of sealed `HOME`, holds the private mode-0700 registry
 `.local/state/prismabuild/pbtest-roots-v1`. Each atomic symlink entry is named
 `<layout>-<device>-<inode>`, where layout is `tmpdir` or `basetemp`, and points
@@ -3178,9 +3173,8 @@ space-freed measurement on real scratch.
   removal that cannot finish keeps the lock and restarts the clock, so it is
   retried a window later.
 - **Trees are reaped where they are made, and the work is bounded.** Each new
-  explicit pbtest root reaps its `<key>/<attempt>` leaves, as does the owning
-  supervisor for registered pbtest roots, including legacy `TMPDIR` roots.
-  Default scratch leaves with its checkout.
+  pbtest attempt reaps its `TMPDIR` (or the `<key>/<attempt>` leaves of its
+  sealed root), as does the owning supervisor for registered pbtest roots.
   Each new checkout reaps its checkout root, and each pbrun
   snapshot reaps its `TMPDIR`. One call inspects at most 256 candidates and
   removes at most 4, in random order, so a crowded directory never holds up an

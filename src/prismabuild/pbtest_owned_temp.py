@@ -130,49 +130,72 @@ def _pb_run_and_clean_attempt_base(_pb_run):
     return _pb_code
 """
 
-#: The default lives in the attempt's materialized checkout (#2449), not
-#: the shared compiler TMPDIR. Checkout cleanup removes it on every ending.
-#: Successful pytest exits also remove it immediately, including read-only
-#: directories. The materializer owns recovery after a killed worker, so this
-#: private root needs no separate supervisor scratch registration.
+#: The worker-only source every shard runs before anything else (#1542). It
+#: gives the attempt its own pytest base temp under the sealed ``TMPDIR``:
+#: ``<tmpdir>/pb-<mkdtemp suffix>/pytest``, beside the attempt's owner lock
+#: (``owned_tree``). An explicit sealed ``--basetemp`` keeps its own
+#: namespace; this default never touches it. After pytest exits 0 the
+#: worker removes this attempt's directory, read-only test directories
+#: included. Any other ending keeps it for diagnosis, as
+#: ``tmp_path_retention_policy=failed`` does, and starts its retention
+#: clock (a SIGKILL starts it when a later attempt first finds the lock
+#: free); a later attempt in the same ``TMPDIR`` reaps it
+#: ``owned_tree.RETENTION_S`` after that. ``TMPDIR`` itself is the sealed
+#: scratch placement and the compiler cache context; it is never removed.
 ATTEMPT_TEMP_PROGRAM = """\
 import os as _pb_os
+import re as _pb_re
 import sys as _pb_sys
 import tempfile as _pb_tempfile
 
+
+def _pb_run_and_clean_attempt_base(_pb_run):
+    return _pb_run()
+
+
+_pb_tmpdir = _pb_os.environ.get("TMPDIR", "")
+_pb_key = _pb_os.environ.get("PRISMABUILD_ACTION_KEY", "")
 _pb_attempt = _pb_os.environ.get("PRISMABUILD_ACTION_NONCE", "")
 if _pb_attempt and (len(_pb_attempt) != 32 or any(
         character not in "0123456789abcdef" for character in _pb_attempt)):
     raise SystemExit(
         "pbtest: PRISMABUILD_ACTION_NONCE is not a 32-hex attempt identity")
-_pb_flags = _pb_os.O_RDONLY | _pb_os.O_DIRECTORY | _pb_os.O_CLOEXEC
-try:
-    _pb_parent = _pb_os.open(".", _pb_flags)
-    # Exclusive creation needs no launcher identity and never falls back to
-    # pytest's shared user temp. Keep the short prefix for socket paths.
-    _pb_attempt_directory = _pb_tempfile.mkdtemp(prefix="pb-", dir=".")
-    _pb_name = _pb_os.path.basename(_pb_attempt_directory)
-    _pb_held = _pb_os.open(_pb_name, _pb_flags | _pb_os.O_NOFOLLOW, dir_fd=_pb_parent)
+if (_pb_tmpdir and _pb_key and "/" not in _pb_key
+        and _pb_key not in (".", "..")):
+    _pb_flags = _pb_os.O_RDONLY | _pb_os.O_DIRECTORY | _pb_os.O_CLOEXEC
     try:
-        _pb_lock = _pb_owned_tree["take_owner_lock"](_pb_held, _pb_owned_tree["LOCK_NAME"])
-    finally:
-        _pb_os.close(_pb_held)
-    _pb_owned = _pb_os.path.join(_pb_attempt_directory, "pytest")
-    _pb_os.mkdir(_pb_owned)
-    with _pb_tempfile.TemporaryFile(dir=_pb_owned):
-        pass
-except (OSError, ValueError) as _pb_exc:
-    raise SystemExit("pbtest: cannot use the attempt base temp: " + str(_pb_exc))
-_pb_sys.argv[2:2] = ["--basetemp", _pb_owned]
+        _pb_parent = _pb_os.open(_pb_tmpdir, _pb_flags)
+        _pb_temp_roots["register_pbtest_root"](_pb_parent)
+        try:
+            _pb_owned_tree["reap_dead_trees"](_pb_parent, _pb_re.compile("pb-[a-z0-9_]{8}"))
+        except Exception as _pb_exc:
+            print("pbtest: base temp expiry skipped: " + str(_pb_exc), file=_pb_sys.stderr)
+        # mkdtemp creates an exclusive namespace; no action identity is truncated.
+        _pb_attempt_directory = _pb_tempfile.mkdtemp(prefix="pb-", dir=_pb_tmpdir)
+        _pb_name = _pb_os.path.basename(_pb_attempt_directory)
+        _pb_held = _pb_os.open(_pb_name, _pb_flags | _pb_os.O_NOFOLLOW, dir_fd=_pb_parent)
+        try:
+            _pb_lock = _pb_owned_tree["take_owner_lock"](_pb_held, _pb_owned_tree["LOCK_NAME"])
+        finally:
+            _pb_os.close(_pb_held)
+        _pb_owned = _pb_os.path.join(_pb_attempt_directory, "pytest")
+        _pb_os.mkdir(_pb_owned)
+        with _pb_tempfile.TemporaryFile(dir=_pb_owned):
+            pass
+    except (OSError, ValueError) as _pb_exc:
+        raise SystemExit("pbtest: cannot use the attempt base temp: " + str(_pb_exc))
+    _pb_sys.argv[2:2] = ["--basetemp", _pb_owned]
 
 
-def _pb_run_and_clean_attempt_base(_pb_run):
-    _pb_code = _pb_run()
-    try:
-        _pb_owned_tree["release_owned_tree"](
-            _pb_parent, _pb_name, _pb_lock, remove=int(_pb_code) == 0)
-    except OSError as _pb_exc:
-        print("pbtest: attempt base temp left for checkout cleanup: " + str(_pb_exc),
-              file=_pb_sys.stderr)
-    return _pb_code
+    def _pb_run_and_clean_attempt_base(_pb_run):
+        _pb_code = _pb_run()
+        try:
+            _pb_owned_tree["release_owned_tree"](
+                _pb_parent, _pb_name, _pb_lock, remove=int(_pb_code) == 0)
+        except OSError as _pb_exc:
+            print("pbtest: attempt base temp kept for expiry: " + str(_pb_exc),
+                  file=_pb_sys.stderr)
+        return _pb_code
+
+
 """

@@ -30,7 +30,7 @@ def check_cleanup_mutants():
     destination = Path(tempfile.mkdtemp(prefix='cleanup-mutants-2270-'))
     for mutant, node in MUTANTS.items():
         result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '--tb=short',
-            '--basetemp=.pytest-cleanup-mutants', 'tests/test_cleanup_obligation_2270.py::' + node], cwd=root,
+            'tests/test_cleanup_obligation_2270.py::' + node], cwd=root,
             env={**os.environ, 'PB2270_MUTANT': mutant},
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         (destination / (mutant + '.log')).write_text(result.stdout)

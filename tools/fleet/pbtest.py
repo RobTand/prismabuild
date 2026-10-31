@@ -1278,7 +1278,7 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
         program = BASETEMP_PROGRAM.replace("@ROOT@", repr(basetemp)) + program
     else:
         # No sealed root: mkdtemp gives the attempt a short, exclusive
-        # directory inside the attempt's materialized checkout.
+        # directory under TMPDIR.
         program = ATTEMPT_TEMP_PROGRAM + program
     # The loaded module's own bytes, as with the digest owner above.
     program = (OWNED_TREE_PROGRAM.replace("@SOURCE@", repr(packed_source(
@@ -1651,8 +1651,7 @@ def main() -> int:
                          "(repeatable); duplicate and pbtest-owned keys are refused")
     ap.add_argument("--basetemp", default=None,
                     help="sealed scratch root for pytest's own temporary files "
-                         "(default: a private directory in the attempt checkout). "
-                         "An explicit root is separate from --tmpdir: the worker derives "
+                         "(#1469), separate from --tmpdir: the worker derives "
                          "<root>/<action-key>/<attempt>/pytest and hands that "
                          "to pytest --basetemp, never the sealed root itself "
                          "(pytest deletes its basetemp). Absolute roots may "
