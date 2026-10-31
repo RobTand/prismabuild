@@ -373,3 +373,48 @@ def test_invalid_baseline_stops_before_mutating(tmp_path, monkeypatch):
     assert calls == ['baseline']
     assert result['valid'] is False
     assert path.read_bytes() == original
+
+
+def test_evaluation_timeout_reaps_descendants_before_scratch_cleanup(tmp_path, monkeypatch):
+    import signal
+    mod = load_tia_module('tia_evaluate')
+    model = {'descendant_alive': True, 'communications': 0}
+    scratch = []
+    class Process:
+        pid = 1701
+        returncode = -9
+        args = ['pytest']
+        def __init__(self, command, **options):
+            scratch.append(Path(options['env']['TMPDIR']))
+            (scratch[-1] / 'child-output').write_text('retained until the child exits')
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def communicate(self, *args, **kwargs):
+            model['communications'] += 1
+            if model['communications'] == 1:
+                raise subprocess.TimeoutExpired(self.args, 1800, output=b'partial stdout', stderr=b'partial stderr')
+            if model['descendant_alive']:
+                raise AssertionError('a live descendant still owns the output pipe')
+            return 'complete stdout', 'complete stderr'
+        def kill(self):
+            # Killing only pytest leaves the child and its inherited pipes alive.
+            pass
+        def wait(self, **options):
+            return self.returncode
+        def poll(self):
+            return self.returncode
+    def kill_group(group, signum):
+        if group != Process.pid or signum != signal.SIGKILL:
+            raise AssertionError('the owned process group was not terminated')
+        model['descendant_alive'] = False
+    monkeypatch.setattr(mod.subprocess, 'Popen', Process)
+    monkeypatch.setattr(mod.os, 'killpg', kill_group)
+    result = mod.pytest_run(tmp_path, ['tests/example.py'], [], tmp_path, 'baseline')
+    assert model['descendant_alive'] is False
+    assert model['communications'] == 2
+    assert result['returncode'] == 124
+    assert result['complete'] is False
+    assert 'complete stderr' in result['tail']
+    assert not scratch[0].parent.exists()
