@@ -221,3 +221,24 @@ def test_recorder_does_not_retain_transient_code_objects(tmp_path):
         assert reference() is None
     finally:
         recorder.close()
+
+
+def test_unmapped_test_retains_static_import_and_path_rules():
+    mod = load('tia_select')
+    mapping = {'source_commit': 'a' * 40, 'files': {'src/a.py': 'abc'},
+               'functions': ['src/a.py::f'], 'unattributed': [],
+               'tests': {'tests/test_a.py::test_f': [0]},
+               'unmapped': {'tests/test_archive.py': 'bubblewrap cannot mount /proc in admitted PrismaBuild actions; exit 78'}}
+    def static(paths):
+        return {'selected': ([{'path': 'tests/test_archive.py', 'reasons': ['direct import: src/a.py']}]
+                             if 'src/a.py' in paths or 'data/golden.json' in paths else [])}
+    args = {'file_hashes': {'src/a.py': 'abc'}, 'fast': [], 'changed_tests': [],
+            'population': ['tests/test_a.py', 'tests/test_archive.py'], 'static': static}
+    changes = {'python': {'src/a.py': {'changed': ['f'], 'added': [], 'deleted': [], 'module_changed': False}}, 'non_python': []}
+    selected = mod.select(mapping, changes, **args)
+    assert selected['targets'] == ['tests/test_a.py::test_f', 'tests/test_archive.py']
+    assert any('unmapped test' in why for row in selected['selected'] for why in row['reasons'])
+    unrelated = mod.select(mapping, {'python': {}, 'non_python': ['docs/readme.md']}, **args)
+    assert unrelated['targets'] == []
+    literal = mod.select(mapping, {'python': {}, 'non_python': ['data/golden.json']}, **args)
+    assert literal['targets'] == ['tests/test_archive.py']
