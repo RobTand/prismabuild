@@ -1,0 +1,19 @@
+{
+  "seconds": 20,
+  "slow": {
+    "tests/test_a_stalled_mover_ends_no_progress.py::test_a_slow_copy_on_a_pool_over_its_caps_is_not_a_stall": 66,
+    "tests/test_a_terminal_receipt_retires_behind_a_covered_fold.py::test_a_batch_retirement_replaces_the_checkpoint_once": 217,
+    "tests/test_fleet_membership_busy_resign.py::test_resign_preserves_newer_unrelated_publication": 52,
+    "tests/test_incident_1627_stalled_window_reclaims.py::test_cycles_reclaim_the_stranded_holders": 69,
+    "tests/test_pbtest_publishes_its_own_shards.py::test_an_offer_timeout_at_publication_is_retried_off_the_same_snapshot": 62,
+    "tests/test_steady_tier_gate_portability_1961.py::test_portable_steady_gate_keeps_read_guards_without_a_machine_cpu_budget": 86,
+    "tests/test_the_r13_dead_instance_gives_its_paths_back.py::test_the_r13_dead_instance_replayed": 52,
+    "tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned": 106
+  },
+  "source": {
+    "inventory": "inventory-22e9d752/inventory.json",
+    "sha256": "43fd222e4ce2e3da0866c1cafa2ee1fc219b653f78872d29f2fd5e42834fd27f",
+    "tests": 20021,
+    "method": "max_s > 20; exception seconds = ceil(2 * max_s)"
+  }
+}

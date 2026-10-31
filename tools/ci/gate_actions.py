@@ -23,6 +23,10 @@ def _verdict(plan, files, record):
             sorted(record['files']) != sorted(files)):
         return None
     code = record.get('pytest_exit_code')
+    budget = record.get('budget')
+    if (record.get('verdict') == 'fail' and isinstance(budget, dict) and
+            budget.get('status') == 'fail' and (code is None or type(code) is int and code in {0, 1})):
+        return 'fail'
     if type(code) is not int:
         return None
     verdict = record.get('verdict')

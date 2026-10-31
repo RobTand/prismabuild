@@ -16,11 +16,25 @@ runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
 
 
+@pytest.fixture(autouse=True)
+def fixture_cost_policy(tmp_path):
+    target = tmp_path / 'tools/ci/gate_budget.json'
+    target.parent.mkdir(parents=True)
+    target.write_text('{"seconds":20,"slow":{}}')
+
+
+def fixture_junit(tmp_path):
+    (tmp_path / 'junit.xml').write_text(
+        '<testsuites><testcase file="tests/test_one.py" classname="tests.test_one" '
+        'name="test_one" time="0.01"/></testsuites>')
+
+
 @pytest.mark.parametrize('code,verdict', [(0, 'pass'), (1, 'fail')])
 def test_completed_pytest_writes_a_final_verdict(tmp_path, code, verdict):
     calls = []
     def execute(command, **kwargs):
         calls.append((command, kwargs))
+        fixture_junit(tmp_path)
         return SimpleNamespace(returncode=code)
     result = runner.run_plan({'selected': [{'path': 'tests/test_one.py'}],
                              'deselect': ['tests/test_one.py::test_bad']},
@@ -115,6 +129,7 @@ def test_ci_python_loader_environment_does_not_leak_into_proof_capture(tmp_path,
     observed = []
     def execute(command, **kwargs):
         observed.append(kwargs['env'])
+        fixture_junit(tmp_path)
         return SimpleNamespace(returncode=0)
     code = runner.run_plan({'selected': [{'path': 'tests/test_one.py'}], 'deselect': []},
         root=tmp_path, output=tmp_path / 'output', junit=tmp_path / 'junit.xml',
