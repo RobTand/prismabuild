@@ -21,9 +21,6 @@ permissions:
   contents: read
   actions: read
   issues: write
-concurrency:
-  group: full-suite-report-main
-  cancel-in-progress: false
 jobs:
   report:
     if: >-
@@ -31,6 +28,9 @@ jobs:
       (github.event_name == 'status' && github.event.state != 'pending' &&
        (github.event.context == 'CircleCI Pipeline' || github.event.context == 'ci/circleci: full-suite-report')) ||
       (github.event_name == 'check_run' && github.event.check_run.name == 'full-suite-report')
+    concurrency:
+      group: full-suite-report-main
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
