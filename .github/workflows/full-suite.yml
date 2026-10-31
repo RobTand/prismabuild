@@ -1,7 +1,7 @@
 name: Full suite
 on:
   push:
-    branches: [main]
+    branches: [main, prismabuild-2428-full-suite]
   schedule:
     - cron: '23 2 * * *'
   workflow_dispatch:
