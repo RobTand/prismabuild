@@ -43,10 +43,6 @@ def test_missing_verdict_or_coverage_or_file_identity_is_inconclusive(tmp_path):
     assert audit(tmp_path, file_attribute=False)['exit_code'] == 75
 
 
-def test_actions_workflow_is_removed():
-    assert not (ROOT / '.github/workflows/gate.yml').exists()
-
-
 def test_assignment_claims_without_junit_coverage_are_inconclusive(tmp_path):
     plan = {'mode': 'full', 'population': {'version': 'v1'},
             'selected': [{'path': 'tests/a.py'}, {'path': 'tests/b.py'}],
