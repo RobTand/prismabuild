@@ -1,7 +1,6 @@
 """CPU coverage and trustworthy verdicts for the off-queue suite."""
 import importlib.util
 from pathlib import Path
-import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -72,7 +71,8 @@ def test_value(value):
     xml = tmp_path / 'junit.xml'
     env = dict(os.environ, PYTHONPATH=str(ROOT / 'tools/ci'), PYTEST_DISABLE_PLUGIN_AUTOLOAD='1')
     done = subprocess.run([sys.executable, '-m', 'pytest', '-p', 'xdist.plugin', '-p',
-        'full_suite_shard', '-n', '1', '--junitxml', str(xml), str(tmp_path / 'test_example.py')],
+        'full_suite_shard', '-n', '1', '--rootdir', str(tmp_path),
+        '--junitxml', str(xml), str(tmp_path / 'test_example.py')],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
     assert done.returncode == 1, done.stdout + done.stderr
     rows = shard.read_junit(xml)
