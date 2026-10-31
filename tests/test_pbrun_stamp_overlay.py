@@ -3,8 +3,10 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import select
 import subprocess
 import sys
+from threading import Barrier
 
 import pytest
 
@@ -70,12 +72,14 @@ def test_concurrent_overlays_need_no_shared_stamp_path(tmp_path):
     stamp = f"{submit_core.STAMP_PREFIX}{'b' * 16}.json"
     identity = movement_actions.checkout_identity(checkout)
     payload = json.dumps({"cwd": ".", **identity}, indent=1, sort_keys=True)
+    at_snapshot = Barrier(2, timeout=60)
     def seal(_):
+        at_snapshot.wait()
         return submit_core.snapshot_checkout(
             checkout, stamp_name=stamp, stamp_payload=payload, cas=cas,
             expected_identity=identity)
-    with ThreadPoolExecutor(max_workers=8) as workers:
-        snapshots = list(workers.map(seal, range(16)))
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        snapshots = list(workers.map(seal, range(2)))
     assert all(snapshot == snapshots[0] for snapshot in snapshots)
     assert not list(checkout.glob(f"{submit_core.STAMP_PREFIX}*"))
     assert movement_actions.checkout_identity(checkout) == identity
@@ -112,7 +116,7 @@ def test_full_concurrent_submissions_leave_no_transient_stamp_names(tmp_path):
     queue = _queue(tmp_path)
     submit_core.keep_droppings_out_of_git(checkout)
     code = r"""
-import socket, sys
+import os, socket, sys
 from pathlib import Path
 import pbrun
 from prismabuild import d38_gate
@@ -121,6 +125,13 @@ d38_gate.ENFORCE = False  # this test is about stamp names, not D38
 socket.gethostname = lambda: 'sparky'
 pbrun_store = submit_core.FleetStore(Path(sys.argv[1]), pbrun.RUNTIME_ROOT, pbrun.fleet_roster.Roster.beside(pbrun.__file__))
 pbrun.configured_store = lambda: pbrun_store
+ready, release = map(int, sys.argv[3:])
+snapshot = submit_core.snapshot_checkout
+def gated_snapshot(*args, **kwargs):
+    os.write(ready, b'r')
+    assert os.read(release, 1) == b'g'
+    return snapshot(*args, **kwargs)
+submit_core.snapshot_checkout = gated_snapshot
 sys.argv = ['pbrun', '--cwd', sys.argv[2], '--detach', '--transport', 'pool',
             '--', '/bin/true']
 raise SystemExit(pbrun.main())
@@ -128,14 +139,30 @@ raise SystemExit(pbrun.main())
     env = dict(os.environ, PYTHONPATH=os.pathsep.join(
         [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]),
         OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
-    def submit(_):
+    ready_read, ready_write = os.pipe()
+    release_read, release_write = os.pipe()
+    def submit():
         result = subprocess.run(
-            [sys.executable, "-c", code, str(tmp_path), str(checkout)],
+            [sys.executable, "-c", code, str(tmp_path), str(checkout),
+             str(ready_write), str(release_read)],
+            pass_fds=(ready_write, release_read),
             env=env, text=True, capture_output=True, timeout=60)
         assert result.returncode == 0, result.stdout + result.stderr
         return json.loads(result.stdout)["action_key"]
-    with ThreadPoolExecutor(max_workers=8) as workers:
-        keys = list(workers.map(submit, range(16)))
+    try:
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            submissions = [workers.submit(submit) for _ in range(2)]
+            try:
+                for _ in submissions:
+                    readable, _, _ = select.select([ready_read], [], [], 60)
+                    assert readable, "submission did not reach snapshot entry"
+                    assert os.read(ready_read, 1) == b'r'
+            finally:
+                os.write(release_write, b'gg')
+            keys = [submission.result() for submission in submissions]
+    finally:
+        for descriptor in (ready_read, ready_write, release_read, release_write):
+            os.close(descriptor)
     assert len(set(keys)) == 1
     assert [item["action_key"] for item in queue.ready_items()] == [keys[0]]
     assert not list(checkout.glob(f"{submit_core.STAMP_PREFIX}*"))
