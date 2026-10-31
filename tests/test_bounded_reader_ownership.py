@@ -224,6 +224,17 @@ def test_callback_cannot_extend_deadline_or_release_after_expiry(tmp_path, monke
     _wait_settled(seen[0])
 
 
+
+def test_expired_callback_settles_without_the_sleeping_wait_helper(
+        tmp_path, monkeypatch):
+    def forbid_sleeping_wait(_ownership):
+        raise AssertionError("callback expiry must synchronize with child exit")
+
+    monkeypatch.setitem(globals(), "_wait_settled", forbid_sleeping_wait)
+    test_callback_cannot_extend_deadline_or_release_after_expiry(
+        tmp_path, monkeypatch)
+
+
 def test_partial_callback_failure_retains_original_proved_identity(tmp_path, monkeypatch):
     marker = tmp_path / "partial.json"
     seen = []
