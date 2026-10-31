@@ -2,6 +2,8 @@
 from pathlib import Path
 import re
 
+import pytest
+
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +47,7 @@ def test_dependencies_retries_and_circleci_timing_contract():
     assert 'NO_VERDICT' in text
 
 
-def run_command(tmp_path, command, *, setup=False, plan_exit=0, runner_exit=0):
+def run_command(tmp_path, command, *, plan_exit=0, runner_exit=0):
     """Execute the configured shell, replacing external services with local commands."""
     import os
     import subprocess
@@ -76,7 +78,7 @@ def execution_command():
 
 def test_environment_setup_failure_exits_no_verdict(tmp_path):
     command = config()['commands']['gate-setup']['steps'][1]['run']['command']
-    result = run_command(tmp_path, command, setup=True)
+    result = run_command(tmp_path, command)
     assert result.returncode == 75
     assert 'NO_VERDICT' in result.stdout
 
@@ -85,9 +87,6 @@ def test_planning_failure_exits_no_verdict(tmp_path):
     result = run_command(tmp_path, execution_command(), plan_exit=1)
     assert result.returncode == 75
     assert 'NO_VERDICT' in result.stdout
-
-
-import pytest
 
 
 @pytest.mark.parametrize('code,marker', [(0, 'GATE_PASS'), (1, 'GATE_TEST_FAILURE'), (75, 'NO_VERDICT')])

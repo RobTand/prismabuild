@@ -7,8 +7,8 @@ commands:
           name: Set up pinned gate environment
           no_output_timeout: 10m
           command: |
-            set -euo pipefail
-            trap 'echo "NO_VERDICT: checkout/environment setup failed"' ERR
+            set -Eeuo pipefail
+            trap 'echo "NO_VERDICT: checkout/environment setup failed"; exit 75' ERR
             export UV_CACHE_DIR="$HOME/.cache/uv"
             python_bin=""
             for attempt in 1 2 3; do
@@ -44,8 +44,8 @@ commands:
           name: Plan and run << parameters.mode >> gate (<< parameters.lane >>)
           no_output_timeout: 30m
           command: |
-            set -euo pipefail
-            trap 'echo "NO_VERDICT: planning or execution infrastructure failed"' ERR
+            set -Eeuo pipefail
+            trap 'echo "NO_VERDICT: planning or execution infrastructure failed"; exit 75' ERR
             mkdir -p gate-artifacts test-results
             git fetch --no-tags origin main
             base=$(git merge-base origin/main HEAD)
@@ -67,16 +67,18 @@ commands:
                   < gate-artifacts/lane.txt > gate-artifacts/assigned.txt
               fi
             fi
-            set +e
-            python tools/ci/gate_run.py --plan gate-artifacts/plan.json \
+            if python tools/ci/gate_run.py --plan gate-artifacts/plan.json \
               --files-from gate-artifacts/assigned.txt --workers 4 \
-              --result gate-artifacts/result.json --junitxml test-results/gate.xml
-            code=$?
-            set -e
+              --result gate-artifacts/result.json --junitxml test-results/gate.xml; then
+              code=0
+            else
+              code=$?
+            fi
             case "$code" in
               0) echo 'GATE_PASS: all assigned tests passed';;
               1) echo 'GATE_TEST_FAILURE: pytest reported a failure';;
-              *) echo 'NO_VERDICT: runner or pytest infrastructure failed';;
+              75) echo 'NO_VERDICT: runner or pytest infrastructure failed';;
+              *) echo 'NO_VERDICT: unexpected runner exit'; code=75;;
             esac
             exit "$code"
       - store_test_results:

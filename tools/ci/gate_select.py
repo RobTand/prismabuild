@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import importlib.util
 import heapq
 import json
 import math
@@ -12,7 +13,11 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 
-POLICY = 'direct-imports-helper-closure-v1'
+PATH_SPEC = importlib.util.spec_from_file_location('gate_paths', Path(__file__).with_name('gate_paths.py'))
+gate_paths = importlib.util.module_from_spec(PATH_SPEC)
+PATH_SPEC.loader.exec_module(gate_paths)
+
+POLICY = 'direct-imports-bound-paths-helper-closure-v2'
 
 
 def read_json(path: Path) -> dict:
@@ -64,29 +69,6 @@ def module_names(path: str) -> set[str]:
     return names
 
 
-def literal_path(node: ast.AST) -> str | None:
-    """Resolve literal Path joins used by file-loading tests, without evaluation."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.Call) and node.args:
-        name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, 'attr', '')
-        if name in {'Path', 'PurePath', 'PurePosixPath'}:
-            parts = [literal_path(arg) for arg in node.args]
-            if all(part is not None for part in parts):
-                return '/'.join(parts)
-    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and
-        node.func.attr == 'joinpath'):
-        base = literal_path(node.func.value)
-        parts = [literal_path(arg) for arg in node.args]
-        if all(part is not None for part in parts):
-            return '/'.join(([base] if base else []) + parts)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        left, right = literal_path(node.left), literal_path(node.right)
-        if right is not None:
-            return left.rstrip('/') + '/' + right.lstrip('/') if left else right
-    return None
-
-
 def dependencies(source: str, path: str = '') -> tuple[set[str], set[str]]:
     parsed = ast.parse(source)
     trees = [parsed]
@@ -99,6 +81,7 @@ def dependencies(source: str, path: str = '') -> tuple[set[str], set[str]]:
                 pass
     modules, paths = set(), set()
     for tree in trees:
+        paths.update(gate_paths.references(tree, path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 modules.update(alias.name for alias in node.names)
@@ -111,9 +94,8 @@ def dependencies(source: str, path: str = '') -> tuple[set[str], set[str]]:
                 if prefix:
                     modules.add(prefix)
                 modules.update(f'{prefix}.{alias.name}' if prefix else alias.name for alias in node.names)
-            value = literal_path(node)
-            if value is not None:
-                paths.add(value.removeprefix('./'))
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                value = node.value
                 if not value.endswith('.py') and re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*', value):
                     modules.add(value)
     return modules, paths
@@ -132,7 +114,10 @@ def helper_importers(index: dict, changed: list[str]) -> dict[str, set[str]]:
     reverse: dict[str, set[str]] = {}
     for path, (imports, references) in index.items():
         targets = {target for module in imports for target in aliases.get(module, ())}
-        targets.update(reference for reference in references if reference in index)
+        targets.update(references & index.keys())
+        patterns = {reference for reference in references if '**' in reference}
+        if patterns:
+            targets.update(target for target in index if gate_paths.matches(target, patterns))
         for target in targets - {path}:
             reverse.setdefault(target, set()).add(path)
     return reverse
@@ -209,7 +194,7 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
             if modules and any(dependency == module or dependency.startswith(module + '.')
                                for dependency in imports for module in modules):
                 why.append('direct import: ' + path)
-            elif path in paths:
+            elif gate_paths.matches(path, paths):
                 why.append('literal path reference: ' + path)
         if why:
             reasons[name] = why
