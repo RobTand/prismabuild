@@ -218,7 +218,7 @@ def campaign(root: Path, gate_dir: Path, mapping: dict, map_path: Path, output: 
                       unattributed=[name for name in mapping['unattributed'] if name.startswith(mutation['path'] + '::')])
         packed_map = base64.b64encode(gzip.compress(json.dumps(subset).encode(), mtime=0)).decode()
         rows.append({'cwd': str(root), 'argv': ['/home/rob/venvs/pb-cpu/bin/python',
-                     'tools/ci/tia_evaluate.py', 'mutation', '--mutation', json.dumps(mutation),
+                     Path(__file__).resolve().relative_to(root).as_posix(), 'mutation', '--mutation', json.dumps(mutation),
                      '--gate-dir', str(gate_dir.relative_to(root))],
                      'demand': {'cpu': 1, 'mem_gb': 4}, 'priority': -10, 'anywhere': True, 'timeout_s': 3600,
                      'env': {'OMP_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1',
