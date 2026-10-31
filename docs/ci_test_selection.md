@@ -18,6 +18,10 @@ The plugin hashes source files before tests start, so callbacks do no filesystem
 I/O while tests run. Shared fixtures carry their recorded dependencies to every
 consumer, including tests that reuse a cached session fixture.
 
+The plugin removes its own `PYTEST_PLUGINS` entries from child environments.
+It propagates explicit plugin arguments to xdist workers instead. A child that
+replaces `PYTHONPATH` therefore does not inherit a broken pytest plugin import.
+
 The plugin creates an opt-in `sitecustomize.py` in its output directory and
 prepends that directory to `PYTHONPATH`. Python subprocesses that inherit the
 environment record under the parent's `PB_TIA_NODE`. Each process writes its

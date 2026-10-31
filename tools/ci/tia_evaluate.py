@@ -189,7 +189,8 @@ def campaign(root: Path, gate_dir: Path, mapping: dict, map_path: Path, output: 
             tests.setdefault(key, set()).update(relevant)
         subset = dict(mapping, functions=[mapping['functions'][i] for i in ids],
                       tests={node: sorted(values) for node, values in tests.items()},
-                      files={mutation['path']: mapping['files'][mutation['path']]})
+                      files={mutation['path']: mapping['files'][mutation['path']]},
+                      unattributed=[name for name in mapping['unattributed'] if name.startswith(mutation['path'] + '::')])
         packed_map = base64.b64encode(gzip.compress(json.dumps(subset).encode(), mtime=0)).decode()
         rows.append({'cwd': str(root), 'argv': ['/home/rob/venvs/pb-cpu/bin/python',
                      'tools/ci/tia_evaluate.py', 'mutation', '--mutation', json.dumps(mutation),
