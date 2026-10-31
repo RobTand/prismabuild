@@ -21,6 +21,9 @@ def test_agents_route_their_tests_through_prismabuild(path: Path):
     assert "gpu jobs, benchmarks, and large or long-running compute" in text
     assert "run the fast relevant tests in your worktree" not in text
     assert "a local run is evidence" not in text
+    # The coordinator may inspect, edit, use Git and submit; it runs no tests.
+    assert "development tests and submission commands may run on the coordinator" not in text
+    assert "fast relevant development tests" not in text
 
 
 @pytest.mark.parametrize("path", POLICIES, ids=["agents", "execution-policy"])
