@@ -69,6 +69,12 @@
     ]
   },
   {
+    "path": "src/prismabuild/_gpu_submission_policy.py",
+    "owner": "_eligible_gpu_classes",
+    "unresolved": "{tag for tag in tags if tag not in code_tags and (not tag.startswith('runtime-generation:'))}",
+    "binding": "required"
+  },
+  {
     "path": "src/prismabuild/_measurement_reservation.py",
     "owner": "CensusReader._checked_census",
     "fields": [
@@ -4141,6 +4147,12 @@
     "path": "tools/backlog_census/hindsight.py",
     "owner": "collect",
     "unresolved": "{key for key in index if not key.startswith('_')}"
+  },
+  {
+    "path": "tools/ci/issue_link.py",
+    "owner": "batch_members",
+    "unresolved": "[i for i, line in enumerate(lines) if line.startswith('pull_requests:')]",
+    "binding": "keys"
   },
   {
     "path": "tools/duplication_inventory.py",
