@@ -112,7 +112,8 @@ def main(argv=None) -> int:
     code, rows, error = 0, {}, ''
     if files:
         command = [sys.executable, '-m', 'pytest', '-p', 'full_suite_shard', '-n', str(args.workers),
-                   '--dist', 'loadfile', '--continue-on-collection-errors', '--junitxml', str(xml), '--durations', '30', *files]
+                   '--dist', 'loadfile', '--continue-on-collection-errors',
+                   '--junitxml', str(xml), '--durations', '30', *files]
         try:
             code = subprocess.run(command, cwd=root, env=env, check=False).returncode
             rows = read_junit(xml)

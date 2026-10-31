@@ -211,3 +211,41 @@ def test_workflow_keeps_suite_off_gate_and_privileges_in_report():
     assert report_job['if'] == 'always()'
     assert set(report_job['needs']) >= {'shards', 'retry'}
     assert 'issues' not in workflow['permissions']
+
+
+def test_artifact_redirect_drops_authorization_before_downloading(monkeypatch):
+    import io
+    import json
+    import urllib.error
+    import zipfile
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w') as zipped:
+        zipped.writestr('results.json', json.dumps({'complete': True, 'sha': 'old', 'tests': {}}))
+    downloads = []
+    class Opener:
+        def open(self, request, timeout):
+            assert request.get_header('Authorization') == 'Bearer unit-test-secret'
+            raise urllib.error.HTTPError(request.full_url, 302, 'redirect',
+                {'Location': 'https://artifact.example/signed'}, None)
+    def download(request, timeout):
+        downloads.append(request)
+        return io.BytesIO(archive.getvalue())
+    monkeypatch.setattr(report.urllib.request, 'build_opener', lambda *args: Opener())
+    monkeypatch.setattr(report.urllib.request, 'urlopen', download)
+    result = report.GitHub('RobTand/prismabuild', 'unit-test-secret').artifact(42)
+    assert result == {'complete': True, 'sha': 'old', 'tests': {}}
+    assert downloads == ['https://artifact.example/signed']
+
+
+def test_rest_payload_scrubs_runtime_token(monkeypatch):
+    import io
+    import json
+    payloads = []
+    def send(request, timeout):
+        payloads.append(json.loads(request.data))
+        return io.BytesIO(b'{"number": 7}')
+    monkeypatch.setattr(report.urllib.request, 'urlopen', send)
+    result = report.GitHub('RobTand/prismabuild', 'unit-test-secret').request(
+        'issues', {'body': 'failure contained unit-test-secret'})
+    assert result['number'] == 7
+    assert payloads == [{'body': 'failure contained [REDACTED]'}]
