@@ -2,7 +2,7 @@
 
 #1961 names this gate on portable-x86, whereas its absolute CPU allowance was
 calibrated on GB10 cores. Exercise the actual steady-cycle regression with
-an affine, unit-preserving CPU clock: the work and filesystem observations stay
+a deterministic CPU clock: the work and filesystem observations stay
 real, but an unchanged cycle costs more CPU seconds. This is a deterministic
 counterexample to the portability assumption, not a reconstruction of the
 unavailable historical gate traceback.
@@ -29,15 +29,10 @@ READ_COUNTERS = (
 def test_portable_steady_gate_keeps_read_guards_without_a_machine_cpu_budget(
     loop, monkeypatch,
 ):
-    real_cpu = time.process_time
-    origin = real_cpu()
     cpu_samples = []
 
     def slower_cpu():
-        # CPU seconds remain CPU seconds; this models a slower interpreter/CPU,
-        # not a clock-unit bug. No wall/monotonic clock or production work is
-        # replaced, and a relative cost comparison can still use this clock.
-        value = origin + 10_000 * (real_cpu() - origin)
+        value = 1000.0 + len(cpu_samples)
         cpu_samples.append(value)
         return value
 
