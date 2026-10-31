@@ -28,6 +28,9 @@ from typing import Literal
 MOVE_PRICING_LOG_TAG = b"pricing.v2"
 
 
+MAX_INSPECTION_RECORD_BYTES = 8 * 1024 * 1024
+
+
 POOL_ATTEMPT_SCHEMA_V1 = "prismaquant.prismabuild.pool_attempt.v1"
 
 
@@ -2007,12 +2010,9 @@ class RecordStore:
         """Distinguish a missing inspection slot from unreadable present bytes."""
         path = self.item_path(state, key)
         try:
-            raw = _document_bytes(path)
-            if raw is None:
-                return Absent()
-            record = _document_from_bytes(path, raw)
+            record = read_bounded_document(path, max_bytes=MAX_INSPECTION_RECORD_BYTES)
             if record is None:
-                raise PoolContractError(f"queue record is present but empty: {path}")
+                return Absent()
         except Exception as exc:
             return Unknown("record-unreadable", path, exc)
         return Present(record)

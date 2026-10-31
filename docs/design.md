@@ -20623,7 +20623,12 @@ facet or UTC-day bucket using the writer's bucket derivation. A parseable leaf
 whose address disagrees with its contents is unreadable index evidence, even
 when an in-place edit preserves all directory coverage stamps. The reader marks
 discovery incomplete and retains readable candidates within the same budgets.
-Other filter predicates may still exclude a valid leaf as a genuine nonmatch.
+Only the addressed facet and filename-bound publication time narrow index
+candidates. Secondary facets are evaluated from canonical slots within the
+same 256-read budget, so an in-place secondary-facet edit cannot hide a match
+or establish complete absence. Indexed canonical records use the strict,
+no-follow replaced-leaf reader with an 8 MiB cap. Duplicate keys, nonfinite
+numbers, oversize records and symlinks return Unknown and incomplete discovery.
 
 This index changes inspection cost and diagnostics. It grants no lifecycle,
 admission, residency, cleanup or dev-certification authority. Source inclusion

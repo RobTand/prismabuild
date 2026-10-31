@@ -250,8 +250,10 @@ def publication_candidates(
                     except (OSError, ValueError, digest_primitives.PrismaBuildError):
                         reasons.append("index-leaf-unreadable")
                         continue
-                    if (all(candidate.facets.get(field) == value for field, value in facets.items())
-                            and (published_after is None or candidate.published_unix >= published_after)
+                    # Only the addressed facet is bound by this leaf's path.
+                    # Secondary values cannot establish a nonmatch; the MCP
+                    # consumer evaluates them from canonical slots in its budget.
+                    if ((published_after is None or candidate.published_unix >= published_after)
                             and (published_before is None or candidate.published_unix <= published_before)):
                         candidates[candidate.action_key, candidate.published_unix] = candidate
             if entries >= max_entries:

@@ -3594,6 +3594,10 @@ The tools:
     publisher and age filters address advisory publication candidates first.
     Discovery consumes at most 256 index entries and 32 time pages; canonical
     verification opens at most 256 requested state slots, including misses.
+    The addressed facet and publication time narrow candidates; secondary
+    predicates use canonical values within that same budget. Indexed canonical
+    records have an 8 MiB cap and strict JSON decoding. Duplicate keys,
+    nonfinite numbers, oversized records and symlinks make discovery incomplete.
     These bounds are independent of the returned-row `limit`. Each returned
     row is read from a canonical state slot and must match the indexed
     publication generation and the supplied predicates. `max_age_s` uses
