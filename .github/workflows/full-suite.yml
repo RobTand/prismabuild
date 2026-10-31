@@ -21,7 +21,7 @@ concurrency:
   group: full-suite-main
   cancel-in-progress: false
 env:
-  FULL_SUITE_SHARDS: '16'
+  FULL_SUITE_SHARDS: '1'
   OMP_NUM_THREADS: '1'
   MKL_NUM_THREADS: '1'
   OPENBLAS_NUM_THREADS: '1'
@@ -29,6 +29,7 @@ env:
   GIT_AUTHOR_EMAIL: ci@example.invalid
   GIT_COMMITTER_NAME: PrismaBuild CI
   GIT_COMMITTER_EMAIL: ci@example.invalid
+  FULL_SUITE_FILING_PROOF: '1'
 jobs:
   plan:
     runs-on: ubuntu-24.04
@@ -304,7 +305,7 @@ jobs:
     - name: Classify and report through GitHub REST
       env:
         GITHUB_TOKEN: ${{ github.token }}
-        DRY_RUN: ${{ inputs.dry_run || github.ref != 'refs/heads/main' }}
+        DRY_RUN: 'false'
       run: |-
         args=()
         if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi

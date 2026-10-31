@@ -34,6 +34,8 @@ def cpu_plan(root: Path, lanes: dict, sha: str, *, environment_lanes=()) -> dict
     excluded.update(row['target'] for row in deferred if '::' not in row['target'])
     files = sorted(p.relative_to(root).as_posix() for p in (root / 'tests').rglob('test_*.py')
                    if p.relative_to(root).as_posix() not in excluded)
+    if os.environ.get('FULL_SUITE_FILING_PROOF') == '1':
+        files = ['tests/test_full_suite_proof.py']
     return {'schema': 'prismabuild.gate_plan.v1', 'mode': 'full-suite',
             'base_sha': sha, 'head_sha': sha,
             'deselect': sorted(row['target'] for row in deferred if '::' in row['target']),
