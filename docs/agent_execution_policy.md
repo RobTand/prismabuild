@@ -264,8 +264,8 @@ Check the exit status, terminal record, logs and CAS receipt. A submission
 acknowledgement is not a passing test. Record skips and missing tooling. Install
 scoped tooling where required instead of silently skipping qualification.
 
-Read-only inspection, source edits, Git operations, fast relevant development
-tests and submission commands may run on the coordinator. Do not hide work
+Read-only inspection, source edits, Git operations and submission commands may
+run on the coordinator; tests run through PrismaBuild. Do not hide work
 requiring admission in SSH commands, shell scripts, containers, inline Python
 or another agent to evade admission. If PrismaBuild
 cannot admit work, diagnose and repair its availability; do not silently fall
