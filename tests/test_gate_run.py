@@ -70,7 +70,7 @@ def test_empty_selection_cannot_default_to_running_the_entire_suite(tmp_path):
     assert result == 75
 
 
-def test_runner_uses_assigned_files_and_job_cpus_with_circleci_junit(tmp_path):
+def test_runner_uses_assigned_files_and_job_cpus_with_portable_junit(tmp_path):
     (tmp_path / 'tests').mkdir()
     (tmp_path / 'pytest.ini').write_text('[pytest]\n')
     (tmp_path / 'tests/test_sample.py').write_text(

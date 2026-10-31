@@ -182,7 +182,7 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
     version = hashlib.sha256(json.dumps(version_body, sort_keys=True).encode()).hexdigest()
     triggers = sorted(path for path in set(changed) if
         path in {'conftest.py', 'tests/conftest.py', 'pyproject.toml', 'tools/verify.py',
-                 'tests/proof_execution.json', 'tests/receipt_execution.json', '.circleci/config.yml'} or
+                 'tests/proof_execution.json', 'tests/receipt_execution.json', '.github/workflows/gate.yml'} or
         path.startswith(('tools/ci/gate_', 'tests/test_gate_')))
     reasons: dict[str, list[str]] = {}
     for name, (imports, paths) in index.items():

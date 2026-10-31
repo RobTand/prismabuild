@@ -1,85 +1,104 @@
-# CircleCI merge gate
+# Hosted Actions merge gate
 
-Ordinary branch pushes run `pr-gate` on one `robtand/fast-arm64` slot. The
-selector always includes FAST, changed tests, direct importers of changed
-production modules, path references, and test helper import closure. Static path
-resolution follows named directory bindings, __file__ parents, test-relative
-paths, Path constructors, joinpath and os.path joins. A computed filename
-retains its known directory as a conservative match; an unresolved base can
-retain a literal suffix. These matches also form helper-closure edges.
-Changing conftest, pyproject, verify, lane manifests or gate code/config selects
-the full population. Documentation alone does not.
+Ordinary PRs run `pr-gate` on GitHub-hosted `ubuntu-latest`, selecting tests by
+evidence. Mergify batch drafts run the full eligible population when the head
+branch starts `mergify/merge-queue/`, the PR author is login `mergify[bot]` with
+id 37929162, and the head repository is this repository. A same-repository PR
+with the `gate-canary` label also runs the full gate. No CI job uses the fleet.
+Mergify requires `pr-gate` to queue and the final job `gate` to merge.
 
-Mergify queue and `gate-canary/*` branches run the **full eligible population**.
-`queue-gate-heavy` uses two ARM slots and `queue-gate-light` uses two x64 slots.
-Files with summed inventory medians of at least 5 seconds, or unknown duration,
-go to heavy. CircleCI splits each lane by filename timings. Coverage is never
-truncated to meet a time budget. The threshold is provisional pending live trials.
-These stable job names publish the GitHub statuses required by Mergify.
-
-Each unprivileged slot has four CPUs and 6 GiB. Setup uses uv's private cache,
-prefers Python 3.14, and falls back to image Python >=3.12. Python installation
-and environment setup each have at most three attempts. Dependencies are
+The full plan records a shadow selection while coverage stays full. The initial
+matrix has ten shards, alternating `ubuntu-latest` and `ubuntu-24.04-arm`.
+Each shard uses four pytest-xdist workers within inherited CPU affinity.
+Actions are pinned by commit SHA. Setup uses Python 3.14 and pip caching with
 pytest 9.1.1, pytest-xdist 3.8.0 and PyYAML 6.0.3. Native threads are bounded to
-one, xdist uses four workers within inherited affinity, and each test has the
-repository's 60-second bound. No shared fleet mount, secrets or contexts are used.
+one and each test has the repository's 60-second bound. Permissions are read
+only; checkout credentials are not persisted and no secrets are configured.
 
-## Plans, verdicts and timings
+## Plans and partitioning
 
-The archived `gate-artifacts/plan.json` records exact base/head SHAs, reasons,
-population version, quarantine and duration provenance. Base is the merge base
-of the fetched main and checkout. Queue plans include `shadow_selected`, the
-selection that would have run. Queue gating remains full until batch evidence
-qualifies selection. A single run with no missed failure proves only that run.
+The selector includes FAST, changed tests, direct production importers, literal
+path references and the test-helper import closure. It resolves named directory
+bindings, __file__ parents, test-relative paths, Path constructors, joinpath and
+os.path joins. Computed fixture names conservatively match their containing
+directory; an unresolved base may retain a literal suffix. Changing conftest,
+pyproject, verify, lane manifests or the gate's code/config selects the full
+population. Documentation alone does not.
 
-The runner is usable from any CI:
+The shared partitioner is also used by the nightly full-suite workflow. It sorts
+by descending duration, then path, assigning each file to the least-loaded shard
+with the lowest index breaking ties. Unknown files cost the nearest-rank p90 of
+known costs; empty or all-zero inventories use one second. Unknown file costs
+remain identifiable. Every file is retained exactly once, and the interface
+retains empty shards when there are fewer files than shards.
 
 ```sh
 python tools/ci/gate_select.py --base "$BASE_SHA" --head "$HEAD_SHA" --mode full \
   --output plan.json --files-output files.txt
+python tools/ci/gate_partition.py matrix --files-from files.txt \
+  --durations tools/ci/gate_durations.json --shards 10 \
+  --runners ubuntu-latest,ubuntu-24.04-arm --output matrix.json
+python tools/ci/gate_partition.py shard --files-from files.txt \
+  --durations tools/ci/gate_durations.json --shards 10 --index 0 \
+  --output-files assigned.txt
 python tools/ci/gate_run.py --plan plan.json --files-from assigned.txt --workers 4 \
-  --result result.json --junitxml results/gate.xml
+  --result result.json --junitxml junit.xml
 ```
 
-Exit 0 means pass, 1 means test failure, and 75 means no verdict. Logs distinguish
-`GATE_PASS`, `GATE_TEST_FAILURE` and `NO_VERDICT`. Setup and planning failures exit 75. The shell preserves the runner's explicit
-0, 1 and 75 without treating a test failure as a planning error. Lost runners cannot self-retry
-without credentials; Mergify owns the bounded check retry. Setup failure, lost
-runner or absent status must never become a pass. JUnit uses xunit1 with `file`
-attributes for CircleCI's `store_test_results` timing history. Plan, assignment,
-result and JUnit are also artifacts on failed runs.
+Each shard recomputes its assignment from the same population, duration table
+and shard count. No test-file list passes through matrix entries. Coverage is
+never truncated to meet a time budget. The initial count and timeout estimates
+must be assessed against live hosted-runner timings, including pickup/setup.
 
-Download all four queue nodes' final result/JUnit artifacts, retain one identical
-full plan, and compare shadow selection with complete full-run failures:
+## Verdicts and retries
+
+Exit 0 means pass, 1 means test failure, and 75 means no verdict. Logs distinguish
+`GATE_PASS`, `GATE_TEST_FAILURE` and `NO_VERDICT`. Setup/planning exceptions are
+infrastructure failures. A shard's first attempt uploads its result and xunit1
+JUnit with file attributes. The retry planner chooses only missing or invalid
+verdicts, including a lost runner or failed setup. A test failure is never retried.
+A separate job retries each chosen shard once, so retry can survive loss of the
+first runner. The final `gate` job fails on any test failure or a missing verdict
+after retry. A valid first verdict cannot be overwritten by a later artifact.
+
+Artifacts are separated by workflow attempt and shard/attempt index to avoid
+stale evidence on reruns. Plans include base/head SHAs, population version,
+quarantine and duration provenance. Job summaries report selection/assignment
+and verdicts. JUnit and final effective results remain available on failures.
+
+## Shadow selection
+
+Each full run archives the shadow selection and effective final shard records.
+Compare selection against full-run failures with:
 
 ```sh
-python tools/ci/gate_shadow.py --plan plan.json --results node*/result.json \
-  --junitxml node*/gate.xml --output shadow-accuracy.json
+python tools/ci/gate_shadow.py --plan plan.json --results effective/*/result.json \
+  --junitxml effective/*/junit.xml --output shadow-accuracy.json
 ```
 
 The audit returns 0 for no missed observed failure, 1 for a missed failure, or
 75 for incomplete evidence. It requires complete, unique assignments, actual
-JUnit file coverage and matching population versions. Fully skipped or empty
-files can make evidence inconclusive, which requires inspection rather than
-an accuracy claim.
+JUnit file coverage and matching population/base/head identities. Fully skipped
+or empty files can make evidence inconclusive. Shadow accuracy does not reduce
+the full gate population, and one successful audit proves only that run.
 
 ## Population and quarantine
 
-The population excludes root, GPU and dedicated two-CPU lanes declared by
-`tools/verify.py` and the proof/receipt manifests. It also excludes whole files
-in `gate_quarantine.json` and deselects its node-prefix entries. Every quarantine
-entry needs an open owning issue and a specific reason. Readiness tracker #2428
-is not an owner. Historical entries are provisional under #2434; archival replay
-stays under #1997. Inventory evidence and per-test action keys accompany new
-observed flaky/broken entries. Filesystem-floor skip/pass variation is not a flake.
+The gate excludes root, GPU and dedicated two-CPU lanes declared by
+`tools/verify.py` and the proof/receipt manifests. It excludes whole files in
+`gate_quarantine.json` and deselects its node-prefix entries. Every quarantine
+entry needs an open owning issue, a specific reason and evidence. Readiness
+tracker #2428 is not an owner. Historical entries remain provisional under
+#2434; archival replay stays with #1997. Filesystem-floor skip/pass variation
+is not called flaky.
 
-Add an entry only with evidence and an open owner. Remove it after root repair
-or five fresh passing repeats on each architecture in the CI container, as the
-owning issue requires. Quarantine is containment, not a root fix. Durations in
-`gate_durations.json` are summed per-test medians from inventory 22e9d752.
-Unknown new-file durations stay unknown; partly quarantined files retain their
-whole-file estimate conservatively. Replay and AST function diagnostics are
-available in `tools/ci/gate_replay.py`; function-level selection is follow-up work.
+Remove an entry after root repair or five fresh passing repeats on each
+architecture in the CI environment, as the owning issue requires. Quarantine
+contains a failure; it does not repair it. Inventory durations are summed
+per-test medians at 22e9d752. New files retain unknown inventory costs, and
+partly quarantined files retain conservative whole-file estimates. Replay and
+pool.py AST diagnostics are in `tools/ci/gate_replay.py`; function-level selection
+remains follow-up work.
 
 ## Path-loading survey
 
@@ -87,11 +106,9 @@ available in `tools/ci/gate_replay.py`; function-level selection is follow-up wo
 python tools/ci/gate_paths.py --root . --output path-survey.json
 ```
 
-The survey counts source AST idioms and distinct files, with examples. Counts
-overlap and include temporary paths and generated fixture output; they do not
-prove dependency completeness. Path-loaded modules through SourceFileLoader or
-runpy use the same argument evidence as importlib loaders. with_suffix and
-filesystem glob operations keep conservative directory matches. Runtime paths
-received only through arguments, environment or arbitrary helper return values
-can remain unresolved when there is no static repository directory or suffix.
-Queue coverage therefore stays full while real-batch shadow evidence accumulates.
+Counts overlap and include temporary paths and generated fixture output; they
+do not prove dependency completeness. Loader arguments contribute static path
+evidence. with_suffix/glob operations retain conservative directory matches.
+Paths supplied only by runtime arguments, environment or arbitrary helper return
+values can remain unresolved without a static repository directory or suffix.
+Queue coverage stays full while real-batch shadow evidence accumulates.

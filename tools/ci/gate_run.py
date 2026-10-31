@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 
@@ -62,12 +61,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--junitxml', type=Path, required=True)
     parser.add_argument('--workers', type=int, help='resource-class CPU allocation; clamped to inherited affinity')
     assigned = parser.add_mutually_exclusive_group()
-    assigned.add_argument('--files-from', type=Path, help='whitespace-separated output of the CI test splitter')
+    assigned.add_argument('--files-from', type=Path, help='one assigned repository-relative file per line')
     assigned.add_argument('--files', nargs='+', help='explicit assigned test files')
     args = parser.parse_args(argv)
     try:
         plan = json.loads(args.plan.read_text())
-        files = shlex.split(args.files_from.read_text()) if args.files_from else args.files
+        files = ([line.strip() for line in args.files_from.read_text().splitlines() if line.strip()]
+                 if args.files_from else args.files)
         return run_plan(plan, root=args.root, output=args.result, junit=args.junitxml,
                         files=files, workers=args.workers)
     except (OSError, ValueError, KeyError, TypeError) as error:
