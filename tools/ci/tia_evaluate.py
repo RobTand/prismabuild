@@ -90,7 +90,7 @@ def replay_impact(root: Path, gate_dir: Path, mapping: dict, history: dict) -> d
     original_index = gate_replay.select.dependency_index
     original_json = gate_replay.select.read_json
     gate_replay.select.dependency_index = lambda directory: {name: value for name, value in original_index(directory).items() if name not in excluded}
-    gate_replay.select.read_json = lambda path: context['durations'] if path.name == 'gate_durations.json' else original_json(path)
+    gate_replay.select.read_json = lambda path: context['durations'] if path.name == 'gate_durations.json' else original_json(gate_dir / path.name)
     try:
         static = gate_replay.replay(root, history)
     finally:
@@ -189,7 +189,7 @@ def campaign(root: Path, gate_dir: Path, mapping: dict, map_path: Path, output: 
             selected = gate.create_plan(root, [path], durations=durations,
                                         quarantine=quarantine, index=index, helper_graph=graph)
             cost = selected['estimate']['serial_seconds']
-            if cost is not None and cost <= 30:
+            if cost is not None and cost <= 1200:
                 costs[path] = cost
     candidates = [(costs[mutation['path']], mutation['path'], mutation['function'], mutation)
                   for mutation in mutations(root, mapping, paths=set(costs))]
@@ -220,7 +220,7 @@ def campaign(root: Path, gate_dir: Path, mapping: dict, map_path: Path, output: 
         rows.append({'cwd': str(root), 'argv': ['/home/rob/venvs/pb-cpu/bin/python',
                      'tools/ci/tia_evaluate.py', 'mutation', '--mutation', json.dumps(mutation),
                      '--gate-dir', str(gate_dir.relative_to(root))],
-                     'demand': {'cpu': 1, 'mem_gb': 4}, 'priority': -10, 'anywhere': True, 'timeout_s': 900,
+                     'demand': {'cpu': 1, 'mem_gb': 4}, 'priority': -10, 'anywhere': True, 'timeout_s': 3600,
                      'env': {'OMP_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1',
                              'PB_TIA_MAP': packed_map, 'PB_TIA_MUTATION': str(number)}})
     output.write_text(sorted_json(rows) + '\n')
@@ -240,7 +240,7 @@ def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Pat
                '--junitxml=' + str(xml), *['--deselect=' + node for node in deselect], *files]
     start = time.monotonic()
     try:
-        run = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=300)
+        run = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=1000)
     except subprocess.TimeoutExpired:
         return {'returncode': 124, 'complete': False, 'failures': [], 'files': len(files)}
     (directory / (label + '.log')).write_text(run.stdout + run.stderr)
@@ -289,11 +289,18 @@ def run_mutation(root: Path, gate_dir: Path, mutation: dict) -> dict:
         finally:
             (root / path).write_bytes(original)
     baseline_bad = set(baseline['failures'] + baseline['errors'])
+    known_baseline = set()
+    for entry in mapping.get('baseline_failures', []):
+        file, name = entry['nodeid'].split('::', 1)
+        known_baseline.add(file.removesuffix('.py').replace('/', '.') + '::' + name)
+    baseline_valid = (baseline['complete'] and baseline['returncode'] in (0, 1)
+                      and baseline_bad <= known_baseline)
     def killed(result):
         return result['complete'] and bool(set(result['failures'] + result['errors']) - baseline_bad)
     return {'mutation': mutation, 'baseline': baseline, 'tia': tia, 'static': full,
             'tia_killed': killed(tia), 'static_killed': killed(full),
-            'valid': baseline['returncode'] == 0 and tia['complete'] and full['complete'],
+            'valid': baseline_valid and tia['complete'] and full['complete'],
+            'known_baseline_failures': sorted(baseline_bad & known_baseline),
             'tia_plan': selected, 'evaluation_excluded': mapping.get('unmapped', {})}
 
 
@@ -317,7 +324,7 @@ def overhead(root: Path, gate_dir: Path) -> dict:
                     command[3:3] = ['-p', 'tia_record']
                 load_before = os.getloadavg()
                 start = time.monotonic()
-                run = subprocess.run(command, env=env, cwd=root, capture_output=True, text=True, timeout=300)
+                run = subprocess.run(command, env=env, cwd=root, capture_output=True, text=True, timeout=1000)
                 elapsed = time.monotonic() - start
                 arms.append({'repeat': repeat, 'recorded': recorded, 'elapsed_s': elapsed,
                              'returncode': run.returncode, 'load_before': load_before, 'load_after': os.getloadavg(),

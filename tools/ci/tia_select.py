@@ -24,6 +24,12 @@ def load_tia_module(path: Path, name: str):
 
 def select(mapping: dict, diff: dict, *, file_hashes: dict, fast: list[str],
            changed_tests: list[str], population: list[str], static) -> dict:
+    plans = {}
+    def static_plan(paths):
+        key = tuple(sorted(paths))
+        if key not in plans:
+            plans[key] = static(list(key))
+        return plans[key]
     eligible = set(population)
     reasons: dict[str, set[str]] = {}
     nodes: dict[str, set[str]] = {}
@@ -74,7 +80,7 @@ def select(mapping: dict, diff: dict, *, file_hashes: dict, fast: list[str],
             for test in eligible:
                 pick(test, 'whole population: ' + path)
     for path, reason in sorted(fallbacks.items()):
-        for row in static([path])['selected']:
+        for row in static_plan([path])['selected']:
             for why in row['reasons']:
                 pick(row['path'], f'{reason}: {path}; {why}')
         # A stale module can affect tests observed dynamically but absent from static imports.
@@ -82,10 +88,19 @@ def select(mapping: dict, diff: dict, *, file_hashes: dict, fast: list[str],
             if function.startswith(path + '::'):
                 for test in tests:
                     pick(test.split('::', 1)[0], f'{reason}: {path}; observed module')
+    # Source text and imported test helpers can affect assertions without calling
+    # the changed function. Retain the static path and helper evidence for them.
+    for path in sorted(diff['python']):
+        if path.startswith('tests/'):
+            continue
+        for row in static_plan([path])['selected']:
+            for why in row['reasons']:
+                if why.startswith(('literal path reference:', 'helper dependency:')):
+                    pick(row['path'], f'source reader or helper consumer: {path}; {why}')
     unmapped = mapping.get('unmapped', {})
     if unmapped:
         changed_paths = sorted([*diff['python'], *diff['non_python']])
-        for row in static(changed_paths)['selected']:
+        for row in static_plan(changed_paths)['selected']:
             if row['path'] in unmapped:
                 detail = unmapped[row['path']]
                 reason = detail.get('reason') if isinstance(detail, dict) else detail

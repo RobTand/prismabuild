@@ -94,7 +94,6 @@ def selection(tmp_path, *, changed=('f',), module=False, hashes=None, mapped=Tru
 def test_selection_function_and_mandatory_tiers(tmp_path):
     plan, calls = selection(tmp_path)
     assert [row['path'] for row in plan['selected']] == ['tests/test_a.py', 'tests/test_fast.py', 'tests/test_new.py']
-    assert calls == []
     assert plan['targets'] == ['tests/test_a.py::test_f', 'tests/test_fast.py', 'tests/test_new.py']
     assert all(row['reasons'] for row in plan['selected'])
 
