@@ -1,0 +1,8 @@
+{
+  "generated_path": "/mnt/shared/paperclip-runs/PRI-243/inventory/field_sets.json",
+  "generated_sha256": "5944498e9435506a0782d835fbc9fb14cb69e60a123e18ea781137d9c3c1cf31",
+  "tracked_path": "tests/compat/field_sets.json",
+  "tracked_sha256": "32f5c3c5861a3cec2d7581c51529b61645a74fb2a4c2b6ab096b5d9d117288f5",
+  "equal": true,
+  "full_completeness": "incomplete/unqualified; unrelated retained source reviews and unparsed files are outside this integration"
+}

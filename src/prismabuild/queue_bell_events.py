@@ -15,7 +15,8 @@ import uuid
 
 from .queue_bell import Cursor, MAX_WAIT_S, REQUIRED_STATE_DIRS
 from .queue_bell_topics import (OutcomeNamespaces, WorkerOffers, HostReservations,
-                                AdaptiveInputs, ClaimDenials, TierInputs, NamespaceInputs, TOPICS)
+                                AdaptiveInputs, ClaimDenials, TierInputs, GangInputs,
+                                NamespaceInputs, TOPICS)
 from .queue_bell_input_shapes import InputShapes
 
 IN_MODIFY = 0x00000002
@@ -203,7 +204,7 @@ class InotifyQueue:
         self.directories = {}
         self.root_watches = {}
         self.adapters = (OutcomeNamespaces(), WorkerOffers(), HostReservations(),
-                         AdaptiveInputs(), ClaimDenials(), TierInputs())
+                         AdaptiveInputs(), ClaimDenials(), TierInputs(), GangInputs())
         self.absent_roots = set()
         self.incomplete_topics = set()
         self.file_watches = {}

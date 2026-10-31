@@ -82,7 +82,7 @@ def fleet(tmp_path, monkeypatch):
     # refusal path keeps its own coverage there, while these history tests
     # never invoke the fleet.
     (roster / "pbcanary.py").write_text(
-        "def run_canary(*, generation):\n    return 0\n"
+        "def preflight_publication(*, fleet_root):\n    pass\ndef run_canary(*, generation):\n    return 0\n"
     )
     return mirror.parent
 

@@ -1,0 +1,202 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "08eeec252e099286168d8572711d87c6e1e21c3e",
+  "scope": [
+    "SC-01",
+    "SC-03",
+    "ID-08",
+    "ID-09",
+    "VER-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-2285",
+    "issue": "https://github.com/RobTand/prismabuild/issues/2285",
+    "integration_task": "PRI-243",
+    "source": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+    "main_parent": "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036",
+    "original_approved_head": "a1bac460f128cbd7872349c8a679277efd8c485c",
+    "validated_repairs": [
+      {
+        "id": "ID-08",
+        "actions": [
+          "2a317fac0f5a67e7d52d063b3a7d552c406d90dc3f58641ec4ea3ebb53fdb2d3",
+          "1029c47876b43da4d37372dbfab0c62fc5697dc7f8bbf208f4bfff9a72eb061c",
+          "c6e2e6e7640183eebc89ec4d1985176ab9679a7de87f33d118d9a31a9e6a331d",
+          "d323105fde5d760fb87c3ae2146b245a890291aad0e1de2357970deeee271c58",
+          "1da0233c88cf57036aff8517f586c265145945df558f7cd3b898e03e59e17a51",
+          "5b2b1cade79357abe6f1f46041f44bd182aba468fc70de902ad8e9b1440d5472",
+          "36d7dfee11709cfc515a0e5866456de7140b429497f58dfe92248a9949bbb4de",
+          "131322b1cb6e9a746df649154d6ca4771d5edd9db14fe2ceede773486b875ec8",
+          "b65406ddc95db56dc6ee4832a31d493d59835387fb0eede657d8c4b85c6fdb93"
+        ],
+        "outcome": "Nine executed/rc0 actions. All terminal records, 18 complete log streams, source bundles, native populations, local result claims, CAS receipts/payloads and complete/empty/settled/released cleanup verified. Eight test actions:156 passed,zero failed,zero skipped. One strict capture.",
+        "evidence": "docs/evidence/pri243/qualification-audit.json"
+      }
+    ],
+    "remaining_gaps": [
+      "Independent Engineer 10 Standards/Spec review of the final evidence-only head is required.",
+      "Leased branch publication and exact-head intake are separately recorded after this evidence commit.",
+      "PE2 owns later composed validation and batch landing.",
+      "Whole requirement axes remain inherited. All proposed/unknown targets remain owed.",
+      "Worker signing keys are unchecked. No cryptographic worker attestation, power-loss durability, live-host lifecycle, deployment, canary or campaign proof.",
+      "Original PRI-173 300-second broad compatibility timeout remains failed/unqualified."
+    ],
+    "note": "Integration only: reproduce three conflicts, preserve complete parent fixture/provenance bytes under distinct identities, retain all automatic merge entries, adopt strict source-bound upgrade-intent capture. No production behavior, test assertions, capture/adoption tools or historical bytes were changed in PRI-243. The final child adds evidence only."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "requirement_axes_from_incoming_main": {
+    "SC-01": {
+      "text": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+      "implementation": {
+        "commit": "PB:ca0f5555",
+        "path": "src/prismabuild/pool.py claim/admission paths",
+        "state": "yes"
+      },
+      "validation": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "deployment": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      }
+    },
+    "SC-03": {
+      "text": "Contract is target plus ledger; unknown axes are owed work, never claims.",
+      "implementation": {
+        "commit": null,
+        "path": null,
+        "state": "no"
+      },
+      "validation": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "deployment": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      }
+    },
+    "ID-08": {
+      "text": "Behavior attributed per (runtime_commit, generation_id).",
+      "implementation": {
+        "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
+        "path": "runtime generation link; worker attestations; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",
+        "state": "yes"
+      },
+      "validation": {
+        "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
+        "state": "partial"
+      },
+      "deployment": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): Offers from sparky, sparklina and dl380g10 announced runtime_commit 81d95cba8d91 at 1790169703 and a0fdcd2f7482 from 1790171012 to 1790171023 (13:43Z); the dl380g10 tier role runs the a0fdcd2f7482-1790170897-121d887b4732 tree; DESKTOP-P5UOGNJ is offline (PB#900) and stale on a80eea97.",
+        "state": "partial"
+      },
+      "workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      }
+    },
+    "ID-09": {
+      "text": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
+      "implementation": {
+        "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:cd7e1b97e5dc (#831) reads a generation's ending from its immutable attempts; 44098612105d (#887) counts a claim whose finish is in flight as outstanding.",
+        "path": "src/prismabuild/pool.py terminal records + CAS receipts (a-c); (d) application-side, referenced",
+        "state": "partial"
+      },
+      "validation": {
+        "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0 attests a-c for its own record 2026-09-23 update (snapshot 13:50Z): #831 fail-before 6a8645b2e7f4 (9 failed), green 79adabbb74f9 (11 passed), 838c1c51a36d (185 passed).",
+        "state": "partial"
+      },
+      "deployment": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): #831 and #887 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs).",
+        "state": "yes"
+      },
+      "workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      }
+    },
+    "VER-01": {
+      "text": "Bounded search completeness: state index, filters, window, truncation before declaring missing; authoritative indexes first; counts/timings alone are not verification.",
+      "implementation": {
+        "commit": "PB:d3c6b4241e86 (#967) reconciles each shard's outcomes with its collection by node ID; d1e217607942 (#957) records each skip's node ID and reason. These cover test receipts only.",
+        "path": null,
+        "state": "partial"
+      },
+      "validation": {
+        "detail": "manual-reviewed correction precedent in this lane, scoped example only - not runtime property proof PBMCP's withdrawn-row view omitted attempt history (attempts_detail=[]) for the withdrawn produced mover 6fbc96301c6c; the retained pre-withdrawal readback (produced-mover-snapshot-root-diagnosis.json; issue 790) proves one actual failed attempt, so 'never claimed' must not be concluded from current ready/withdrawn state. Counts alone are not verification, and neither is an empty view whose read scope is not stated. 2026-09-23 update (snapshot 13:50Z): #967 b31c34b551fd and 9 more shards (567 passed), PQ full suite 63ebbe7e42cf and 39 more shards; #957 c749c91fcae9, cfb88c896310.",
+        "state": "partial"
+      },
+      "deployment": {
+        "detail": "contains no proof of current deployment 2026-09-23 update (snapshot 13:50Z): #957 and #967 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
+        "state": "yes"
+      },
+      "workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      }
+    }
+  },
+  "scope_assessment": {
+    "SC-01": {
+      "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+      "implemented": "Incoming-main/source-owner implementation retained; this integration does not promote the whole requirement.",
+      "validated": "Only the fixture/source/component evidence in this record.",
+      "deployed": "No integration runtime deployed or activated. Incoming ledger deployment axes are historical and unchanged.",
+      "workload": "No whole-requirement or campaign claim."
+    },
+    "SC-03": {
+      "target": "Contract is target plus ledger; unknown axes are owed work, never claims.",
+      "implemented": "Incoming-main/source-owner implementation retained; this integration does not promote the whole requirement.",
+      "validated": "Only the fixture/source/component evidence in this record.",
+      "deployed": "No integration runtime deployed or activated. Incoming ledger deployment axes are historical and unchanged.",
+      "workload": "No whole-requirement or campaign claim."
+    },
+    "ID-08": {
+      "target": "Behavior attributed per (runtime_commit, generation_id).",
+      "implemented": "Incoming-main/source-owner implementation retained; this integration does not promote the whole requirement.",
+      "validated": "Only the fixture/source/component evidence in this record.",
+      "deployed": "No integration runtime deployed or activated. Incoming ledger deployment axes are historical and unchanged.",
+      "workload": "No whole-requirement or campaign claim."
+    },
+    "ID-09": {
+      "target": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
+      "implemented": "Incoming-main/source-owner implementation retained; this integration does not promote the whole requirement.",
+      "validated": "Only the fixture/source/component evidence in this record.",
+      "deployed": "No integration runtime deployed or activated. Incoming ledger deployment axes are historical and unchanged.",
+      "workload": "No whole-requirement or campaign claim."
+    },
+    "VER-01": {
+      "target": "Bounded search completeness: state index, filters, window, truncation before declaring missing; authoritative indexes first; counts/timings alone are not verification.",
+      "implemented": "Incoming-main/source-owner implementation retained; this integration does not promote the whole requirement.",
+      "validated": "Only the fixture/source/component evidence in this record.",
+      "deployed": "No integration runtime deployed or activated. Incoming ledger deployment axes are historical and unchanged.",
+      "workload": "No whole-requirement or campaign claim."
+    }
+  },
+  "protection": {
+    "R6_source": "6cbaa7524e6e99d42a69b33d75faae9482e50253",
+    "R6_staged": "bf35bf34c9a8-1793101542-8c593f19863e",
+    "unchanged": "No publisher,activation,canary,service,keyring,shadow,protection,floor or R6 operation. R5 verified/R4 rollback;59 of original88 released. PRI-128 bounds unchanged."
+  }
+}

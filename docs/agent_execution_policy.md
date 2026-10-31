@@ -1,13 +1,22 @@
 # Agent execution through PrismaBuild
 
-Rob requires all agent and subagent test execution and GPU work to run through
-PrismaBuild. This applies across projects and hosts, including targeted tests,
-full suites, benchmarks, builds that execute GPU kernels, and validation inside
-containers. The coordinator submits; a worker executes after admission. Tests
-and subprocesses already inside an admitted action do not submit themselves
-recursively.
+Agents and subagents run their tests and computational work through
+PrismaBuild (Rob, 2026-09-05, amended 2026-10-29): targeted tests, full suites,
+GPU jobs, benchmarks, and large or long-running compute. This applies across
+projects and hosts, including work inside containers. The coordinator
+submits; a worker executes after admission. Tests and subprocesses already
+inside an admitted action do not submit themselves recursively.
+
+PrismaBuild is not the CI system. CI runs as GitHub Actions checks on
+GitHub-hosted runners, and pull requests merge through the Mergify queue,
+which gates on those checks of the integrated SHA. Do not route CI through
+PrismaBuild. A PrismaBuild run is development
+evidence, not the merge gate. Merge only through the Mergify queue; never
+bypass required checks, reviews or branch protections.
 
 Use the published runtime at `/mnt/shared/prismabuild-fleet/repo/tools`:
+
+For example, submit a large CPU suite that needs fleet compute or a GPU job:
 
 ```bash
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
@@ -257,8 +266,9 @@ acknowledgement is not a passing test. Record skips and missing tooling. Install
 scoped tooling where required instead of silently skipping qualification.
 
 Read-only inspection, source edits, Git operations and submission commands may
-run on the coordinator. Do not hide tests in SSH commands, shell scripts,
-containers, inline Python or another agent to evade admission. If PrismaBuild
+run on the coordinator; tests run through PrismaBuild. Do not hide work
+requiring admission in SSH commands, shell scripts, containers, inline Python
+or another agent to evade admission. If PrismaBuild
 cannot admit work, diagnose and repair its availability; do not silently fall
 back to untracked local execution. A bootstrap exception requires an explicit
 user instruction and its scope and evidence must be recorded.
@@ -315,9 +325,10 @@ PrismaBuild -- action `a475cb59` did -- and it is exempt all the same. The
 exemption turns on whether the thing runs vLLM, not on whether a given run
 feels like a test or divides into quanta.
 
-This does not exempt the work *around* it. A test that does not run vLLM still
-submits, and so does an export, a probe or a cost stage that merely runs on the
-same box.
+This does not exempt the work *around* it. Non-vLLM GPU jobs, benchmarks, and
+large or long-running compute still require admission, including exports,
+probes or cost stages that merely run on the same box, and so do development
+tests, as the start of this policy says.
 
 A directly started serve remains **external load for batch admission**. It is
 outside the ledger, so no reservation accounts for the CPU, memory and GPU it
