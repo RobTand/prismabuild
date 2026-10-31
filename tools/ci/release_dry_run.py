@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import configparser
 import csv
 from email.parser import BytesParser
 import io
@@ -30,6 +31,23 @@ def candidate_version(candidate: str, metadata: dict) -> str:
     return version
 
 
+def console_script(entry_points: str) -> str | None:
+    """The target of the ``prismabuild`` command in ``[console_scripts]``, if any.
+
+    Only that group installs a command. A malformed file or a duplicated name
+    has no trustworthy target.
+    """
+    parser = configparser.ConfigParser(interpolation=None, delimiters=("=",))
+    parser.optionxform = str
+    try:
+        parser.read_string(entry_points)
+    except configparser.Error:
+        return None
+    if not parser.has_option("console_scripts", "prismabuild"):
+        return None
+    return parser.get("console_scripts", "prismabuild").strip()
+
+
 def validate_wheel(wheel: Path, version: str) -> dict:
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
@@ -43,8 +61,7 @@ def validate_wheel(wheel: Path, version: str) -> dict:
         if metadata["Name"] != "prismabuild" or metadata["Version"] != version:
             raise ValueError("Wheel name or version does not match the candidate")
         prefix = metadata_path.removesuffix("METADATA")
-        entry_points = archive.read(prefix + "entry_points.txt").decode()
-        if "prismabuild = prismabuild.core:main" not in entry_points.splitlines():
+        if console_script(archive.read(prefix + "entry_points.txt").decode()) != "prismabuild.core:main":
             raise ValueError("Wheel is missing the prismabuild CLI entry point")
         if not {"prismabuild/__init__.py", "prismabuild/core.py"}.issubset(names):
             raise ValueError("Wheel is missing the PrismaBuild package")

@@ -44,8 +44,8 @@ path overrides. It checks the wheel's package, CLI entry point, name, version,
 and complete SHA-256 RECORD inventory. The temporary repository, tag and wheel
 are deleted on exit.
 
-CircleCI is PB's CI, and Mergify is its merge queue. There are no GitHub Actions
-fleet runners, so this source unit supplies no GitHub Actions release workflow.
+PB's CI runs as GitHub Actions checks on GitHub-hosted runners, and Mergify is
+its merge queue. This source unit supplies no release workflow.
 The commands above are agent development checks submitted through PrismaBuild.
 They establish no integrated CI, runner readiness, queue authentication, or
 permission to release. Independent review and the separate queue and provenance
