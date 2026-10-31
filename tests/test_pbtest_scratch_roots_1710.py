@@ -52,27 +52,36 @@ def _future_reap(parent, pattern, **options):
                                      now=time.time() + 90000, **options)
 
 
-@pytest.mark.parametrize("basetemp", [False, True])
 def test_real_failed_shard_registers_root_and_expires_without_later_shard(
-        registry, tmp_path, monkeypatch, basetemp):
+        registry, tmp_path, monkeypatch):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    base = tmp_path / "base" if basetemp else None
-    if base is not None:
-        base.mkdir()
+    base = tmp_path / "base"
+    base.mkdir()
     monkeypatch.setenv("HOME", str(tmp_path / "sealed-home"))
     checkout = _checkout(tmp_path, "    assert False\n")
     result = _shard(checkout, scratch, base)
     assert result.returncode == 1, result.stdout + result.stderr
-    root = base if basetemp else scratch
+    root = base
     assert list(root.rglob("marker"))
     entry, = registry.iterdir()
     assert entry.is_symlink() and entry.readlink() == root
-    assert entry.name.startswith("basetemp-" if basetemp else "tmpdir-")
+    assert entry.name.startswith("basetemp-")
     assert roots.sweep_pbtest_roots(owned_tree.reap_dead_trees) == [(entry.name, [], None)]
     reports = roots.sweep_pbtest_roots(_future_reap)
     assert reports[0][1] and reports[0][2] is None
     assert root.exists() and list(root.iterdir()) == []
+
+
+def test_default_checkout_scratch_needs_no_supervisor_registry(registry, tmp_path):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    checkout = _checkout(tmp_path, "    assert False\n")
+    result = _shard(checkout, scratch)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert list(checkout.rglob("marker"))
+    assert not registry.exists()
+    assert list(scratch.iterdir()) == []
 
 
 @pytest.mark.parametrize("basetemp", [False, True])

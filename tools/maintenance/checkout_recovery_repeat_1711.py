@@ -65,7 +65,7 @@ def main() -> int:
     for index in range(1, arguments.repeats + 1):
         junit = output / f"repeat-{index:02d}.xml"
         stdout = output / f"repeat-{index:02d}.stdout"
-        command = [sys.executable, "-m", "pytest", "-vv", "--tb=long", "-rs", *[
+        command = [sys.executable, "-m", "pytest", "-vv", "--tb=long", "-rs", "--basetemp=.pytest-checkout-recovery", *[
             f"{TEST_PATH}::{name}" for name in SELECTORS], f"--junitxml={junit}"]
         if arguments.workers:
             command[3:3] = ["-n", str(arguments.workers)]

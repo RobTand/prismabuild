@@ -42,3 +42,21 @@ def test_default_basetemp_is_inside_checkout_even_with_shared_tmpdir(
     assert Path(record["base"]).is_relative_to(checkout), record
     assert record["tmpdir"] == str(shared)
     assert list(shared.iterdir()) == []
+
+
+def test_failed_default_scratch_leaves_with_worker_checkout_cleanup(tmp_path):
+    from prismabuild import materialize
+    from test_pbtest_attempt_temp_1542 import _checkout, _run
+
+    shared = tmp_path / "shared-tmpdir"
+    shared.mkdir()
+    checkout = _checkout(tmp_path, "assert False, 'inspect before action cleanup'")
+    result = _run(checkout, shared)
+    assert result.returncode == 1, result.stdout + result.stderr
+    markers = list(checkout.rglob("marker"))
+    assert len(markers) == 1
+    assert list(shared.iterdir()) == []
+    materialize._cleanup_execution_checkout(tmp_path, checkout, {"action_key": "a" * 64})
+    assert not checkout.exists()
+    assert not markers[0].exists()
+    assert shared.is_dir() and list(shared.iterdir()) == []

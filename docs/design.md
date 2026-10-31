@@ -2933,20 +2933,23 @@ Surface report names expand `{shard}` or receive `.shard-N` before the final
 suffix. Expanded arguments and GPU budgets enter the ordinary sealed action
 identity through `pbrun`; no second dispatcher or placement policy is added.
 
-Without a sealed `--basetemp`, each shard creates an exclusive attempt directory
-with `tempfile.mkdtemp(prefix="pb-", dir=TMPDIR)` (#1709).
-pytest receives its `pytest` child as the base temp.
-The short name leaves room for xdist worker directories and AF_UNIX sockets.
-No action key or attempt identity is truncated to create this namespace.
-The attempt directory is an owned tree (see "Owned trees" below). It holds
-the owner lock `pb-owner.lock` beside `pytest`, and the plugin roster that
-`pbtest_outcomes` writes for xdist workers, so a killed shard leaves nothing
-directly in `TMPDIR`. Exit 0 removes the attempt directory, read-only test
-directories included. Any other ending keeps it for diagnosis and starts its
-24-hour retention clock; a later attempt or owning worker supervisor then removes it.
-A sealed `--basetemp` attempt `<root>/<key>/<attempt>` follows the same rule
-under its root, and exit 0 also removes the key directory it empties. The
-sealed root and `TMPDIR` themselves are never removed or changed.
+Without an explicit `--basetemp`, each shard creates an exclusive attempt
+directory with `tempfile.mkdtemp(prefix="pb-", dir=".")` (#2449).
+Pytest receives its `pytest` child as the base temp. The relative parent is
+sealed into the shard program. It lives inside the attempt's materialized
+checkout, so `materialize._execution_checkout` removes it in its `finally`
+cleanup after success, failure, or payload interruption. A killed worker's
+checkout follows the materializer's existing owned-tree recovery. Cleanup
+failures retain the existing observable cleanup-failure records.
+The default never changes compiler `TMPDIR` and needs no separate supervisor
+scratch registration. Exclusive creation works without a launcher action key
+or nonce and never falls back to pytest's shared user temp. The short `pb-`
+name avoids adding full action identities to socket paths, though a long
+materialized checkout path can still exceed AF_UNIX limits.
+Exit 0 also removes the base temp immediately, including read-only directories.
+An explicit `--basetemp` retains its existing `<root>/<key>/<attempt>` layout,
+owner lock, 24-hour failed-attempt retention, and supervisor registration.
+The caller's root and compiler `TMPDIR` are never removed or changed.
 
 `--pytest-args '["--pbtest-trace"]'` opts into interrupted-shard diagnostics
 (#1455, Refs #1421). The existing outcome controller flushes one

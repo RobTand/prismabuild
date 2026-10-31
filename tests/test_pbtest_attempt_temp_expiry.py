@@ -8,8 +8,8 @@ gave up on a test's read-only directory, leaving the tree behind.
 
 These tests drive real shard programs and look only at the filesystem, so
 they say the same thing about any layout: a passing attempt leaves nothing,
-a failed or killed attempt stays for its retention window and then goes, a
-live attempt stays at any age. "Ageing" an attempt backdates every entry in
+an explicitly sealed failed attempt stays for its retention window and then
+goes. Default scratch leaves with the action checkout (#2449). "Ageing" an attempt backdates every entry in
 its directory, which is where an attempt keeps its retention clock.
 """
 from __future__ import annotations
@@ -17,7 +17,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import signal
 import stat
 import subprocess
 import sys
@@ -32,7 +31,6 @@ pbtest = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(pbtest)
 
 ACTION_KEY = "ef56" * 16
-MONTH_S = 30 * 24 * 3600
 DAY_AND_AN_HOUR_S = 25 * 3600
 
 READ_ONLY = (
@@ -40,15 +38,6 @@ READ_ONLY = (
     "    ro.mkdir()\n"
     "    (ro / 'kept.txt').write_text('read-only parent')\n"
     "    ro.chmod(0o555)\n")
-BLOCKING = (
-    "    import time\n"
-    "    from pathlib import Path\n"
-    "    here = Path(__file__).parent\n"
-    "    (here / 'started').write_text('1')\n"
-    "    deadline = time.monotonic() + 120\n"
-    "    while not (here / 'release').exists():\n"
-    "        assert time.monotonic() < deadline\n"
-    "        time.sleep(0.05)\n")
 
 
 def _checkout(parent: Path, body: str) -> Path:
@@ -84,19 +73,6 @@ def _shard(checkout: Path, scratch: Path, basetemp: Path | None = None
                           text=True, timeout=240)
 
 
-def _background(checkout: Path, scratch: Path, log: Path) -> subprocess.Popen:
-    with log.open("w") as output:
-        process = subprocess.Popen(_command(checkout, None), cwd=checkout,
-                                   env=_environment(scratch), stdout=output,
-                                   stderr=subprocess.STDOUT)
-    deadline = time.monotonic() + 120
-    while not (checkout / "tests" / "started").exists():
-        assert process.poll() is None, log.read_text()
-        assert time.monotonic() < deadline, log.read_text()
-        time.sleep(0.05)
-    return process
-
-
 def _tree(root: Path) -> list[str]:
     return sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
 
@@ -124,83 +100,10 @@ def test_a_passing_shard_removes_a_read_only_directory_in_its_base(tmp_path):
     result = _shard(checkout, scratch)
     assert result.returncode == 0, result.stdout + result.stderr
     try:
-        assert _tree(scratch) == [], "exit 0 left a partial base temp behind"
+        assert not list(checkout.glob("pb-*")), "exit 0 left a partial base temp behind"
+        assert _tree(scratch) == []
     finally:
         _writable(scratch)
-
-
-def test_a_failed_base_is_kept_through_its_window_then_reaped(tmp_path):
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    failing = _checkout(tmp_path / "failing", "    assert False, 'kept'\n")
-    result = _shard(failing, scratch)
-    assert result.returncode == 1, result.stdout + result.stderr
-    (kept,) = scratch.iterdir()
-    assert list(kept.rglob("marker")), "the failed test's tmp_path is gone"
-
-    passing = _checkout(tmp_path / "passing", "")
-    assert _shard(passing, scratch).returncode == 0
-    assert list(scratch.iterdir()) == [kept], "reaped inside its window"
-
-    _age(kept, DAY_AND_AN_HOUR_S)
-    assert _shard(passing, scratch).returncode == 0
-    assert _tree(scratch) == [], "an expired failed base outlived its window"
-
-
-def test_an_expired_failed_base_with_a_read_only_directory_is_removed(tmp_path):
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    failing = _checkout(tmp_path / "failing", READ_ONLY + "    assert False\n")
-    assert _shard(failing, scratch).returncode == 1
-    (kept,) = scratch.iterdir()
-    assert list(kept.rglob("kept.txt"))
-    _age(kept, DAY_AND_AN_HOUR_S)
-    passing = _checkout(tmp_path / "passing", "")
-    assert _shard(passing, scratch).returncode == 0
-    try:
-        assert _tree(scratch) == [], "expiry left a read-only directory behind"
-    finally:
-        _writable(scratch)
-
-
-def test_a_killed_shard_base_is_reaped_once_its_window_passes(tmp_path):
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    blocked = _checkout(tmp_path / "blocked", BLOCKING)
-    process = _background(blocked, scratch, tmp_path / "blocked.log")
-    process.send_signal(signal.SIGKILL)
-    assert process.wait(timeout=60) == -signal.SIGKILL
-    (killed,) = scratch.iterdir()
-
-    # The first attempt to find its owner gone starts the clock; nothing
-    # goes before the window has passed from then.
-    passing = _checkout(tmp_path / "passing", "")
-    assert _shard(passing, scratch).returncode == 0
-    assert list(scratch.iterdir()) == [killed]
-
-    _age(killed, DAY_AND_AN_HOUR_S)
-    assert _shard(passing, scratch).returncode == 0
-    assert _tree(scratch) == [], "a dead shard's base outlived its window"
-
-
-def test_a_live_shard_base_is_never_reaped_at_any_age(tmp_path):
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    blocked = _checkout(tmp_path / "blocked", BLOCKING)
-    process = _background(blocked, scratch, tmp_path / "blocked.log")
-    try:
-        (live,) = scratch.iterdir()
-        _age(live, MONTH_S)
-        passing = _checkout(tmp_path / "passing", "")
-        for _ in range(2):
-            assert _shard(passing, scratch).returncode == 0
-            assert list(scratch.iterdir()) == [live]
-            assert list(live.rglob("marker")), "a live shard lost its tmp_path"
-    finally:
-        (blocked / "tests" / "release").write_text("1")
-        returncode = process.wait(timeout=120)
-    assert returncode == 0, (tmp_path / "blocked.log").read_text()
-    assert _tree(scratch) == []
 
 
 def test_a_passing_sealed_basetemp_shard_removes_its_attempt_leaf(tmp_path):
