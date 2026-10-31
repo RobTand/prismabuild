@@ -156,3 +156,17 @@ def test_w2_nvidia_read_counts_remove_w1_unrelated_pid_slope(tmp_path):
             assert len(matching) == 3
             assert len({(row['reads'], row['bytes']) for row in matching}) == 1, (
                 'unrelated host PID population must not add collector or monitor file reads', matching)
+
+
+def test_w3_unchanged_oom_events_are_not_reread_on_numeric_ticks(tmp_path):
+    report = _brb_load_reproducer().run_synthetic(tmp_path / 'w3', populations=(0,), cycles=3)
+    cases = {case['scenario']: case for case in report['cases']
+             if case['phase'] == 'monitor' and case['active_scopes'] == 1}
+    assert set(cases) == {'no_gpu', 'gpu_error', 'gpu_present'}
+    for scenario, case in cases.items():
+        reads = {Path(row['path']).name: row['reads'] for row in case['reads']}
+        assert reads.get('memory.current') == 3, (
+            'numeric memory sampling must continue on every tick', scenario, reads)
+        assert {name: reads.get(name) for name in ('memory.events', 'memory.events.local')} == {
+            'memory.events': 1, 'memory.events.local': 1,
+        }, ('unchanged OOM counters need one initial snapshot, then invalidations', scenario, reads)

@@ -53,6 +53,7 @@ def run_synthetic(root, populations=(0, 8, 64), cycles=2):
                 'cpu': 'cpu_pressure', 'memory.current': 'scope_memory',
                 'memory.events': 'oom_hierarchical',
                 'memory.events.local': 'oom_local',
+                'cgroup.events': 'scope_population',
                 'maintenance.json': 'maintenance_state'}.get(path.name, 'authority_state')
 
     def instrument(original):
@@ -127,6 +128,7 @@ def run_synthetic(root, populations=(0, 8, 64), cycles=2):
                     put(path / 'memory.current', '1048576\n')
                     put(path / 'memory.events', 'oom 0\noom_kill 0\n')
                     put(path / 'memory.events.local', 'oom 0\noom_kill 0\n')
+                    put(path / 'cgroup.events', 'populated 1\nfrozen 0\n')
                     scopes = [gpu_memory.Scope(scope, path, 1024**3, gpu_budget_bytes=1024**3)]
                 backend = SimpleNamespace(path=lambda name: cgroup / 'prismabuild.slice' / name,
                                           healthy=lambda: True, inventory=lambda: {})
@@ -159,8 +161,11 @@ def run_synthetic(root, populations=(0, 8, 64), cycles=2):
                         memory_oom_local_baseline=0)
                 monitor = broker.ResourceMonitor(authority, memory_adapter, capacity_module=capacity_adapter)
                 counts, children = new_case('monitor', scenario, population, active, cycles)
-                for _ in range(cycles):
-                    monitor.poll_once()
+                try:
+                    for _ in range(cycles):
+                        monitor.poll_once()
+                finally:
+                    monitor.close()
                 finish()
                 # Request-only workload has no scopes: isolate installed-file rereads
                 # from the backend's inventory and unrelated authority reconciliation.

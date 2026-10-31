@@ -78,6 +78,7 @@ from prismabuild.stage_marks import (  # noqa: E402
     STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR, source_identity,
 )
 from prismabuild import staged_path
+from prismabuild import filesystem_floor
 
 #: Seconds between republications of the residency fragment while a move runs.
 #: See :func:`move`; a per-entry publish costs an NFS round trip per file and
@@ -525,6 +526,10 @@ class _Copier:
             source = self.mounts.local(str(entry["path"]))
             source_offset = int(entry["offset"])
         source = str(source)
+        if self.publisher is not None:
+            filesystem_floor.enforce_paths(self.publisher.queue.root,
+                [source, self.stage_root, destination.parent, destination, temporary, self.publisher.queue.root,
+                 self.publisher.residency_root, self.publisher.cas_root], label="stage copy")
         offset = int(source_offset
                      if source_offset is not None else entry["offset"])
         # One stat of the source, for the origin fast path: compared
@@ -558,6 +563,7 @@ class _Copier:
         # prewarm loop gives: the manifest is submitter-supplied and a symlink
         # swapped in after validation must fail here rather than send this copy
         # reading something outside the mount the manifest declared.
+        temporary_handle = None
         fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
             if not statmod.S_ISREG(os.fstat(fd).st_mode):
@@ -576,6 +582,9 @@ class _Copier:
                 # ``residency_map._write_atomic`` already takes for its own
                 # directory.
                 destination.parent.mkdir(parents=True, exist_ok=True)
+                if self.publisher is not None:
+                    filesystem_floor.enforce_paths(self.publisher.queue.root,
+                        [source, destination.parent, temporary], label="stage copy retry")
                 temporary_handle = open(temporary, "wb")
             with temporary_handle as sink:
                 buffer = bytearray(self.block)
@@ -629,7 +638,8 @@ class _Copier:
                 os.fsync(sink.fileno())
                 spent["fsync"] += now() - mark
         except BaseException:
-            temporary.unlink(missing_ok=True)
+            if temporary_handle is not None:
+                temporary.unlink(missing_ok=True)
             raise
         finally:
             os.close(fd)
@@ -762,6 +772,16 @@ class _Copier:
                     self.errors.append(
                         f"{os.path.basename(path)}: {prefix}{exc}")
 
+        floor_refusals: list[filesystem_floor.FloorRefused] = []
+
+        def refuse_entry(path, exc):
+            with dispatch:
+                self.publication_refused.set()
+                if exc.refusal is not None and self.refusal is None:
+                    self.refusal = exc.refusal
+                    self.conflict = exc.conflict
+            record_error(path, exc, wait_verdict=exc.wait_verdict)
+
         def take() -> dict[str, object] | None:
             """The next entry, or ``None`` once dispatch has ended."""
 
@@ -795,6 +815,11 @@ class _Copier:
                     written, digest, identity = self._copy_one(
                         entry, destination, admission, stop,
                         source=staged_source, source_offset=staged_offset)
+                except filesystem_floor.FloorRefused as exc:
+                    with dispatch:
+                        self.publication_refused.set()
+                        floor_refusals.append(exc)
+                    return
                 except staged_path.PublicationRefused as exc:
                     # The range cannot publish what it declared, so stop
                     # issuing work: record the refusal under the dispatch
@@ -805,12 +830,7 @@ class _Copier:
                     # committed stays committed.  This is not the caller's
                     # stop: cancellation and withdrawal keep their own
                     # decision and terminal.
-                    with dispatch:
-                        self.publication_refused.set()
-                        if exc.refusal is not None and self.refusal is None:
-                            self.refusal = exc.refusal
-                            self.conflict = exc.conflict
-                    record_error(path, exc, wait_verdict=exc.wait_verdict)
+                    refuse_entry(path, exc)
                     return
                 except (OSError, ValueError) as exc:
                     # An ordinary source read, digest or filesystem failure:
@@ -866,6 +886,8 @@ class _Copier:
         for thread in threads:
             thread.join()
         admission.close()
+        if floor_refusals:
+            raise floor_refusals[0]
 
 
 class _ProgressReporter:
@@ -2069,6 +2091,11 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         copier.run(window, stop=stop,
                    on_entry=None if args.no_incremental_fragment else publish,
                    named_once=named_once)
+    except filesystem_floor.FloorRefused:
+        landing.stop()
+        landing.remove()
+        reporter.stop()
+        raise
     finally:
         if trailing is not None:
             trailing.stop()
@@ -2514,7 +2541,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.residency_root is None:
         args.residency_root = str(Path(args.pool_root) / pool.record_store.RESIDENCY)
 
-    receipt = move(args)
+    try:
+        receipt = move(args)
+    except filesystem_floor.FloorRefused as exc:
+        print(f"stage move deferred: {exc}", file=sys.stderr)
+        return 75
     queue = pool.PoolQueue(Path(args.pool_root))
     queue.record_move(args.action_key, receipt)
     if args.receipt:

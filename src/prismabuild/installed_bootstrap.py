@@ -16,7 +16,12 @@ from .compatibility_window import (
 from .digest_primitives import canonical_sha256, raw_sha256
 
 CORPUS_FILES = tuple('tests/test_record_compatibility_' + name + '.py' for name in (
-    'queue', 'storage', 'ownership', 'outputs', 'host', 'decomposition', 'core', 'controller'))
+    'queue', 'storage', 'ownership', 'outputs', 'host', 'decomposition', 'core', 'controller',
+    'controller_archival', 'controller_broker', 'controller_config', 'controller_edges',
+    'controller_floor', 'controller_gang', 'controller_inputs', 'controller_markers',
+    'controller_outcomes', 'controller_preflight', 'controller_prelaunch',
+    'controller_prelaunch_release', 'controller_prelaunch_turns', 'controller_reclaim',
+    'controller_rollout', 'controller_slurm', 'controller_state', 'controller_upgrade'))
 ROOT_FILES = ('tests/test_client_bootstrap_root.py', 'tests/test_receipt_reader_root.py')
 QUALIFICATION_SOURCES = (*CORPUS_FILES, *ROOT_FILES, 'tests/run_proof_container.py',
     'tests/proof_container_runtime.py', 'tests/proof_execution.json', 'tests/receipt_execution.json',

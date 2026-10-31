@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from prismabuild import _measurement_reservation as reservation, adaptive_cpu, pool
+from prismabuild import _bounded_reader as reader
 from fleet_world import Clock
 from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
@@ -18,9 +19,25 @@ from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
 @pytest.fixture
 def cache_clock(monkeypatch):
-    clock = Clock()
+    clock, fence_clock = Clock(), Clock()
+
+    class FenceDeadline:
+        def __init__(self, seconds):
+            self.timeout_s = seconds
+            self.expires = fence_clock.now + seconds
+
+        def remaining(self):
+            return self.expires - fence_clock.now
+
+    def bounded_with_reader_deadline(section, read, *, deadline, **kwargs):
+        return reader.bounded(section, read, deadline=reader.Deadline(deadline.timeout_s),
+                              **kwargs)
+
+    monkeypatch.setattr(reservation, "reader", SimpleNamespace(
+        **{**vars(reader), "Deadline": FenceDeadline,
+           "bounded": bounded_with_reader_deadline}))
     monkeypatch.setattr(reservation, "time", SimpleNamespace(
-        monotonic=lambda: clock.now, time=time.time, sleep=time.sleep))
+        monotonic=lambda: clock.now, time=time.time, sleep=fence_clock.advance))
     return clock
 
 
@@ -153,11 +170,12 @@ def test_parsed_sidecars_are_reused_but_replacements_are_rechecked(fleet, monkey
     second = publish("r2-recheck-second", gpu=0)
     pass_census = reservation.PassCensus(queue, queue.ledger(), adaptive_cpu.AdmissionGate(queue.ledger()))
     original = reservation._read
-    reads = []
+    reads = queue.root / "ordinary-source-reads.log"
 
     def observe(path, **kwargs):
         if path == queue.records.passes_path(selected):
-            reads.append(path)
+            with reads.open("a") as log:
+                log.write(str(path) + "\n")
         return original(path, **kwargs)
 
     monkeypatch.setattr(reservation, "_read", observe)
@@ -167,7 +185,7 @@ def test_parsed_sidecars_are_reused_but_replacements_are_rechecked(fleet, monkey
                 pass_census, queue, queue.ledger(), pass_census._controller, row,
                 dependent_owner=None) as census:
             assert "unavailable" not in census
-    assert len(reads) == 1
+    assert len(reads.read_text().splitlines()) == 1
     _fixture_selection(queue, selected)
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
     with _fixture_census_fence(queue):
@@ -175,7 +193,7 @@ def test_parsed_sidecars_are_reused_but_replacements_are_rechecked(fleet, monkey
                 pass_census, queue, queue.ledger(), pass_census._controller, row,
                 dependent_owner=None) as census:
             assert "unavailable" in census
-    assert len(reads) == 2
+    assert len(reads.read_text().splitlines()) == 2
 
 
 def test_election_between_source_discovery_and_H_cannot_authorize_admission(fleet, monkeypatch):
@@ -288,14 +306,21 @@ def test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow(
 
     def slow_capture(active):
         entered.set()
-        assert release.wait(30), "fixture census was never released"
+        assert release.wait(), "fixture census was never released"
         return original_capture(active)
 
     monkeypatch.setattr(reservation, "_capture", slow_capture)
-    monkeypatch.setattr(reservation, "READ_BUDGET_S", 40)
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
 
     def observe():
+        class ParkedDeadline(reader.Deadline):
+            def remaining(self):
+                return self.timeout_s
+
+        real_select = reader.select.select
+        monkeypatch.setattr(reader, "Deadline", ParkedDeadline)
+        monkeypatch.setattr(reader, "select", SimpleNamespace(
+            select=lambda ready, write, error, timeout: real_select(ready, write, error)))
         try:
             reservation.CensusReader(queue, queue.ledger()).capture()
         except reservation.CensusUnavailable:
@@ -305,7 +330,7 @@ def test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow(
     observer = context.Process(target=observe)
     observer.start()
     try:
-        assert entered.wait(30), "fixture census child did not start"
+        assert entered.wait(), "fixture census child did not start"
         for key, row in zip(candidates, rows):
             sibling = pool.PoolQueue(queue.root)
             result = sibling.claim(capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
@@ -318,10 +343,12 @@ def test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow(
                 assert denial(key)["reason"] == expected
     finally:
         release.set()
-        observer.join(45)
-        if observer.is_alive():
-            observer.kill()
+        try:
             observer.join()
+        finally:
+            if observer.is_alive():
+                observer.kill()
+                observer.join()
     assert observer.exitcode == 0
 
 

@@ -6,7 +6,7 @@ import threading
 
 import pytest
 
-from prismabuild import queue_bell, queue_bell_events, queue_bell_host_reads
+from prismabuild import queue_bell, queue_bell_events, queue_bell_input_reads
 
 
 def drain(watch, ring):
@@ -72,8 +72,8 @@ def test_existing_hidden_holder_metadata_cannot_be_silently_covered(inputs):
 
 
 def test_a_confirmation_cannot_consume_an_invalidation_during_its_read(monkeypatch):
-    monkeypatch.setattr(queue_bell_host_reads.time, "monotonic", lambda: 0.0)
-    pending = queue_bell_host_reads.DirtyHostInputs()
+    monkeypatch.setattr(queue_bell_input_reads.time, "monotonic", lambda: 0.0)
+    pending = queue_bell_input_reads.DirtyInputs()
     pending.invalidate("reservations", "worker.lab", deadline=4.0)
     observed = []
     deadlines = []
@@ -108,8 +108,8 @@ def test_holder_watches_cover_the_authoritative_census(inputs):
 
 
 def test_confirmation_keeps_concurrent_invalidation_dirty(monkeypatch):
-    monkeypatch.setattr(queue_bell_host_reads.time, "monotonic", lambda: 0.0)
-    pending = queue_bell_host_reads.DirtyHostInputs()
+    monkeypatch.setattr(queue_bell_input_reads.time, "monotonic", lambda: 0.0)
+    pending = queue_bell_input_reads.DirtyInputs()
     pending.invalidate("workers", "worker.lab", deadline=4.0)
     read_started = threading.Event()
     invalidated = threading.Event()

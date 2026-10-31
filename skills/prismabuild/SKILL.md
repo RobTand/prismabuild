@@ -1,11 +1,19 @@
 ---
 name: prismabuild
-description: Submit tests, benchmarks, builds and GPU work through the PrismaBuild fleet; size admitted work and verify its actual result. Use for agent and subagent test or GPU execution on Rob's workers.
+description: Submit computational work -- GPU jobs, benchmarks, builds and large or long-running compute -- through the PrismaBuild fleet; size admitted work and verify its actual result. Use for agent and subagent computational execution on Rob's workers. Not the CI system.
 ---
 
 # PrismaBuild execution
 
-Rob requires every agent and subagent to route tests and GPU work through PB.
+PrismaBuild admission is for computational work: GPU jobs, benchmarks, and
+large or long-running compute; verify terminal records and CAS receipts.
+PrismaBuild is not the CI system. CI and integration tests run as GitHub checks
+in the Mergify merge queue on the integrated SHA. While developing, run the
+fast relevant tests in your worktree; a local run is evidence, not the merge
+gate. Merge only through the Mergify queue and never bypass required checks,
+reviews or branch protections; if a required check cannot run yet, leave the
+PR approved and report it.
+
 Use the published client at `/mnt/shared/prismabuild-fleet/repo/tools/` so a
 stale checkout does not become a stale submission client. Read-only inspection,
 source edits and Git operations may run locally. Children already executing
@@ -57,7 +65,9 @@ and executes that snapshot on an eligible worker. `--cwd` belongs to pbrun;
 `--checkout` belongs to pbtest. Inspect the published tool's `--help` for
 options rather than inventing aliases.
 
-Example CPU suite, sized for eight processes and eight GiB total:
+Example of a large or long-running CPU suite that needs fleet compute, sized
+for eight processes and eight GiB total (fast relevant tests run in your
+worktree instead):
 
 ```bash
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
@@ -328,11 +338,13 @@ decoding. Oversized decoded data is refused before JSON parsing; use a shorter
 stored `bytes`. JSON object memory is additional, and the validation limit does
 not cap trace growth during capture or preserve an interrupted export.
 
-Agent self-validation -- test shards, the receipt for a PR, a re-run to confirm
-a fix -- submits at `--priority -10` (`pbtest.py --priority -10`, `pbrun.py
---priority -10`). Ready items are ordered by priority band before aging, so
-that work is considered only after everything at the default priority has been
-tried and never displaces campaign work in the queue. Campaign work stays at 0.
+Agent self-validation that needs fleet compute -- large test shards, a GPU
+re-run to confirm a fix -- submits at `--priority -10` (`pbtest.py --priority
+-10`, `pbrun.py --priority -10`). Ready items are ordered by priority band
+before aging, so that work is considered only after everything at the default
+priority has been tried and never displaces campaign work in the queue.
+Campaign work stays at 0. A PB receipt is evidence for a PR, not its merge
+gate; the gate is the GitHub checks in the Mergify queue.
 
 An explicitly retry-safe `-10` generation action can also yield the box: when a
 foreground item is denied for tokens a background holder is sitting on, that holder is

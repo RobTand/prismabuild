@@ -47,6 +47,10 @@ def argument_parser() -> argparse.ArgumentParser:
                        help="seal into the CAS, print prismabuild.sealed.v1, and publish no work")
     verbs.add_argument("--publish-sealed", metavar="KEY",
                        help="publish a verified CAS request without preparing the checkout again")
+    verbs.add_argument("--d38-plan", metavar="PATH",
+                       help="seal a reviewed GPU invocation and its CPU preflight plan; publish no work")
+    verbs.add_argument("--d38-preflight-for", metavar="PLAN",
+                       help="run the sealed plan's reviewed CPU invocation and publish its D38 receipt")
     ap.add_argument("--demand", default="",
                     help="resource demand, e.g. gpu=1,mem_gb=16")
     ap.add_argument("--gpu", action="store_true",
@@ -301,8 +305,13 @@ def argument_parser() -> argparse.ArgumentParser:
                     help="positive execution deadline in seconds, enforced by "
                          "both transports; the pool worker's safety ceiling "
                          "(7200 s by default, announced per box and reported "
-                         "here when it would cut this request short) also "
-                         "applies. Queue waiting is bounded by --wait-s")
+                         "here when it would cut this request short) clamps "
+                         "an explicit budget. Without it the pool ends a run "
+                         "on a progress stall. Queue waiting is bounded by --wait-s")
+    ap.add_argument("--stall-s", type=float, default=None,
+                    help="silence allowance for output and CPU activity when no "
+                         "--progress-phase is declared (default 7200 s, the former "
+                         "worker ceiling, clamped by the worker ceiling; pool only)")
     ap.add_argument("--progress-phase", "--progress", action="append", default=None,
                     metavar="NAME=SECONDS",
                     help="declare one phase of this action and the quiet it is "
@@ -431,21 +440,28 @@ def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Na
         if args.command or any(word.startswith("--") and word.split("=", 1)[0] not in allowed
                                for word in supplied):
             ap.error("--publish-sealed takes only KEY, --detach and --wait-s")
-    if args.seal_only and (args.detach or args.withdraw or args.release_origin_consumer
+    if (args.seal_only or args.d38_plan is not None) and (args.detach or args.withdraw or args.release_origin_consumer
                           or args.as_sealed_by):
-        ap.error("--seal-only cannot combine with --detach, --withdraw, "
+        ap.error("plan/seal-only cannot combine with --detach, --withdraw, "
                  "--release-origin-consumer or --as-sealed-by")
+    if args.d38_preflight_for is not None:
+        supplied = list(sys.argv[1:] if argv is None else argv)
+        allowed = {"--d38-preflight-for", "--detach", "--wait-s", "--priority", "--client-events-fd"}
+        if args.command or any(word.startswith("--") and word.split("=", 1)[0] not in allowed
+                               for word in supplied):
+            ap.error("--d38-preflight-for takes only PLAN, --detach, --wait-s and --priority")
 
     args.progress_policy = submission.parse_progress_phases(
         args.progress_phase, cycle=args.progress_cycle)
     args.awaited_batch = submission.parse_awaited_batch(args.awaited_batch)
     try:
-        submission.validate_request(request_from_args(args))
+        if args.d38_preflight_for is None:
+            submission.validate_request(request_from_args(args))
     except SubmissionRefused as exc:
         if isinstance(exc, ArgumentRefused):
             ap.error(exc.reason)
-        if args.seal_only or args.publish_sealed is not None or args.detach:
-            print_consumer_refusal(exc, sealed=args.seal_only)
+        if args.seal_only or args.d38_plan is not None or args.publish_sealed is not None or args.detach:
+            print_consumer_refusal(exc, sealed=args.seal_only or args.d38_plan is not None)
             raise SystemExit((exc.reason or 1) if plain_detach(args) else 1) from None
         raise SystemExit(exc.reason or exc.returncode) from None
     return args
@@ -490,13 +506,27 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
                                         "withdrawn": withdrawn, "reason": args.reason})
             json_options["on_withdrawal"] = withdrawal_result
 
+        if args.d38_plan is not None:
+            from prismabuild import d38_producer
+            record = d38_producer.write_d38_plan(request_from_args(args), args.d38_plan,
+                store=configured_store(), display=display)
+            print(json.dumps(record), flush=True)
+            report.finish(action_client.ClientCommand(0))
+            return 0
         if args.seal_only:
             record = sealed_submission.seal_consumer_request(request_from_args(args),
                 store=configured_store(), display=display)
             print(json.dumps(record), flush=True)
             report.finish(action_client.ClientCommand(0))
             return 0
-        if args.publish_sealed is not None:
+        if args.d38_preflight_for is not None:
+            from prismabuild import d38_producer
+            action, template, request = d38_producer.prepare_preflight(
+                args.d38_preflight_for, request_from_args(args),
+                store=configured_store(), display=display)
+            result = submission.submit_action(action, template=template, request=request,
+                store=configured_store(), display=display, report=report)
+        elif args.publish_sealed is not None:
             result = sealed_submission.publish_consumer_seal(args.publish_sealed,
                 store=configured_store(), detach=args.detach, wait_s=args.wait_s,
                 transport=args.transport, display=display, report=report)
@@ -537,20 +567,20 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
     except SubmissionRefused as exc:
         if report.ending is None:
             report.finish(action_client.ClientRefused(exc.returncode))
-        if 'args' in locals() and (args.seal_only or args.publish_sealed is not None or args.detach):
+        if 'args' in locals() and (args.seal_only or args.d38_plan is not None or args.publish_sealed is not None or args.detach):
             if isinstance(exc, ArgumentRefused):
                 parser.error(exc.reason)
-            print_consumer_refusal(exc, sealed=args.seal_only)
+            print_consumer_refusal(exc, sealed=args.seal_only or args.d38_plan is not None)
             if plain_detach(args):
                 raise SystemExit(exc.reason or 1) from None
             return 1
         raise SystemExit(exc.reason or exc.returncode) from None
     except (OSError, pb.PrismaBuildError, ValueError) as exc:
-        if 'args' not in locals() or not (args.seal_only or args.publish_sealed is not None):
+        if 'args' not in locals() or not (args.seal_only or args.d38_plan is not None or args.d38_preflight_for is not None or args.publish_sealed is not None):
             raise
         if report.ending is None:
             report.finish(action_client.ClientRefused(1))
-        print_consumer_refusal(exc, sealed=args.seal_only)
+        print_consumer_refusal(exc, sealed=args.seal_only or args.d38_plan is not None)
         return 1
     finally:
         timing_scope.close()

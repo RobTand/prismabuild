@@ -27,6 +27,8 @@ import os
 from pathlib import Path
 import sys
 import threading
+import time
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -123,6 +125,17 @@ def test_a_held_owner_lock_past_the_grace_is_a_retryable_refusal(
     path = loop._staged(stage, loop.NAMES[1])
     before = os.stat(path)
 
+    now = [100.0]
+    polls = []
+
+    def advance(seconds):
+        polls.append(seconds)
+        assert len(polls) == 1, "a busy owner must refuse once its grace ends"
+        now[0] += staged_path._PUBLISH_GRACE_S
+
+    monkeypatch.setattr(staged_path, "time", SimpleNamespace(
+        monotonic=lambda: now[0], sleep=advance,
+        perf_counter=time.perf_counter, time=time.time))
     taken, release = threading.Event(), threading.Event()
     acquired: list[bool] = []
 
@@ -134,12 +147,12 @@ def test_a_held_owner_lock_past_the_grace_is_a_retryable_refusal(
 
     holder = threading.Thread(target=hold, daemon=True)
     holder.start()
-    assert taken.wait(timeout=10) and acquired == [True]
+    assert taken.wait(timeout=60) and acquired == [True]
     try:
         rc, receipt = world.run(claimed=True)
     finally:
         release.set()
-        holder.join(timeout=10)
+        holder.join(timeout=60)
 
     # Retryable, as a lock that will be let go must be.
     assert rc == 0 and receipt.get("refusal") is None, (
@@ -157,7 +170,6 @@ def test_a_held_owner_lock_past_the_grace_is_a_retryable_refusal(
     assert "unproven" not in receipt
     phases = receipt["phase_timings"]["thread_seconds"]
     assert "owner_judgement" not in phases, phases
-    # The grace was waited out at publication, not skipped.
-    assert phases["publish_poll_sleep"]["calls"] >= 1, phases
+    assert phases["publish_poll_sleep"]["calls"] == len(polls) == 1, phases
     assert residency_plan.superseded(queue, world.plan) is None
     assert world.copier in world.window()

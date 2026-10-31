@@ -1,0 +1,51 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "prelaunch",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "e57b7a3c160f95f9b8da90337b3ed93b021d96d7",
+  "scope": [
+    "SC-03",
+    "ID-08"
+  ],
+  "prelaunch": {
+    "submission": {
+      "declares": [
+        "immutable source snapshot",
+        "actual interpreter capability",
+        "zero GPU demand",
+        "native thread bounds",
+        "hard execution deadline"
+      ],
+      "source_producer": "79f90af7e6fd4d0aa72e8c9bfa1f8f98b91887a6",
+      "capture_action": "e092d1842dc46c5f3114cb542f78d8c2d46a73aefd1828682550f5e89a859e9d",
+      "subsequent_work": [
+        "strict source-fixture adoption",
+        "portable tests on x86 and ARM",
+        "archival-only tests on existing x86 archival lane"
+      ]
+    },
+    "readiness_gate": "PB-owned claim/admission verdict remains authoritative. This source-fixture qualification declares no staged application data.",
+    "tier_policy": "strict",
+    "window_fit": "unsupported-workset:no staged application workset is read by this source-fixture qualification",
+    "scope_note": "No lifecycle, residency, dev-identity, runtime publication, activation or policy change. This record scopes subsequent source qualification only; the existing captured action retains its actual launch and terminal records."
+  },
+  "merge": {
+    "status": "not-this-step"
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "ledger_sha256": "6c07e942cca8e99352750f858b1954c6078146c4a2aab5079246bd8cb1948575",
+  "requirements_unchanged_from_main": true,
+  "recorded_at": "2026-10-26T21:26:37.203488+00:00",
+  "requirement_axes_reference": {
+    "path": "docs/staged_read_requirements_2026-09-20.json",
+    "sha256": "6c07e942cca8e99352750f858b1954c6078146c4a2aab5079246bd8cb1948575",
+    "requirements": 69,
+    "all_target_and_status_axes": "unchanged from merged main; no requirement promotion"
+  }
+}
