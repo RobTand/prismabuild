@@ -7,7 +7,7 @@ FROM base-${TARGETARCH}
 
 USER root
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates coreutils curl git \
+    && apt-get install -y --no-install-recommends bash ca-certificates coreutils curl git util-linux \
     && rm -rf /var/lib/apt/lists/*
 # Release digests come from the public python-build-standalone release API.
 RUN set -eu; \

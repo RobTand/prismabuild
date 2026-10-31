@@ -84,9 +84,10 @@ def test_registration_transport_isolation_and_credential_handoff(host, name, arc
     assert runner.startswith(f'name=pb-{name}-slot-1-')
     container = next(c for c in commands if c[:2] == ['podman', 'run'])
     assert container[container.index('--name') + 1] == 'pb-ci-runner-1'
-    assert container[-1] == IMAGE
+    assert container[-2] == IMAGE
+    assert container[-1], 'the entrypoint must receive the service CPU mask'
     assert {'--rm', '--interactive', '--pull=never', '--network=private', '--pid=private',
-            '--ipc=private', '--userns=keep-id:uid=1001,gid=1001', '--http-proxy=false', '--sdnotify=ignore',
+            '--ipc=private', '--http-proxy=false', '--sdnotify=ignore',
             '--cap-drop=all', '--security-opt=no-new-privileges', '--pids-limit=1024',
             f'--memory={memory}', f'--memory-swap={memory}'} <= set(container)
     assert not any(a.startswith(('--volume', '--mount', '--env', '--device', '--privileged'))

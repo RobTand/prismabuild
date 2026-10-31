@@ -48,12 +48,19 @@ jit_config=$("${registration[@]}" 2>/dev/null) || {
     echo 'JIT registration returned no valid encoded config' >&2
     exit 1
 }
+# OCI runtimes can widen inherited task affinity when creating the container.
+# Carry the service's mask into its entrypoint, without a host mount or socket.
+affinity=
+while read -r key value; do
+    if [[ "$key" == Cpus_allowed_list: ]]; then affinity=$value; break; fi
+done < /proc/self/status
+[[ "$affinity" =~ ^[0-9,-]+$ ]] || exit 1
 systemd-notify RESTART_RESET=1
 echo "Starting $runner"
 printf '%s\n' "$jit_config" | podman run --rm --interactive \
     --name "pb-ci-runner-$slot" --pull=never \
     --memory="$memory" --memory-swap="$memory" --pids-limit=1024 \
-    --network=private --pid=private --ipc=private --userns=keep-id:uid=1001,gid=1001 \
+    --network=private --pid=private --ipc=private \
     --http-proxy=false --sdnotify=ignore --cap-drop=all \
     --security-opt=no-new-privileges --label "io.prismabuild.ci-slot=$slot" \
-    "${options[@]}" "$PB_CI_IMAGE"
+    "${options[@]}" "$PB_CI_IMAGE" "$affinity"

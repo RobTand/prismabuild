@@ -16,6 +16,9 @@ no polling loop. Nothing here installs or changes PB workers or TL3 services.
 The Sparks use efficiency cores outside PB's declared ten performance CPUs.
 Their user managers delegate cpu, memory, and pids, but no cpuset controller.
 Per-slot systemd `CPUAffinity=` places the processes without changing delegation.
+The OCI runtime can widen inherited task affinity. The slot reads its own
+`Cpus_allowed_list` and passes that nonsecret mask as an entrypoint argument.
+The entrypoint restores the mask with `taskset` before reading the JIT input.
 The canary checks the actual affinity inside a job. Each Spark declares 104 GB
 to PB out of about 121 GB. Check `free -g` before enabling slots. If 16 GiB of
 additional memory does not fit, enable only slot 1 and report the reduced count.
@@ -27,8 +30,8 @@ not a reservation in PB's ledger. Each container limits total memory plus swap
 to the memory limit and permits at most 1,024 processes.
 
 Containers have private process, user, IPC, and network namespaces.
-The user namespace maps the rootless owner to the image's runner UID and GID
-1001 with `--userns=keep-id:uid=1001,gid=1001`. They have
+Podman uses its default rootless UID mapping, as in the reference design.
+The host owner and the image's unprivileged runner have distinct mapped IDs. They have
 no host mounts, shared storage, device access, container sockets, or host
 credentials. All capabilities are dropped and privilege escalation is disabled.
 Host proxy variables are not forwarded. The image runs as the unprivileged
