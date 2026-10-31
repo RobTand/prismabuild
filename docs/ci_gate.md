@@ -13,7 +13,7 @@ matrix has twelve shards, alternating `ubuntu-latest` and `ubuntu-24.04-arm`.
 Workflow reruns swap the architectures by shard index, so qualification exercises
 each file on both architectures.
 `GATE_RUNNERS` is the workflow's single list of test destinations. The small
-label-resolution job bootstraps on hosted x64; all gate jobs use its outputs,
+label-resolution job bootstraps on hosted x64; test jobs use its outputs,
 and `matrix --runners` receives that same list. Changing test destinations
 requires one edit to `GATE_RUNNERS`.
 Each shard uses four pytest-xdist workers within inherited CPU affinity.
@@ -84,7 +84,7 @@ Budget enforcement runs only in this CI runner.
 
 ## Verdicts and retries
 
-Exit 0 means pass, 1 means test failure, and 75 means no verdict. Logs distinguish
+Exit 0 means pass, 1 means a test or cost-policy failure, and 75 means no verdict. Logs distinguish
 `GATE_PASS`, `GATE_TEST_FAILURE` and `NO_VERDICT`. Setup/planning exceptions are
 infrastructure failures. A shard's first attempt uploads its result and xunit1
 JUnit with file attributes. The retry planner chooses only missing or invalid

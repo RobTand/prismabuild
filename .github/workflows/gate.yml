@@ -34,7 +34,7 @@ jobs:
           python3 - <<'PYTHON'
           import json, os
           labels = json.loads(os.environ['GATE_RUNNERS'])
-          if not labels or any(not isinstance(label, (str, list)) or not label for label in labels):
+          if not labels or any(not isinstance(label, str) or not label for label in labels):
               raise ValueError('GATE_RUNNERS needs runner labels')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('labels=' + json.dumps(labels, separators=(',', ':')) + '\n')
@@ -43,7 +43,7 @@ jobs:
     name: pr-gate
     needs: runners
     if: >-
-      ${{ !(github.event.pull_request.head.repo.full_name == github.repository &&
+      ${{ always() && !(github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.head_ref, 'mergify/merge-queue/') &&
       github.event.pull_request.user.login == 'mergify[bot]' &&
       github.event.pull_request.user.id == 37929162) &&
@@ -344,9 +344,15 @@ jobs:
           retention-days: 7
   gate:
     name: gate
-    if: ${{ always() && needs.plan.result != 'skipped' }}
+    if: >-
+      ${{ always() && github.event.pull_request.head.repo.full_name == github.repository &&
+      ((startsWith(github.head_ref, 'mergify/merge-queue/') &&
+      github.event.pull_request.user.login == 'mergify[bot]' &&
+      github.event.pull_request.user.id == 37929162) ||
+      contains(github.event.pull_request.labels.*.name, 'gate-canary')) }}
     needs: [runners, plan, shards, retry-plan, retry-shards]
-    runs-on: ${{ fromJSON(needs.runners.outputs.labels)[0] }}
+    # The aggregator must still start if label resolution was lost with its runner.
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Require a complete plan

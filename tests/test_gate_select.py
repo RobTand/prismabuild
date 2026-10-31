@@ -222,8 +222,20 @@ def test_always_fast_tests_do_not_seed_helper_change_propagation(tmp_path):
 
 
 @pytest.fixture(scope='module')
-def repository_path_index():
-    return select.dependency_index(ROOT)
+def repository_path_index(tmp_path_factory):
+    # Keep the real source patterns, without rescanning 1,300 unrelated files.
+    root = tree(tmp_path_factory.mktemp('repository-path-patterns'))
+    for name in (
+        'tests/test_pbtest_native_directory_collection_1458.py',
+        'tests/test_worker_loop_proves_it_parked.py',
+        'tests/test_458_reboot_gate_regression.py',
+        'tests/test_needrestart_broker_restart_exclusion.py',
+        'tests/test_container_image_inventory.py',
+    ):
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((ROOT / name).read_text())
+    return root, select.dependency_index(root)
 
 
 @pytest.mark.parametrize('changed,consumer', [
@@ -234,7 +246,8 @@ def repository_path_index():
     ('tests/fixtures/container_images/sparky_image_ls.txt', 'tests/test_container_image_inventory.py'),
 ])
 def test_repository_path_loading_regressions(repository_path_index, changed, consumer):
-    result = plan(ROOT, [changed], index=repository_path_index)
+    root, index = repository_path_index
+    result = plan(root, [changed], index=index)
     assert consumer in selected(result)
 
 
