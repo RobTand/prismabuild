@@ -191,12 +191,7 @@ def survey(root: Path) -> dict:
         tree = ast.parse(source)
         for node in ast.walk(tree):
             idiom = None
-            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
-        # Formatting can enclose a Path division because / and % share precedence.
-        # Keep the known containing directory even when the filename is computed.
-        prefixes = {value.split('%', 1)[0] for value in resolve(node.left, bindings, filename)}
-        return {posixpath.dirname(value).rstrip('/') + '/**' for value in prefixes if '/' in value}
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
                 idiom = 'slash_join'
             elif isinstance(node, ast.JoinedStr):
                 idiom = 'interpolated_string'

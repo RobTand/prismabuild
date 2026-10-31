@@ -2,7 +2,11 @@
 
 Ordinary branch pushes run `pr-gate` on one `robtand/fast-arm64` slot. The
 selector always includes FAST, changed tests, direct importers of changed
-production modules, literal path references, and test helper import closure.
+production modules, path references, and test helper import closure. Static path
+resolution follows named directory bindings, __file__ parents, test-relative
+paths, Path constructors, joinpath and os.path joins. A computed filename
+retains its known directory as a conservative match; an unresolved base can
+retain a literal suffix. These matches also form helper-closure edges.
 Changing conftest, pyproject, verify, lane manifests or gate code/config selects
 the full population. Documentation alone does not.
 
@@ -38,7 +42,8 @@ python tools/ci/gate_run.py --plan plan.json --files-from assigned.txt --workers
 ```
 
 Exit 0 means pass, 1 means test failure, and 75 means no verdict. Logs distinguish
-`GATE_PASS`, `GATE_TEST_FAILURE` and `NO_VERDICT`. Lost runners cannot self-retry
+`GATE_PASS`, `GATE_TEST_FAILURE` and `NO_VERDICT`. Setup and planning failures exit 75. The shell preserves the runner's explicit
+0, 1 and 75 without treating a test failure as a planning error. Lost runners cannot self-retry
 without credentials; Mergify owns the bounded check retry. Setup failure, lost
 runner or absent status must never become a pass. JUnit uses xunit1 with `file`
 attributes for CircleCI's `store_test_results` timing history. Plan, assignment,
@@ -75,3 +80,18 @@ owning issue requires. Quarantine is containment, not a root fix. Durations in
 Unknown new-file durations stay unknown; partly quarantined files retain their
 whole-file estimate conservatively. Replay and AST function diagnostics are
 available in `tools/ci/gate_replay.py`; function-level selection is follow-up work.
+
+## Path-loading survey
+
+```sh
+python tools/ci/gate_paths.py --root . --output path-survey.json
+```
+
+The survey counts source AST idioms and distinct files, with examples. Counts
+overlap and include temporary paths and generated fixture output; they do not
+prove dependency completeness. Path-loaded modules through SourceFileLoader or
+runpy use the same argument evidence as importlib loaders. with_suffix and
+filesystem glob operations keep conservative directory matches. Runtime paths
+received only through arguments, environment or arbitrary helper return values
+can remain unresolved when there is no static repository directory or suffix.
+Queue coverage therefore stays full while real-batch shadow evidence accumulates.
