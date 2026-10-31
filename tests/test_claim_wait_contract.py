@@ -11,7 +11,7 @@ from prismabuild import candidate_policy, claim_wait
 @pytest.fixture
 def observation():
     queue = object()
-    with claim_wait.capture(queue, wall_clock=lambda: 1000.0,
+    with claim_wait.capture_claim_wait(queue, wall_clock=lambda: 1000.0,
                             monotonic_clock=lambda: 40.0) as collector:
         yield queue, collector
 
@@ -19,11 +19,11 @@ def observation():
 def test_capture_is_queue_scoped_and_restores_the_outer_capture(observation):
     queue, outer = observation
     other = object()
-    claim_wait.observe(other, claim_wait.SourceKind.ACTION, "foreign")
-    with claim_wait.capture(other) as inner:
-        claim_wait.observe(queue, claim_wait.SourceKind.ACTION, "hidden")
-        claim_wait.observe(other, claim_wait.SourceKind.ACTION, "inner")
-    claim_wait.observe(queue, claim_wait.SourceKind.ACTION, "outer")
+    claim_wait.observe_claim_source(other, claim_wait.SourceKind.ACTION, "foreign")
+    with claim_wait.capture_claim_wait(other) as inner:
+        claim_wait.observe_claim_source(queue, claim_wait.SourceKind.ACTION, "hidden")
+        claim_wait.observe_claim_source(other, claim_wait.SourceKind.ACTION, "inner")
+    claim_wait.observe_claim_source(queue, claim_wait.SourceKind.ACTION, "outer")
     assert {entry.identity for entry in outer.observation().blocked_on.inputs
             if entry.kind is claim_wait.SourceKind.ACTION} == {"outer"}
     assert {entry.identity for entry in inner.observation().blocked_on.inputs
@@ -33,7 +33,7 @@ def test_capture_is_queue_scoped_and_restores_the_outer_capture(observation):
 def test_snapshot_is_frozen_and_does_not_retain_later_observations(observation):
     queue, collector = observation
     before = collector.observation()
-    claim_wait.observe(queue, claim_wait.SourceKind.TIER, "fast")
+    claim_wait.observe_claim_source(queue, claim_wait.SourceKind.TIER, "fast")
     assert all(entry.kind is not claim_wait.SourceKind.TIER for entry in before.blocked_on.inputs)
     assert any(entry.kind is claim_wait.SourceKind.TIER for entry in collector.observation().blocked_on.inputs)
     with pytest.raises(FrozenInstanceError):
@@ -54,7 +54,7 @@ def test_wall_deadline_translates_once_without_changing_its_policy_start(observa
                                    claim_wait.EvidenceState.UNREADABLE])
 def test_unavailable_source_cannot_enter_an_indefinite_wait(observation, state):
     queue, collector = observation
-    claim_wait.observe(queue, claim_wait.SourceKind.RESIDENCY, "lead", state)
+    claim_wait.observe_claim_source(queue, claim_wait.SourceKind.RESIDENCY, "lead", state)
     result = collector.observation().blocked_on
     assert claim_wait.WakeInput(claim_wait.SourceKind.RESIDENCY, "lead", state) in result.inputs
     assert not result.coverage.complete

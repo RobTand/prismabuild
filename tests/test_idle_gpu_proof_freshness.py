@@ -15,12 +15,12 @@ def test_idle_sample_must_remain_fresh_after_restartability_reads(guest_fleet, m
     monkeypatch.setattr(pool, '_now', lambda: clock[0])
     original_load = fleet.queue._opposite_resource_load
 
-    def current_cpu_load(offer, *, gpu_job):
+    def current_cpu_load(offer, *, gpu_job, on_expiry=None):
         # Isolate GPU expiry while the fitting CPU peer stays freshly observed.
         if offer.get('host') == 'cpuhost':
             offer = {**offer, 'observed_detail': {
                 **offer['observed_detail'], 'observed_unix': clock[0]}}
-        return original_load(offer, gpu_job=gpu_job)
+        return original_load(offer, gpu_job=gpu_job, on_expiry=on_expiry)
 
     monkeypatch.setattr(fleet.queue, '_opposite_resource_load', current_cpu_load)
     original = fleet.queue._guest_restartable

@@ -209,7 +209,7 @@ _CURRENT: ContextVar[tuple[object, Collector] | None] = ContextVar("claim_wait",
 
 
 @contextmanager
-def capture(queue: object, *, wall_clock: Callable[[], float] = time.time,
+def capture_claim_wait(queue: object, *, wall_clock: Callable[[], float] = time.time,
             monotonic_clock: Callable[[], float] = time.monotonic) -> Iterator[Collector]:
     collector = Collector(queue, wall_clock=wall_clock, monotonic_clock=monotonic_clock)
     token = _CURRENT.set((queue, collector))
@@ -235,20 +235,20 @@ def on_unix_deadline(queue: object) -> Callable[[str, float], None] | None:
 
 @contextmanager
 def reading(queue: object, kind: SourceKind, identity: str) -> Iterator[None]:
-    observe(queue, kind, identity)
+    observe_claim_source(queue, kind, identity)
     try:
         yield
     except (OSError, ValueError, TypeError, KeyError) as exc:
-        observe(queue, kind, identity,
+        observe_claim_source(queue, kind, identity,
                 EvidenceState.UNREADABLE if isinstance(exc, OSError) else EvidenceState.UNKNOWN)
         raise
 
 
-def action_identity(item: Mapping[str, object]) -> str:
+def claim_row_identity(item: Mapping[str, object]) -> str:
     return f"{item.get('action_key', '')}:{item.get('published_unix')!r}:{item.get('attempts', 0)!r}"
 
 
-def observe(queue: object, kind: SourceKind, identity: str,
+def observe_claim_source(queue: object, kind: SourceKind, identity: str,
             state: EvidenceState = EvidenceState.PRESENT) -> None:
     if (collector := _collector(queue)) is not None:
         collector.observe(kind, identity, state)
@@ -275,7 +275,7 @@ def refusal(queue: object, item: Mapping[str, object], reason: str,
     if collector is None:
         return
     collector.reasons.add(reason)
-    identity = action_identity(item)
+    identity = claim_row_identity(item)
     collector.observe(SourceKind.ACTION, identity)
     kinds = REFUSAL_SOURCES.get(reason)
     if kinds is None:

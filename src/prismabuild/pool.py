@@ -6300,7 +6300,7 @@ class PoolQueue:
         """Every worker offer still fresh enough to believe, allowing bounded skew."""
 
         records = self._offer_records()
-        claim_wait.observe(self, claim_wait.SourceKind.PEER, "workers:*",
+        claim_wait.observe_claim_source(self, claim_wait.SourceKind.PEER, "workers:*",
                            claim_wait.EvidenceState.PRESENT if records else claim_wait.EvidenceState.ABSENT)
         # Directory enumeration or any later read can stall on the shared
         # filesystem. All offers must still be fresh after the complete scan;
@@ -6312,7 +6312,7 @@ class PoolQueue:
             if age is not None and age <= max_age_s:
                 live.append(record)
                 host = str(record.get("host", "?"))
-                claim_wait.observe(self, claim_wait.SourceKind.PEER, host)
+                claim_wait.observe_claim_source(self, claim_wait.SourceKind.PEER, host)
                 claim_wait.unix_deadline(self, f"offer_expiry:{host}",
                                          record["announced_unix"] + max_age_s)
         return live
@@ -16212,7 +16212,7 @@ class PoolQueue:
         try:
             cost = local_scratch.profile_cost(offer, intent, now=now)
         except (ValueError, TypeError, OSError, KeyError):
-            claim_wait.observe(self, claim_wait.SourceKind.CAPABILITY,
+            claim_wait.observe_claim_source(self, claim_wait.SourceKind.CAPABILITY,
                                f"scratch:{offer.get('host', '?')}", claim_wait.EvidenceState.UNKNOWN)
             raise
         claim_wait.unix_deadline(self, f"scratch_profile_expiry:{offer.get('host', '?')}",
@@ -16223,7 +16223,7 @@ class PoolQueue:
         with claim_wait.reading(self, claim_wait.SourceKind.PEER, f"scratch-offer:{host}"):
             offer = record_store.read_document(self.records.worker_offer_path(host))
         if not isinstance(offer, Mapping):
-            claim_wait.observe(self, claim_wait.SourceKind.PEER, f"scratch-offer:{host}",
+            claim_wait.observe_claim_source(self, claim_wait.SourceKind.PEER, f"scratch-offer:{host}",
                                claim_wait.EvidenceState.UNKNOWN)
         return offer
 
@@ -16416,17 +16416,17 @@ class PoolQueue:
         Peer I/O stays outside host admission (#351).
         """
         remote = self.ledger(host)
-        claim_wait.observe(self, claim_wait.SourceKind.HOST_LEDGER, host)
-        claim_wait.observe(self, claim_wait.SourceKind.PEER, f"denials:{host}")
+        claim_wait.observe_claim_source(self, claim_wait.SourceKind.HOST_LEDGER, host)
+        claim_wait.observe_claim_source(self, claim_wait.SourceKind.PEER, f"denials:{host}")
         tiers = offer.get("cpu_tiers") or {}
         if record_store.read_document(remote.base / "cpu-map.json") != tiers:
-            claim_wait.observe(self, claim_wait.SourceKind.CAPABILITY, f"cpu-map:{host}",
+            claim_wait.observe_claim_source(self, claim_wait.SourceKind.CAPABILITY, f"cpu-map:{host}",
                                claim_wait.EvidenceState.UNKNOWN)
             return None
         denials = cpu_admission.read_json(
             self.root / RESERVATIONS / host / "adaptive" / CLAIM_DENIALS).get("records")
         if not isinstance(denials, Mapping):
-            claim_wait.observe(self, claim_wait.SourceKind.PEER, f"denials:{host}",
+            claim_wait.observe_claim_source(self, claim_wait.SourceKind.PEER, f"denials:{host}",
                                claim_wait.EvidenceState.UNKNOWN)
         capacity = _peer_placement.PeerCapacity(
             available=dict(remote.available()),
@@ -16951,7 +16951,7 @@ class PoolQueue:
         """The shared hold check for every claim route and the parked offer."""
         host = socket.gethostname()
         hold = host_hold.read_host_hold(self.root, host)
-        claim_wait.observe(self, claim_wait.SourceKind.CONTROL, f"hold:{host}",
+        claim_wait.observe_claim_source(self, claim_wait.SourceKind.CONTROL, f"hold:{host}",
                            claim_wait.EvidenceState.ABSENT if hold is None else
                            claim_wait.EvidenceState.UNREADABLE if hold.error else
                            claim_wait.EvidenceState.PRESENT)
@@ -16974,27 +16974,27 @@ class PoolQueue:
         return None
 
     def _observe_claim_call(self, call, kwargs) -> claim_wait.ClaimObservation:
-        with claim_wait.capture(self, wall_clock=lambda: _now(),
+        with claim_wait.capture_claim_wait(self, wall_clock=lambda: _now(),
                                 monotonic_clock=lambda: time.monotonic()) as observed:
             return observed.observation(call(**kwargs))
 
     def _observe_claim_row(self, item: Mapping[str, object]) -> None:
         if not claim_wait.is_observing(self):
             return
-        identity = claim_wait.action_identity(item)
-        claim_wait.observe(self, claim_wait.SourceKind.ACTION, identity)
+        identity = claim_wait.claim_row_identity(item)
+        claim_wait.observe_claim_source(self, claim_wait.SourceKind.ACTION, identity)
         for kind in (claim_wait.SourceKind.OWNERSHIP, claim_wait.SourceKind.RECEIPT,
                      claim_wait.SourceKind.PROGRESS):
-            claim_wait.observe(self, kind, identity)
+            claim_wait.observe_claim_source(self, kind, identity)
         group = item.get("gang")
         if isinstance(group, Mapping):
-            claim_wait.observe(self, claim_wait.SourceKind.GROUP, str(group.get("group", "*")))
+            claim_wait.observe_claim_source(self, claim_wait.SourceKind.GROUP, str(group.get("group", "*")))
         for field in ("resident_set", "residency_plan"):
             if item.get(field):
-                claim_wait.observe(self, claim_wait.SourceKind.RESIDENCY, str(item[field]))
+                claim_wait.observe_claim_source(self, claim_wait.SourceKind.RESIDENCY, str(item[field]))
         for field in ("interpreter", "local_dependencies", "requires_files", "container_images"):
             if item.get(field):
-                claim_wait.observe(self, claim_wait.SourceKind.CAPABILITY,
+                claim_wait.observe_claim_source(self, claim_wait.SourceKind.CAPABILITY,
                                    f"{field}:{item[field]!r}")
 
     def _observe_resource_sample(self, source: str, sample: Mapping[str, object] | None,
@@ -17003,7 +17003,7 @@ class PoolQueue:
             return
         stamp = sample.get("sampled_unix") if isinstance(sample, Mapping) else None
         known = type(stamp) in (int, float) and math.isfinite(stamp)
-        claim_wait.observe(self, claim_wait.SourceKind.RESOURCE, source,
+        claim_wait.observe_claim_source(self, claim_wait.SourceKind.RESOURCE, source,
                            claim_wait.EvidenceState.PRESENT if known else claim_wait.EvidenceState.UNKNOWN)
         # Numeric CPU/GPU load has no complete callback. One counter sample
         # within 1 s cancels on a new observation or when the claim interest ends.
@@ -18138,7 +18138,7 @@ class PoolQueue:
                 raise PoolContractError("scratch I/O row lacks/misstates sealed intent")
             if scratch_intent is not None:
                 with claim_wait.reading(self, claim_wait.SourceKind.ACTION,
-                                        f"ready:{claim_wait.action_identity(item)}"):
+                                        f"ready:{claim_wait.claim_row_identity(item)}"):
                     current = record_store.value_or_raise(self.records.item(READY, key))
                 if not self._scratch_record_matches(current, item, scratch_intent):
                     raise PoolContractError("scratch I/O evaluated stale or contradictory publication/attempt")
@@ -18968,7 +18968,7 @@ class PoolQueue:
             return _ClaimHandled.REFUSED
         if tier_demand:
             for tier in tier_demand:
-                claim_wait.observe(self, claim_wait.SourceKind.TIER, str(tier))
+                claim_wait.observe_claim_source(self, claim_wait.SourceKind.TIER, str(tier))
             # The tier's reader plan first (#1091): a copy a
             # claimed consumer is blocked on goes first and alone,
             # and no more copies read the pool than its measured
@@ -19764,7 +19764,7 @@ class PoolQueue:
             wall_clock=lambda: _now(),
             on_deadline=lambda preference, generation, at: claim_wait.deadline(
                 self, f"{preference.value}_preference", at),
-            on_unavailable=lambda host, unreadable: claim_wait.observe(
+            on_unavailable=lambda host, unreadable: claim_wait.observe_claim_source(
                 self, claim_wait.SourceKind.PEER, host,
                 claim_wait.EvidenceState.UNREADABLE if unreadable else claim_wait.EvidenceState.UNKNOWN))
 
@@ -23858,7 +23858,7 @@ class PoolQueue:
             # Only create emits this typed maintenance refusal: no payload or
             # scope has been created, so capacity returns without an attempt.
             self._defer_unstarted_claim(item)
-            claim_wait.observe(self, claim_wait.SourceKind.CONTROL, "maintenance")
+            claim_wait.observe_claim_source(self, claim_wait.SourceKind.CONTROL, "maintenance")
             claim_wait.recovery(self, "resource_scope_unavailable", 1.0)
             return None
         except BaseException as exc:                      # noqa: BLE001

@@ -56,14 +56,14 @@ def test_report_uses_the_preference_start_across_pass_handoff_and_hints(
     clocks["monotonic"] = 10.0
     for instant in (10.0, 17.0, 29.999):
         clocks["monotonic"] = instant
-        with claim_wait.capture(queue) as collected:
+        with claim_wait.capture_claim_wait(queue) as collected:
             scan = queue._start_claim_scan(ready=[row])
             assert not scan.placement.timer_expired(preference, generation)
-            claim_wait.observe(queue, claim_wait.SourceKind.ACTION, "unrelated-hint")
+            claim_wait.observe_claim_source(queue, claim_wait.SourceKind.ACTION, "unrelated-hint")
         assert collected.observation().blocked_on.deadlines == (
             claim_wait.RetryDeadline(preference.value + "_preference", 30.0),)
     clocks["monotonic"] = 30.0
-    with claim_wait.capture(queue) as collected:
+    with claim_wait.capture_claim_wait(queue) as collected:
         scan = queue._start_claim_scan(ready=[row])
         assert scan.placement.timer_expired(preference, generation)
     assert collected.observation().blocked_on.deadlines == ()
@@ -79,7 +79,7 @@ def test_cpu_host_yield_evidence_cannot_create_a_preference_timeout(tmp_path, cl
         wall_clock=lambda: clocks["unix"],
         on_deadline=lambda preference, generation, due: claim_wait.deadline(
             queue, "unexpected_1262_timeout", due))
-    with claim_wait.capture(queue) as collected:
+    with claim_wait.capture_claim_wait(queue) as collected:
         assert view.cpu_host_evidence(generation, "peer", capacity, {"cpu": 1})["yielding_s"] == 0.0
         clocks["unix"] = 1_000_000.0
         assert view.cpu_host_evidence(generation, "peer", capacity, {"cpu": 1})["yielding_s"] == 999000.0
@@ -99,7 +99,7 @@ def test_initial_cpu_counter_baseline_and_cached_sample_report_the_same_next_dea
     clocks["unix"] = 1000.5
     assert controller.sample() == {}
     assert controller.next_sample_unix == 1001.0
-    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+    with claim_wait.capture_claim_wait(queue, wall_clock=lambda: clocks["unix"],
                             monotonic_clock=lambda: clocks["monotonic"]) as collected:
         queue._observe_cpu_sample(controller)
     result = collected.observation().blocked_on
@@ -109,7 +109,7 @@ def test_initial_cpu_counter_baseline_and_cached_sample_report_the_same_next_dea
     clocks.update(unix=1000.75, monotonic=40.25)
     assert controller.sample() == {}
     assert controller.next_sample_unix == 1001.0
-    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+    with claim_wait.capture_claim_wait(queue, wall_clock=lambda: clocks["unix"],
                             monotonic_clock=lambda: clocks["monotonic"]) as collected:
         queue._observe_cpu_sample(controller)
     assert claim_wait.RetryDeadline("cpu_baseline_next_sample", 40.5) in (
@@ -200,7 +200,7 @@ def test_carried_withhold_reports_original_deadlines_before_diagnostic_validatio
     queue = pool.PoolQueue(tmp_path / "queue")
     carried = {"epoch_unix": 990.0, "drain_until_unix": 1040.0,
                "unmeasured_until_unix": 1030.0, "measurement_cpu_sampled_unix": 999.0}
-    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+    with claim_wait.capture_claim_wait(queue, wall_clock=lambda: clocks["unix"],
                             monotonic_clock=lambda: clocks["monotonic"]) as collected:
         queue.record_denial({"action_key": "a" * 64}, "transition_busy",
                             {"withhold_carried": carried})
@@ -208,7 +208,7 @@ def test_carried_withhold_reports_original_deadlines_before_diagnostic_validatio
         claim_wait.RetryDeadline("measurement_drain_expiry", 80.0),
         claim_wait.RetryDeadline("unmeasured_drain_expiry", 70.0),
         claim_wait.RetryDeadline("withhold_cpu_freshness", 44.0)}
-    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+    with claim_wait.capture_claim_wait(queue, wall_clock=lambda: clocks["unix"],
                             monotonic_clock=lambda: clocks["monotonic"]) as collected:
         queue.record_denial({"action_key": "a" * 64}, "transition_busy",
                             {"withhold_carried": {"epoch_unix": 990.0}})
@@ -225,14 +225,14 @@ def test_resident_preference_uses_publication_plus_thirty_despite_new_hints(
     row = {"resident_set": "a" * 64, "published_unix": 995.0}
     for unix, monotonic in ((1000.0, 40.0), (1010.0, 50.0), (1024.999, 64.999)):
         clocks.update(unix=unix, monotonic=monotonic)
-        with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+        with claim_wait.capture_claim_wait(queue, wall_clock=lambda: clocks["unix"],
                                 monotonic_clock=lambda: clocks["monotonic"]) as collected:
             assert _gang.resident_hold(queue, {"group": "b" * 32, "size": 2},
                 {"index": 0}, row, "local", unix, live=[], prefer_s=30.0) is not None
         assert collected.observation().blocked_on.deadlines == (
             claim_wait.RetryDeadline("resident_copy_preference", 65.0),)
     clocks.update(unix=1025.0, monotonic=65.0)
-    with claim_wait.capture(queue) as collected:
+    with claim_wait.capture_claim_wait(queue) as collected:
         assert _gang.resident_hold(queue, {"group": "b" * 32, "size": 2},
             {"index": 0}, row, "local", 1025.0, live=[], prefer_s=30.0) is None
     assert collected.observation().blocked_on.deadlines == ()
@@ -242,7 +242,7 @@ def test_gang_terminal_confirmation_keeps_its_first_observation_deadline(tmp_pat
     queue = pool.PoolQueue(tmp_path / "queue")
     for unix, monotonic in ((1000.0, 40.0), (1003.0, 43.0)):
         clocks.update(unix=unix, monotonic=monotonic)
-        with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+        with claim_wait.capture_claim_wait(queue, wall_clock=lambda: clocks["unix"],
                                 monotonic_clock=lambda: clocks["monotonic"]) as collected:
             assert not _gang.note_terminal(queue, "b" * 32, "a" * 64, "same-ending", now=unix)
         assert collected.observation().blocked_on.deadlines == (
@@ -266,7 +266,7 @@ def test_cross_resource_refusal_reports_the_consulted_peer_sample_expiry(
     monkeypatch.setattr(queue, "_ready_gpu_for_host", lambda *args, **kwargs: None)
     row = {"action_key": "a" * 64, "published_unix": 1000.0,
            "tags": [], "needs_gpu": gpu_job, "resources": {"cpu": 1, "mem_gb": 1}}
-    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+    with claim_wait.capture_claim_wait(queue, wall_clock=lambda: clocks["unix"],
                             monotonic_clock=lambda: clocks["monotonic"]) as collected:
         scan = queue._start_claim_scan(ready=[row])
         assert queue._defer_cross_resource_placement(
@@ -282,7 +282,7 @@ def test_idle_gpu_sample_expiry_is_separate_from_a_preference_timeout(tmp_path, 
     queue = pool.PoolQueue(tmp_path / "queue")
     offer = {"host": "peer", "has_gpu": True, "observed_detail": {
         "gpu_capacity_trusted": True, "foreign_gpu_processes": 0, "gpu_sampled_unix": 998.0}}
-    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+    with claim_wait.capture_claim_wait(queue, wall_clock=lambda: clocks["unix"],
                             monotonic_clock=lambda: clocks["monotonic"]) as collected:
         assert queue._idle_gpu_offer(offer, on_expiry=claim_wait.on_unix_deadline(queue))
     assert collected.observation().blocked_on.deadlines == (
@@ -299,7 +299,7 @@ def test_swallowed_peer_reads_report_unknown_evidence_and_recovery(
         return None
     monkeypatch.setattr(queue, "_read_peer_observation", read_peer)
     monkeypatch.setattr(runtime_publication, "live_authority", lambda: False)
-    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+    with claim_wait.capture_claim_wait(queue, wall_clock=lambda: clocks["unix"],
                             monotonic_clock=lambda: clocks["monotonic"]) as collected:
         scan = queue._start_claim_scan(ready=[])
         if unreadable:
@@ -316,7 +316,7 @@ def test_swallowed_peer_reads_report_unknown_evidence_and_recovery(
 
 def test_existing_gang_reservation_horizon_reports_the_strict_boundary(tmp_path, clocks):
     queue = pool.PoolQueue(tmp_path / "queue")
-    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+    with claim_wait.capture_claim_wait(queue, wall_clock=lambda: clocks["unix"],
                             monotonic_clock=lambda: clocks["monotonic"]) as collected:
         queue._observe_gang_reservation(500.0, now=1000.0)
     due = math.nextafter(1100.0, math.inf) - 1000.0 + 40.0
@@ -340,7 +340,7 @@ def test_measured_scratch_profile_reports_its_original_expiry(tmp_path, clocks):
         local_scratch.PROFILES: [profile], local_scratch.DEVICES: {root: device}}}
     intent = {"root": root, "declaration": {"profile_contract": local_scratch.PROFILE_CONTRACT,
         "max_profile_age_s": 60.0, "write_bytes": 1024, "read_bytes": 0}}
-    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+    with claim_wait.capture_claim_wait(queue, wall_clock=lambda: clocks["unix"],
                             monotonic_clock=lambda: clocks["monotonic"]) as collected:
         assert queue._scratch_profile_cost(offer, intent, now=1000.0)["io_seconds"] == 2.0
     assert collected.observation().blocked_on.deadlines == (
@@ -358,7 +358,7 @@ def test_scratch_peer_refusal_reports_both_original_freshness_bounds(tmp_path, c
               "evidence": {"decision": {"reason": "host_pressure", "fresh": True, "sample": sample}}}
     view = placement.PeerObservation(placement.PeerCapacity({}, {}, 0),
                                      {"a" * 64 + ":900.0": record})
-    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+    with claim_wait.capture_claim_wait(queue, wall_clock=lambda: clocks["unix"],
                             monotonic_clock=lambda: clocks["monotonic"]) as collected:
         assert queue._scratch_peer_passed_on(row, offer, view, now=1000.0)
     assert set(collected.observation().blocked_on.deadlines) == {
@@ -383,7 +383,7 @@ def test_scratch_reads_outside_the_peer_cache_preserve_unreadable_evidence(
         view = placement.PeerObservation(placement.PeerCapacity({}, {}, 0), {})
         read = lambda: queue._scratch_isolated("peer", view)
         kind, identity = claim_wait.SourceKind.HOST_LEDGER, "peer"
-    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+    with claim_wait.capture_claim_wait(queue, wall_clock=lambda: clocks["unix"],
                             monotonic_clock=lambda: clocks["monotonic"]) as collected:
         with pytest.raises(OSError, match="source unreadable"):
             read()
@@ -484,7 +484,7 @@ def test_cpu_load_preference_reports_both_consulted_sample_expiries(
     monkeypatch.setattr(runtime_publication, "live_authority", lambda: False)
     row = {"action_key": "a" * 64, "published_unix": 1000.0,
            "tags": [], "needs_gpu": False, "resources": {"cpu": 1, "mem_gb": 1}}
-    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+    with claim_wait.capture_claim_wait(queue, wall_clock=lambda: clocks["unix"],
                             monotonic_clock=lambda: clocks["monotonic"]) as collected:
         scan = queue._start_claim_scan(ready=[row])
         assert queue._defer_for_cpu_load(row, row["resources"], placement=scan.placement) is not None
