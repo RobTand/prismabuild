@@ -1,0 +1,22 @@
+[Unit]
+Description=PrismaBuild ephemeral CI runner slot %i
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+NotifyAccess=all
+EnvironmentFile=%h/.config/pb-ci-runners/slot-%i.env
+ExecStartPre=-/usr/bin/podman rm --force pb-ci-runner-%i
+ExecStart=%h/.local/lib/pb-ci-runners/runner-slot.sh %i
+ExecStop=-/usr/bin/podman stop --time 30 pb-ci-runner-%i
+ExecStopPost=-/usr/bin/podman rm --force pb-ci-runner-%i
+Restart=always
+RestartSec=30
+RestartSteps=5
+RestartMaxDelaySec=5min
+TimeoutStopSec=90
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=default.target

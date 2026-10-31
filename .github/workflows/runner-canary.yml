@@ -1,0 +1,74 @@
+name: PB runner canary
+on:
+  pull_request:
+    paths:
+      - deploy/ci-runners/**
+      - .github/workflows/runner-canary.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - role: gate
+            labels: [self-hosted, pb-fleet, pb-gate]
+          - role: suite
+            labels: [self-hosted, pb-fleet, pb-suite]
+    name: PB runner (${{ matrix.role }})
+    runs-on: ${{ matrix.labels }}
+    timeout-minutes: 5
+    steps:
+      - name: Prove image, affinity, limits, and credential boundary
+        env:
+          PB_CANARY_ROLE: ${{ matrix.role }}
+        run: |
+          python -I - <<'PY'
+          import importlib.metadata
+          import os
+          from pathlib import Path
+          import platform
+          import subprocess
+          import sys
+
+          name = os.environ['RUNNER_NAME']
+          role = os.environ['PB_CANARY_ROLE']
+          print('runner:', name, flush=True)
+          print('architecture:', platform.machine())
+          print('python:', sys.version)
+          print('python3:', subprocess.check_output(['python3', '--version'], text=True).strip())
+          for package in ('pytest', 'pytest-xdist', 'PyYAML'):
+              print(package + ':', importlib.metadata.version(package))
+          affinity = sorted(os.sched_getaffinity(0))
+          print('sched_getaffinity:', affinity)
+          status = Path('/proc/self/status').read_text()
+          print(next(line for line in status.splitlines() if line.startswith('Cpus_allowed_list:')))
+          print('nproc:', subprocess.check_output(['nproc'], text=True).strip())
+          memory = Path('/sys/fs/cgroup/memory.max').read_text().strip()
+          print('memory.max:', memory)
+          jit_set = 'ACTIONS_RUNNER_INPUT_JITCONFIG' in os.environ
+          print('JITCONFIG:', 'set' if jit_set else 'unset')
+          assert not jit_set
+          assert not Path('/mnt/shared').exists(), 'fleet shared storage is visible'
+          assert sys.version_info[:2] == (3, 14)
+          assert subprocess.check_output(['python3', '-I', '-c', 'import sys; print(sys.version_info[:2])'], text=True).strip() == '(3, 14)'
+          assert importlib.metadata.version('pytest') == '9.1.1'
+          assert importlib.metadata.version('pytest-xdist') == '3.8.0'
+          assert importlib.metadata.version('PyYAML') == '6.0.3'
+          if role == 'gate':
+              assert platform.machine() == 'aarch64'
+              assert name.startswith(('pb-sparky-slot-', 'pb-sparklina-slot-'))
+              slot = int(name.split('-slot-')[1].split('-')[0])
+              assert affinity == list(range(0, 5) if slot == 1 else range(10, 15))
+              assert int(memory) == 8 * 1024**3
+          else:
+              assert platform.machine() == 'x86_64'
+              assert name.startswith('pb-dl380g10-slot-')
+              assert affinity == list(range(40, 80))
+              assert int(memory) == 6 * 1024**3
+          PY

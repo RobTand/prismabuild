@@ -1,0 +1,43 @@
+ARG TARGETARCH
+ARG BASE_AMD64=ghcr.io/actions/actions-runner@sha256:0ce3288e48b012a83685998f683a2ae0cbd284fa722c090dda0af5443215cf30
+ARG BASE_ARM64=ghcr.io/actions/actions-runner@sha256:2089924d7fb6a96f1d1d2aca242ad6a07315b4ec2d7d275391ee265de70e941b
+FROM ${BASE_AMD64} AS base-amd64
+FROM ${BASE_ARM64} AS base-arm64
+FROM base-${TARGETARCH}
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash ca-certificates coreutils curl git \
+    && rm -rf /var/lib/apt/lists/*
+# Release digests come from the public python-build-standalone release API.
+RUN set -eu; \
+    case "$(uname -m)" in \
+      x86_64) arch=x86_64; checksum=4d3c16c59ed0802a3d1d34d8bce504b15ceeaff39d62dadecc6a9fa803412aed ;; \
+      aarch64) arch=aarch64; checksum=90f48337bc3dd4ae6eda81e001e4c981236d403b6b5a07778bbdf94ee423dc00 ;; \
+      *) exit 1 ;; \
+    esac; \
+    download_dir=$(mktemp -d); cd "$download_dir"; \
+    curl -fsSLo python.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.14.10%2B20261026-${arch}-unknown-linux-gnu-install_only_stripped.tar.gz"; \
+    printf '%s  python.tar.gz\n' "$checksum" | sha256sum -c -; \
+    tar -xzf python.tar.gz -C /opt; \
+    ln -s /opt/python/bin/python3 /usr/local/bin/python; \
+    ln -s /opt/python/bin/python3 /usr/local/bin/python3; \
+    rm -rf "$download_dir"
+COPY requirements.lock /opt/pb-ci/requirements.lock
+RUN download_dir=$(mktemp -d) \
+    && cd "$download_dir" \
+    && /opt/python/bin/python3 -I -m pip install --no-cache-dir --only-binary=:all: \
+       --require-hashes -r /opt/pb-ci/requirements.lock \
+    && rm -rf "$download_dir"
+
+USER runner
+ENV PATH=/opt/python/bin:${PATH} \
+    ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=0 \
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+COPY --chown=runner:runner runner-entrypoint.sh /home/runner/runner-entrypoint.sh
+WORKDIR /home/runner
+ENTRYPOINT ["/bin/bash", "/home/runner/runner-entrypoint.sh"]
