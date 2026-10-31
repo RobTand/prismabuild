@@ -195,3 +195,18 @@ def test_ssh_broker_accepts_only_pb_gate_registration(host):
                                 capture_output=True, text=True, timeout=30)
         assert result.returncode != 0
         assert not calls(host)
+
+
+def test_entrypoint_restores_the_admitted_cpu_mask(host):
+    cpu = min(os.sched_getaffinity(0))
+    listener = host[0] / 'affinity-listener'
+    listener.write_text(f'#!{sys.executable}\nimport json,os\n'
+                        'print(json.dumps(sorted(os.sched_getaffinity(0))))\n')
+    listener.chmod(0o700)
+    entrypoint = host[0] / 'affinity-entrypoint.sh'
+    entrypoint.write_text((RUNNERS / 'runner-entrypoint.sh').read_text().replace(
+        '/home/runner/bin/Runner.Listener', str(listener)))
+    result = subprocess.run(['bash', str(entrypoint), str(cpu)], env=host[1],
+                            input=JIT + '\n', capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [cpu]
