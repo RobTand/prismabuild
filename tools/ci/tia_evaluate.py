@@ -90,7 +90,7 @@ def replay_impact(root: Path, gate_dir: Path, mapping: dict, history: dict) -> d
     original_index = gate_replay.select.dependency_index
     original_json = gate_replay.select.read_json
     gate_replay.select.dependency_index = lambda directory: {name: value for name, value in original_index(directory).items() if name not in excluded}
-    gate_replay.select.read_json = lambda path: context['durations'] if path.name == 'gate_durations.json' else original_json(gate_dir / path.name)
+    gate_replay.select.read_json = lambda path: context['durations'] if path.name == 'gate_durations.json' else original_json(gate_dir / path.name if path.name == 'gate_quarantine.json' else path)
     try:
         static = gate_replay.replay(root, history)
     finally:
