@@ -18,12 +18,12 @@ A_PULL = {'number': 203, 'pull_request': {}}
 
 
 def run(scenario):
-    from tools.ci.issue_link import check_pull_request
+    from tools.ci.issue_link import issue_link_verdict
 
     scenario = {'branch': 'ig/legacy', 'created_at': '2026-10-09T17:00:00Z', **scenario}
     pull = {'number': 1, 'body': scenario['body'], 'head': {'ref': scenario['branch']},
             'created_at': scenario['created_at']}
-    verdict = check_pull_request(
+    verdict = issue_link_verdict(
         pull, 'RobTand/prismabuild',
         lambda number: scenario['issues'].get(str(number)),
         lambda number: None, lambda number: scenario['sidebar'],
