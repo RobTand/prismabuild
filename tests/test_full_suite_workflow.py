@@ -146,3 +146,24 @@ raise SystemExit(int(os.environ['ATTEMPT_CODES'].split(',')[count]))
                           env=environment, capture_output=True, text=True, timeout=30)
     assert done.returncode == expected_code, done.stdout + done.stderr
     assert len(log.read_text().splitlines()) == attempts
+
+
+def test_incomplete_ci_writes_a_result_without_requesting_or_filing_issues(tmp_path, monkeypatch):
+    class API:
+        def pages(self, *args):
+            raise AssertionError('incomplete CI must not look up issues')
+        def request(self, *args):
+            raise AssertionError('incomplete CI must not file')
+    monkeypatch.setattr(workflow.report.GitHub, 'from_environment', lambda repository: API())
+    monkeypatch.setattr(workflow, 'previous_results', lambda api, current: {})
+    monkeypatch.setenv('GITHUB_REPOSITORY', 'RobTand/prismabuild')
+    monkeypatch.setenv('GITHUB_RUN_ID', '42')
+    manifest = {'sha': 'a' * 40, 'include': [
+        {'index': 0, 'runner': 'ubuntu-latest', 'files': ['tests/a.py']}]}
+    output = tmp_path / 'out/results.json'
+    assert workflow.write_report(tmp_path / 'missing', manifest, output, False) == 2
+    result = json.loads(output.read_text())
+    assert result['complete'] is False
+    assert result['filed'] == []
+    assert result['plans'] == []
+    assert result['classification'] == {'new': [], 'known': [], 'quarantined': [], 'recovered': []}
