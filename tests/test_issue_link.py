@@ -56,6 +56,30 @@ def test_supported_references(keyword, reference):
     assert check(pull(body=keyword + '\n' + reference)).allowed
 
 
+# The deleted JavaScript matched with the g and i flags and no u flag: its \s
+# is every ECMAScript WhiteSpace and LineTerminator, while \b and case folding
+# stay ASCII.
+JS_SPACES = ['\t', '\n', '\v', '\f', '\r', ' ', ' ', ' ', ' ', ' ',
+             ' ', ' ', ' ', ' ', ' ', '　', '﻿']
+
+
+@pytest.mark.parametrize('space', JS_SPACES, ids=[f'U+{ord(c):04X}' for c in JS_SPACES])
+def test_javascript_whitespace_separates_keyword_and_reference(space):
+    assert check(pull(body='Refs' + space + '#2406')).allowed
+
+
+# Python's own \s also matches U+001C to U+001F and U+0085, and its Unicode
+# case folding maps U+017F and U+0131 onto ASCII letters; JavaScript did neither.
+@pytest.mark.parametrize('body', [
+    'Refs\x1c#2406', 'Refs\x1f#2406', 'Refs\x85#2406', 'Refs​#2406', 'Refs᠎#2406',
+    'Refſ #2406', 'Fıxes #2406',
+])
+def test_only_javascript_whitespace_and_ascii_keywords_count(body):
+    verdict = check(pull(body=body))
+    assert not verdict.allowed
+    assert 'branch naming rule (rule 12)' in verdict.reason
+
+
 @pytest.mark.parametrize('branch,body', [
     ('fix/something', 'Refs #2406'), ('prismabuild-2407', 'Refs #2406'),
     ('prismabuild-2406-', 'Refs #2406'), ('prismabuild-2406-GPU', 'Refs #2406'),

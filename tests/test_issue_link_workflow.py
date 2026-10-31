@@ -197,4 +197,7 @@ const exec = {getExecOutput: async (command, args) => {
     failed = json.loads(result.stdout)['failed']
     assert (failed is None) is accepted
     if not accepted:
-        assert 'Issue-link policy rejected' in failed
+        # The check's annotation carries the policy reason itself, as it did
+        # before the evaluator moved to Python.
+        assert failed.startswith('This pull request violates the branch naming rule (rule 12). ')
+        assert 'for example prismabuild-999.' in failed
