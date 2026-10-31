@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -26,7 +25,18 @@ def _rows(tmp_path):
     return json.loads((tmp_path / "report.json").read_text())
 
 
-def test_each_shard_prints_what_its_pbrun_printed(tmp_path, monkeypatch, capsys):
+@pytest.fixture
+def unclaimed_shards(monkeypatch):
+    observe = pbtest.client_recovery.observe_command
+
+    def observe_without_waiting(identity, *, deadline):
+        return observe(identity, deadline=0)
+
+    monkeypatch.setattr(pbtest.client_recovery, "observe_command", observe_without_waiting)
+
+
+def test_each_shard_prints_what_its_pbrun_printed(
+        tmp_path, monkeypatch, capsys, unclaimed_shards):
     code, _, root = _counted_run(tmp_path, monkeypatch, shards=3)
     printed = capsys.readouterr()
     rows = _rows(tmp_path)
@@ -51,7 +61,7 @@ def test_each_shard_prints_what_its_pbrun_printed(tmp_path, monkeypatch, capsys)
 
 @pytest.mark.parametrize("change", ["uncommitted", "commit"])
 def test_a_checkout_that_moves_after_publication_fails_the_run_by_name(
-        tmp_path, monkeypatch, capsys, change):
+        tmp_path, monkeypatch, capsys, change, unclaimed_shards):
     published = []
     real = submission.submit_action
 
@@ -107,7 +117,7 @@ def test_a_refused_preparation_is_each_shards_refusal_and_is_asked_once(
 
 
 def test_an_offer_timeout_at_publication_is_retried_off_the_same_snapshot(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, unclaimed_shards):
     real = submission.bounded_offer_snapshot
     timeouts = []
 
@@ -121,7 +131,7 @@ def test_an_offer_timeout_at_publication_is_retried_off_the_same_snapshot(
     monkeypatch.setattr(pbtest, "time", SimpleNamespace(**{
         **vars(pbtest.time), "sleep": lambda seconds: None,
     }))
-    code, counts, root = _counted_run(tmp_path, monkeypatch, shards=3, wait_s=30)
+    code, counts, root = _counted_run(tmp_path, monkeypatch, shards=3, wait_s=60)
     rows = _rows(tmp_path)
     assert sorted(row["attempts"] for row in rows) == [1, 1, 2]
     assert len(_sealed(root)) == 3
