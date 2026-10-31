@@ -115,7 +115,8 @@ def test_recorder_real_pytest_shared_fixture_and_child(tmp_path):
     (root / 'src').mkdir(parents=True)
     (root / 'tests').mkdir()
     (root / 'src/example.py').write_text('def import_work():\n return 11\nVALUE = import_work()\ndef fixture_work():\n return 4\ndef direct():\n return 7\ndef child():\n return 9\n')
-    (root / 'tests/test_example.py').write_text('''import subprocess, sys
+    (root / 'tests/test_example.py').write_text('''import os, subprocess, sys
+from pathlib import Path
 import pytest
 from example import fixture_work, direct
 @pytest.fixture(scope="session")
@@ -128,11 +129,19 @@ def test_one(shared):
 def test_two(shared):
  assert shared == 4
  assert direct() == 7
+def test_nested_pytest(tmp_path):
+ nested = tmp_path / 'nested'
+ nested.mkdir()
+ (nested / 'test_child.py').write_text('def test_ok(): assert 1 == 1')
+ env = dict(os.environ, PYTHONPATH=str(nested))
+ run = subprocess.run([sys.executable, '-m', 'pytest', '-q', str(nested)], cwd=nested, env=env, capture_output=True, text=True)
+ assert run.returncode == 0, run.stdout + run.stderr
 ''')
     output = tmp_path / 'records'
     env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(ROOT / 'tools/ci'), str(root / 'src')]),
                PB_TIA_ROOT=str(root), PB_TIA_OUTPUT=str(output), PB_TIA_COMMIT='a' * 40,
-               PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', PYTEST_PLUGINS='')
+               PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', PYTEST_PLUGINS='tia_record')
+    env.pop('PB_TIA_NODE', None)
     result = subprocess.run([sys.executable, '-m', 'pytest', '-p', 'tia_record', '-q', '--rootdir=' + str(root), str(root / 'tests')],
                             cwd=root, env=env, text=True, capture_output=True, timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -196,3 +205,19 @@ def test_import_time_function_calls_require_static_fallback(tmp_path):
     assert calls == [['src/a.py']]
     assert result['targets'] == ['tests/test_a.py', 'tests/test_fast.py', 'tests/test_new.py', 'tests/test_static.py']
     assert any('outside test' in why for row in result['selected'] for why in row['reasons'])
+
+
+def test_recorder_does_not_retain_transient_code_objects(tmp_path):
+    import gc
+    import weakref
+    mod = load('tia_record')
+    recorder = mod.Recorder(tmp_path, tmp_path / 'out', 'a' * 40)
+    try:
+        code = compile('value = 41', 'generated.py', 'exec')
+        reference = weakref.ref(code)
+        recorder.key(code)
+        del code
+        gc.collect()
+        assert reference() is None
+    finally:
+        recorder.close()
