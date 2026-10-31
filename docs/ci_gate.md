@@ -71,8 +71,9 @@ shards reserve eight jobs per architecture and leave the account some capacity. 
 ## Per-test cost limits
 
 `tools/ci/gate_budget.json` sets a 20-second default. Its bootstrap slow list
-uses hosted canary timings, not the PrismaBuild-worker inventory. Runs
-41240788649, 41242040262, 41242876374, 41243455746, 41244414908, 41245236880, 41245684824 and 41246084806 measured
+uses hosted canary timings, not the PrismaBuild-worker inventory. Bootstrap runs
+41240788649, 41242040262, 41242876374, 41243455746, 41244414908, 41245236880,
+41245684824, 41246084806, 41246932853, 41247411735, 41247912349, 41248484796 measured
 13 tests above 20 seconds. Every exception is `ceil(2 * largest_hosted_time)`,
 ranging from 44 to 116 seconds. The policy records the maximum, run ID,
 artifact name and verified download digest for each entry. These measurements
@@ -347,3 +348,87 @@ selection accuracy.
 | `spec_from_file_location` | 132 | 123 |
 | `with_name` | 199 | 105 |
 | `with_suffix` | 49 | 33 |
+
+## Hosted qualification timings
+
+The three final-population samples below each run all 1,245 eligible files.
+They passed without infrastructure retries or test failures. No test above
+60 seconds was observed in retained JUnit, including root/capability diagnostics. Full-run wall
+measures workflow start to completion of the final `gate`; pickup measures
+job creation to runner start. All times are seconds and GitHub timestamps
+have one-second resolution.
+
+| Run | Wall | Shard job range | Shard pickup range | Passed / skipped |
+| --- | ---: | ---: | ---: | ---: |
+| [41247912349, attempt 1](https://github.com/RobTand/prismabuild/actions/runs/41247912349/attempts/1) | 326 | 126–228 | 2–10 | 19,453 / 104 |
+| [41248484796, attempt 1](https://github.com/RobTand/prismabuild/actions/runs/41248484796/attempts/1) | 305 | 121–219 | 2–12 | 19,453 / 104 |
+| [41248484796, attempt 2](https://github.com/RobTand/prismabuild/actions/runs/41248484796/attempts/2) | 399 | 126–293 | 2–6 | 19,453 / 104 |
+
+Nearest-rank p50 is 326 seconds and p90 is 399 seconds. The chosen
+setting remains `GATE_SHARDS=16`, eight shards on each architecture. It uses
+a large share of the account's hosted capacity as requested. The lead bounds
+concurrent Mergify batches to leave total shard demand near 20 jobs.
+
+A comparable earlier 1,243-file twelve-shard run, 41245236880, took 300 seconds,
+with shard jobs 121–218 seconds and pickup 3–8 seconds. The first three
+sixteen-shard trials at that same population took 267, 357 and 328 seconds.
+These CI trials include setup and runner variation; they are not an isolated
+shard-count performance experiment. Sixteen is the requested capacity default,
+not a claim that these samples establish the optimum count. Setup variation
+still affects the five-minute target; all qualified samples stay below the
+ten-minute gate limit.
+
+The first final-population sample included two temporary capability jobs.
+Those jobs passed five fresh 32-case repeats per architecture and were then
+removed. The second and third samples use the permanent workflow. Rerunning
+swaps the architecture for each shard, so every file is exercised on both.
+
+Each cell below is job duration / pickup. The first two samples assign even
+indices to ARM and odd indices to x64. The third sample swaps that assignment.
+
+| Shard | Run 41247912349 a1 | Run 41248484796 a1 | Run 41248484796 a2 |
+| --- | ---: | ---: | ---: |
+| 0 | 207 / 6 | 172 / 4 | 265 / 3 |
+| 1 | 218 / 3 | 197 / 2 | 189 / 6 |
+| 2 | 184 / 4 | 219 / 4 | 293 / 3 |
+| 3 | 188 / 2 | 190 / 12 | 160 / 5 |
+| 4 | 131 / 4 | 124 / 5 | 133 / 2 |
+| 5 | 228 / 2 | 185 / 3 | 132 / 5 |
+| 6 | 126 / 5 | 126 / 5 | 207 / 3 |
+| 7 | 172 / 2 | 142 / 3 | 126 / 5 |
+| 8 | 139 / 6 | 121 / 4 | 131 / 3 |
+| 9 | 181 / 10 | 140 / 3 | 161 / 5 |
+| 10 | 146 / 4 | 137 / 4 | 148 / 2 |
+| 11 | 187 / 3 | 154 / 2 | 127 / 4 |
+| 12 | 126 / 4 | 145 / 5 | 193 / 3 |
+| 13 | 212 / 3 | 132 / 2 | 148 / 5 |
+| 14 | 139 / 5 | 144 / 5 | 142 / 3 |
+| 15 | 135 / 3 | 180 / 3 | 129 / 4 |
+
+Attempt 1 of run 41248484796 lost six JUnit archives when its rerun began
+before their download. All 16 archived job logs confirm its full pass/skip
+totals, and GitHub retains complete per-job timing records. The other samples
+have complete retained JUnit. No missing timing is treated as zero.
+
+Control-job durations / pickup:
+
+| Job | First | Second | Third |
+| --- | ---: | ---: | ---: |
+| Resolve test runner labels | 3 / 3 | 2 / 3 | 3 / 3 |
+| Plan full gate | 48 / 2 | 30 / 3 | 40 / 10 |
+| Plan infrastructure retry | 16 / 3 | 20 / 3 | 20 / 3 |
+| gate | 16 / 2 | 17 / 2 | 18 / 3 |
+
+JUnit ZIP digests, individual runner labels and all per-job measurements are
+in `tools/ci/gate_evidence.json`. Shadow comparisons have complete assignments
+and no missed observed failure; these gate implementation changes select the
+full population even in shadow mode, so they do not qualify narrow selection.
+
+Development verification used published PrismaBuild at priority -10. All changed
+runner, budget, aggregator and selector test files passed five fresh repeats
+per architecture, twice with xdist, 1,040 executions and 40 verified CAS
+receipts. Five missing-basetemp setup failures were rerun successfully; the
+final correction drops that flag and passes another 152 cases in five verified
+actions. Failing actions have terminal records/logs and no success receipt.
+No x86 admission check remains pending. Complete keys and receipt digests are
+in `tools/ci/gate_evidence.json`.

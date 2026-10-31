@@ -28,7 +28,8 @@
       41246084806,
       41246932853,
       41247411735,
-      41247912349
+      41247912349,
+      41248484796
     ],
     "measurements": {
       "tests/test_a_stalled_mover_ends_no_progress.py::test_a_slow_copy_on_a_pool_over_its_caps_is_not_a_stall": {

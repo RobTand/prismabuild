@@ -1,6 +1,6 @@
 {
   "schema": "prismabuild.gate_evidence.v2",
-  "status": "hosted qualification in progress",
+  "status": "qualified: three full-population hosted samples, both architectures, verified development evidence",
   "partition_handoff_commit": "dbcdfde7a641011793c5c3586497d3e01594e76c",
   "main_merged": "69b2ab559184cd1156cdcb5ab5d85f7c33085454",
   "analysis": {
@@ -3656,6 +3656,652 @@
         "gate-result-1-a1-13": "089bc205e44cc98b692acb5fa8923fd3bbb2af48e0d62f42eafa27648c8cdb79",
         "gate-final-1": "8fa0a2272ba751154875e05e61dc6cc79078fe6f00a1cd96805b543c08e4d8bc"
       }
+    },
+    {
+      "run": 41248484796,
+      "attempt": 1,
+      "url": "https://github.com/RobTand/prismabuild/actions/runs/41248484796",
+      "head": "5c222fa85d346986a3557b84655d63ca394405e8",
+      "workflow_started_at": "2026-10-31T22:30:30Z",
+      "gate_completed_at": "2026-10-31T22:35:35Z",
+      "gate_conclusion": "success",
+      "wall_seconds": 305.0,
+      "jobs": [
+        {
+          "name": "Resolve test runner labels",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 2.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": null,
+          "test_seconds": null
+        },
+        {
+          "name": "Plan full gate",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 30.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": null,
+          "test_seconds": null
+        },
+        {
+          "name": "pr-gate",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 0.0,
+          "pickup_seconds": 0.0,
+          "conclusion": "skipped",
+          "setup_seconds": null,
+          "test_seconds": null
+        },
+        {
+          "name": "shard-8-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 121.0,
+          "pickup_seconds": 4.0,
+          "conclusion": "success",
+          "setup_seconds": 39.0,
+          "test_seconds": 67.0
+        },
+        {
+          "name": "shard-2-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 219.0,
+          "pickup_seconds": 4.0,
+          "conclusion": "success",
+          "setup_seconds": 57.0,
+          "test_seconds": 148.0
+        },
+        {
+          "name": "shard-0-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 172.0,
+          "pickup_seconds": 4.0,
+          "conclusion": "success",
+          "setup_seconds": 38.0,
+          "test_seconds": 121.0
+        },
+        {
+          "name": "shard-13-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 132.0,
+          "pickup_seconds": 2.0,
+          "conclusion": "success",
+          "setup_seconds": 35.0,
+          "test_seconds": 82.0
+        },
+        {
+          "name": "shard-10-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 137.0,
+          "pickup_seconds": 4.0,
+          "conclusion": "success",
+          "setup_seconds": 40.0,
+          "test_seconds": 82.0
+        },
+        {
+          "name": "shard-1-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 197.0,
+          "pickup_seconds": 2.0,
+          "conclusion": "success",
+          "setup_seconds": 37.0,
+          "test_seconds": 144.0
+        },
+        {
+          "name": "shard-11-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 154.0,
+          "pickup_seconds": 2.0,
+          "conclusion": "success",
+          "setup_seconds": 35.0,
+          "test_seconds": 100.0
+        },
+        {
+          "name": "shard-6-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 126.0,
+          "pickup_seconds": 5.0,
+          "conclusion": "success",
+          "setup_seconds": 49.0,
+          "test_seconds": 63.0
+        },
+        {
+          "name": "shard-9-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 140.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": 48.0,
+          "test_seconds": 74.0
+        },
+        {
+          "name": "shard-4-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 124.0,
+          "pickup_seconds": 5.0,
+          "conclusion": "success",
+          "setup_seconds": 40.0,
+          "test_seconds": 69.0
+        },
+        {
+          "name": "shard-12-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 145.0,
+          "pickup_seconds": 5.0,
+          "conclusion": "success",
+          "setup_seconds": 53.0,
+          "test_seconds": 74.0
+        },
+        {
+          "name": "shard-5-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 185.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": 38.0,
+          "test_seconds": 128.0
+        },
+        {
+          "name": "shard-3-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 190.0,
+          "pickup_seconds": 12.0,
+          "conclusion": "success",
+          "setup_seconds": 55.0,
+          "test_seconds": 120.0
+        },
+        {
+          "name": "shard-7-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 142.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": 42.0,
+          "test_seconds": 85.0
+        },
+        {
+          "name": "shard-14-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 144.0,
+          "pickup_seconds": 5.0,
+          "conclusion": "success",
+          "setup_seconds": 47.0,
+          "test_seconds": 78.0
+        },
+        {
+          "name": "shard-15-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 180.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": 44.0,
+          "test_seconds": 114.0
+        },
+        {
+          "name": "Plan infrastructure retry",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 20.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": null,
+          "test_seconds": null
+        },
+        {
+          "name": "gate",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 17.0,
+          "pickup_seconds": 2.0,
+          "conclusion": "success",
+          "setup_seconds": null,
+          "test_seconds": null
+        },
+        {
+          "name": "shard-${{ matrix.index }}-a2",
+          "runner": [],
+          "job_seconds": 0.0,
+          "pickup_seconds": 0.0,
+          "conclusion": "skipped",
+          "setup_seconds": null,
+          "test_seconds": null
+        }
+      ],
+      "over_60_seconds": [],
+      "compatibility": {
+        "tests/test_current_receipt_compat_composition.py": {
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "outcomes": {
+            "pass": 4
+          }
+        }
+      },
+      "outcomes": {
+        "pass": 19453,
+        "skip": 104
+      },
+      "artifact_digests": {
+        "gate-result-1-a1-4": "d88eda666ea0e94c4f0b759ab6c0c60505b60eff13ab354f70cb8dcc960984a7",
+        "gate-result-1-a1-7": "296b04c9adb6fb06c2b1db5c319c10bc3d72b964fe7f597468e6762c6fd695c1",
+        "gate-result-1-a1-9": "adea8f070e49d128a402fd8c48771535e9b2bf8727d15191e36d08f96be90c15",
+        "gate-result-1-a1-14": "4b89f8997105ffa93266ef481b94fb7a11c49451c8dc8e63a619f0bbe50bf688",
+        "gate-result-1-a1-6": "3083bc73472e2e8c7d5636f4485db5e0b151c3dbab041886f40f3e5389ff87cd",
+        "gate-result-1-a1-13": "3d2fdb7503ce9141e90c7176316c2689ef56cf4c11d4c74d5c65b16705daeff6",
+        "gate-result-1-a1-12": "03ff177637c2f57e338143999bf959c520d6884dcf57e015083f113fb47dd1fc",
+        "gate-result-1-a1-11": "4469a316ed353690132c72c987776d365e9a7a833c30e739984bdc15556f4449",
+        "gate-result-1-a1-10": "08bfee54395e92a490b079a8485085dc01c7f0ed463d904771bf137e14ca9250",
+        "gate-result-1-a1-8": "6a8d421fd3f1e87e55917f1429a59506c3b9bf3b99ff1873030240bf363985de",
+        "gate-plan-1": "cddb39e75823cf0e316c83dd36d714dcc57ec06a869a20b3f560e5fd8e4c807d"
+      },
+      "outcomes_source": {
+        "kind": "complete archived job-log summaries",
+        "logs_zip_sha256": "d6d6b9d222d591e35d90628fbb599d62e998f02e1ede1014e04af6b1f21f8162",
+        "shards": [
+          {
+            "member": "shard-5-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:34:14.3499448Z 1065 passed, 1 skipped, 1556 warnings in 125.46s (0:02:05)"
+          },
+          {
+            "member": "shard-15-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:34:08.9099845Z 1393 passed, 1446 warnings in 111.70s (0:01:51)"
+          },
+          {
+            "member": "shard-7-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:33:32.1564559Z 1156 passed, 1675 warnings in 82.43s (0:01:22)"
+          },
+          {
+            "member": "shard-14-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:33:35.6941702Z 1273 passed, 2550 warnings in 76.19s (0:01:16)"
+          },
+          {
+            "member": "shard-3-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:34:30.0794670Z 1191 passed, 2242 warnings in 117.16s (0:01:57)"
+          },
+          {
+            "member": "shard-9-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:33:30.4128917Z 1354 passed, 11 skipped, 2126 warnings, 9 subtests passed in 72.44s (0:01:12)"
+          },
+          {
+            "member": "shard-12-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:33:37.4123549Z 968 passed, 1797 warnings in 71.73s (0:01:11)"
+          },
+          {
+            "member": "shard-4-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:33:16.7634954Z 1318 passed, 1780 warnings in 67.76s (0:01:07)"
+          },
+          {
+            "member": "shard-6-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:33:18.2205151Z 1173 passed, 3 skipped, 2695 warnings in 61.04s (0:01:01)"
+          },
+          {
+            "member": "shard-1-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:34:26.4363957Z 844 passed, 1080 warnings in 142.10s (0:02:22)"
+          },
+          {
+            "member": "shard-2-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:34:50.1500057Z 1291 passed, 18 skipped, 3332 warnings in 146.27s (0:02:26)"
+          },
+          {
+            "member": "shard-13-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:33:21.2968682Z 1574 passed, 69 skipped, 1317 warnings in 80.16s (0:01:20)"
+          },
+          {
+            "member": "shard-11-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:33:43.2402740Z 1085 passed, 1 skipped, 1293 warnings in 97.67s (0:01:37)"
+          },
+          {
+            "member": "shard-10-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:33:28.0528367Z 1416 passed, 1 skipped, 2412 warnings in 79.92s (0:01:19)"
+          },
+          {
+            "member": "shard-8-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:33:12.4357336Z 1224 passed, 2589 warnings in 65.32s (0:01:05)"
+          },
+          {
+            "member": "shard-0-a1/6_Compute assignment and run tests.txt",
+            "summary": "2026-10-31T22:34:04.5203504Z 1128 passed, 4532 warnings in 119.12s (0:01:59)"
+          }
+        ]
+      },
+      "timing_coverage_note": "Six per-shard JUnit archives were removed by GitHub when attempt 2 began before their download; 10 per-shard JUnit archives and all 16 complete job logs were retained. Passed/skipped totals are reconstructed from all 16 archived pytest summaries, not the partial JUnit download."
+    },
+    {
+      "run": 41248484796,
+      "attempt": 2,
+      "url": "https://github.com/RobTand/prismabuild/actions/runs/41248484796",
+      "head": "5c222fa85d346986a3557b84655d63ca394405e8",
+      "workflow_started_at": "2026-10-31T22:36:04Z",
+      "gate_completed_at": "2026-10-31T22:42:43Z",
+      "gate_conclusion": "success",
+      "wall_seconds": 399.0,
+      "jobs": [
+        {
+          "name": "Resolve test runner labels",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 3.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": null,
+          "test_seconds": null
+        },
+        {
+          "name": "Plan full gate",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 40.0,
+          "pickup_seconds": 10.0,
+          "conclusion": "success",
+          "setup_seconds": null,
+          "test_seconds": null
+        },
+        {
+          "name": "pr-gate",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 0.0,
+          "pickup_seconds": 0.0,
+          "conclusion": "skipped",
+          "setup_seconds": null,
+          "test_seconds": null
+        },
+        {
+          "name": "shard-5-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 132.0,
+          "pickup_seconds": 5.0,
+          "conclusion": "success",
+          "setup_seconds": 45.0,
+          "test_seconds": 69.0
+        },
+        {
+          "name": "shard-4-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 133.0,
+          "pickup_seconds": 2.0,
+          "conclusion": "success",
+          "setup_seconds": 39.0,
+          "test_seconds": 78.0
+        },
+        {
+          "name": "shard-11-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 127.0,
+          "pickup_seconds": 4.0,
+          "conclusion": "success",
+          "setup_seconds": 50.0,
+          "test_seconds": 62.0
+        },
+        {
+          "name": "shard-10-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 148.0,
+          "pickup_seconds": 2.0,
+          "conclusion": "success",
+          "setup_seconds": 50.0,
+          "test_seconds": 78.0
+        },
+        {
+          "name": "shard-6-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 207.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": 60.0,
+          "test_seconds": 126.0
+        },
+        {
+          "name": "shard-15-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 129.0,
+          "pickup_seconds": 4.0,
+          "conclusion": "success",
+          "setup_seconds": 46.0,
+          "test_seconds": 66.0
+        },
+        {
+          "name": "shard-14-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 142.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": 44.0,
+          "test_seconds": 83.0
+        },
+        {
+          "name": "shard-8-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 131.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": 47.0,
+          "test_seconds": 69.0
+        },
+        {
+          "name": "shard-13-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 148.0,
+          "pickup_seconds": 5.0,
+          "conclusion": "success",
+          "setup_seconds": 55.0,
+          "test_seconds": 75.0
+        },
+        {
+          "name": "shard-7-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 126.0,
+          "pickup_seconds": 5.0,
+          "conclusion": "success",
+          "setup_seconds": 43.0,
+          "test_seconds": 68.0
+        },
+        {
+          "name": "shard-3-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 160.0,
+          "pickup_seconds": 5.0,
+          "conclusion": "success",
+          "setup_seconds": 76.0,
+          "test_seconds": 67.0
+        },
+        {
+          "name": "shard-1-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 189.0,
+          "pickup_seconds": 6.0,
+          "conclusion": "success",
+          "setup_seconds": 55.0,
+          "test_seconds": 117.0
+        },
+        {
+          "name": "shard-9-a1",
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "job_seconds": 161.0,
+          "pickup_seconds": 5.0,
+          "conclusion": "success",
+          "setup_seconds": 66.0,
+          "test_seconds": 70.0
+        },
+        {
+          "name": "shard-12-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 193.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": 45.0,
+          "test_seconds": 128.0
+        },
+        {
+          "name": "shard-0-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 265.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": 71.0,
+          "test_seconds": 179.0
+        },
+        {
+          "name": "shard-2-a1",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 293.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": 51.0,
+          "test_seconds": 210.0
+        },
+        {
+          "name": "Plan infrastructure retry",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 20.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": null,
+          "test_seconds": null
+        },
+        {
+          "name": "gate",
+          "runner": [
+            "ubuntu-24.04"
+          ],
+          "job_seconds": 18.0,
+          "pickup_seconds": 3.0,
+          "conclusion": "success",
+          "setup_seconds": null,
+          "test_seconds": null
+        },
+        {
+          "name": "shard-${{ matrix.index }}-a2",
+          "runner": [],
+          "job_seconds": -1.0,
+          "pickup_seconds": 0.0,
+          "conclusion": "skipped",
+          "setup_seconds": null,
+          "test_seconds": null
+        }
+      ],
+      "over_60_seconds": [],
+      "compatibility": {
+        "tests/test_record_compatibility.py": {
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "outcomes": {
+            "pass": 20
+          }
+        },
+        "tests/test_current_receipt_compat_composition.py": {
+          "runner": [
+            "ubuntu-24.04-arm"
+          ],
+          "outcomes": {
+            "pass": 4
+          }
+        }
+      },
+      "outcomes": {
+        "pass": 19453,
+        "skip": 104
+      },
+      "artifact_digests": {
+        "gate-result-2-a1-8": "c4744cc9f5148bb98d9f2e576f8714a3fd8ef1f929b219394e49296da848171a",
+        "gate-result-2-a1-12": "eacb484585670f468839e28a9662b7dda1eb2cd1888060439fc83171b7172cbc",
+        "gate-result-2-a1-1": "e496bde983c25cd174241bf7a43d4ea4c88fe5ed50581131830c5816bbf6bc54",
+        "gate-result-2-a1-5": "7b7aca39dc8a911bdbce2785b5bb6f7b05bba177b8f9a9ce6b18fa1454dd387b",
+        "gate-result-2-a1-10": "9e47287874923914c4edbd47ff280b92bf76aa87b4682fcdf22e490f8784e467",
+        "gate-result-2-a1-7": "ac0a596244f7bdb8b13e2dc39662db74ebf78a5ca8bfe9499b7fc798b98998e6",
+        "gate-result-2-a1-9": "ba4ee52c983a0968413ec2a8cfb931b2affe61b0ec9475ae14f77b895d8d7652",
+        "gate-result-2-a1-13": "6acdc7ec0d82f875fd370ab1a548e12ce3beb228a57e210dd204d7ea544274a0",
+        "gate-result-2-a1-4": "4a0c84b4f5df57311e9f7d6da14817d83cd52a126ac49da4e6ca1b78fa7aa4c5",
+        "gate-result-2-a1-11": "d079e6b04b4f0a37a3fb87c19c7add29d72a4fd0c28e2983ff54057eec0abe59",
+        "gate-plan-2": "ee705cbf9cc6249d75f6b7bbb4fcc8944b111b9cc11541eb62cf906af217a89d",
+        "gate-result-2-a1-3": "acd21107adbdfae1b6c9679f0c96fdd4f583d93cde67b1ad09f1e34319b505c0",
+        "gate-result-2-a1-6": "70419c83bc96b8b6d6a90f6cdf69c4bf9ee5d50b744f9fd837923e8e342a4fe8",
+        "gate-result-2-a1-14": "6c4a6e4e75e0fd0ba054a0efe8eaf6850c296075c5d713f61f3d62e3aa767d1a",
+        "gate-result-2-a1-15": "a18e9178dc81cce6acd232b93a3b0a41228441c41a9138b65d55913556425255",
+        "gate-final-2": "1272fb356f22129859f2bb4c92466473d4650d22b96f97006de8233df013bcb2",
+        "gate-result-2-a1-0": "be329de24479e8d7c9bd80bfdd096419621be78a8bfd47990e95fe63d925c2be",
+        "gate-result-2-a1-2": "dfb76eaeae6f7c1da9f7357eb17a443aa38991ce8b0b27b508c97f1c00659dc6"
+      }
     }
   ],
   "budget_bootstrap": {
@@ -3671,7 +4317,8 @@
       41246084806,
       41246932853,
       41247411735,
-      41247912349
+      41247912349,
+      41248484796
     ],
     "measurements": {
       "tests/test_a_stalled_mover_ends_no_progress.py::test_a_slow_copy_on_a_pool_over_its_caps_is_not_a_stall": {
@@ -3778,14 +4425,16 @@
     2437,
     2442,
     2446,
-    2447
+    2447,
+    2448
   ],
   "notes": [
     "No .circleci file or CircleCI test remains. Earlier platform trials are superseded.",
     "Failing PB actions have terminal records and logs, never success CAS receipts.",
     "No x86 check remains blocked by the resolved 19:28Z admission outage.",
     "The temporary shared duplication registry exceptions were removed after mainline repair #2445. No shared registry diff remains.",
-    "CI cost ownership is #2448 under #2328; compatibility namespace requirements are a separate lane under #2447, not flake quarantine."
+    "Namespace compatibility and root-owned interpreter controls are restored after five fresh passing hosted repeats per architecture; temporary capability jobs are removed.",
+    "One canary attempt retains partial JUnit after GitHub removed old archives at rerun. All 16 complete archived job logs verify its outcome totals; the metrics identify this offline timing limitation."
   ],
   "development_verification": [
     {
@@ -4908,6 +5557,55 @@
       "failing_nodes": [],
       "cas_receipt": {
         "sha256": "28febf4a08b5247135e6d5114cbc248e25b15a757843e20bb928ea1c0e1a578c",
+        "verified": true
+      }
+    },
+    {
+      "report": "partition-red",
+      "files": [
+        "tests/test_gate_partition.py"
+      ],
+      "action_key": "7ab352babb45aa3df2d0380c1879a7d5d639ff59775d4769a1178306ff4c2d11",
+      "green": false,
+      "exit_code": 1,
+      "summary": "17 failed in 0.24s",
+      "skipped": [],
+      "completion": "complete",
+      "failing_nodes": [
+        "tests/test_gate_partition.py::test_longest_first_assignment_is_complete_balanced_and_order_independent",
+        "tests/test_gate_partition.py::test_equal_costs_break_ties_by_path_then_shard_index",
+        "tests/test_gate_partition.py::test_unknown_cost_is_nearest_rank_p90_and_recorded_explicitly",
+        "tests/test_gate_partition.py::test_empty_or_zero_only_inventory_has_a_positive_unknown_default",
+        "tests/test_gate_partition.py::test_empty_shards_are_retained",
+        "tests/test_gate_partition.py::test_invalid_count_is_refused[0]",
+        "tests/test_gate_partition.py::test_invalid_count_is_refused[-1]",
+        "tests/test_gate_partition.py::test_invalid_count_is_refused[True]",
+        "tests/test_gate_partition.py::test_invalid_count_is_refused[1.5]",
+        "tests/test_gate_partition.py::test_invalid_duration_is_refused_even_when_file_is_not_selected[-1]",
+        "tests/test_gate_partition.py::test_invalid_duration_is_refused_even_when_file_is_not_selected[inf]",
+        "tests/test_gate_partition.py::test_invalid_duration_is_refused_even_when_file_is_not_selected[nan]",
+        "tests/test_gate_partition.py::test_invalid_duration_is_refused_even_when_file_is_not_selected[True]",
+        "tests/test_gate_partition.py::test_invalid_duration_is_refused_even_when_file_is_not_selected[False]",
+        "tests/test_gate_partition.py::test_duplicate_files_are_refused",
+        "tests/test_gate_partition.py::test_matrix_and_shard_commands_agree_with_unknowns_and_blank_lines",
+        "tests/test_gate_partition.py::test_cli_explicit_unknown_cost_and_invalid_assignment"
+      ],
+      "cas_receipt": null
+    },
+    {
+      "report": "partition-green",
+      "files": [
+        "tests/test_gate_partition.py"
+      ],
+      "action_key": "f3ac876e3a1ebb6a14962a27739d365adcb746a9eb21e3f34bc549a8a16da757",
+      "green": true,
+      "exit_code": 0,
+      "summary": "17 passed in 0.29s",
+      "skipped": [],
+      "completion": "complete",
+      "failing_nodes": [],
+      "cas_receipt": {
+        "sha256": "dd19b6c04338f5c465cd410b0164721602964a8dad85f7f51951f2a928aecd66",
         "verified": true
       }
     },
@@ -6406,8 +7104,126 @@
         "sha256": "d8737acc27b718fa8cb6d6a17a2d700bb0b4038a7458152d557d7527ddf7ab36",
         "verified": true
       }
+    },
+    {
+      "report": "temp-correction-gb10",
+      "files": [
+        "tests/test_gate_run.py"
+      ],
+      "action_key": "1063bdf937c1c8fbc468c57efb1baae74b262c35e3a26c0569d9ab05843706da",
+      "green": true,
+      "exit_code": 0,
+      "summary": "13 passed in 1.16s",
+      "skipped": [],
+      "completion": "complete",
+      "failing_nodes": [],
+      "cas_receipt": {
+        "sha256": "acde03ec3fb815b3e48e521b52442e33a7a51e9c3888b3090adea0dac8d37c61",
+        "verified": true
+      }
+    },
+    {
+      "report": "temp-correction-gb10",
+      "files": [
+        "tests/test_gate_budget.py"
+      ],
+      "action_key": "63231e22b99abd0da24219ed42ad6ab8ed3613e97ad8cff13337c67c5c27d2d1",
+      "green": true,
+      "exit_code": 0,
+      "summary": "20 passed in 0.54s",
+      "skipped": [],
+      "completion": "complete",
+      "failing_nodes": [],
+      "cas_receipt": {
+        "sha256": "870eaca9e4324bc9b2960242a9b920514066aa5c9178a32fa9f164d01fa423a4",
+        "verified": true
+      }
+    },
+    {
+      "report": "temp-correction-gb10",
+      "files": [
+        "tests/test_gate_actions.py"
+      ],
+      "action_key": "4810c6ebeb648828116b2f2ca329b08ceb6cd0eee9023fdfe13edb5694974e2f",
+      "green": true,
+      "exit_code": 0,
+      "summary": "23 passed in 0.44s",
+      "skipped": [],
+      "completion": "complete",
+      "failing_nodes": [],
+      "cas_receipt": {
+        "sha256": "8560de28b3d721152d8dffde889683febddaaec360568194209aa1db4a360012",
+        "verified": true
+      }
+    },
+    {
+      "report": "temp-correction-gb10",
+      "files": [
+        "tests/test_gate_select.py"
+      ],
+      "action_key": "00b6d7095ba57109942786d05c3b941d36a85b6bdb0f51a5019cfb9e365bc81f",
+      "green": true,
+      "exit_code": 0,
+      "summary": "48 passed in 0.59s",
+      "skipped": [],
+      "completion": "complete",
+      "failing_nodes": [],
+      "cas_receipt": {
+        "sha256": "612bdcf8cdff201b3245083c94338ae9436c6ebe170ea614dc8704d52f6c2b54",
+        "verified": true
+      }
+    },
+    {
+      "report": "temp-correction-x86",
+      "files": [
+        "tests/test_gate_select.py"
+      ],
+      "action_key": "0c17db87118289122a24dfc31b8802303d201e2b4ce9a520ff97600a966cef7e",
+      "green": true,
+      "exit_code": 0,
+      "summary": "48 passed in 1.75s",
+      "skipped": [],
+      "completion": "complete",
+      "failing_nodes": [],
+      "cas_receipt": {
+        "sha256": "d48e9d1283d6bd2961d142e7bcf74bf544c241aa1901d8fd5c449d6690e9a371",
+        "verified": true
+      }
     }
   ],
+  "qualification_cohort": {
+    "runs": [
+      [
+        41247912349,
+        1
+      ],
+      [
+        41248484796,
+        1
+      ],
+      [
+        41248484796,
+        2
+      ]
+    ],
+    "p50_seconds": 326.0,
+    "p90_seconds": 399.0,
+    "population": 1245,
+    "shards": 16
+  },
+  "fresh_changed_files": {
+    "files": [
+      "tests/test_gate_run.py",
+      "tests/test_gate_budget.py",
+      "tests/test_gate_actions.py",
+      "tests/test_gate_select.py"
+    ],
+    "repeats_per_architecture": 5,
+    "xdist_repeats_per_architecture": 2,
+    "test_executions": 1040,
+    "verified_successful_actions": 40,
+    "basetemp_correction": "Five shards refused a missing relative basetemp before pytest; after a successful marker-backed repeat they were rerun without --basetemp as corrected by the lead. Final five corrective actions pass 152 tests; see temp-correction records."
+  },
   "hosted_capabilities": [
     {
       "run": 41245684824,
