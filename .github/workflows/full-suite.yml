@@ -298,10 +298,10 @@ jobs:
         pattern: full-suite-result-${{ github.run_attempt }}-*
         path: verdicts
     - name: Select complete verdicts after infrastructure retry
-      continue-on-error: true
       run: python3 tools/ci/gate_actions.py finish --plan gate-artifacts/plan.json --matrix gate-artifacts/matrix.json --artifacts verdicts --prefix
         full-suite-result-${{ github.run_attempt }} --output gate-artifacts/final.json --effective-output full-suite-effective --summary "$GITHUB_STEP_SUMMARY"
     - name: Classify and report through GitHub REST
+      if: always()
       env:
         GITHUB_TOKEN: ${{ github.token }}
         DRY_RUN: ${{ inputs.dry_run || github.ref != 'refs/heads/main' }}
