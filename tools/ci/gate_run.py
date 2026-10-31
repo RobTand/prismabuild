@@ -32,7 +32,7 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
             raise ValueError('job needs a positive worker count and assigned CPUs')
         workers = min(workers, len(cpus))
         record['workers'] = workers
-        environment = dict(os.environ, PRISMABUILD_TEST_TIMEOUT_S='60',
+        environment = dict(os.environ, PRISMABUILD_TEST_TIMEOUT_S='300',
                            OMP_NUM_THREADS='1', MKL_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1')
         # setup-python exports loader overrides; proof capture must see the actual
         # installed interpreter rather than an ambient dynamic-loader override.

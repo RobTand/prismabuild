@@ -113,8 +113,8 @@ jobs:
           trap 'echo "NO_VERDICT: full planning infrastructure failed"; exit 75' ERR
           mkdir -p gate-artifacts
           python tools/ci/gate_select.py --base "$GATE_BASE" --head "$GATE_HEAD"             --mode full --output gate-artifacts/plan.json             --files-output gate-artifacts/population.txt --summary "$GITHUB_STEP_SUMMARY"
-          runners=ubuntu-latest,ubuntu-24.04-arm
-          if (( GITHUB_RUN_ATTEMPT % 2 == 0 )); then runners=ubuntu-24.04-arm,ubuntu-latest; fi
+          runners=ubuntu-24.04-arm,ubuntu-latest
+          if (( GITHUB_RUN_ATTEMPT % 2 == 0 )); then runners=ubuntu-latest,ubuntu-24.04-arm; fi
           python tools/ci/gate_partition.py matrix --files-from gate-artifacts/population.txt             --durations tools/ci/gate_durations.json --shards 10             --runners "$runners" --output gate-artifacts/matrix.json
           python - <<'PYTHON'
           import json, math, os

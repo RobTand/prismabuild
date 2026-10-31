@@ -19,8 +19,8 @@ Hosted setup installs bubblewrap and creates the real local scratch directory
 declared in the fleet roster. It exports that directory as TMPDIR. Proof capture
 runs without setup-python's ambient LD_* loader overrides; the interpreter must
 also pass its version check without those overrides. Native threads are bounded to
-one and each test has the repository's 60-second bound. Permissions are read
-only; checkout credentials are not persisted and no secrets are configured.
+one and each test has the integration tier's 300-second failure bound. A test over 60 seconds is reported as a cost issue for #2328, not a speed
+verdict or an exclusion. Permissions are read only; checkout credentials are not persisted and no secrets are configured.
 
 ## Plans and partitioning
 

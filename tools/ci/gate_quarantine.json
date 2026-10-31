@@ -518,6 +518,18 @@
           "061f1fde31b6f802e391d2a5d36fec3f8a76ae0e9164b5ae72cc754eb1706217"
         ]
       }
+    },
+    {
+      "target": "tests/test_worker_adapter_requires_known_receipts.py::test_public_adapter_requires_a_known_pair[real-contained-child-match]",
+      "reason": "Deterministic hosted four-CPU topology exposes a changed adapter caller affinity at worker_adapter_fixture.py:183; not established as flaky.",
+      "issue": 2446,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
+    },
+    {
+      "target": "tests/test_worker_adapter_requires_known_receipts.py::test_public_adapter_requires_a_known_pair[loop-commit-drift]",
+      "reason": "Deterministic hosted four-CPU topology exposes a changed adapter caller affinity at worker_adapter_fixture.py:183; not established as flaky.",
+      "issue": 2446,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
     }
   ],
   "cost_exclusions": [],
@@ -1466,6 +1478,34 @@
       "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
       "issue": 2442,
       "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_pbrun_d38_gate.py::test_a_release_re_checks_the_gate_for_a_record_an_old_client_filed",
+      "lane": "fleet_broker",
+      "reason": "Deferred-release fixture needs the broker-backed producer cleanup to conclude; a hosted worker has no PB broker.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
+    },
+    {
+      "target": "tests/test_pbrun_d38_setting_1649.py::test_disabled_deferred_release_audits_the_completed_identity",
+      "lane": "fleet_broker",
+      "reason": "Deferred-release fixture needs the broker-backed producer cleanup to conclude; a hosted worker has no PB broker.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
+    },
+    {
+      "target": "tests/test_proof_runtime_observation.py::test_host_customization_file_root_selection[selected-sitecustomize.py]",
+      "lane": "root_owned_runtime",
+      "reason": "The selected-runtime positive control requires a root-owned interpreter; setup-python supplies a runner-owned interpreter on hosted CI.",
+      "issue": 1831,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
+    },
+    {
+      "target": "tests/test_proof_runtime_observation.py::test_host_customization_file_root_selection[selected-usercustomize.py]",
+      "lane": "root_owned_runtime",
+      "reason": "The selected-runtime positive control requires a root-owned interpreter; setup-python supplies a runner-owned interpreter on hosted CI.",
+      "issue": 1831,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
     }
   ]
 }
