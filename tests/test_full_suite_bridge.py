@@ -96,6 +96,9 @@ def test_hosted_bridge_has_no_test_or_fleet_execution_steps():
     assert set(triggers) == {'status', 'check_run', 'workflow_dispatch'}
     job = workflow['jobs']['report']
     assert job['runs-on'] == 'ubuntu-latest'
+    # Unrelated status events must not displace a pending nightly report.
+    assert 'concurrency' not in workflow
+    assert job['concurrency'] == {'group': 'full-suite-report-main', 'cancel-in-progress': False}
     checkout = next(s for s in job['steps'] if s.get('uses', '').startswith('actions/checkout'))
     assert checkout['with']['ref'] == 'main'
     source = (ROOT / '.github/workflows/full-suite-report.yml').read_text()
