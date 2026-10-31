@@ -138,3 +138,23 @@ def test_git_changes_include_rename_source_and_destination(tmp_path):
     assert select.changed_files(root, base, head) == ['src/prismabuild/pool.py', 'src/prismabuild/renamed.py']
     with pytest.raises(ValueError):
         select.changed_files(root, '--output=unsafe', head)
+
+
+def test_root_relative_path_joins_select_file_loader_tests(tmp_path):
+    root = tree(tmp_path)
+    (root / 'tests/test_root_join.py').write_text(
+        "from pathlib import Path\nROOT = Path(__file__).parents[1]\n"
+        "tool = ROOT / 'tools' / 'fleet' / 'pbrun.py'\n")
+    (root / 'tests/test_joinpath.py').write_text(
+        "from pathlib import Path\nROOT = Path(__file__).parents[1]\n"
+        "tool = ROOT.joinpath('tools', 'fleet', 'pbrun.py')\n")
+    assert selected(plan(root, ['tools/fleet/pbrun.py'])) >= {
+        'tests/test_root_join.py', 'tests/test_joinpath.py'}
+
+
+def test_root_relative_asset_joins_are_direct_evidence(tmp_path):
+    root = tree(tmp_path)
+    (root / 'tests/test_asset_join.py').write_text(
+        "from pathlib import Path\nROOT = Path(__file__).parents[1]\n"
+        "asset = ROOT / 'deploy' / 'pool.json'\n")
+    assert 'tests/test_asset_join.py' in selected(plan(root, ['deploy/pool.json']))
