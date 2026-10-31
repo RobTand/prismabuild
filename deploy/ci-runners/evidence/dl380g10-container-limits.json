@@ -1,0 +1,31 @@
+{
+  "Binds": [],
+  "NetworkMode": "pasta",
+  "PidMode": "private",
+  "IpcMode": "private",
+  "UsernsMode": "",
+  "CapDrop": [
+    "CAP_CHOWN",
+    "CAP_DAC_OVERRIDE",
+    "CAP_FOWNER",
+    "CAP_FSETID",
+    "CAP_KILL",
+    "CAP_NET_BIND_SERVICE",
+    "CAP_SETFCAP",
+    "CAP_SETGID",
+    "CAP_SETPCAP",
+    "CAP_SETUID",
+    "CAP_SYS_CHROOT"
+  ],
+  "SecurityOpt": [
+    "no-new-privileges"
+  ],
+  "Memory": 6442450944,
+  "MemorySwap": 6442450944,
+  "PidsLimit": 1024,
+  "CpuQuota": 400000,
+  "CpuPeriod": 100000,
+  "CpusetCpus": "40-79",
+  "Privileged": false,
+  "Devices": []
+}

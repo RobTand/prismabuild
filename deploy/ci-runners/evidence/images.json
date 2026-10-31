@@ -1,0 +1,23 @@
+[
+  {
+    "host": "dl380g10",
+    "image_id": "sha256:635b714d3c6f6b60a0db4e367ad8ec0e8b61bcb7fdd635f7b86d691023c92306",
+    "manifest_digest": "sha256:d3c55aadfe526bf457ce34a5caa9cb84dbe5660e6fec4e3fd79afb35e739dfd1",
+    "architecture": "amd64",
+    "tag": "localhost/pb-ci-runner:py314"
+  },
+  {
+    "host": "sparky",
+    "image_id": "sha256:2dfe6817ac5f66d73a46eb837cd2907c2e1c674b010eef535ee47e8dc2c4677a",
+    "manifest_digest": "sha256:73569de293f1b6a41653a9bfd7be914025bc4a6332f888f01420072b4287efce",
+    "architecture": "arm64",
+    "tag": "localhost/pb-ci-runner:py314"
+  },
+  {
+    "host": "sparklina",
+    "image_id": "sha256:e7ea1386ac59843c5856c40b5dd842e28435d51520c44cb42a8b65e58366de7d",
+    "manifest_digest": "sha256:ac21bd7f1c9ff84a739bbcbec87ecb5ae996c8cc2472bb30840e408d828aa8c6",
+    "architecture": "arm64",
+    "tag": "localhost/pb-ci-runner:py314"
+  }
+]

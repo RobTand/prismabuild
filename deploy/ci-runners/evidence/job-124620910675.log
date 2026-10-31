@@ -1,0 +1,75 @@
+﻿2026-10-31T18:28:57.1759543Z Current runner version: '2.338.2'
+2026-10-31T18:28:57.1766979Z Runner name: 'pb-sparky-slot-1-662ce4a3-0a69-4c4f-a55c-cc61a12f219f'
+2026-10-31T18:28:57.1768414Z Runner group name: 'Default'
+2026-10-31T18:28:57.1769581Z Machine name: 'e374b4bbaf74'
+2026-10-31T18:28:57.1772849Z ##[group]GITHUB_TOKEN Permissions
+2026-10-31T18:28:57.1775498Z Contents: read
+2026-10-31T18:28:57.1776209Z Metadata: read
+2026-10-31T18:28:57.1776822Z ##[endgroup]
+2026-10-31T18:28:57.1780093Z Secret source: Actions
+2026-10-31T18:28:57.1781169Z Cache mode: write
+2026-10-31T18:28:57.1782321Z Prepare workflow directory
+2026-10-31T18:28:57.2215398Z Prepare all required actions
+2026-10-31T18:28:57.2323303Z Complete job name: PB runner (gate)
+2026-10-31T18:28:57.3300295Z ##[group]Run python -I - <<'PY'
+2026-10-31T18:28:57.3301151Z [36;1mpython -I - <<'PY'[0m
+2026-10-31T18:28:57.3301764Z [36;1mimport importlib.metadata[0m
+2026-10-31T18:28:57.3302362Z [36;1mimport os[0m
+2026-10-31T18:28:57.3302899Z [36;1mfrom pathlib import Path[0m
+2026-10-31T18:28:57.3303554Z [36;1mimport platform[0m
+2026-10-31T18:28:57.3304115Z [36;1mimport subprocess[0m
+2026-10-31T18:28:57.3304670Z [36;1mimport sys[0m
+2026-10-31T18:28:57.3305168Z [36;1m[0m
+2026-10-31T18:28:57.3305667Z [36;1mname = os.environ['RUNNER_NAME'][0m
+2026-10-31T18:28:57.3306346Z [36;1mrole = os.environ['PB_CANARY_ROLE'][0m
+2026-10-31T18:28:57.3307034Z [36;1mprint('runner:', name, flush=True)[0m
+2026-10-31T18:28:57.3307764Z [36;1mprint('architecture:', platform.machine())[0m
+2026-10-31T18:28:57.3308620Z [36;1mprint('python:', sys.version)[0m
+2026-10-31T18:28:57.3309589Z [36;1mprint('python3:', subprocess.check_output(['python3', '--version'], text=True).strip())[0m
+2026-10-31T18:28:57.3310692Z [36;1mfor package in ('pytest', 'pytest-xdist', 'PyYAML'):[0m
+2026-10-31T18:28:57.3311586Z [36;1m    print(package + ':', importlib.metadata.version(package))[0m
+2026-10-31T18:28:57.3312425Z [36;1maffinity = sorted(os.sched_getaffinity(0))[0m
+2026-10-31T18:28:57.3313159Z [36;1mprint('sched_getaffinity:', affinity)[0m
+2026-10-31T18:28:57.3313916Z [36;1mstatus = Path('/proc/self/status').read_text()[0m
+2026-10-31T18:28:57.3315094Z [36;1mprint(next(line for line in status.splitlines() if line.startswith('Cpus_allowed_list:')))[0m
+2026-10-31T18:28:57.3316262Z [36;1mprint('nproc:', subprocess.check_output(['nproc'], text=True).strip())[0m
+2026-10-31T18:28:57.3317408Z [36;1mmemory = Path('/sys/fs/cgroup/memory.max').read_text().strip()[0m
+2026-10-31T18:28:57.3318340Z [36;1mprint('memory.max:', memory)[0m
+2026-10-31T18:28:57.3319093Z [36;1mjit_set = 'ACTIONS_RUNNER_INPUT_JITCONFIG' in os.environ[0m
+2026-10-31T18:28:57.3319965Z [36;1mprint('JITCONFIG:', 'set' if jit_set else 'unset')[0m
+2026-10-31T18:28:57.3320680Z [36;1massert not jit_set[0m
+2026-10-31T18:28:57.3321489Z [36;1massert not Path('/mnt/shared').exists(), 'fleet shared storage is visible'[0m
+2026-10-31T18:28:57.3322374Z [36;1massert sys.version_info[:2] == (3, 14)[0m
+2026-10-31T18:28:57.3323538Z [36;1massert subprocess.check_output(['python3', '-I', '-c', 'import sys; print(sys.version_info[:2])'], text=True).strip() == '(3, 14)'[0m
+2026-10-31T18:28:57.3324790Z [36;1massert importlib.metadata.version('pytest') == '9.1.1'[0m
+2026-10-31T18:28:57.3325715Z [36;1massert importlib.metadata.version('pytest-xdist') == '3.8.0'[0m
+2026-10-31T18:28:57.3326641Z [36;1massert importlib.metadata.version('PyYAML') == '6.0.3'[0m
+2026-10-31T18:28:57.3327384Z [36;1mif role == 'gate':[0m
+2026-10-31T18:28:57.3328020Z [36;1m    assert platform.machine() == 'aarch64'[0m
+2026-10-31T18:28:57.3329181Z [36;1m    assert name.startswith(('pb-sparky-slot-', 'pb-sparklina-slot-'))[0m
+2026-10-31T18:28:57.3330134Z [36;1m    slot = int(name.split('-slot-')[1].split('-')[0])[0m
+2026-10-31T18:28:57.3357784Z [36;1m    assert affinity == list(range(0, 5) if slot == 1 else range(10, 15))[0m
+2026-10-31T18:28:57.3358756Z [36;1m    assert int(memory) == 8 * 1024**3[0m
+2026-10-31T18:28:57.3359389Z [36;1melse:[0m
+2026-10-31T18:28:57.3360615Z [36;1m    assert platform.machine() == 'x86_64'[0m
+2026-10-31T18:28:57.3361370Z [36;1m    assert name.startswith('pb-dl380g10-slot-')[0m
+2026-10-31T18:28:57.3362118Z [36;1m    assert affinity == list(range(40, 80))[0m
+2026-10-31T18:28:57.3362827Z [36;1m    assert int(memory) == 6 * 1024**3[0m
+2026-10-31T18:28:57.3363460Z [36;1mPY[0m
+2026-10-31T18:28:57.3391552Z shell: /usr/bin/bash -e {0}
+2026-10-31T18:28:57.3392543Z env:
+2026-10-31T18:28:57.3393021Z   PB_CANARY_ROLE: gate
+2026-10-31T18:28:57.3393555Z ##[endgroup]
+2026-10-31T18:28:57.4004481Z runner: pb-sparky-slot-1-662ce4a3-0a69-4c4f-a55c-cc61a12f219f
+2026-10-31T18:28:57.4292014Z architecture: aarch64
+2026-10-31T18:28:57.4293444Z python: 3.14.10 (main, Oct 26 2026, 14:07:51) [Clang 23.1.3 ]
+2026-10-31T18:28:57.4294266Z python3: Python 3.14.10
+2026-10-31T18:28:57.4294860Z pytest: 9.1.1
+2026-10-31T18:28:57.4295386Z pytest-xdist: 3.8.0
+2026-10-31T18:28:57.4295880Z PyYAML: 6.0.3
+2026-10-31T18:28:57.4296386Z sched_getaffinity: [0, 1, 2, 3, 4]
+2026-10-31T18:28:57.4297002Z Cpus_allowed_list:	0-4
+2026-10-31T18:28:57.4297509Z nproc: 1
+2026-10-31T18:28:57.4297966Z memory.max: 8589934592
+2026-10-31T18:28:57.4298696Z JITCONFIG: unset
+2026-10-31T18:28:57.4571480Z Cleaning up orphan processes

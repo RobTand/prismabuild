@@ -1,0 +1,215 @@
+{
+  "total_count": 6,
+  "runners": [
+    {
+      "id": 44,
+      "name": "pb-dl380g10-slot-1-108fdf20-771d-480c-92b0-3abf65e939ac",
+      "os": "linux",
+      "status": "online",
+      "busy": true,
+      "version": "2.338.2",
+      "labels": [
+        {
+          "id": 0,
+          "name": "self-hosted",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "linux",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "x64",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "pb-fleet",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "pb-suite",
+          "type": "read-only"
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "name": "pb-dl380g10-slot-2-a6bd4af0-b406-47e2-92c4-0904ed55d7c9",
+      "os": "linux",
+      "status": "online",
+      "busy": true,
+      "version": "2.338.2",
+      "labels": [
+        {
+          "id": 0,
+          "name": "self-hosted",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "linux",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "x64",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "pb-fleet",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "pb-suite",
+          "type": "read-only"
+        }
+      ]
+    },
+    {
+      "id": 50,
+      "name": "pb-sparklina-slot-1-a81c3c6a-7a94-4425-905e-0e45440a3efb",
+      "os": "linux",
+      "status": "online",
+      "busy": false,
+      "version": "2.338.2",
+      "labels": [
+        {
+          "id": 0,
+          "name": "self-hosted",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "linux",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "pb-fleet",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "arm64",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "pb-gate",
+          "type": "read-only"
+        }
+      ]
+    },
+    {
+      "id": 49,
+      "name": "pb-sparklina-slot-2-cbe032ca-8bae-41f8-ba78-e9fd5702c9d9",
+      "os": "linux",
+      "status": "online",
+      "busy": false,
+      "version": "2.338.2",
+      "labels": [
+        {
+          "id": 0,
+          "name": "self-hosted",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "linux",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "pb-fleet",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "arm64",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "pb-gate",
+          "type": "read-only"
+        }
+      ]
+    },
+    {
+      "id": 47,
+      "name": "pb-sparky-slot-1-7fdf3ac5-5a1c-4587-a3dd-7d665eadb1d2",
+      "os": "linux",
+      "status": "online",
+      "busy": false,
+      "version": "2.338.2",
+      "labels": [
+        {
+          "id": 0,
+          "name": "self-hosted",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "linux",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "pb-fleet",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "arm64",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "pb-gate",
+          "type": "read-only"
+        }
+      ]
+    },
+    {
+      "id": 48,
+      "name": "pb-sparky-slot-2-46d9ae2c-ce7b-4fe2-9d32-9f2f3a98d061",
+      "os": "linux",
+      "status": "online",
+      "busy": false,
+      "version": "2.338.2",
+      "labels": [
+        {
+          "id": 0,
+          "name": "self-hosted",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "linux",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "pb-fleet",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "arm64",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "pb-gate",
+          "type": "read-only"
+        }
+      ]
+    }
+  ]
+}

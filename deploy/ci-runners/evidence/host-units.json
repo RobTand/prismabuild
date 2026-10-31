@@ -1,0 +1,14 @@
+[
+  {
+    "host": "dl380g10",
+    "units": "Id=pb-ci-runner@1.service\nActiveState=active\nSubState=running\nUnitFileState=enabled\nNRestarts=0\nCPUAffinity=40-79\n\nId=pb-ci-runner@2.service\nActiveState=active\nSubState=running\nUnitFileState=enabled\nNRestarts=0\nCPUAffinity=40-79\n"
+  },
+  {
+    "host": "sparky",
+    "units": "NRestarts=0\nCPUAffinity=0-4\nId=pb-ci-runner@1.service\nActiveState=active\nSubState=running\nUnitFileState=enabled\n\nNRestarts=0\nCPUAffinity=10-14\nId=pb-ci-runner@2.service\nActiveState=active\nSubState=running\nUnitFileState=enabled\n"
+  },
+  {
+    "host": "sparklina",
+    "units": "NRestarts=0\nCPUAffinity=0-4\nId=pb-ci-runner@1.service\nActiveState=active\nSubState=running\nUnitFileState=enabled\n\nNRestarts=0\nCPUAffinity=10-14\nId=pb-ci-runner@2.service\nActiveState=active\nSubState=running\nUnitFileState=enabled\n"
+  }
+]
