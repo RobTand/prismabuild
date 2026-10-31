@@ -198,6 +198,7 @@ def test_callback_cannot_extend_deadline_or_release_after_expiry(tmp_path, monke
     fifo = tmp_path / "read.fifo"
     os.mkfifo(fifo)
     seen = []
+    pidfds = []
     released = []
     deadline = reader.Deadline(60)
     write_payload = reader._write_reader_payload
@@ -211,18 +212,27 @@ def test_callback_cannot_extend_deadline_or_release_after_expiry(tmp_path, monke
 
     def expire(ownership):
         seen.append(ownership)
+        pidfds.append(os.pidfd_open(ownership.pid))
         _persist(marker, ownership)
         monkeypatch.setattr(deadline, "remaining", lambda: 0.0)
 
-    result = reader.bounded(SECTION, lambda: _read_fifo(fifo),
-                            deadline=deadline, abandoned=[],
-                            on_spawn=expire, pool_identity=_scope(tmp_path))
-    assert result["status"] == "timed_out" and result["started"] is True
-    assert released == []
-    assert marker.exists()
-    _no_fifo_reader(fifo)
-    _wait_settled(seen[0])
-
+    try:
+        result = reader.bounded(SECTION, lambda: _read_fifo(fifo),
+                                deadline=deadline, abandoned=[],
+                                on_spawn=expire, pool_identity=_scope(tmp_path))
+        assert result["status"] == "timed_out" and result["started"] is True
+        assert released == []
+        assert marker.exists()
+        _no_fifo_reader(fifo)
+        exited = select.poll()
+        exited.register(pidfds[0], select.POLLIN)
+        assert exited.poll(60_000), "exact fixture reader did not exit"
+        with suppress(ChildProcessError):
+            os.waitpid(seen[0].pid, 0)
+        assert _live(seen[0]) == "settled"
+    finally:
+        for descriptor in pidfds:
+            os.close(descriptor)
 
 
 def test_expired_callback_settles_without_the_sleeping_wait_helper(
