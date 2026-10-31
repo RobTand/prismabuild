@@ -12,7 +12,7 @@
     "tests/test_gate_select.py::test_repository_path_loading_regressions[tools/fleet/pbtest.py-tests/test_pbtest_native_directory_collection_1458.py]": 116,
     "tests/test_history_inputs.py::test_historical_inputs_come_from_the_committed_tree": 76,
     "tests/test_pbtest_publishes_its_own_shards.py::test_an_offer_timeout_at_publication_is_retried_off_the_same_snapshot": 62,
-    "tests/test_staged_path_epoch_bytes.py::test_the_original_prune_epoch_bytes_and_effect_order[case0]": 65,
+    "tests/test_staged_path_epoch_bytes.py::test_the_original_prune_epoch_bytes_and_effect_order[case0]": 73,
     "tests/test_steady_tier_gate_portability_1961.py::test_portable_steady_gate_keeps_read_guards_without_a_machine_cpu_budget": 47
   },
   "source": {
@@ -22,7 +22,10 @@
       41242040262,
       41242876374,
       41243455746,
-      41244414908
+      41244414908,
+      41245236880,
+      41245684824,
+      41246084806
     ],
     "measurements": {
       "tests/test_a_stalled_mover_ends_no_progress.py::test_a_slow_copy_on_a_pool_over_its_caps_is_not_a_stall": {
@@ -103,11 +106,11 @@
         "artifact_sha256": "1d99bbf79ff506ab8a6403e879bf78732d18f82887363d97d177a0421d0da3cc"
       },
       "tests/test_staged_path_epoch_bytes.py::test_the_original_prune_epoch_bytes_and_effect_order[case0]": {
-        "max_hosted_seconds": 32.341,
-        "seconds": 65,
-        "run": 41242040262,
-        "artifact": "gate-result-1-a1-8",
-        "artifact_sha256": "1d99bbf79ff506ab8a6403e879bf78732d18f82887363d97d177a0421d0da3cc"
+        "max_hosted_seconds": 36.075,
+        "seconds": 73,
+        "run": 41245684824,
+        "artifact": "gate-result-1-a1-3",
+        "artifact_sha256": "7e00ee9791bb3cd5fa6670b39fcd8b9d850570d0de759877c3f7e6d553913c91"
       },
       "tests/test_steady_tier_gate_portability_1961.py::test_portable_steady_gate_keeps_read_guards_without_a_machine_cpu_budget": {
         "max_hosted_seconds": 23.426,

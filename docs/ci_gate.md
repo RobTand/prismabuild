@@ -1,6 +1,6 @@
 # Hosted Actions merge gate
 
-Ordinary PRs run `pr-gate` on GitHub-hosted `ubuntu-latest`, selecting tests by
+Ordinary PRs run `pr-gate` on GitHub-hosted `ubuntu-24.04`, selecting tests by
 evidence. Mergify batch drafts run the full eligible population when the head
 branch starts `mergify/merge-queue/`, the PR author is login `mergify[bot]` with
 id 37929162, and the head repository is this repository. A same-repository PR
@@ -8,14 +8,17 @@ with the `gate-canary` label also runs the full gate, without duplicating the
 single-job PR selection run. No CI job uses the fleet.
 Mergify requires `pr-gate` to queue and the final job `gate` to merge.
 
-The full plan records a shadow selection while coverage stays full. The qualified
-matrix has twelve shards, alternating `ubuntu-latest` and `ubuntu-24.04-arm`.
+The full plan records a shadow selection while coverage stays full. The full
+matrix defaults to sixteen shards, alternating `ubuntu-24.04` and `ubuntu-24.04-arm`.
 Workflow reruns swap the architectures by shard index, so qualification exercises
 each file on both architectures.
 `GATE_RUNNERS` is the workflow's single list of test destinations. The small
 label-resolution job bootstraps on hosted x64; test jobs use its outputs,
 and `matrix --runners` receives that same list. Changing test destinations
 requires one edit to `GATE_RUNNERS`.
+`GATE_SHARDS` is the single workflow setting for the full shard count. The
+lead sizes Mergify parallel checks so shard count times concurrent batches
+stays near the account's 20 hosted Linux jobs.
 Each shard uses four pytest-xdist workers within inherited CPU affinity.
 Actions are pinned by commit SHA. Setup uses Python 3.14 and pip caching with
 pytest 9.1.1, pytest-xdist 3.8.0, PyYAML 6.0.3 and setuptools 80.9.0.
@@ -47,10 +50,10 @@ retains empty shards when there are fewer files than shards.
 python tools/ci/gate_select.py --base "$BASE_SHA" --head "$HEAD_SHA" --mode full \
   --output plan.json --files-output files.txt
 python tools/ci/gate_partition.py matrix --files-from files.txt \
-  --durations tools/ci/gate_durations.json --shards 12 \
-  --runners ubuntu-latest,ubuntu-24.04-arm --output matrix.json
+  --durations tools/ci/gate_durations.json --shards 16 \
+  --runners ubuntu-24.04,ubuntu-24.04-arm --output matrix.json
 python tools/ci/gate_partition.py shard --files-from files.txt \
-  --durations tools/ci/gate_durations.json --shards 12 --index 0 \
+  --durations tools/ci/gate_durations.json --shards 16 --index 0 \
   --output-files assigned.txt
 python tools/ci/gate_run.py --plan plan.json --files-from assigned.txt --workers 4 \
   --result result.json --junitxml junit.xml
@@ -59,14 +62,14 @@ python tools/ci/gate_run.py --plan plan.json --files-from assigned.txt --workers
 Each shard recomputes its assignment from the same population, duration table
 and shard count. No test-file list passes through matrix entries. Coverage is
 never truncated to meet a time budget. Two ten-shard trials took 6m20s and 6m21s from workflow start to the final
-gate. Twelve shards reduce the longest assignments while retaining half on
-each architecture. Timeouts include setup margin and never truncate coverage.
+gate. A twelve-shard hosted-seeded run took exactly five minutes. Sixteen shards
+are the next measured candidate, retaining half on each architecture. Timeouts include setup margin and never truncate coverage.
 
 ## Per-test cost limits
 
 `tools/ci/gate_budget.json` sets a 20-second default. Its bootstrap slow list
 uses hosted canary timings, not the PrismaBuild-worker inventory. Runs
-41240788649, 41242040262, 41242876374, 41243455746 and 41244414908 measured
+41240788649, 41242040262, 41242876374, 41243455746, 41244414908, 41245236880, 41245684824 and 41246084806 measured
 13 tests above 20 seconds. Every exception is `ceil(2 * largest_hosted_time)`,
 ranging from 44 to 116 seconds. The policy records the maximum, run ID,
 artifact name and verified download digest for each entry. These measurements
@@ -148,6 +151,29 @@ PrismaBuild refusal reported by the selection agent is different, exit 78
 because bubblewrap cannot mount /proc. Neither refusal is classified as flaky.
 The three flaky bundle-cache cases under #2435 exhaust their file's collection,
 so the quarantine names that complete file.
+
+Hosted privilege checks are measured, not inferred. Canary 41245684824 changed
+`kernel.apparmor_restrict_unprivileged_userns` from 1 to 0 on both architectures;
+bubblewrap then entered its namespace but its deliberately hidden `/opt` tree
+also hid setup-python. Canary 41246084806 used a byte-preserving runtime copy
+under `/usr/local`; the next refusal named the shared libpython loader path.
+The hosted setup registers that copied library directory with the loader and
+relocates its installation metadata, including DESTSHARED, to the actual copied
+standard-library directory. Canary 41246932853 passed all eight selected-runtime
+controls on both architectures with the root-owned copy, restoring the two
+previously deferred customization controls. Its namespace run then exposed the
+remaining extension-module metadata path into hidden `/opt`.
+These are disposable hosted-VM settings, with no fleet service changes.
+
+The same canaries measured the complete 227-case root population with real
+passwordless sudo. Earlier x64 runs passed 226 cases and ARM passed 224; run
+41246932853 passed 224 on both. Both require the selected
+`proof_container_runtime.run` wrapper for the installed-reader credential-drop
+case, and ARM also failed two real-census assertions. Sudo itself works. The
+authoritative root lane remains intact under its pinned proof-runtime wrapper
+through PrismaBuild, owned by #1831, rather than pretending the bare-host run
+provided that runtime attestation. Root privileges alone are not the remaining
+requirement, and these root cases are not classified as flaky by this gate.
 
 Remove an entry after root repair or five fresh passing repeats on each
 architecture in the CI environment, as the owning issue requires. Quarantine

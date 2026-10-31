@@ -1501,20 +1501,6 @@
       "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
     },
     {
-      "target": "tests/test_proof_runtime_observation.py::test_host_customization_file_root_selection[selected-sitecustomize.py]",
-      "lane": "root_owned_runtime",
-      "reason": "The selected-runtime positive control requires a root-owned interpreter; setup-python supplies a runner-owned interpreter on hosted CI.",
-      "issue": 1831,
-      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
-    },
-    {
-      "target": "tests/test_proof_runtime_observation.py::test_host_customization_file_root_selection[selected-usercustomize.py]",
-      "lane": "root_owned_runtime",
-      "reason": "The selected-runtime positive control requires a root-owned interpreter; setup-python supplies a runner-owned interpreter on hosted CI.",
-      "issue": 1831,
-      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
-    },
-    {
       "target": "tests/test_record_compatibility.py",
       "lane": "namespace_compatibility",
       "reason": "Both hosted architectures refuse bubblewrap uid-map setup before the stable-path consumer enters or attests its source. Requires a qualified namespace environment, not flake quarantine.",

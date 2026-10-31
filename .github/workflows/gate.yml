@@ -77,6 +77,14 @@ jobs:
           sudo chown -R root:root /usr/local/pb-gate-python
           printf '%s\n' /usr/local/pb-gate-python/lib | sudo tee /etc/ld.so.conf.d/pb-gate-python.conf >/dev/null
           sudo ldconfig
+          # Update installation metadata to the real copied stdlib location.
+          # Isolated consumers use DESTSHARED after hiding the original /opt.
+          sudo env GATE_ORIGINAL_PREFIX="$gate_python_prefix" /usr/local/pb-gate-python/bin/python - <<'PYTHON'
+          import os, sys, sysconfig
+          from pathlib import Path
+          for config in Path(sysconfig.get_path('stdlib')).glob('_sysconfigdata_*.py'):
+              config.write_text(config.read_text().replace(os.environ['GATE_ORIGINAL_PREFIX'], sys.base_prefix))
+          PYTHON
           env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/local/pb-gate-python/bin/python --version
           echo /usr/local/pb-gate-python/bin >> "$GITHUB_PATH"
           sudo apt-get -o Acquire::Retries=3 update -qq
@@ -212,6 +220,14 @@ jobs:
           sudo chown -R root:root /usr/local/pb-gate-python
           printf '%s\n' /usr/local/pb-gate-python/lib | sudo tee /etc/ld.so.conf.d/pb-gate-python.conf >/dev/null
           sudo ldconfig
+          # Update installation metadata to the real copied stdlib location.
+          # Isolated consumers use DESTSHARED after hiding the original /opt.
+          sudo env GATE_ORIGINAL_PREFIX="$gate_python_prefix" /usr/local/pb-gate-python/bin/python - <<'PYTHON'
+          import os, sys, sysconfig
+          from pathlib import Path
+          for config in Path(sysconfig.get_path('stdlib')).glob('_sysconfigdata_*.py'):
+              config.write_text(config.read_text().replace(os.environ['GATE_ORIGINAL_PREFIX'], sys.base_prefix))
+          PYTHON
           env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/local/pb-gate-python/bin/python --version
           echo /usr/local/pb-gate-python/bin >> "$GITHUB_PATH"
           sudo apt-get -o Acquire::Retries=3 update -qq
@@ -296,6 +312,14 @@ jobs:
           sudo chown -R root:root /usr/local/pb-gate-python
           printf '%s\n' /usr/local/pb-gate-python/lib | sudo tee /etc/ld.so.conf.d/pb-gate-python.conf >/dev/null
           sudo ldconfig
+          # Update installation metadata to the real copied stdlib location.
+          # Isolated consumers use DESTSHARED after hiding the original /opt.
+          sudo env GATE_ORIGINAL_PREFIX="$gate_python_prefix" /usr/local/pb-gate-python/bin/python - <<'PYTHON'
+          import os, sys, sysconfig
+          from pathlib import Path
+          for config in Path(sysconfig.get_path('stdlib')).glob('_sysconfigdata_*.py'):
+              config.write_text(config.read_text().replace(os.environ['GATE_ORIGINAL_PREFIX'], sys.base_prefix))
+          PYTHON
           env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/local/pb-gate-python/bin/python --version
           echo /usr/local/pb-gate-python/bin >> "$GITHUB_PATH"
           sudo apt-get -o Acquire::Retries=3 update -qq
@@ -416,6 +440,14 @@ jobs:
           sudo chown -R root:root /usr/local/pb-gate-python
           printf '%s\n' /usr/local/pb-gate-python/lib | sudo tee /etc/ld.so.conf.d/pb-gate-python.conf >/dev/null
           sudo ldconfig
+          # Update installation metadata to the real copied stdlib location.
+          # Isolated consumers use DESTSHARED after hiding the original /opt.
+          sudo env GATE_ORIGINAL_PREFIX="$gate_python_prefix" /usr/local/pb-gate-python/bin/python - <<'PYTHON'
+          import os, sys, sysconfig
+          from pathlib import Path
+          for config in Path(sysconfig.get_path('stdlib')).glob('_sysconfigdata_*.py'):
+              config.write_text(config.read_text().replace(os.environ['GATE_ORIGINAL_PREFIX'], sys.base_prefix))
+          PYTHON
           env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/local/pb-gate-python/bin/python --version
           echo /usr/local/pb-gate-python/bin >> "$GITHUB_PATH"
           sudo apt-get -o Acquire::Retries=3 update -qq
