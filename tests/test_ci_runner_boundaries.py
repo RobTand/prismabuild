@@ -211,3 +211,16 @@ def test_entrypoint_restores_the_admitted_cpu_mask(host):
                             input=JIT + '\n', capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [cpu]
+
+
+def test_successful_registration_resets_only_its_pb_unit_on_older_systemd(host):
+    result = run(host, 'runner-slot.sh', '2')
+    assert result.returncode == 0, result.stderr
+    commands = calls(host)
+    reset = ['systemctl', '--user', 'reset-failed', 'pb-ci-runner@2.service']
+    container = next(c for c in commands if c[:2] == ['podman', 'run'])
+    assert commands.index(reset) < commands.index(container)
+    (host[0] / 'calls.jsonl').unlink()
+    host[1]['FAIL_REGISTRATION'] = '1'
+    assert run(host, 'runner-slot.sh', '2').returncode != 0
+    assert not any(c[0] in ('systemctl', 'systemd-notify') for c in calls(host))
