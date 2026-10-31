@@ -56,6 +56,8 @@ while read -r key value; do
 done < /proc/self/status
 [[ "$affinity" =~ ^[0-9,-]+$ ]] || exit 1
 systemd-notify RESTART_RESET=1
+# systemd 255 on the Sparks predates RESTART_RESET. Reset only this PB unit.
+systemctl --user reset-failed "pb-ci-runner@$slot.service"
 echo "Starting $runner"
 printf '%s\n' "$jit_config" | podman run --rm --interactive \
     --name "pb-ci-runner-$slot" --pull=never \

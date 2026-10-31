@@ -94,10 +94,11 @@ processes start. Every canary asserts that it is unset and prints only `set` or
 `unset`. Runner diagnostic files live only in the ephemeral container.
 
 Registration failures retain systemd's backoff from 30 seconds to five minutes.
-Valid registration sends `RESTART_RESET=1`. Start limits are disabled. Systemd
-versions that support the reset notification reset the delay after registration.
-Older versions may keep a longer restart delay after an outage. The canary
-measures observed job pickup separately from this notification contract.
+Valid registration sends `RESTART_RESET=1` and resets only that PB unit with
+`systemctl --user reset-failed`. The latter also clears the restart counter on
+the Sparks' systemd 255, which predates the notification. Registration failures
+do neither, so they retain backoff. Start limits are disabled. The canary
+measures observed job pickup separately from the restart delay.
 
 ## Prove the canary and expand
 
