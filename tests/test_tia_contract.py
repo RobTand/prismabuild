@@ -324,10 +324,12 @@ def test_evaluation_arm_scratch_is_local_and_removed(tmp_path, monkeypatch, conf
         assert scratch.parent in base.parents
         assert not base.exists()
     else:
-        assert output in scratch.parents
-        assert '--basetemp=.pytest-basetemp' in command
+        assert Path('/tmp') in scratch.parents
+        assert checkout not in scratch.parents
+        base = Path(next(arg.split('=', 1)[1] for arg in command if arg.startswith('--basetemp=')))
+        assert scratch.parent in base.parents
+        assert not base.exists()
     assert not scratch.parent.exists()
-    assert not (checkout / '.pytest-basetemp').exists()
     assert result['tests'] == 1
 
 
