@@ -55,9 +55,14 @@ def test_leg_names_match_verdict_labels() -> None:
         "leg-1", "leg-2", "leg-3", "leg-4")
 
 
-def test_leg_builds_are_green_and_worker_argv_uses_moved_path() -> None:
+@pytest.fixture(scope="module")
+def leg3_spec():
+    return leg3.build()
+
+
+def test_leg_builds_are_green_and_worker_argv_uses_moved_path(leg3_spec) -> None:
     for module, name in ((leg3, "leg3"), (leg4, "leg4")):
-        spec = module.build()
+        spec = leg3_spec if module is leg3 else module.build()
         assert spec["expected"]
         argv = (spec.get("argv") or spec.get("action", {}).get("argv")
                 or spec["actions"][0]["argv"])
@@ -67,7 +72,6 @@ def test_leg_builds_are_green_and_worker_argv_uses_moved_path() -> None:
 
 
 def test_leg3_manifest_roundtrip_in_tmp(tmp_path: Path) -> None:
-    spec = leg3.build()
     chunk_paths = leg3.write_chunk_files(str(tmp_path))
     manifest = leg3.manifest_for_run(chunk_paths, str(tmp_path))
     assert manifest["total_bytes"] == sum(leg3.LEG3_CHUNK_SIZES)
@@ -75,8 +79,7 @@ def test_leg3_manifest_roundtrip_in_tmp(tmp_path: Path) -> None:
         leg3.LEG3_EXPECTED_CHUNK_SHA256)
 
 
-def _leg3_ok_receipt() -> tuple[dict, dict]:
-    spec = leg3.build()
+def _leg3_ok_receipt(spec) -> tuple[dict, dict]:
     chunks = []
     for chunk in spec["expected"]["chunks"]:
         path = f"/x/{chunk['name']}"
@@ -109,8 +112,8 @@ def _leg3_ok_receipt() -> tuple[dict, dict]:
     return spec["expected"], receipt
 
 
-def test_leg3_verify_ok_and_corrupted_are_exit1_without_markers() -> None:
-    expected, receipt = _leg3_ok_receipt()
+def test_leg3_verify_ok_and_corrupted_are_exit1_without_markers(leg3_spec) -> None:
+    expected, receipt = _leg3_ok_receipt(leg3_spec)
     ok, reason = leg3.verify(receipt, expected)
     assert ok, reason
     bad_chunks = dict(receipt)
@@ -275,7 +278,7 @@ def test_summary_dir_writer(tmp_path: Path) -> None:
 # --- the driver's --priority governs every leg (issue #690) ------------------
 
 
-def test_leg_specs_never_pin_priority_over_the_driver() -> None:
+def test_leg_specs_never_pin_priority_over_the_driver(leg3_spec) -> None:
     """Legs 3-4 used to append a pinned --priority after the driver's own.
 
     On a repeated single-value flag pbrun's argparse lets the later value
@@ -284,7 +287,7 @@ def test_leg_specs_never_pin_priority_over_the_driver() -> None:
     """
 
     flags: list[str] = []
-    for spec in (leg3.build(), leg4.build()):
+    for spec in (leg3_spec, leg4.build()):
         flags += list(spec.get("pbrun_flags", []))
         for action in spec.get("actions", []):
             flags += list(action.get("pbrun_flags", []))
