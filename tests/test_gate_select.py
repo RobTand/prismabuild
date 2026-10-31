@@ -81,7 +81,8 @@ def test_changed_tests_and_non_python_path_references(tmp_path):
 
 @pytest.mark.parametrize('changed', ['conftest.py', 'tests/conftest.py', 'pyproject.toml',
                                     'tests/support.py', 'tools/verify.py',
-                                    'tools/ci/gate_select.py', '.github/workflows/gate.yml'])
+                                    'tools/ci/gate_select.py', '.github/workflows/gate.yml',
+                                    'tests/test_gate_select.py', 'docs/ci_gate.md'])
 def test_shared_configuration_and_helpers_select_whole_population(tmp_path, changed):
     result = plan(tree(tmp_path), [changed])
     assert len(result['selected']) == result['population']['size'] == 10
@@ -158,3 +159,10 @@ def test_root_relative_asset_joins_are_direct_evidence(tmp_path):
         "from pathlib import Path\nROOT = Path(__file__).parents[1]\n"
         "asset = ROOT / 'deploy' / 'pool.json'\n")
     assert 'tests/test_asset_join.py' in selected(plan(root, ['deploy/pool.json']))
+
+
+def test_test_module_imported_as_a_helper_changes_whole_population(tmp_path):
+    root = tree(tmp_path)
+    (root / 'tests/test_fixture_consumer.py').write_text('from test_indirect import fixture_builder\n')
+    result = plan(root, ['tests/test_indirect.py'])
+    assert len(result['selected']) == result['population']['size'] == 11
