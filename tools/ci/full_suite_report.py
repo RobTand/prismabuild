@@ -158,6 +158,9 @@ def quarantine_entries(path: Path) -> set[str]:
     if not path.exists():
         return set()
     value = json.loads(path.read_text())
+    if isinstance(value, dict) and 'entries' in value:
+        return {entry['target'] for key in ('entries', 'cost_exclusions')
+                for entry in value.get(key, [])}
     # The gate owns this schema. Accept its list of records or keyed entries.
     entries = value.get('tests', value.get('quarantine', value)) if isinstance(value, dict) else value
     if isinstance(entries, dict):

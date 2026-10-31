@@ -42,16 +42,16 @@ def test_missing_shard_or_no_verdict_refuses_complete_reporting(tmp_path):
         {'arch': 'x64', 'shard': 0, 'files': ['tests/a.py']},
         {'arch': 'arm64', 'shard': 0, 'files': ['tests/a.py']}]}
     for arch in ['x64', 'arm64']:
-        path = tmp_path / f'{arch}-0'
+        path = tmp_path / f'full-suite-shard-{arch}-0'
         path.mkdir()
         (path / 'result.json').write_text(json.dumps({'verdict': 'pass', 'head_sha': 'a' * 40,
                                                      'files': ['tests/a.py']}))
         (path / 'junit.xml').write_text('<testsuite><testcase file="tests/a.py" classname="tests.a" name="test_x"/></testsuite>')
     assert workflow.collect_shards(tmp_path, manifest)['tests/a.py::test_x']['outcome'] == 'passed'
-    (tmp_path / 'arm64-0/result.json').write_text(json.dumps({'verdict': None}))
+    (tmp_path / 'full-suite-shard-arm64-0/result.json').write_text(json.dumps({'verdict': None}))
     with pytest.raises(ValueError, match='verdict|identity'):
         workflow.collect_shards(tmp_path, manifest)
-    (tmp_path / 'arm64-0/result.json').unlink()
+    (tmp_path / 'full-suite-shard-arm64-0/result.json').unlink()
     with pytest.raises((ValueError, FileNotFoundError)):
         workflow.collect_shards(tmp_path, manifest)
 
@@ -69,3 +69,38 @@ def test_nightly_workflow_uses_hosted_gate_tools_and_always_reports():
     assert 'gate_run.py' in source
     assert 'self-hosted' not in source
     assert 'CircleCI' not in source
+
+
+def test_previous_results_skips_dry_and_incomplete_runs(monkeypatch):
+    class API:
+        def pages(self, path, field):
+            if '/runs?' in path:
+                return [{'id': n, 'run_number': n} for n in [3, 2, 1, 4]]
+            number = int(path.split('/')[2])
+            return [{'id': number, 'name': 'full-suite-results', 'expired': False}]
+    monkeypatch.setattr(workflow, 'artifact_results', lambda api, number: {
+        3: {'complete': True, 'dry_run': True},
+        2: {'complete': False},
+        1: {'complete': True, 'dry_run': False, 'sha': 'previous'}}[number])
+    assert workflow.previous_results(API(), 4)['sha'] == 'previous'
+
+
+def test_signed_artifact_download_drops_authorization(tmp_path, monkeypatch):
+    import io
+    import urllib.error
+    import zipfile
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w') as output:
+        output.writestr('results.json', '{"complete": true, "sha": "old"}')
+    class Opener:
+        def open(self, request, timeout):
+            assert request.get_header('Authorization') == 'Bearer test-only-secret'
+            raise urllib.error.HTTPError(request.full_url, 302, 'redirect',
+                                         {'Location': 'https://example.invalid/public'}, None)
+    monkeypatch.setattr(workflow.urllib.request, 'build_opener', lambda *args: Opener())
+    def public_download(request, timeout):
+        assert request == 'https://example.invalid/public'
+        return io.BytesIO(archive.getvalue())
+    monkeypatch.setattr(workflow.urllib.request, 'urlopen', public_download)
+    api = workflow.report.GitHub('RobTand/prismabuild', 'test-only-secret')
+    assert workflow.artifact_results(api, 7)['sha'] == 'old'
