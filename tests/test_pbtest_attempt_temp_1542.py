@@ -113,33 +113,27 @@ def test_a_passing_shard_removes_its_attempt_base_temp(tmp_path):
         path.relative_to(scratch).as_posix() for path in scratch.rglob("*"))
 
 
-def test_a_failing_shard_keeps_the_failed_tests_tmp_path(tmp_path):
+def test_a_failing_shard_removes_the_failed_tests_tmp_path(tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     checkout = _checkout(tmp_path, "assert False, 'kept for diagnosis'")
     result = _run(checkout, scratch)
     assert result.returncode == 1, result.stdout + result.stderr
-    markers = list(scratch.rglob("marker"))
-    assert markers, "the failed test's tmp_path is gone"
-    assert all(marker.read_text() == "x" for marker in markers)
+    assert list(scratch.iterdir()) == [], "failed attempt retained its scratch"
 
 
-def test_success_removes_only_its_directory_and_keeps_failed_attempts(tmp_path):
+def test_success_preserves_unowned_scratch(tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    checkout = _checkout(tmp_path, "assert False, 'kept for diagnosis'")
-    for _ in range(2):
-        result = _run(checkout, scratch)
-        assert result.returncode == 1, result.stdout + result.stderr
-    retained = set(scratch.iterdir())
-    assert len(retained) == 2
-    markers = set(scratch.rglob("marker"))
-    assert len(markers) == 2
-    (checkout / "tests" / "test_one.py").write_text("def test_one():\n    assert True\n")
+    unowned = scratch / "compiler-cache"
+    unowned.mkdir()
+    sentinel = unowned / "sentinel"
+    sentinel.write_text("keep")
+    checkout = _checkout(tmp_path, "assert True")
     result = _run(checkout, scratch)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert set(scratch.iterdir()) == retained
-    assert all(marker.read_text() == "x" for marker in markers)
+    assert list(scratch.iterdir()) == [unowned]
+    assert sentinel.read_text() == "keep"
 
 
 def test_an_explicit_basetemp_keeps_its_meaning_and_the_compiler_tmpdir(tmp_path, monkeypatch):
