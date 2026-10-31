@@ -6,6 +6,7 @@ import importlib.metadata
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -54,9 +55,15 @@ def installed(tmp_path_factory):
             pytest.fail(f"offline installed-package gate requires {name} in {sys.executable}")
     wheels = root / "wheels"
     wheels.mkdir()
+    source = root / "source"
+    source.mkdir()
+    for name in ("pyproject.toml", "README.md", "LICENSE"):
+        shutil.copyfile(ROOT / name, source / name)
+    shutil.copytree(ROOT / "src", source / "src",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"))
     _run([sys.executable, "-I", "-m", "pip", "--disable-pip-version-check",
           "--no-cache-dir", "wheel", "--no-index", "--no-deps",
-          "--no-build-isolation", "--wheel-dir", str(wheels), str(ROOT)],
+          "--no-build-isolation", "--wheel-dir", str(wheels), str(source)],
          cwd=root, label="wheel-build")
     wheel, = wheels.glob("prismabuild-*.whl")
     with zipfile.ZipFile(wheel) as archive:
