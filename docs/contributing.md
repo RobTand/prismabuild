@@ -68,6 +68,44 @@ contain risk at the highest displayed tier. Do not retrospectively reprioritize
 historical issues, including solely to adopt this taxonomy, and do not mass relabel
 them.
 
+## Timing guard mechanics (#1771)
+
+See the Test quality section for the test-authoring rules. This guard scans
+all Python files under `tests/`, including conftest and support modules.
+It flags every `from time import sleep`, `from time import *`, and every
+imported time module's `.sleep` attribute, except a direct call with one literal zero argument and
+no keywords. Use `import time; time.sleep(0)` for cooperative yields; importing
+`sleep` separately is always a finding. Import names are collected syntactically
+across each file, including shadowed names. Static name assignments, annotated
+assignments, and walrus bindings preserve module provenance through lexical
+bindings, including alias chains and closures. These assigned aliases do not
+leak into sibling scopes or shadowing parameters. The guard does not evaluate
+binding order or deferred code.
+
+The guard also flags constant timeout expressions below 60 s on wait, join,
+Queue-shaped get/put, subprocess wait/communicate/run, and socket settimeout.
+Bounds of 60 s or more are allowed. The test module defines exact argument
+slots and constant arithmetic. Computed getattr, exec/eval, importlib tricks
+and non-constant bounds are outside its scope. TrustLadder's test-quality
+checker, PB reviewer rules and the five-run flake check cover those limits.
+The guard measures no pass/fail runtime threshold.
+
+For a controlled clock, put `# pb-timing-ok: <reason>` on the import,
+attribute or call's starting line. Explain how the clock is controlled.
+Empty reasons and stale pragmas fail; reviewers check the reason.
+
+Existing debt is in `tests/timing_allowlist.txt`, keyed by
+`path::qualname kind count #issue`. Each entry links an issue. New offenders,
+stale entries and count mismatches fail. After fixing offenders, regenerate
+from the repository root with this single source-edit command:
+
+```bash
+python3 tools/maintenance/shrink_timing_allowlist.py
+```
+
+The generator preserves issue links, removes resolved entries, and refuses new
+identities or larger counts before writing. Review the allowlist diff and
+validate through PB. It reads no Git history and never uses source hashes.
 ## Test quality — Rob, 2026-10-24 (#2249)
 
 TrustLadder's release gates excused 40 PrismaBuild tests as flaky (#2246,
