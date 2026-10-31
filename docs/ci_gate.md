@@ -30,8 +30,9 @@ this evidence.
 
 Changes to conftests, `pyproject.toml`, `tools/verify.py`, root population
 manifests, test helper modules, `tools/ci/gate_*`, or the gate workflow select
-the entire eligible population. Test helper modules are Python files under
-`tests/` whose names do not start with `test_`.
+the entire eligible population. This includes the gate tests and this document.
+Test helper modules are Python files under `tests/` whose names do not start
+with `test_`, plus test modules imported by other tests.
 
 The root and GPU populations stay in their existing lanes. The gate applies
 file and node-ID exclusions from `tools/ci/gate_quarantine.json`. Every entry

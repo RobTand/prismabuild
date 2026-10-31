@@ -168,13 +168,19 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
     version_body = {'policy': POLICY, 'files': sorted(population), 'fast': sorted(fast),
                     'other_lanes': other_lanes, 'exclusions': exclusions, 'durations': durations}
     version = hashlib.sha256(json.dumps(version_body, sort_keys=True).encode()).hexdigest()
-    triggers = sorted(path for path in changed if
-        path in {'conftest.py', 'pyproject.toml', 'tools/verify.py',
-                 'tests/proof_execution.json', 'tests/receipt_execution.json',
-                 '.github/workflows/gate.yml'} or
-        path.startswith('tools/ci/gate_') or
-        (path.startswith('tests/') and path.endswith('.py') and
-         (Path(path).name == 'conftest.py' or not Path(path).name.startswith('test_'))))
+    imported_modules = {module for imports, _ in index.values() for module in imports}
+    triggers = []
+    for path in sorted(set(changed)):
+        test_module = path.startswith('tests/') and path.endswith('.py')
+        helper_names = {Path(path).stem, path.removesuffix('.py').replace('/', '.'),
+                        path.removeprefix('tests/').removesuffix('.py').replace('/', '.')}
+        helper = test_module and (not Path(path).name.startswith('test_') or
+                                  bool(helper_names & imported_modules))
+        if (path in {'conftest.py', 'pyproject.toml', 'tools/verify.py',
+                     'tests/proof_execution.json', 'tests/receipt_execution.json',
+                     '.github/workflows/gate.yml', 'docs/ci_gate.md'} or
+            path.startswith(('tools/ci/gate_', 'tests/test_gate_')) or helper):
+            triggers.append(path)
     reasons: dict[str, list[str]] = {}
     for name, (imports, paths) in index.items():
         why = []
