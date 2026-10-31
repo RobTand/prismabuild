@@ -1,9 +1,8 @@
-"""Each pbtest attempt owns its base temp; success removes it (#1542).
+"""Default pbtest scratch is private and removed on handled endings (#2449).
 
-A passing shard leaves no ``pytest-N`` or attempt base temp under its
-``TMPDIR``. A failing shard keeps the failed test's ``tmp_path``. An
-explicit sealed ``--basetemp`` keeps its existing meaning, and the
-compiler ``TMPDIR`` stays sealed.
+Passing and failing default shards leave no attempt base temp under their
+``TMPDIR``. An explicit sealed ``--basetemp`` keeps its existing meaning,
+and compiler ``TMPDIR`` stays sealed.
 """
 from __future__ import annotations
 
@@ -111,15 +110,6 @@ def test_a_passing_shard_removes_its_attempt_base_temp(tmp_path):
     assert "1 passed" in result.stdout
     assert list(scratch.rglob("*")) == [], sorted(
         path.relative_to(scratch).as_posix() for path in scratch.rglob("*"))
-
-
-def test_a_failing_shard_removes_the_failed_tests_tmp_path(tmp_path):
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    checkout = _checkout(tmp_path, "assert False, 'kept for diagnosis'")
-    result = _run(checkout, scratch)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert list(scratch.iterdir()) == [], "failed attempt retained its scratch"
 
 
 def test_success_preserves_unowned_scratch(tmp_path):

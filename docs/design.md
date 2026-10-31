@@ -3180,10 +3180,10 @@ space-freed measurement on real scratch.
   alone would reap live work.
 - **Retention is a clock in the lock.** The owner writes
   `prismabuild owner lock v1 host=<hostname>` and a `running` line. An owner
-  that ends but keeps its tree (a failed shard), or the first reaper to find
+  that ends but keeps its tree (an explicit-basetemp failed shard), or the first reaper to find
   the lock free, truncates `running` away, and that write's mtime starts the
   clock. The tree goes `owned_tree.RETENTION_S` (24 hours) later, so a failed
-  or killed attempt stays a full day after it ended, however long it ran. A
+  or killed retained attempt stays a full day after it ended, however long it ran. A
   removal that cannot finish keeps the lock and restarts the clock, so it is
   retried a window later.
 - **Trees are reaped where they are made, and the work is bounded.** Each new

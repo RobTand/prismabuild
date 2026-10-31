@@ -2374,7 +2374,8 @@ Only `tmp_path` is removed per test. A directory made with `tmp_path_factory.mkt
 and the directory of any failing test, lasts as long as the session's base temporary
 directory. Without `--basetemp` each attempt owns its base temp (#1542):
 `<tmpdir>/pb-<mkdtemp suffix>/pytest`, where `tmpdir` is the
-default `/home/rob/tmp` or the `--tmpdir` directory when one is given.
+sealed `TMPDIR` from the worker profile, or the `--tmpdir` directory when
+one is given.
 `mkdtemp` creates each directory exclusively with mode 0700. It retries name
 collisions; it does not truncate an action key or an attempt identity.
 The standard eight-character suffix leaves an 86-byte socket path under
