@@ -31,4 +31,8 @@ jobs:
             fs.writeFileSync(helper, Buffer.from(data.content, 'base64'));
             const result = await exec.getExecOutput('python3', ['-I', helper], {ignoreReturnCode: true});
             core.info(result.stdout);
-            if (result.exitCode !== 0) core.setFailed('Issue-link policy rejected this PR; see the verdict above.');
+            if (result.stderr) core.info(result.stderr);
+            // The evaluator prints its verdict as its last line; a rejection
+            // annotates the check with that reason.
+            const reason = result.stdout.trim().split('\n').pop();
+            if (result.exitCode !== 0) core.setFailed(reason || 'Issue-link evaluator failed; see the log above.');

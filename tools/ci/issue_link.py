@@ -27,9 +27,15 @@ class Verdict:
     reason: str
 
 
+# JavaScript's \s without the u flag: ECMAScript WhiteSpace and LineTerminator.
+# re.ASCII keeps \b and case folding ASCII, as the JavaScript's were, so the
+# whitespace class is spelled out instead of narrowed with them.
+_JS_SPACE = r'[\t\n\v\f\r    -     　﻿]'
+
+
 def issue_numbers(body: str | None, repository: str) -> tuple[int, ...]:
     pattern = re.compile(
-        r'\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|references?)\s+'
+        r'\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|references?)' + _JS_SPACE + '+'
         r'(?:https://github\.com/' + re.escape(repository) + r'/issues/|'
         + re.escape(repository) + r'#|#)([1-9][0-9]*)\b', re.IGNORECASE | re.ASCII,
     )
