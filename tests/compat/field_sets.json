@@ -4155,6 +4155,11 @@
     "binding": "keys"
   },
   {
+    "path": "tools/ci/release_dry_run.py",
+    "owner": "validate_wheel",
+    "unresolved": "{row[0] for row in rows}"
+  },
+  {
     "path": "tools/duplication_inventory.py",
     "owner": "same_name_growth",
     "unresolved": "set(base.get(name, ()))"
