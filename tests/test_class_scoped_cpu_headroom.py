@@ -135,3 +135,111 @@ def test_class_headroom_reuses_one_holder_pricing(class_claim_host, monkeypatch,
         claimed = _claim_class_action(host)
     assert claimed is not None and claimed["action_key"] == candidate
     assert len(telemetry_reads) == 1
+
+
+def _pending_declared_holder(host, declared_cpu):
+    """Model pending demand separately from the one physical CPU token."""
+    holder = _publish_class_action(host, "pending", {"cpu": 1, "mem_gb": 1})
+    assert _claim_class_action(host)["action_key"] == holder
+    metadata = _class_metadata(host, holder)
+    metadata["declared_cpu"] = declared_cpu
+    adaptive_cpu.write_json(
+        host.queue.ledger().held_dir / holder / adaptive_cpu.METADATA, metadata)
+    assert host.queue.ledger().holder_tokens(holder) == {"cpu": 1, "mem_gb": 1}
+    return holder
+
+
+@pytest.mark.parametrize(("declared_cpu", "admitted"), [(1, True), (3, False)])
+def test_cpu_admission_counts_pending_declared_demand(
+    class_claim_host, monkeypatch, declared_cpu, admitted,
+):
+    host = class_claim_host
+    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda self: idle_gpu_sample())
+    holder = _pending_declared_holder(host, declared_cpu)
+    gpu = _publish_class_action(host, "gpu", {"cpu": 6, "gpu": 1, "mem_gb": 16})
+    claimed = _claim_class_action(host)
+    if admitted:
+        assert claimed is not None and claimed["action_key"] == gpu
+        assert host.queue.ledger().held() == {"cpu": 7, "gpu": 1, "mem_gb": 17}
+    else:
+        assert claimed is None
+        decision = _class_denial(host, gpu)["evidence"]["decision"]
+        assert decision["reason"] == "projected_cpu_cost"
+        assert decision["active_cpu_cost"] == 3.0
+        assert decision["pending_cpu_cost"] == 3.0
+        assert decision["requested_cpu_cost"] == 6.0
+        assert host.queue.ledger().held_keys() == [holder]
+        assert host.queue.records.item_path(pool.READY, gpu).exists()
+
+
+@pytest.mark.parametrize("declared_cpu", [1, 3])
+@pytest.mark.parametrize(("tags", "scope"), [
+    (["gb10", "arm64"], "class"),
+    (["sparky"], "hostname"),
+    ([], "portable"),
+])
+def test_ready_gpu_exemption_counts_pending_declared_demand(
+    class_claim_host, monkeypatch, declared_cpu, tags, scope,
+):
+    host = class_claim_host
+    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda self: idle_gpu_sample())
+    holder = _pending_declared_holder(host, declared_cpu)
+    candidate = _publish_class_action(
+        host, "candidate", {"cpu": 1, "mem_gb": 1}, tags=tags)
+    gpu = _publish_class_action(host, "gpu", {"cpu": 4, "gpu": 1, "mem_gb": 16})
+    with _class_gpu_lock_busy(host, gpu):
+        claimed = _claim_class_action(host)
+    admitted = scope == "hostname" or (scope == "class" and declared_cpu == 1)
+    if admitted:
+        assert claimed is not None and claimed["action_key"] == candidate
+        assert not claimed.get("cpu_guest")
+        assert host.queue.ledger().holder_tokens(candidate) == {"cpu": 1, "mem_gb": 1}
+    else:
+        assert claimed is None
+        denial = _class_denial(host, candidate)
+        if scope == "portable":
+            assert denial["reason"] == "deferred_for_ready_gpu"
+        else:
+            assert denial["reason"] == "deferred_for_ready_gpu_row"
+            evidence = denial["evidence"]
+            assert evidence["kept_for"] == "class_scoped_cpu_projected_cpu_cost"
+            assert evidence["active_cpu_cost"] == 4.25
+            assert evidence["pending_cpu_cost"] == 4.25
+            assert evidence["holder_cost"] == 1.25
+            assert evidence["gpu_cost"] == 4.0
+        assert host.queue.ledger().holder_tokens(candidate) == {}
+        assert host.queue.ledger().held_keys() == [holder]
+    assert host.queue.records.item_path(pool.READY, gpu).exists()
+    assert host.queue.passes(candidate) == 0
+
+
+@pytest.mark.parametrize("exemption", [False, True], ids=["admission", "exemption"])
+def test_admission_and_exemption_obey_shared_projection(
+    class_claim_host, monkeypatch, exemption,
+):
+    host = class_claim_host
+    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda self: idle_gpu_sample())
+    holder = _pending_declared_holder(host, 1)
+    if exemption:
+        candidate = _publish_class_action(host, "candidate", {"cpu": 1, "mem_gb": 1})
+    gpu = _publish_class_action(host, "gpu", {"cpu": 4, "gpu": 1, "mem_gb": 16})
+    projection = adaptive_cpu.projected_cpu_fits
+
+    def deny_gpu_projection(**costs):
+        return costs["requested_cpu_cost"] != 4.0 and projection(**costs)
+
+    monkeypatch.setattr(adaptive_cpu, "projected_cpu_fits", deny_gpu_projection)
+    if exemption:
+        with _class_gpu_lock_busy(host, gpu):
+            assert _claim_class_action(host) is None
+        denial = _class_denial(host, candidate)
+        assert denial["reason"] == "deferred_for_ready_gpu_row"
+        assert denial["evidence"]["kept_for"] == "class_scoped_cpu_projected_cpu_cost"
+        assert denial["evidence"]["decision"]["reason"] == "admitted"
+    else:
+        assert _claim_class_action(host) is None
+        decision = _class_denial(host, gpu)["evidence"]["decision"]
+        assert decision["reason"] == "projected_cpu_cost"
+        assert decision["requested_cpu_cost"] == 4.0
+    assert host.queue.ledger().held_keys() == [holder]
+    assert host.queue.records.item_path(pool.READY, gpu).exists()
