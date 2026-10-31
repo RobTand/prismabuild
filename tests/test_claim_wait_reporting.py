@@ -492,3 +492,20 @@ def test_cpu_load_preference_reports_both_consulted_sample_expiries(
     assert claim_wait.RetryDeadline("peer_observation_freshness:" + local, 44.0) in deadlines
     assert claim_wait.RetryDeadline("peer_observation_freshness:peer", 43.0) in deadlines
     assert claim_wait.RetryDeadline("cpu_load_preference", 60.0) in deadlines
+
+
+def test_truncated_ready_record_reports_unreadable_input_and_bounded_recovery(tmp_path, clocks):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.records.ensure_layout()
+    path = queue.records.item_path(pool.record_store.READY, "a" * 64)
+    path.write_bytes(b'{"broken":')
+    assert queue.claim(capacity={"cpu": 1, "mem_gb": 1}) is None
+
+    observed = queue.claim_or_observe(capacity={"cpu": 1, "mem_gb": 1})
+    assert observed.value is None
+    assert not observed.blocked_on.coverage.complete
+    assert claim_wait.WakeInput(claim_wait.SourceKind.ACTION, str(path),
+                                claim_wait.EvidenceState.UNREADABLE) in observed.blocked_on.inputs
+    assert "action:" + str(path) + ":unreadable" in observed.blocked_on.coverage.gaps
+    assert claim_wait.RetryDeadline("source_recovery", 45.0) in observed.blocked_on.deadlines
+    assert path.read_bytes() == b'{"broken":'
