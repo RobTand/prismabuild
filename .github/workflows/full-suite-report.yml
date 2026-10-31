@@ -26,7 +26,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'status' && github.event.state != 'pending' &&
-       (github.event.context == 'CircleCI Pipeline' || github.event.context == 'ci/circleci: full-suite-report')) ||
+       github.event.context == 'ci/circleci: full-suite-report') ||
       (github.event_name == 'check_run' && github.event.check_run.name == 'full-suite-report')
     concurrency:
       group: full-suite-report-main
