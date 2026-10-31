@@ -58,3 +58,47 @@ def test_old_and_duplicate_circleci_runs_cannot_replace_the_newer_baseline():
     assert not bridge.newer_than_history(8, history)
     assert not bridge.newer_than_history(7, history)
     assert bridge.newer_than_history(1, {})
+
+
+def test_bridge_runs_reporter_offline_with_public_xml_as_data(tmp_path, monkeypatch):
+    import json
+    sha = 'a' * 40
+    event = tmp_path / 'event.json'
+    event.write_text(json.dumps({'inputs': {'job_number': '42', 'sha': sha}}))
+    output = tmp_path / 'out/results.json'
+    class Circle:
+        def __init__(self, repository):
+            pass
+        def resolve(self, kind, number):
+            return {'number': 42}, {'number': 9, 'project_slug': 'gh/RobTand/prismabuild',
+                                  'vcs': {'branch': 'main', 'revision': sha}}
+        def junit(self, number, revision, directory):
+            (directory / 'tests.xml').write_text('''<testsuite><testcase file="tests/a.py"
+                classname="tests.a" name="test_x"><failure>wrong value</failure></testcase></testsuite>''')
+    monkeypatch.setattr(bridge, 'CircleCI', Circle)
+    monkeypatch.setattr(bridge, 'previous_results', lambda *args: {})
+    monkeypatch.setattr(bridge.report.GitHub, 'from_environment', lambda repository: object())
+    monkeypatch.setenv('GITHUB_REPOSITORY', 'RobTand/prismabuild')
+    monkeypatch.setenv('GITHUB_RUN_NUMBER', '7')
+    monkeypatch.delenv('GITHUB_TOKEN', raising=False)
+    assert bridge.main(['--event', str(event), '--output', str(output), '--dry-run']) == 1
+    result = json.loads(output.read_text())
+    assert result['classification']['new'] == ['tests/a.py::test_x']
+    assert result['circleci_pipeline_number'] == 9
+    assert result['filed'] == []
+    assert result['plans'][0]['title'] == '[P2] Full suite: tests/a.py::test_x fails on main'
+
+
+def test_hosted_bridge_has_no_test_or_fleet_execution_steps():
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/full-suite-report.yml').read_text())
+    triggers = workflow.get('on', workflow.get(True))
+    assert set(triggers) == {'status', 'check_run', 'workflow_dispatch'}
+    job = workflow['jobs']['report']
+    assert job['runs-on'] == 'ubuntu-latest'
+    checkout = next(s for s in job['steps'] if s.get('uses', '').startswith('actions/checkout'))
+    assert checkout['with']['ref'] == 'main'
+    source = (ROOT / '.github/workflows/full-suite-report.yml').read_text()
+    assert 'self-hosted' not in source
+    assert 'pytest' not in source
+    assert 'CIRCLE_TOKEN' not in source

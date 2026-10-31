@@ -259,3 +259,29 @@ def test_cli_dry_run_needs_no_ci_environment_or_token(tmp_path, monkeypatch):
     assert result['classification']['new'] == ['tests/a.py::test_x']
     assert result['filed'] == []
     assert result['plans'][0]['title'] == '[P2] Full suite: tests/a.py::test_x fails on main'
+
+
+def test_real_pytest_legacy_junit_preserves_class_and_parameter(tmp_path):
+    import os
+    import subprocess
+    import sys
+    (tmp_path / 'test_sample.py').write_text('''import pytest
+class TestBehavior:
+    @pytest.mark.parametrize('value', ['a.b'])
+    def test_value(self, value):
+        assert value == 'expected'
+''')
+    output = tmp_path / 'junit.xml'
+    done = subprocess.run([sys.executable, '-m', 'pytest', '--rootdir', str(tmp_path),
+        '-o', 'junit_family=legacy', '--junitxml', str(output), 'test_sample.py'], cwd=tmp_path,
+        env=dict(os.environ, PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'), capture_output=True, text=True, timeout=60)
+    assert done.returncode == 1, done.stdout + done.stderr
+    rows = report.parse_junit(output.read_bytes())
+    assert list(rows) == ['test_sample.py::TestBehavior::test_value[a.b]']
+    assert rows['test_sample.py::TestBehavior::test_value[a.b]']['outcome'] == 'failed'
+
+
+def test_junit_collection_error_keeps_its_file_identity():
+    rows = report.parse_junit('''<testsuite><testcase name="tests/test_import.py" classname="">
+        <error>ImportError: unavailable dependency</error></testcase></testsuite>''')
+    assert rows['tests/test_import.py']['outcome'] == 'failed'
