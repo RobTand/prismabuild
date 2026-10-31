@@ -31,5 +31,23 @@
       "reason": "The wheel RECORD names must cover every archived wheel member exactly once. This is an external package-file boundary, not a durable PB wire."
     }
   ],
-  "generator": "python3 tests/compat/support/wire_inventory.py --root CHECKOUT --out SCRATCH"
+  "generator": "python3 tests/compat/support/wire_inventory.py --root CHECKOUT --out SCRATCH",
+  "merge_review": {
+    "before_source": "69b2ab559184cd1156cdcb5ab5d85f7c33085454",
+    "before_count": 594,
+    "after_count": 595,
+    "changes": [
+      {
+        "change": "added",
+        "row": {
+          "path": "tools/ci/release_dry_run.py",
+          "owner": "validate_wheel",
+          "unresolved": "{row[0] for row in rows}"
+        },
+        "count": 1,
+        "reason": "The wheel RECORD member boundary belongs to this release validator. Main already includes its own regenerated inventory; preserve all main policies and add the exact wheel-member boundary."
+      }
+    ],
+    "generator": "tools/maintenance/refresh_compat_field_sets.py"
+  }
 }

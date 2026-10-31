@@ -27,13 +27,15 @@ def test_agents_route_their_tests_through_prismabuild(path: Path):
 
 
 @pytest.mark.parametrize("path", POLICIES, ids=["agents", "execution-policy"])
-def test_ci_runs_on_circleci_in_the_mergify_queue(path: Path):
+def test_ci_runs_on_github_hosted_runners_in_the_mergify_queue(path: Path):
+    # Rob, 2026-10-31: CircleCI is out; CI is GitHub Actions on GitHub-hosted
+    # runners, free for this public repository, and off the fleet.
     text = policy_text(path)
     assert "prismabuild is not the ci system" in text
-    assert "ci runs on circleci" in text
-    assert "mergify queue, which gates on circleci's checks of the integrated sha" in text
+    assert "ci runs as github actions checks on github-hosted runners" in text
+    assert "mergify queue, which gates on those checks of the integrated sha" in text
     assert "do not route ci through prismabuild" in text
-    assert "ci and integration tests run as github checks" not in text
+    assert "circleci" not in text
     assert "never bypass required checks, reviews or branch protections" in text
 
 

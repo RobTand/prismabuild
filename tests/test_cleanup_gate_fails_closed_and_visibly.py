@@ -60,6 +60,14 @@ import pbstatus  # noqa: E402
 from test_pool_resource_scope import _process, scoped  # noqa: E402,F401
 
 
+@pytest.fixture(autouse=True)
+def _isolated_host_telemetry(monkeypatch):
+    monkeypatch.setattr(pool.PoolQueue, "_box_window", lambda *args: {
+        "schema": pool.box_window.BOX_WINDOW_SCHEMA_V1,
+        "source": "unavailable", "reason": "cleanup tests use a fake process",
+    })
+
+
 #: The two classes the old tuple did not name, for opposite reasons.  A bare
 #: ``RuntimeError`` is how this subsystem states an honest refusal -- both
 #: ``box_state`` on a directory this uid does not own and ``Controller.locked``
