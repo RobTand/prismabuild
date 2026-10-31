@@ -73,10 +73,16 @@ def literal_path(node: ast.AST) -> str | None:
             parts = [literal_path(arg) for arg in node.args]
             if all(part is not None for part in parts):
                 return '/'.join(parts)
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and
+        node.func.attr == 'joinpath'):
+        base = literal_path(node.func.value)
+        parts = [literal_path(arg) for arg in node.args]
+        if all(part is not None for part in parts):
+            return '/'.join(([base] if base else []) + parts)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         left, right = literal_path(node.left), literal_path(node.right)
-        if left is not None and right is not None:
-            return left.rstrip('/') + '/' + right.lstrip('/')
+        if right is not None:
+            return left.rstrip('/') + '/' + right.lstrip('/') if left else right
     return None
 
 
@@ -101,7 +107,7 @@ def dependencies(source: str) -> tuple[set[str], set[str]]:
             value = literal_path(node)
             if value is not None:
                 paths.add(value.removeprefix('./'))
-                if re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*', value):
+                if not value.endswith('.py') and re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*', value):
                     modules.add(value)
     return modules, paths
 
@@ -190,7 +196,7 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
     selected = [{'path': name, 'reasons': reasons[name],
                  'estimated_seconds': durations['files'].get(name)}
                 for name in sorted(population & reasons.keys())]
-    deferred = [{'path': name, 'reason': reason, 'issue': OWNER, 'lane': True}
+    deferred = [{'path': name, 'reason': reason, 'issue': 1831 if reason.startswith('root') else OWNER, 'lane': True}
                 for name, reason in sorted(other_lanes.items()) if name in all_tests]
     deferred += [{'path': row['target'], 'reason': row['reason'], 'issue': row['issue'],
                   'kind': row['kind'], 'selected_by': reasons.get(row['target'].split('::')[0], [])}
