@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import threading
 
 import pytest
 
@@ -401,13 +402,65 @@ def test_interruptions_leave_resolvable_prefix_and_retry_adopts_publications(fle
     assert fleet.queue.attempt_outcomes(record)[0]["stdout"] == "stdout evidence\n"
 
 
-def test_concurrent_collectors_preserve_exact_archive(fleet, zstd_required):
-    record = fleet.finish()
+@pytest.mark.parametrize("damage", [None, "missing_index", "missing_manifest", "missing_chunk",
+                                    "corrupt_chunk", "wrong_descriptor"])
+def test_concurrent_collectors_preserve_exact_archive(fleet, zstd_required, monkeypatch, damage):
+    record = fleet.finish("d" * 64)
+    later = fleet.finish("e" * 64)
+    logs = [fact for row in (record, later) for fact in fleet.descriptors(row).values()]
+    expected = {fact["path"]: (fleet.queue.root / fact["path"]).read_bytes() for fact in logs}
     plan = fleet.plan()
-    with ThreadPoolExecutor(max_workers=2) as workers:
-        results = list(workers.map(lambda _: retention.apply_attempt_log_retention(fleet.queue, plan), range(2)))
-    assert sum(len(result["removed"]) for result in results) == 2
-    assert fleet.queue.attempt_outcomes(record)[0]["stdout"] == "stdout evidence\n"
+    first = fleet.descriptors(record)["stdout"]
+    paused, release = threading.Event(), threading.Event()
+    original = archive._stream_live_attempt_log
+    def pause_first(path, fact, consume):
+        if threading.current_thread().name.startswith("paused-collector") and fact == first:
+            paused.set()
+            assert release.wait(60)
+        return original(path, fact, consume)
+    monkeypatch.setattr(archive, "_stream_live_attempt_log", pause_first)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="paused-collector") as workers:
+        earlier = workers.submit(retention.apply_attempt_log_retention, fleet.queue, plan)
+        try:
+            assert paused.wait(60)  # A observed no archive and has not opened the source.
+            completed = retention.apply_attempt_log_retention(
+                fleet.queue, {**plan, "candidates": plan["candidates"][:1]})
+            assert len(completed["removed"]) == 2
+            assert not (fleet.queue.root / first["path"]).exists()
+            index_path = archive._attempt_archive_index_path(fleet.config, first)
+            entry = json.loads(index_path.read_bytes())
+            manifest = archive._read_attempt_archive_manifest(fleet.config, first)
+            if damage == "missing_index":
+                index_path.unlink()
+            elif damage == "missing_manifest":
+                sha = entry["manifest_sha256"]
+                (fleet.root / "manifests" / sha[:2] / f"{sha}.json").unlink()
+            elif damage in ("missing_chunk", "corrupt_chunk"):
+                sha = manifest["chunks"][0]["compressed_sha256"]
+                chunk = fleet.root / "chunks" / sha[:2] / f"{sha}.zst"
+                chunk.unlink()
+                if damage == "corrupt_chunk":
+                    native.publish_immutable(chunk, b"corrupt")
+            elif damage == "wrong_descriptor":
+                entry["descriptor"] = fleet.descriptors(record)["stderr"]
+                index_path.unlink()
+                native.publish_immutable(index_path, digests._canonical_bytes(entry))
+        finally:
+            release.set()
+        if damage is not None:
+            with pytest.raises(retention.AttemptRetentionRefused, match="retirement stopped"):
+                earlier.result(timeout=60)
+        else:
+            result = earlier.result(timeout=60)
+            assert result["aborted"] is None and len(result["removed"]) == 2
+            assert len(result["skipped"]) == 2
+    if damage is not None:
+        assert all((fleet.queue.root / fact["path"]).exists()
+                   for fact in fleet.descriptors(later).values())
+    else:
+        assert all(not (fleet.queue.root / fact["path"]).exists() for fact in logs)
+        for fact in logs:
+            assert archive.resolve_attempt_log(fleet.queue.root, fact) == expected[fact["path"]]
 
 
 def test_logs_only_cli_does_not_remove_legacy_metadata(fleet, zstd_required, monkeypatch):
