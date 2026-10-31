@@ -6991,6 +6991,65 @@ an atomic global scheduling order. An incompatible host, an undersized host,
 or a stale offer does not strand host-specific or wide work. Local ordered
 allocation remains effective after the deferral expires.
 
+### Claim refusal reports (#1947)
+
+`PoolQueue.claim_or_observe` and `serve_or_observe_once` return a
+`claim_wait.ClaimObservation`: the existing claim or execution value plus an
+immutable `ClaimWait`. Both methods use one observation adapter around the
+authoritative legacy methods. Existing `claim` and `serve_once` callers retain
+their return values and wait defaults. This source contract does not activate
+subscriptions or change drain maturity, placement, reservation, or cleanup.
+
+The report captures queue, control, and host-ledger interests before any hold,
+empty scan, or admission-lock refusal. Candidate reports add action,
+peer, resource, capability, tier, group, residency, receipt, progress, and
+ownership inputs. Action IDs retain the row's `action_key`, `published_unix`,
+and `attempts`. A `*` ID declares an interest in the entire source family,
+including absent members; concrete observations also name peer hosts, tiers,
+groups, and capabilities. These IDs describe wake interests, never eligibility.
+Absent, unknown, and unreadable evidence remain distinct input states.
+
+The collector is local to one execution context and queue instance. It adds
+no source reads and persists no verdict in READY records. `Coverage` describes
+the report's dependency audit, not deployed bell or watch coverage. Unknown
+refusal variants emit a diagnostic, mark coverage incomplete, and request
+recovery within five seconds. Source-level refusal and adaptive-decision
+audits reject new unmapped literals; finite dynamic reason domains have their
+own audit. A caller must still establish transport coverage before event waiting.
+
+Deadlines come from policy owners and record timestamps. The collector maps
+wall time to monotonic time once per observation. It never reconstructs starts
+from rounded `yielding_s` or `wait_remaining_s` diagnostics.
+
+| Deadline | Source and bound | Reevaluation or cancellation |
+|---|---|---|
+| Preferred CPU, cross-resource, idle GPU and CPU-load preference | Existing `PlacementHistory` monotonic start plus 20 s | Original start survives hints and pass handoff; existing generation retirement clears it |
+| Resident copy | Row publication time plus 30 s | Copy, fit, election, or publication changes; never restarted by a hint |
+| CPU baseline | Counter writer or cached baseline stamp plus `MIN_INTERVAL_S`, currently 1 s | Next usable counter delta or the claim interest ends |
+| CPU and GPU observation | Next numeric sample within 1 s; consulted sample stamp plus 5 s freshness | New sample or the claim interest ends; counters lack complete callbacks |
+| Peer offer | Consulted announcement plus `OFFER_TIMEOUT_S`, currently 120 s | Replacement, retirement, or placement reevaluation |
+| Tier reader plan | Original tier announcement plus 120 s, at the first representable instant after the strict boundary, including cached records | Plan replacement, expiry, or claim cancellation |
+| Peer placement observations and scratch pass-on | Consulted host, GPU, power, denial, and sample stamps plus 5 s | New peer evidence, expiry, or claim cancellation |
+| Scratch service profile | Original measured time plus its declared maximum age; replacement offers retain their own 120 s expiry | Profile, device, root, offer, or generation changes |
+| Image class inventory | Consulted inventory stamp plus 5 s | Docker inventory or class policy changes |
+| Carried withhold | Original epoch plus 900 s, or exact `drain_until_unix`; unmeasured protection also retains its 180 s cutoff | Episode, reservation, holder, or publication changes; carried CPU proof retains original sample plus 5 s |
+| Other evaluated drain bounds | First denial or foreign stamp plus 900 s; holder-tail stamp plus the 60 s delta window and 5 s freshness | Fresh policy evidence or the existing bound expires; no synthetic refusal passes |
+| Gang readiness and terminal confirmation | Consulted readiness plus 30 s; first identical terminal observation plus 120 s | Member, readiness, or terminal signature changes |
+| Existing gang reservation horizon | First gang publication plus 600 s, at the first representable instant after the strict boundary | Gang or protected-copy authority changes; distinct from drain maturity |
+| Operator hold | Recorded hold expiry | Operator replacement, release, or expiry |
+| Claim lock contention | Cancellable retry within 1 s | Owner completion or claim cancellation; an unlock has no inotify event |
+| Unknown or unreadable source | Diagnosed recovery within 5 s | Source recovery, a fresh observation, or claim cancellation |
+
+`deferred_for_cpu_only_host` retains #1262's untimed policy. Peer offer and
+sample expiry can require reevaluation, but there is no CPU-host-yield timeout.
+No reporting deadline increments pass counts or authorizes admission.
+
+Sealed-request and current READY reads during scratch-intent qualification
+capture their named source before the legacy refusal handler consumes a read
+error. Unreadable or unknown evidence makes coverage incomplete and requests
+recovery within five seconds, even when the refusal uses the mixed
+`local_scratch_io_intent_invalid` reason.
+
 ### Cross-resource placement preference
 
 A box that is already working one resource prefers not to take work for the
