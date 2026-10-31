@@ -11,12 +11,12 @@ import os
 from pathlib import Path
 
 
-def population_pytest_configure(config):
+def pytest_tia_population_configure(config):
     name = config.pluginmanager.get_name(sys.modules[__name__])
     config.invocation_params = replace(config.invocation_params, args=('-p', name, *config.invocation_params.args))
 
 
-def population_pytest_collection_modifyitems(config, items):
+def pytest_tia_population_collection_modifyitems(config, items):
     root = Path.cwd()
     path = root / os.environ.get('PB_TIA_GATE_DIR', 'tools/ci') / 'gate_select.py'
     spec = importlib.util.spec_from_file_location('tia_population_gate', path)
@@ -31,6 +31,6 @@ def population_pytest_collection_modifyitems(config, items):
     if removed:
         config.hook.pytest_deselected(items=removed)
 
-population_pytest_configure.pytest_impl = {'specname': 'pytest_configure'}
+pytest_tia_population_configure.pytest_impl = {'specname': 'pytest_configure'}
 
-population_pytest_collection_modifyitems.pytest_impl = {'specname': 'pytest_collection_modifyitems'}
+pytest_tia_population_collection_modifyitems.pytest_impl = {'specname': 'pytest_collection_modifyitems'}

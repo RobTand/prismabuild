@@ -141,7 +141,7 @@ def bootstrap():
     return _STATE
 
 
-def record_pytest_configure(config):
+def pytest_tia_record_configure(config):
     # Workers need an explicit plugin argument; unrelated child pytest invocations do not.
     name = config.pluginmanager.get_name(sys.modules[__name__])
     config.invocation_params = replace(config.invocation_params, args=('-p', name, *config.invocation_params.args))
@@ -173,18 +173,18 @@ def record_pytest_configure(config):
     os.environ['PYTHONPATH'] = os.pathsep.join(entries)
 
 
-def record_pytest_runtest_setup(item):
+def pytest_tia_record_runtest_setup(item):
     _STATE.boundary(item.nodeid)
 
 
-def record_pytest_runtest_call(item):
+def pytest_tia_record_runtest_call(item):
     # Cached fixtures execute once but can affect every consumer. Preserve their dependencies.
     for fixture in item._request._fixture_defs.values():
         _STATE.tests[item.nodeid].update(getattr(fixture, '_pb_tia_calls', set()))
     sys.monitoring.restart_events()
 
 
-def record_pytest_fixture_setup(fixturedef, request):
+def pytest_tia_record_fixture_setup(fixturedef, request):
     calls: set[str] = set()
     _STATE.fixture_calls.append(calls)
     sys.monitoring.restart_events()
@@ -195,20 +195,20 @@ def record_pytest_fixture_setup(fixturedef, request):
         fixturedef._pb_tia_calls = calls
 
 
-record_pytest_fixture_setup.pytest_impl = {'specname': 'pytest_fixture_setup', 'wrapper': True}
+pytest_tia_record_fixture_setup.pytest_impl = {'specname': 'pytest_fixture_setup', 'wrapper': True}
 
 
-def record_pytest_runtest_teardown(item, nextitem):
+def pytest_tia_record_runtest_teardown(item, nextitem):
     try:
         return (yield)
     finally:
         _STATE.boundary('')
 
 
-record_pytest_runtest_teardown.pytest_impl = {'specname': 'pytest_runtest_teardown', 'wrapper': True}
+pytest_tia_record_runtest_teardown.pytest_impl = {'specname': 'pytest_runtest_teardown', 'wrapper': True}
 
 
-def record_pytest_sessionfinish(session, exitstatus):
+def pytest_tia_record_sessionfinish(session, exitstatus):
     _STATE.flush()
     if os.environ.get('PB_TIA_EMIT') == '1':
         # PB's CAS-captured stdout retains the data without a shared output directory.
@@ -216,10 +216,10 @@ def record_pytest_sessionfinish(session, exitstatus):
         encoded = gzip.compress(sorted_json(records).encode(), mtime=0)
         print('tia-record: ' + base64.b64encode(encoded).decode(), flush=True)
 
-record_pytest_runtest_setup.pytest_impl = {'specname': 'pytest_runtest_setup', 'tryfirst': True}
+pytest_tia_record_runtest_setup.pytest_impl = {'specname': 'pytest_runtest_setup', 'tryfirst': True}
 
-record_pytest_configure.pytest_impl = {'specname': 'pytest_configure'}
+pytest_tia_record_configure.pytest_impl = {'specname': 'pytest_configure'}
 
-record_pytest_runtest_call.pytest_impl = {'specname': 'pytest_runtest_call'}
+pytest_tia_record_runtest_call.pytest_impl = {'specname': 'pytest_runtest_call'}
 
-record_pytest_sessionfinish.pytest_impl = {'specname': 'pytest_sessionfinish'}
+pytest_tia_record_sessionfinish.pytest_impl = {'specname': 'pytest_sessionfinish'}
