@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -234,6 +235,8 @@ def test_the_census_guard_is_the_same_tmpfs_directory(
                     0o600, dir_fd=directory)
     try:
         fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        monkeypatch.setattr(reservation.reader, "Deadline",
+                            lambda _seconds: SimpleNamespace(remaining=lambda: 0.0))
         with pytest.raises(reservation.CensusUnavailable, match="busy"):
             reservation.CensusReader(queue, queue.ledger()).capture()
     finally:

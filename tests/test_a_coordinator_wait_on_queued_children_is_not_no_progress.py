@@ -36,6 +36,15 @@ from test_progress_keeps_a_working_action_alive import _policy  # noqa: E402
 
 EVIDENCE = "cas:sha256:" + "0" * 64
 
+
+@pytest.fixture(autouse=True)
+def _isolated_host_telemetry(monkeypatch):
+    monkeypatch.setattr(pool.PoolQueue, "_box_window", lambda *args: {
+        "schema": pool.box_window.BOX_WINDOW_SCHEMA_V1,
+        "source": "unavailable", "reason": "child-wait tests isolate host telemetry",
+    })
+
+
 #: A producer that reads its batch envelope and writes its result manifest.
 PRODUCER = """
 import hashlib, json, sys

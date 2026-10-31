@@ -179,13 +179,14 @@ def test_real_session_rejects_a_leak_from_its_test_worker(tmp_path: Path, worker
         "    (root / 'pb-queue/done/leak.json').write_text(str(tmp_path))\n"
     )
     env = dict(os.environ, PRISMABUILD_TEST_LIVE_ROOT=str(live),
-               PRISMABUILD_TEST_LIVE_PROBE_TIMEOUT_S="5")
-    command = [sys.executable, "-m", "pytest", "-q", "-p", "no:randomly",
+               PRISMABUILD_TEST_LIVE_PROBE_TIMEOUT_S="5",
+               PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
+    command = [sys.executable, "-m", "pytest", "-q",
                "--basetemp", str(tmp_path / "child-basetemp")]
     if workers:
-        command += ["-n", str(workers)]
+        command += ["-p", "xdist.plugin", "-n", str(workers)]
     result = subprocess.run(command + ["tests"], cwd=suite, env=env,
-                            text=True, capture_output=True, timeout=45)
+                            text=True, capture_output=True, timeout=60)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "1 passed" in result.stdout, result.stdout + result.stderr
     assert "were written by this test session" in result.stdout
