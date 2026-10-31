@@ -144,3 +144,30 @@ def test_two(shared):
     assert tests['tests/test_example.py::test_one'] >= {'src/example.py::fixture_work', 'src/example.py::direct', 'src/example.py::child'}
     assert tests['tests/test_example.py::test_two'] >= {'src/example.py::fixture_work', 'src/example.py::direct'}
     assert not any('<module>' in function for values in tests.values() for function in values)
+
+
+def test_non_python_uses_static_rule(tmp_path):
+    mod = load('tia_select')
+    seen = []
+    def static(paths):
+        seen.extend(paths)
+        return {'selected': [{'path': 'tests/test_data.py', 'reasons': ['literal path reference']}]}
+    result = mod.select({'functions': [], 'tests': {}, 'files': {}, 'source_commit': 'a' * 40},
+                        {'python': {}, 'non_python': ['data/schema.json']}, file_hashes={},
+                        fast=[], changed_tests=[], population=['tests/test_data.py'], static=static)
+    assert seen == ['data/schema.json']
+    assert result['targets'] == ['tests/test_data.py']
+    assert 'non-Python path rule' in result['selected'][0]['reasons'][0]
+
+
+def test_stale_source_keeps_dynamic_import_consumers(tmp_path):
+    result, _ = selection(tmp_path, hashes={'src/a.py': 'new'})
+    assert result['targets'] == ['tests/test_a.py', 'tests/test_fast.py', 'tests/test_new.py', 'tests/test_static.py']
+
+
+def test_record_schema_rejects_out_of_range_function_indices(tmp_path):
+    path = tmp_path / 'bad.gz'
+    path.write_bytes(gzip.compress(json.dumps({'schema': 'prismabuild.tia_map.v1',
+                     'functions': ['src/a.py::f'], 'tests': {'tests/test_a.py::test_a': [1]}}).encode()))
+    with pytest.raises(ValueError, match='indices'):
+        load('tia_map').read_map(path)

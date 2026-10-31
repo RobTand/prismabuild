@@ -241,9 +241,41 @@ def run_mutation(root: Path, gate_dir: Path, mutation: dict) -> dict:
             'tia_plan': selected}
 
 
+def overhead(root: Path, gate_dir: Path) -> dict:
+    gate = load(gate_dir / 'gate_select.py', 'tia_overhead_gate')
+    fast, _ = gate.tier_declarations(root)
+    arms = []
+    with tempfile.TemporaryDirectory() as temporary:
+        for repeat in range(5):
+            for recorded in (False, True):
+                output = Path(temporary) / f'{repeat}-{int(recorded)}'
+                env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(root / 'tools/ci'), str(root / 'src'), str(root)]),
+                           PYTEST_ADDOPTS='', PYTEST_PLUGINS='')
+                for key in list(env):
+                    if key.startswith('PB_TIA_'):
+                        env.pop(key)
+                command = [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', *sorted(fast)]
+                if recorded:
+                    env.update(PB_TIA_ROOT=str(root), PB_TIA_OUTPUT=str(output),
+                               PB_TIA_COMMIT=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip())
+                    command[3:3] = ['-p', 'tia_record']
+                load_before = os.getloadavg()
+                start = time.monotonic()
+                run = subprocess.run(command, env=env, cwd=root, capture_output=True, text=True, timeout=300)
+                elapsed = time.monotonic() - start
+                arms.append({'repeat': repeat, 'recorded': recorded, 'elapsed_s': elapsed,
+                             'returncode': run.returncode, 'load_before': load_before, 'load_after': os.getloadavg(),
+                             'summary': run.stdout.splitlines()[-1:]})
+                if run.returncode:
+                    raise RuntimeError(run.stdout + run.stderr)
+    return {'schema': 'prismabuild.tia_overhead.v1', 'python': sys.version,
+            'files': sorted(fast), 'arms': arms,
+            'method': 'five interleaved plain/recorded pairs in one PB measurement action; includes pytest startup'}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['extract', 'replay', 'campaign', 'mutation'])
+    parser.add_argument('mode', choices=['extract', 'replay', 'campaign', 'mutation', 'overhead'])
     parser.add_argument('--root', type=Path, default=Path.cwd())
     parser.add_argument('--gate-dir', type=Path, default=Path('tools/ci'))
     parser.add_argument('--map', type=Path)
@@ -260,7 +292,8 @@ def main():
     elif args.mode == 'campaign':
         campaign(root, gate_dir, read_map(args.map), args.map, args.output, args.count)
     else:
-        result = (run_mutation(root, gate_dir, json.loads(args.mutation)) if args.mode == 'mutation'
+        result = (overhead(root, gate_dir) if args.mode == 'overhead' else
+                  run_mutation(root, gate_dir, json.loads(args.mutation)) if args.mode == 'mutation'
                   else replay(root, gate_dir, read_map(args.map), json.loads(args.history.read_text())))
         rendered = json.dumps(result, sort_keys=True)
         if args.output:
