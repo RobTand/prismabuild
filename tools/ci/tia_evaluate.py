@@ -221,7 +221,7 @@ def campaign(root: Path, gate_dir: Path, mapping: dict, map_path: Path, output: 
         rows.append({'cwd': str(root), 'argv': ['/home/rob/venvs/pb-cpu/bin/python',
                      Path(__file__).resolve().relative_to(root).as_posix(), 'mutation', '--mutation', json.dumps(mutation),
                      '--gate-dir', str(gate_dir.relative_to(root))],
-                     'demand': {'cpu': 1, 'mem_gb': 4}, 'priority': -10, 'anywhere': True, 'timeout_s': 3600,
+                     'demand': {'cpu': 1, 'mem_gb': 4}, 'priority': -10, 'anywhere': True, 'timeout_s': 6000,
                      'env': {'OMP_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1',
                              'PB_TIA_MAP': packed_map, 'PB_TIA_MUTATION': str(number)}})
     output.write_text(sorted_json(rows) + '\n')
@@ -238,31 +238,26 @@ def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Pat
         if key.startswith('PB_TIA_') or key == 'PYTEST_PLUGINS':
             env.pop(key, None)
     command = [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider',
-               '--basetemp=.pytest-basetemp', '--junitxml=' + str(xml),
+               '--junitxml=' + str(xml),
                *['--deselect=' + node for node in deselect], *files]
     start = time.monotonic()
     complete = True
-    scratch_root = os.environ.get('PB_TIA_SCRATCH_ROOT')
-    if scratch_root is not None and not Path(scratch_root).is_absolute():
+    scratch_root = os.environ.get('PB_TIA_SCRATCH_ROOT', '/tmp')
+    if not Path(scratch_root).is_absolute():
         raise ValueError('PB_TIA_SCRATCH_ROOT must be absolute')
-    with tempfile.TemporaryDirectory(prefix='tia-', dir=scratch_root or directory) as scratch:
+    with tempfile.TemporaryDirectory(prefix='pbm.', dir=scratch_root) as scratch:
         temporary = Path(scratch) / 'tmp'
         temporary.mkdir()
         env['TMPDIR'] = str(temporary)
-        if scratch_root is not None:
-            command[command.index('--basetemp=.pytest-basetemp')] = '--basetemp=' + str(Path(scratch) / 'pytest')
+        command.insert(7, '--basetemp=' + str(Path(scratch) / 't'))
         try:
-            try:
-                run = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=1000)
-                code, output = run.returncode, run.stdout + run.stderr
-            except subprocess.TimeoutExpired as error:
-                code, complete = 124, False
-                output = ''.join(value.decode(errors='replace') if isinstance(value, bytes) else value
-                                 for value in (error.stdout, error.stderr) if value)
-            (directory / (label + '.log')).write_text(output)
-        finally:
-            # This path belongs to this action's materialized checkout, never a shared temp root.
-            shutil.rmtree(root / '.pytest-basetemp', ignore_errors=True)
+            run = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=1800)
+            code, output = run.returncode, run.stdout + run.stderr
+        except subprocess.TimeoutExpired as error:
+            code, complete = 124, False
+            output = ''.join(value.decode(errors='replace') if isinstance(value, bytes) else value
+                             for value in (error.stdout, error.stderr) if value)
+        (directory / (label + '.log')).write_text(output)
     failures, errors, tests, skips = [], [], 0, 0
     if xml.exists():
         for case in ET.parse(xml).iter('testcase'):
@@ -273,6 +268,8 @@ def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Pat
             if case.find('error') is not None:
                 errors.append(node)
             skips += case.find('skipped') is not None
+    if code:
+        print('tia-arm-log: ' + base64.b64encode(gzip.compress(output.encode(), mtime=0)).decode(), flush=True)
     result = {'returncode': code, 'complete': complete and code in (0, 1, 2) and xml.exists(),
               'failures': sorted(failures), 'errors': sorted(errors), 'tests': tests, 'skipped': skips,
               'files': len({target.split('::', 1)[0] for target in files}), 'targets': len(files),
@@ -346,17 +343,18 @@ def overhead(root: Path, gate_dir: Path) -> dict:
                 for key in list(env):
                     if key.startswith('PB_TIA_'):
                         env.pop(key)
-                command = [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider',
-                           '--basetemp=.pytest-basetemp', *sorted(fast)]
+                command = [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', *sorted(fast)]
                 if recorded:
                     env.update(PB_TIA_ROOT=str(root), PB_TIA_OUTPUT=str(output),
                                PB_TIA_COMMIT=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip())
                     command[3:3] = ['-p', 'tia_record']
                 load_before = os.getloadavg()
                 start = time.monotonic()
-                run = subprocess.run(command, env=env, cwd=root, capture_output=True, text=True, timeout=1000)
+                with tempfile.TemporaryDirectory(prefix='pbo.', dir=os.environ.get('PB_TIA_SCRATCH_ROOT', '/tmp')) as scratch:
+                    env['TMPDIR'] = scratch
+                    command.insert(6, '--basetemp=' + str(Path(scratch) / 't'))
+                    run = subprocess.run(command, env=env, cwd=root, capture_output=True, text=True, timeout=1800)
                 elapsed = time.monotonic() - start
-                shutil.rmtree(root / '.pytest-basetemp', ignore_errors=True)
                 arms.append({'repeat': repeat, 'recorded': recorded, 'elapsed_s': elapsed,
                              'returncode': run.returncode, 'load_before': load_before, 'load_after': os.getloadavg(),
                              'summary': run.stdout.splitlines()[-1:]})
