@@ -159,7 +159,7 @@ def _trust(root: Path, stamps: Mapping[str, list[int] | None]) -> list[str]:
     return reasons
 
 
-def _coverage(root: Path, stamps: Mapping[str, object]) -> list[str]:
+def _publication_index_coverage(root: Path, stamps: Mapping[str, object]) -> list[str]:
     reasons = _trust(root, stamps)
     try:
         coverage = read_bounded_document(_root(root) / "coverage.json",
@@ -197,7 +197,7 @@ def publication_candidates(
     observed: dict[Path, list[int] | None] = {}
     try:
         before = _namespace_stamps(root)
-        reasons.extend(_coverage(root, before))
+        reasons.extend(_publication_index_coverage(root, before))
         if facets:
             field = next(field for field in FACETS if field in facets)
             buckets = iter((index / "facets" / field / _hash(facets[field]),))
