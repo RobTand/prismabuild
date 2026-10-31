@@ -316,7 +316,7 @@ def test_evaluation_arm_scratch_is_local_and_removed(tmp_path, monkeypatch, conf
         base.mkdir()
         (base / 'retained-fixture').write_text('fixture bytes')
         return subprocess.CompletedProcess(command, 0, 'one passed', '')
-    monkeypatch.setattr(mod.subprocess, 'run', fake_pytest)
+    monkeypatch.setattr(mod, 'run_tia_pytest_process', fake_pytest)
     result = mod.pytest_run(checkout, ['tests/test_example.py'], [], output, 'baseline')
     command, env = observed[0]
     scratch = Path(env['TMPDIR'])
@@ -340,7 +340,7 @@ def test_evaluation_timeout_preserves_partial_output(tmp_path, monkeypatch):
     mod = load_tia_module('tia_evaluate')
     def timeout(command, **options):
         raise subprocess.TimeoutExpired(command, 1000, output=b'partial pytest output', stderr=b'partial stderr')
-    monkeypatch.setattr(mod.subprocess, 'run', timeout)
+    monkeypatch.setattr(mod, 'run_tia_pytest_process', timeout)
     result = mod.pytest_run(tmp_path, ['tests/test_example.py'], [], tmp_path, 'baseline')
     assert result['complete'] is False
     assert result['returncode'] == 124
@@ -385,6 +385,7 @@ def test_evaluation_timeout_reaps_descendants_before_scratch_cleanup(tmp_path, m
         returncode = -9
         args = ['pytest']
         def __init__(self, command, **options):
+            model['group'] = self.pid if options.get('start_new_session') else 500
             scratch.append(Path(options['env']['TMPDIR']))
             (scratch[-1] / 'child-output').write_text('retained until the child exits')
         def __enter__(self):
@@ -406,7 +407,7 @@ def test_evaluation_timeout_reaps_descendants_before_scratch_cleanup(tmp_path, m
         def poll(self):
             return self.returncode
     def kill_group(group, signum):
-        if group != Process.pid or signum != signal.SIGKILL:
+        if group != model['group'] or signum != signal.SIGKILL:
             raise AssertionError('the owned process group was not terminated')
         model['descendant_alive'] = False
     monkeypatch.setattr(mod.subprocess, 'Popen', Process)

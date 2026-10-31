@@ -13,7 +13,7 @@ import copy
 import gzip
 import json
 import os
-import shutil
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -230,6 +230,22 @@ def campaign(root: Path, gate_dir: Path, mapping: dict, map_path: Path, output: 
                       'fleet': sum(m['path'].startswith('tools/') for m in chosen)}))
 
 
+def run_tia_pytest_process(command, *, cwd, env, timeout):
+    """Reap the launched process group before its private scratch is removed."""
+    with subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True, start_new_session=True) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = process.communicate()
+            raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from error
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
 def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Path, label: str) -> dict:
     xml = directory / (label + '.xml')
     env = dict(os.environ, PYTHONPATH=str(root / 'src') + os.pathsep + str(root),
@@ -251,7 +267,7 @@ def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Pat
         env['TMPDIR'] = str(temporary)
         command.insert(7, '--basetemp=' + str(Path(scratch) / 't'))
         try:
-            run = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=1800)
+            run = run_tia_pytest_process(command, cwd=root, env=env, timeout=1800)
             code, output = run.returncode, run.stdout + run.stderr
         except subprocess.TimeoutExpired as error:
             code, complete = 124, False
@@ -353,7 +369,7 @@ def overhead(root: Path, gate_dir: Path) -> dict:
                 with tempfile.TemporaryDirectory(prefix='pbo.', dir=os.environ.get('PB_TIA_SCRATCH_ROOT', '/tmp')) as scratch:
                     env['TMPDIR'] = scratch
                     command.insert(6, '--basetemp=' + str(Path(scratch) / 't'))
-                    run = subprocess.run(command, env=env, cwd=root, capture_output=True, text=True, timeout=1800)
+                    run = run_tia_pytest_process(command, env=env, cwd=root, timeout=1800)
                 elapsed = time.monotonic() - start
                 arms.append({'repeat': repeat, 'recorded': recorded, 'elapsed_s': elapsed,
                              'returncode': run.returncode, 'load_before': load_before, 'load_after': os.getloadavg(),
