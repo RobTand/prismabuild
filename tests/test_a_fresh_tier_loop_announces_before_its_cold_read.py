@@ -29,10 +29,11 @@ their real reader threads and delays.
 
 The consumer is R12 on the whole stage, waiting on its advance leg
 (``chain-032``), as in ``test_a_wait_on_a_deferred_leg_counts_while_the_tier
-_loop_lives``.  It polls PQ's ``landing_verdict`` (restated in
+_loop_lives``.  The parallel cases poll PQ's ``landing_verdict`` (restated in
 ``test_a_leg_past_the_horizon_is_waited_for_not_clocked``) and PB's
 ``PoolQueue._tier_loop_alive`` on its own thread while the fresh loop runs
-its first cycle.
+its first cycle. The serial logical-clock case polls synchronously between
+clock advances.
 
 Every fixture is a temp queue and a temp stage root; nothing touches a real
 ``/stage``, ``/ram`` or the live queue.
@@ -195,11 +196,14 @@ def _replaced_loop(tmp_path: Path):
     return queue, stage, capacity, consumer
 
 
-def _first_cycle(queue, stage, capacity, consumer: _Consumer
-                 ) -> dict[str, object]:
+def _first_cycle(queue, stage, capacity, consumer: _Consumer, *,
+                 background_consumer: bool = True) -> dict[str, object]:
     """The fresh loop's start and first cycle, with the consumer polling."""
 
-    consumer.start()
+    if background_consumer:
+        consumer.start()
+    else:
+        consumer.poll()
     started = time.monotonic()
     try:
         receipts, liveness = _fresh_loop(queue)
@@ -209,8 +213,9 @@ def _first_cycle(queue, stage, capacity, consumer: _Consumer
                             TIER: _tier_record(stage, gib=capacity)},
                         liveness=liveness)
     finally:
-        consumer.halt.set()
-        consumer.join(30.0)
+        if background_consumer:
+            consumer.halt.set()
+            consumer.join(30.0)
     consumer.poll()
     assert consumer.error is None, repr(consumer.error)
     return {"wall_s": round(time.monotonic() - started, 3),
@@ -272,7 +277,8 @@ def test_adoption_alone_keeps_the_consumer_waiting_through_a_serial_read(
     slow = _Slow(monkeypatch, delay=finish_read)
     _file_cold_receipts(queue)
 
-    line = _first_cycle(queue, stage, capacity, consumer)
+    line = _first_cycle(queue, stage, capacity, consumer,
+                        background_consumer=False)
 
     assert slow.reads == COLD_RECEIPTS, slow.reads
     assert float(line["receipts_s"] or 0.0) > BOUND_S, line
