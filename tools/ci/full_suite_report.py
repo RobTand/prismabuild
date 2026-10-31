@@ -29,7 +29,7 @@ def marker(node: str) -> str:
     return '<!-- full-suite: ' + html.escape(node).replace('@', '&#64;') + ' -->'
 
 
-def classify(now: dict, before: dict, quarantine: set[str]) -> dict[str, list[str]]:
+def classify_failures(now: dict, before: dict, quarantine: set[str]) -> dict[str, list[str]]:
     groups = {'new': [], 'known': [], 'recovered': [], 'quarantined': []}
     for node, row in sorted(now.items()):
         old = before.get(node, {}).get('outcome')
@@ -54,7 +54,7 @@ def owners(issues: list[dict]) -> dict[str, int]:
 
 def issue_plan(now: dict, before: dict, quarantine: set[str], owned: dict[str, int],
                previous_sha: str, sha: str, prs: list[dict], run_url: str) -> list[dict]:
-    groups = classify(now, before, quarantine)
+    groups = classify_failures(now, before, quarantine)
     plans = []
     new = groups['new']
     pr_text = '\n'.join(f"- #{pr['number']}: {safe_text(pr['title'])}" for pr in prs) or '- None found.'
@@ -287,7 +287,7 @@ def build_report(now: dict, previous: dict, quarantine: set[str], issues: list[d
     tests = {node: dict(row, last_pass_sha=(sha if row['outcome'] == 'passed'
                          else before.get(node, {}).get('last_pass_sha')))
              for node, row in now.items()}
-    groups = classify(tests, before, quarantine) if complete else {
+    groups = classify_failures(tests, before, quarantine) if complete else {
         'new': [], 'known': [], 'recovered': [], 'quarantined': []}
     plans = issue_plan(tests, before, quarantine, owners(issues),
                        previous.get('sha') or 'no previous baseline', sha, prs, run_url) if complete else []
@@ -319,7 +319,7 @@ def main(argv=None) -> int:
             parser.error('--repository is required for filing')
         api = GitHub.from_environment(args.repository)
         issues = api.pages('issues?state=open&labels=full-suite')
-        if not args.merged_prs and classify(tests, previous.get('tests', {}),
+        if not args.merged_prs and classify_failures(tests, previous.get('tests', {}),
                                            quarantine_entries(args.quarantine))['new']:
             prs = merged_prs(api, previous.get('sha'), args.sha)
     result = build_report(tests, previous, quarantine_entries(args.quarantine), issues,
@@ -328,14 +328,14 @@ def main(argv=None) -> int:
     result['filed'] = apply_plan(api, result['plans']) if api else []
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # Report artifacts must not contain the publishing credential either.
-    serialized = json.dumps(result, sort_keys=True)
+    serialized = json.dumps(result)
     token = os.environ.get('GITHUB_TOKEN')
     if token:
         serialized = serialized.replace(token, '[REDACTED]')
     args.output.write_text(serialized + '\n')
     print(json.dumps({'complete': result['complete'], 'dry_run': args.dry_run,
                       'classification': {k: len(v) for k, v in result['classification'].items()},
-                      'actions': len(result['plans'])}, sort_keys=True))
+                      'actions': len(result['plans'])}))
     return 2 if args.incomplete else int(any(r['outcome'] == 'failed' for r in tests.values()))
 
 

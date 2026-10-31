@@ -34,8 +34,6 @@ def cpu_plan(root: Path, lanes: dict, sha: str, *, environment_lanes=()) -> dict
     excluded.update(row['target'] for row in deferred if '::' not in row['target'])
     files = sorted(p.relative_to(root).as_posix() for p in (root / 'tests').rglob('test_*.py')
                    if p.relative_to(root).as_posix() not in excluded)
-    if os.environ.get('FULL_SUITE_FILING_PROOF') == '1':
-        files = ['tests/test_full_suite_proof.py']
     return {'schema': 'prismabuild.gate_plan.v1', 'mode': 'full-suite',
             'base_sha': sha, 'head_sha': sha,
             'deselect': sorted(row['target'] for row in deferred if '::' in row['target']),
@@ -125,7 +123,7 @@ def write_report(directory: Path, manifest: dict, output: Path, dry_run: bool) -
     result['dry_run'] = dry_run
     result['filed'] = report.apply_plan(api, result['plans']) if complete and not dry_run else []
     result['shards'] = manifest['include']
-    serialized = json.dumps(result, sort_keys=True)
+    serialized = json.dumps(result)
     token = os.environ.get('GITHUB_TOKEN')
     if token:
         serialized = serialized.replace(token, '[REDACTED]')
@@ -134,7 +132,7 @@ def write_report(directory: Path, manifest: dict, output: Path, dry_run: bool) -
     summary = {'complete': complete, 'dry_run': dry_run,
                'classification': {key: len(nodes) for key, nodes in result['classification'].items()},
                'filed': result['filed']}
-    print(json.dumps(summary, sort_keys=True))
+    print(json.dumps(summary))
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as handle:
             handle.write('## Full suite\n\n```json\n' + json.dumps(summary, indent=2) + '\n```\n')

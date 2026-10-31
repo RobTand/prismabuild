@@ -18,7 +18,7 @@ def test_classify_new_known_recovered_and_quarantined():
               'skipped': row('failed')}
     now = {'new': row('failed'), 'known': row('failed'), 'fixed': row('passed'),
            'added': row('failed'), 'skip': row('failed'), 'skipped': row('skipped')}
-    assert report.classify(now, before, {'skip'}) == {
+    assert report.classify_failures(now, before, {'skip'}) == {
         'new': ['added', 'new'], 'known': ['known'], 'recovered': ['fixed'],
         'quarantined': ['skip']}
 
@@ -66,7 +66,7 @@ def test_issue_contains_range_prs_reproducer_and_no_mentions():
 def test_quarantine_file_and_node_markers_suppress_only_matching_tests():
     now = {'tests/a.py::test_x': row('failed'), 'tests/a.py::test_y': row('failed'),
            'tests/b.py::test_x': row('failed')}
-    assert report.classify(now, {}, {'tests/a.py'})['new'] == ['tests/b.py::test_x']
+    assert report.classify_failures(now, {}, {'tests/a.py'})['new'] == ['tests/b.py::test_x']
 
 
 
