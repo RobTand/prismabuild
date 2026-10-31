@@ -30,11 +30,15 @@ def test_invalid_candidate_is_rejected(candidate):
         release.candidate_version(candidate, {"project": {"version": "0.1.0"}})
 
 
-def wheel_fixture(tmp_path, *, version="0.1.0", corrupt=False, missing=False):
+VALID_ENTRY_POINTS = b"[console_scripts]\nprismabuild = prismabuild.core:main\n"
+
+
+def wheel_fixture(tmp_path, *, version="0.1.0", corrupt=False, missing=False,
+                  entry_points=VALID_ENTRY_POINTS):
     prefix = f"prismabuild-{version}.dist-info/"
     files = {
         prefix + "METADATA": f"Metadata-Version: 2.1\nName: prismabuild\nVersion: {version}\n".encode(),
-        prefix + "entry_points.txt": b"[console_scripts]\nprismabuild = prismabuild.core:main\n",
+        prefix + "entry_points.txt": entry_points,
         "prismabuild/__init__.py": b"",
         "prismabuild/core.py": b"def main():\n    return 0\n",
     }
@@ -99,3 +103,23 @@ def test_invalid_candidate_does_not_mutate_source_or_build(tmp_path, monkeypatch
     assert all("GITHUB_TOKEN" not in environment and "PYTHONPATH" not in environment for environment in environments)
     assert subprocess.check_output(["git", "-C", str(source), "tag"]) == b""
     assert subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"]) == b""
+
+
+@pytest.mark.parametrize("entry_points", [
+    b"[gui_scripts]\nprismabuild = prismabuild.core:main\n",
+    b"[console_scripts]\nother = prismabuild.core:main\n[other_group]\nprismabuild = prismabuild.core:main\n",
+    b"[console_scripts]\nprismabuild = prismabuild.other:main\n",
+    b"[console_scripts]\nprismabuild = prismabuild.core:main\nprismabuild = prismabuild.core:main\n",
+    b"prismabuild = prismabuild.core:main\n",
+], ids=["wrong-group", "only-in-another-group", "wrong-target", "duplicate-key", "no-group"])
+def test_cli_entry_point_must_be_the_console_script(tmp_path, entry_points):
+    # A RECORD-consistent wheel whose prismabuild line sits outside
+    # [console_scripts], or points elsewhere, installs no prismabuild command.
+    with pytest.raises(ValueError, match="entry point"):
+        release.validate_wheel(wheel_fixture(tmp_path, entry_points=entry_points), "0.1.0")
+
+
+def test_other_entry_point_groups_may_coexist(tmp_path):
+    entry_points = (b"[console_scripts]\nprismabuild=prismabuild.core:main\n"
+                    b"[gui_scripts]\nprismabuild-gui = prismabuild.core:main\n")
+    assert release.validate_wheel(wheel_fixture(tmp_path, entry_points=entry_points), "0.1.0")["wheel_files"] == 5
