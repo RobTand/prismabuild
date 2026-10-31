@@ -1,0 +1,35 @@
+{
+  "schema": "prismabuild.source_field_review.v1",
+  "before_count": 592,
+  "after_count": 595,
+  "removed": [],
+  "added": [
+    {
+      "record": {
+        "binding": "keys",
+        "owner": "batch_members",
+        "path": "tools/ci/issue_link.py",
+        "unresolved": "[i for i, line in enumerate(lines) if line.startswith('pull_requests:')]"
+      },
+      "reason": "Inherited omission from merged main, reproduced by the main control action; regenerated without editing individual inventory rows."
+    },
+    {
+      "record": {
+        "binding": "required",
+        "owner": "_eligible_gpu_classes",
+        "path": "src/prismabuild/_gpu_submission_policy.py",
+        "unresolved": "{tag for tag in tags if tag not in code_tags and (not tag.startswith('runtime-generation:'))}"
+      },
+      "reason": "Inherited omission from merged main, reproduced by the main control action; regenerated without editing individual inventory rows."
+    },
+    {
+      "record": {
+        "owner": "validate_wheel",
+        "path": "tools/ci/release_dry_run.py",
+        "unresolved": "{row[0] for row in rows}"
+      },
+      "reason": "The wheel RECORD names must cover every archived wheel member exactly once. This is an external package-file boundary, not a durable PB wire."
+    }
+  ],
+  "generator": "python3 tests/compat/support/wire_inventory.py --root CHECKOUT --out SCRATCH"
+}

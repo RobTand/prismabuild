@@ -93,7 +93,7 @@ def test_invalid_candidate_does_not_mutate_source_or_build(tmp_path, monkeypatch
     monkeypatch.setenv("PYTHONPATH", "/untrusted")
     monkeypatch.setattr(release.subprocess, "run", guarded_run)
     with pytest.raises(ValueError, match="does not match project version"):
-        release.run(source, "HEAD", "v0.2.0")
+        release.dry_run_release(source, "HEAD", "v0.2.0")
     monkeypatch.setattr(release.subprocess, "run", original)
     assert environments
     assert all("GITHUB_TOKEN" not in environment and "PYTHONPATH" not in environment for environment in environments)

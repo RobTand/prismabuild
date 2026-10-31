@@ -5,7 +5,6 @@ import argparse
 import base64
 import csv
 from email.parser import BytesParser
-import hashlib
 import io
 import json
 import os
@@ -17,6 +16,9 @@ import tarfile
 import tempfile
 import tomllib
 import zipfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from prismabuild.digest_primitives import new_sha256, raw_sha256
 
 
 def candidate_version(candidate: str, metadata: dict) -> str:
@@ -58,14 +60,14 @@ def validate_wheel(wheel: Path, version: str) -> dict:
                     raise ValueError("Wheel RECORD must not hash itself")
                 continue
             content = archive.read(name)
-            expected = "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
+            expected = "sha256=" + base64.urlsafe_b64encode(new_sha256(content).digest()).rstrip(b"=").decode()
             if digest != expected or size != str(len(content)):
                 raise ValueError(f"Wheel RECORD mismatch: {name}")
-    return {"wheel": wheel.name, "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+    return {"wheel": wheel.name, "wheel_sha256": raw_sha256(wheel.read_bytes()),
             "wheel_files": len(names)}
 
 
-def run(source: Path, revision: str, candidate: str) -> dict:
+def dry_run_release(source: Path, revision: str, candidate: str) -> dict:
     with tempfile.TemporaryDirectory(prefix="prismabuild-release-") as temporary:
         scratch = Path(temporary)
         home = scratch / "home"
@@ -121,7 +123,7 @@ def main() -> int:
     parser.add_argument("--report", type=Path)
     arguments = parser.parse_args()
     try:
-        report = run(arguments.source.resolve(), arguments.revision, arguments.candidate)
+        report = dry_run_release(arguments.source.resolve(), arguments.revision, arguments.candidate)
     except (ValueError, OSError, KeyError, zipfile.BadZipFile, subprocess.TimeoutExpired) as error:
         report = {"outcome": "FAIL", "candidate": arguments.candidate, "reason": str(error)}
     rendered = json.dumps(report, indent=2) + "\n"
