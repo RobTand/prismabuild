@@ -7020,6 +7020,10 @@ and `attempts`. A `*` ID declares an interest in the entire source family,
 including absent members; concrete observations also name peer hosts, tiers,
 groups, and capabilities. These IDs describe wake interests, never eligibility.
 Absent, unknown, and unreadable evidence remain distinct input states.
+A READY read that the legacy listing skips as malformed still contributes its
+exact path as unreadable action evidence. It leaves claim and quarantine
+behavior unchanged, marks coverage incomplete and requests source recovery
+within five seconds, even if no readable candidate survives the listing.
 
 The collector is local to one execution context and queue instance. It adds
 no source reads and persists no verdict in READY records. `Coverage` describes

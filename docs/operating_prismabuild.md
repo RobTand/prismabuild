@@ -1223,8 +1223,10 @@ Inspect `blocked_on.coverage.gaps` when a refused claim cannot declare complete
 dependency coverage. Unknown variants log `Unmapped claim refusal` or
 `Unmapped claim decision` and request `source_recovery` within five seconds.
 Known unavailable evidence also carries an explicit unknown or unreadable
-state and a recovery deadline. `lock_retry` bounds claim-lock retry to one
-second. A report schedules no work itself and grants no resource credit.
+state and a recovery deadline. A malformed READY row skipped by the legacy
+listing also reports its unreadable path and bounded recovery. The legacy
+claim value and quarantine behavior remain unchanged. `lock_retry` bounds
+claim-lock retry to one second. A report schedules no work itself and grants no resource credit.
 
 The [claim refusal contract](design.md#claim-refusal-reports-1947) lists each
 timer's source, bound, and cancellation condition. In particular, #1262 has no

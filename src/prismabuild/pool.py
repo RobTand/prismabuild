@@ -8062,6 +8062,8 @@ class PoolQueue:
                 # succeeded, so the directory is live and the entry is not.
                 record = record_store.value_or_raise(self.records.listed_record(path))
             except PoolContractError:
+                claim_wait.observe_claim_source(self, claim_wait.SourceKind.ACTION, str(path),
+                                                claim_wait.EvidenceState.UNREADABLE)
                 # A record nobody can parse is nobody's work.  Raising it out
                 # of here took ``claim`` down on every box at once for one
                 # foreign writer's truncated file, and ``reap_stale`` with it
