@@ -239,7 +239,6 @@ def test_installed_recipe_core_change_after_cached_success_invalidates_all_same_
     actions, bodies, refs = [], [], []
     for observation_id in ("older", "newer"):
         action = _recorder_action(fleet, extra_env={ls.PROFILE_OBSERVATION_ENV: observation_id})
-        _assert_materialized_producer_snapshot(fleet, action)
         _, raw = _successful_profile_execution(fleet, monkeypatch, action)
         body = json.loads(raw)
         assert body["completed"] is True

@@ -1211,6 +1211,27 @@ native threads per process; admission cannot infer those needs from argv.
 
 ## Wait, detach, and give up
 
+When a terminal carries `supersedes_terminal`, `pbwait --json` and `--endings`
+include an optional `superseded` object. `pbstatus` includes the same summary
+on job and ending rows, with a readable note in its tables. The summary names
+the earlier state, status, attempts and `finished_unix`, plus `returncode` when
+available. A failed generation with a real nonzero return code followed by a
+success is `flaky_rerun`; lease-loss-like history without a return code is
+`infrastructure_rerun`. Other cases remain unclassified. The display reads at
+most the single named archive, with bounded bytes and time; missing or invalid
+history cannot change the current verdict. It never expands attempt history or
+follows older supersessions. Rows without supersession keep their existing shape.
+Archive readers stay owned by the client, outside immutable-verification children.
+`pbstatus` reads archives inside its existing bounded census reader rather than
+spawning a nested child; that reader's existing parent owns any abandonment. Other census callers project
+only the retained summary unless they provide an archive reader under their own
+budget, so shared census reads never start implicit archive grandchildren.
+A retained reader emits its identity on stderr and fences subsequent archive reads
+across rows and observations until a nonblocking own-child reap confirms its exit.
+An invalid ownership identity retains its raw evidence and fences archive reads
+for the remaining client lifetime. These diagnostics do not replace the current
+execution or CAS verdict; an unavailable archive remains unclassified.
+
 Pool waits use the queue-host bell when available (#1894), without CLI changes.
 The waiter reads a cursor, checks the record, then long-polls for that key's
 outcome-input changes, including nested publication endings, withdrawals,
@@ -2740,6 +2761,46 @@ and varied `--pytest-args` keep the result cache from serving them.
 
 `pb-cpu` is the PrismaBuild infrastructure test environment. Its presence on a
 worker does not mean that arbitrary project dependencies are installed there.
+The reviewed definitions are
+`tools/maintenance/pb_cpu/x86_64-cp314.json`
+for dl380g10's CPython 3.14 and
+`tools/maintenance/pb_cpu/aarch64-cp312.json`
+for sparky and sparklina's CPython 3.12 over `/usr/bin/python3`.
+Each definition records exact distribution versions, including local versions
+such as `torch==2.11.0+cpu`, wheel SHA-256 hashes, and each package's purpose.
+PB's runtime remains stdlib-only.
+
+The declared shared test dependencies include pytest, pytest-xdist, PyYAML,
+CPU torch, jsonschema 4.26.0, numpy, scipy, compressed-tensors, transformers,
+safetensors, and their pinned dependencies. CPU torch and jsonschema support
+Tessera's rung-allowability tests. Compressed-tensors supports PrismaQuant's
+autouse fixtures. The definitions also retain the captured environment's
+tooling, with a reason beside each pin. Their presence does not qualify every
+served project's test suite or GPU execution.
+
+Run `tools/maintenance/pb_cpu.py --python /absolute/interpreter check` through PB to
+compare a named interpreter with its host-class definition. The command prints
+JSON and exits 1 for missing, extra, duplicate, or different distributions,
+including a different `+cpu` suffix. It exits 2 for inspection or build errors.
+`--python /absolute/base/interpreter build /new/destination` creates a fresh
+venv, installs the hashed wheels without resolving new dependencies, and runs
+the same comparison. The destination must not exist. The tool reads protected
+live environment directories from `pb_cpu_live_roots` in the checkout's fleet
+roster, `tools/fleet/fleet_boxes.json`. Keep this nonempty list in sync with
+every live deployment, including relocated or renamed environments. Builds
+refuse any listed root or descendant, including through symlink aliases, before
+creating directories or running installers. Missing, empty, unreadable, or
+invalid protection configuration refuses the build. `check` does not need this
+configuration and never installs.
+
+To change `pb-cpu`, review changes to the appropriate definition, including
+package purposes and wheel hashes. Preserve each host class's Python minor
+version. Build into a new directory through PB and qualify both PB tests and
+the affected projects' tests there. Re-provision a shared environment only
+while no `pb-cpu` user is running. Applying the ARM definition's jsonschema
+addition to live Sparks is a separate operations step after review. Never
+install dependencies into a shared venv from a running test action.
+
 For project CPU tests, use an interpreter qualified against that project's
 current dependency and runtime pins. Resolve its absolute path on eligible
 workers before submitting. The path below is illustrative, not a qualified

@@ -41,6 +41,12 @@ def _published(tmp_path, monkeypatch) -> Path:
     return mirror.resolve()
 
 
+@pytest.fixture(scope="module")
+def generation(tmp_path_factory):
+    with pytest.MonkeyPatch.context() as publication:
+        return _published(tmp_path_factory.mktemp("generation"), publication)
+
+
 def test_the_publication_carries_the_evidence_tool_in_both_layouts():
     manifest = publish_runtime._publication_manifest()
     assert "tools/pbevidence.py" in manifest
@@ -60,8 +66,7 @@ def test_no_published_script_imports_a_module_the_publication_lacks():
     ("fleet/tier_loop.py", "--source-pool"),
 ])
 def test_the_command_starts_from_the_generation_alone(
-        tmp_path, monkeypatch, tool, fragment):
-    generation = _published(tmp_path, monkeypatch)
+        tmp_path, generation, tool, fragment):
     consumer = tmp_path / "consumer"
     consumer.mkdir()
     env = {key: value for key, value in os.environ.items()
