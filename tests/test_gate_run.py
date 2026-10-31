@@ -16,7 +16,7 @@ runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
 
 
-@pytest.mark.parametrize('code,verdict', [(0, 'pass'), (1, 'fail'), (2, 'fail'), (3, 'fail'), (4, 'fail'), (5, 'fail')])
+@pytest.mark.parametrize('code,verdict', [(0, 'pass'), (1, 'fail')])
 def test_completed_pytest_writes_a_final_verdict(tmp_path, code, verdict):
     calls = []
     def execute(command, **kwargs):
@@ -34,6 +34,15 @@ def test_completed_pytest_writes_a_final_verdict(tmp_path, code, verdict):
     assert command[-1] == 'tests/test_one.py'
     assert kwargs['env']['PRISMABUILD_TEST_TIMEOUT_S'] == '60'
     assert kwargs['env']['OMP_NUM_THREADS'] == kwargs['env']['OPENBLAS_NUM_THREADS'] == '1'
+
+
+@pytest.mark.parametrize('code', [2, 3, 4, 5])
+def test_pytest_without_complete_test_verdict_is_infrastructure(tmp_path, code):
+    result = runner.run_plan({'selected': [{'path': 'tests/test_one.py'}], 'deselect': []},
+        root=tmp_path, output=tmp_path / 'output', junit=tmp_path / 'junit.xml',
+        execute=lambda *a, **k: SimpleNamespace(returncode=code), affinity={1})
+    assert result == 75
+    assert json.loads((tmp_path / 'output').read_text())['verdict'] is None
 
 
 def test_launch_failure_leaves_no_verdict(tmp_path):
@@ -58,6 +67,7 @@ def test_empty_selection_cannot_default_to_running_the_entire_suite(tmp_path):
     result = runner.run_plan({'selected': [], 'deselect': []}, root=tmp_path,
                         output=tmp_path / 'output', junit=tmp_path / 'junit.xml',
                         execute=lambda *a, **k: pytest.fail('must not start pytest'), affinity={1})
+    assert result == 75
 
 
 def test_runner_uses_assigned_files_and_job_cpus_with_circleci_junit(tmp_path):

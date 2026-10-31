@@ -167,7 +167,7 @@ def exclusion_entries(quarantine: dict) -> list[dict]:
             '..' in path.parts or not str(path).endswith('.py') or
             not isinstance(issue, int) or isinstance(issue, bool) or issue <= 0 or issue == 2428 or
             not isinstance(row.get('reason'), str) or not row['reason'].strip()):
-            raise ValueError(f'invalid or unowned gate exclusion: {target!r}')
+            raise ValueError(f'invalid gate exclusion or missing owner: {target!r}')
         if row['kind'] == 'cost_exclusions' and '::' in target:
             raise ValueError('cost exclusions must name complete files')
     if len({row['target'] for row in entries}) != len(entries):
