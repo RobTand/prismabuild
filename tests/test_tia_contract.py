@@ -282,3 +282,63 @@ def test_source_readers_and_their_consumers_keep_static_coverage():
                         'tests/test_consumer.py', 'tests/test_other.py'], static=static)
     assert result['targets'] == ['tests/test_consumer.py', 'tests/test_direct.py::test_f', 'tests/test_reader.py']
     assert any('source reader' in reason for row in result['selected'] for reason in row['reasons'])
+
+
+def test_evaluation_arm_scratch_is_local_and_removed(tmp_path, monkeypatch):
+    mod = load_tia_module('tia_evaluate')
+    output = tmp_path / 'evaluation'
+    output.mkdir()
+    observed = []
+    def fake_pytest(command, **options):
+        observed.append((command, options['env']))
+        xml = next(arg.split('=', 1)[1] for arg in command if arg.startswith('--junitxml='))
+        Path(xml).write_text('<testsuite><testcase classname="tests.test_example" name="test_ok"/></testsuite>')
+        return subprocess.CompletedProcess(command, 0, 'one passed', '')
+    monkeypatch.setattr(mod.subprocess, 'run', fake_pytest)
+    result = mod.pytest_run(tmp_path, ['tests/test_example.py'], [], output, 'baseline')
+    command, env = observed[0]
+    scratch = Path(env['TMPDIR'])
+    assert output in scratch.parents
+    basetemp = Path(next(arg.split('=', 1)[1] for arg in command if arg.startswith('--basetemp=')))
+    assert scratch.parent == basetemp.parent
+    assert not scratch.parent.exists()
+    assert result['tests'] == 1
+
+
+def test_evaluation_timeout_preserves_partial_output(tmp_path, monkeypatch):
+    mod = load_tia_module('tia_evaluate')
+    def timeout(command, **options):
+        raise subprocess.TimeoutExpired(command, 1000, output=b'partial pytest output', stderr=b'partial stderr')
+    monkeypatch.setattr(mod.subprocess, 'run', timeout)
+    result = mod.pytest_run(tmp_path, ['tests/test_example.py'], [], tmp_path, 'baseline')
+    assert result['complete'] is False
+    assert result['returncode'] == 124
+    assert 'partial pytest output' in result['tail']
+    assert 'partial stderr' in (tmp_path / 'baseline.log').read_text()
+
+
+def test_invalid_baseline_stops_before_mutating(tmp_path, monkeypatch):
+    import base64
+    from types import SimpleNamespace
+    mod = load_tia_module('tia_evaluate')
+    path = tmp_path / 'src/prismabuild/example.py'
+    path.parent.mkdir(parents=True)
+    original = b'def work(): return 7\n'
+    path.write_bytes(original)
+    mapping = {'unmapped': {}, 'baseline_failures': []}
+    monkeypatch.setenv('PB_TIA_MAP', base64.b64encode(gzip.compress(json.dumps(mapping).encode())).decode())
+    selected = {'selected': [{'path': 'tests/test_example.py'}], 'targets': ['tests/test_example.py'], 'deselect': []}
+    monkeypatch.setattr(mod, 'plan', lambda *args: selected)
+    monkeypatch.setattr(mod, 'load_tia_module', lambda *args: SimpleNamespace(
+        read_json=lambda path: {}, create_plan=lambda *args, **kwargs: selected))
+    calls = []
+    def invalid(*args):
+        calls.append(args[-1])
+        return {'returncode': 124, 'complete': False, 'failures': [], 'errors': []}
+    monkeypatch.setattr(mod, 'pytest_run', invalid)
+    mutation = {'path': 'src/prismabuild/example.py', 'before': mod.raw_sha256(original),
+                'start': 0, 'end': len(original), 'replacement': 'def work(): return 9\n', 'diff': {}}
+    result = mod.run_mutation(tmp_path, tmp_path / 'support', mutation)
+    assert calls == ['baseline']
+    assert result['valid'] is False
+    assert path.read_bytes() == original
