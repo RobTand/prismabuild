@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import ast
 from collections import Counter, defaultdict
+from fnmatch import fnmatchcase
 import json
 import posixpath
 from pathlib import Path
@@ -41,6 +42,11 @@ def resolve(node, bindings, filename):
         return {node.value}
     if isinstance(node, ast.Name):
         return {filename} if node.id == '__file__' else bindings.get(node.id, set())
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        # Formatting can enclose a Path division because / and % share precedence.
+        # Keep the known containing directory even when the filename is computed.
+        prefixes = {value.split('%', 1)[0] for value in resolve(node.left, bindings, filename)}
+        return {posixpath.dirname(value).rstrip('/') + '/**' for value in prefixes if '/' in value}
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         left, right = resolve(node.left, bindings, filename), resolve(node.right, bindings, filename)
         return {value for base in left or {None} for tail in right or {None}
@@ -168,10 +174,10 @@ def references(tree: ast.AST, path: str) -> set[str]:
 def matches(path: str, references: set[str]) -> bool:
     if path in references or '**' in references:
         return True
-    return any((reference.endswith('/**') and path.startswith(reference[:-2])) or
-               (reference.startswith('**/') and
-                (path == reference[3:] or path.endswith('/' + reference[3:])))
-               for reference in references)
+    return any(fnmatchcase(path, reference) or
+               (reference.startswith('**/') and fnmatchcase(path, reference[3:]))
+               for reference in references if '**' in reference)
+
 
 
 def survey(root: Path) -> dict:
@@ -185,7 +191,12 @@ def survey(root: Path) -> dict:
         tree = ast.parse(source)
         for node in ast.walk(tree):
             idiom = None
-            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        # Formatting can enclose a Path division because / and % share precedence.
+        # Keep the known containing directory even when the filename is computed.
+        prefixes = {value.split('%', 1)[0] for value in resolve(node.left, bindings, filename)}
+        return {posixpath.dirname(value).rstrip('/') + '/**' for value in prefixes if '/' in value}
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
                 idiom = 'slash_join'
             elif isinstance(node, ast.JoinedStr):
                 idiom = 'interpolated_string'
