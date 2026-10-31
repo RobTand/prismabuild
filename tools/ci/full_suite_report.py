@@ -4,20 +4,20 @@ from __future__ import annotations
 
 import argparse
 import html
-import io
 import json
+import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shlex
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
+from typing import Protocol
+import xml.etree.ElementTree as ET
 
 LABEL = 'full-suite'
-ARTIFACT = 'full-suite-results'
 MARKER = re.compile(r'<!-- full-suite: (.*?) -->')
 
 
@@ -97,36 +97,15 @@ def issue_plan(now: dict, before: dict, quarantine: set[str], owned: dict[str, i
     return plans
 
 
-def previous_run(runs: list[dict], run_id: int, run_number: int) -> dict | None:
-    eligible = [run for run in runs if run['id'] != run_id and run['run_number'] < run_number
-                and run['head_branch'] == 'main' and run['status'] == 'completed']
-    return max(eligible, key=lambda run: run['run_number'], default=None)
 
 
-def collect_results(directory: Path, count: int) -> dict:
-    shards = {}
-    for path in sorted(directory.rglob('result.json')):
-        row = json.loads(path.read_text())
-        index = row['shard']
-        if not 0 <= index < count:
-            raise ValueError('unexpected shard index')
-        if index not in shards or not shards[index]['verdict']:
-            shards[index] = row
-        elif row['verdict']:
-            raise ValueError('two test verdicts for one shard')
-    missing = [i for i in range(count) if i not in shards or not shards[i]['verdict']]
-    tests = {}
-    for row in shards.values():
-        overlap = tests.keys() & row['tests'].keys()
-        if overlap:
-            raise ValueError('tests appeared in multiple shards')
-        tests.update(row['tests'])
-    return {'complete': not missing, 'missing_shards': missing, 'tests': tests,
-            'shards': [{k: v for k, v in row.items() if k != 'tests'} for _, row in sorted(shards.items())]}
+class IssueAPI(Protocol):
+    def pages(self, path: str, field: str | None = None) -> list: ...
+    def request(self, path: str, data=None, method=None): ...
 
 
 class GitHub:
-    """Bounded REST requests. Authorization is never sent to artifact redirect hosts."""
+    """Thin GitHub REST adapter. Tokens come from the caller environment."""
 
     def __init__(self, repository: str, token: str):
         if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
@@ -135,6 +114,10 @@ class GitHub:
         if not token:
             raise ValueError('workflow token is empty')
         self.token = token
+
+    @classmethod
+    def from_environment(cls, repository: str):
+        return cls(repository, os.environ['GITHUB_TOKEN'])
 
     def request(self, path: str, data=None, method=None):
         payload = None if data is None else json.dumps(data).replace(self.token, '[REDACTED]').encode()
@@ -155,53 +138,11 @@ class GitHub:
                 return result
         raise ValueError('REST pagination exceeded 1000 pages')
 
-    def artifact(self, artifact_id: int) -> dict:
-        class NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, *args, **kwargs):
-                return None
-        request = urllib.request.Request(self.root + f'actions/artifacts/{artifact_id}/zip',
-            headers={'Authorization': f'Bearer {self.token}'})
-        try:
-            urllib.request.build_opener(NoRedirect).open(request, timeout=60)
-        except urllib.error.HTTPError as exc:
-            if exc.code != 302:
-                raise
-            location = exc.headers['Location']
-        else:
-            raise ValueError('artifact endpoint did not redirect')
-        if urllib.parse.urlparse(location).scheme != 'https':
-            raise ValueError('artifact redirect must use HTTPS')
-        # The signed URL is secret too. Do not log it, including in HTTP errors.
-        try:
-            with urllib.request.urlopen(location, timeout=60) as response:
-                archive = response.read(64 * 1024 * 1024 + 1)
-        except Exception:
-            raise ValueError('artifact download failed') from None
-        if len(archive) > 64 * 1024 * 1024:
-            raise ValueError('artifact exceeds 64 MiB')
-        with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
-            info = zipped.getinfo('results.json')
-            if info.file_size > 256 * 1024 * 1024:
-                raise ValueError('results exceed 256 MiB')
-            return json.loads(zipped.read(info))
 
 
-def load_history(api: GitHub, run_id: int, run_number: int) -> dict:
-    runs = api.pages('actions/workflows/full-suite.yml/runs?branch=main&status=completed', 'workflow_runs')
-    # An incomplete run cannot replace the last usable baseline. Expired artifacts
-    # are explicit bootstrap gaps, rather than evidence that every old test passed.
-    while (run := previous_run(runs, run_id, run_number)) is not None:
-        artifacts = api.pages(f"actions/runs/{run['id']}/artifacts", 'artifacts')
-        match = next((a for a in artifacts if a['name'] == ARTIFACT and not a['expired']), None)
-        if match:
-            history = api.artifact(match['id'])
-            if history['complete'] and not history.get('dry_run', False):
-                return history
-        runs = [r for r in runs if r['id'] != run['id']]
-    return {'tests': {}, 'sha': None, 'complete': False}
 
 
-def merged_prs(api: GitHub, before: str | None, sha: str) -> list[dict]:
+def merged_prs(api: IssueAPI, before: str | None, sha: str) -> list[dict]:
     if not before or before == sha:
         return []
     commits = api.pages(f'compare/{before}...{sha}', 'commits')
@@ -224,7 +165,7 @@ def quarantine_entries(path: Path) -> set[str]:
     return {entry if isinstance(entry, str) else entry['nodeid'] for entry in entries}
 
 
-def apply_plan(api: GitHub, plans: list[dict]) -> list[dict]:
+def apply_plan(api: IssueAPI, plans: list[dict]) -> list[dict]:
     results = []
     if any(p['kind'] == 'issue' for p in plans):
         labels = {label['name'] for label in api.pages('labels')}
@@ -263,64 +204,135 @@ def apply_plan(api: GitHub, plans: list[dict]) -> list[dict]:
     return results
 
 
+
+
+def parse_junit(xml: str | bytes) -> dict[str, dict]:
+    """Parse pytest JUnit without importing or executing the producing checkout."""
+    root = ET.fromstring(xml)
+    if root.tag not in {'testsuite', 'testsuites'}:
+        raise ValueError('expected JUnit testsuite or testsuites')
+    rows = {}
+    for case in root.iter('testcase'):
+        node = next((p.get('value') for p in case.findall('./properties/property')
+                     if p.get('name') == 'nodeid'), None)
+        if not node:
+            filename = case.get('file')
+            if not filename:
+                raise ValueError('JUnit needs an exact nodeid property or file attribute; '
+                                 'use pytest -o junit_family=legacy')
+            path = PurePosixPath(filename.removeprefix('./'))
+            if path.is_absolute() or '..' in path.parts or path.suffix != '.py':
+                raise ValueError('JUnit file must be a repository-relative Python path')
+            module = str(path.with_suffix('')).replace('/', '.')
+            classname = case.get('classname', '')
+            if classname == module:
+                classname = ''
+            elif classname.startswith(module + '.'):
+                classname = classname[len(module) + 1:]
+            name = case.get('name')
+            if not name:
+                raise ValueError('JUnit testcase needs a name')
+            node = '::'.join([str(path), *(classname.split('.') if classname else []), name])
+        duration = float(case.get('time', '0'))
+        if not math.isfinite(duration) or duration < 0:
+            raise ValueError('JUnit duration must be finite and nonnegative')
+        failure = case.find('failure')
+        if failure is None:
+            failure = case.find('error')
+        row = {'outcome': 'failed' if failure is not None else (
+                   'skipped' if case.find('skipped') is not None else 'passed'),
+               'duration': duration,
+               'failure': '' if failure is None else (failure.text or failure.get('message', ''))}
+        if node in rows:
+            # Pytest can emit separate call and teardown failures for one item.
+            previous = rows[node]
+            row['duration'] += previous['duration']
+            if previous['outcome'] == 'failed':
+                row['outcome'] = 'failed'
+                row['failure'] = previous['failure'] + '\n' + row['failure']
+        rows[node] = row
+    return rows
+
+
+def read_results(directory: Path) -> dict[str, dict]:
+    files = sorted(directory.rglob('*.xml'))
+    if not files:
+        raise ValueError('no JUnit XML files found')
+    rows = {}
+    for path in files:
+        tests = parse_junit(path.read_bytes())
+        if rows.keys() & tests.keys():
+            raise ValueError('a test appeared in multiple JUnit files')
+        rows.update(tests)
+    if not rows:
+        raise ValueError('JUnit contains no test outcomes')
+    return rows
+
+
+def build_report(now: dict, previous: dict, quarantine: set[str], issues: list[dict],
+                 sha: str, prs: list[dict], run_url: str, *, complete: bool = True) -> dict:
+    """Build an outcome snapshot and issue plan. This function performs no I/O."""
+    if previous and (not previous.get('complete') or previous.get('dry_run')):
+        raise ValueError('previous results must be complete and previously reported')
+    before = previous.get('tests', {})
+    tests = {node: dict(row, last_pass_sha=(sha if row['outcome'] == 'passed'
+                         else before.get(node, {}).get('last_pass_sha')))
+             for node, row in now.items()}
+    groups = classify(tests, before, quarantine) if complete else {
+        'new': [], 'known': [], 'recovered': [], 'quarantined': []}
+    plans = issue_plan(tests, before, quarantine, owners(issues),
+                       previous.get('sha') or 'no previous baseline', sha, prs, run_url) if complete else []
+    return {'schema': 1, 'complete': complete, 'sha': sha, 'run_url': run_url,
+            'tests': tests, 'classification': groups, 'plans': plans}
+
+
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--input', type=Path)
-    parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--shards', type=int, default=4)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument('--input', type=Path, required=True, help='Directory of JUnit XML files')
+    parser.add_argument('--previous', type=Path, help='Last complete, reported results.json')
+    parser.add_argument('--output', type=Path, required=True, help='Output results.json file')
+    parser.add_argument('--sha', required=True)
+    parser.add_argument('--run-url', required=True)
+    parser.add_argument('--repository', default=os.environ.get('GITHUB_REPOSITORY'))
     parser.add_argument('--quarantine', type=Path, default=Path('tools/ci/gate_quarantine.json'))
-    parser.add_argument('--history-only', action='store_true')
+    parser.add_argument('--issues', type=Path, help='Offline open-issue snapshot for dry runs')
+    parser.add_argument('--merged-prs', type=Path, help='Offline merged-PR metadata')
+    parser.add_argument('--incomplete', action='store_true', help='Do not file or claim recoveries')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args(argv)
-    api = GitHub(os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_TOKEN'])
-    history = load_history(api, int(os.environ['GITHUB_RUN_ID']), int(os.environ['GITHUB_RUN_NUMBER']))
-    args.output.mkdir(parents=True, exist_ok=True)
-    if args.history_only:
-        (args.output / 'results.json').write_text(json.dumps(history, sort_keys=True) + '\n')
-        return 0
-    if args.input is None:
-        parser.error('--input is required unless --history-only')
-    result = collect_results(args.input, args.shards)
-    sha = os.environ['GITHUB_SHA']
-    result.update(schema=1, sha=sha)
-    for node, row in result['tests'].items():
-        row['last_pass_sha'] = sha if row['outcome'] == 'passed' else history['tests'].get(node, {}).get('last_pass_sha')
-    quarantine = quarantine_entries(args.quarantine)
-    result['classification'] = classify(result['tests'], history['tests'], quarantine)
-    run_url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-    plans = []
-    if result['complete']:
-        owned = owners(api.pages('issues?state=open&labels=full-suite'))
-        prs = merged_prs(api, history['sha'], sha) if result['classification']['new'] else []
-        plans = issue_plan(result['tests'], history['tests'], quarantine, owned,
-                           history['sha'] or 'no previous baseline', sha, prs, run_url)
-    else:
-        # Infrastructure is tracked separately, never as recovered tests.
-        plans = [{'kind': 'issue', 'title': '[P2] Full suite: shards ended without test verdicts',
-                  'labels': [LABEL], 'body': marker('__infrastructure__') +
-                  f"\n\nMissing verdicts after one infrastructure retry: {result['missing_shards']}\n"
-                  f'Commit: {sha}\nRun: {run_url}\nRerun the workflow through workflow_dispatch.\n'}]
+    previous = json.loads(args.previous.read_text()) if args.previous else {}
+    tests = read_results(args.input) if not args.incomplete else {}
+    api = None
+    issues = json.loads(args.issues.read_text()) if args.issues else []
+    prs = json.loads(args.merged_prs.read_text()) if args.merged_prs else []
+    if not args.dry_run and not args.incomplete:
+        if not args.repository:
+            parser.error('--repository is required for filing')
+        api = GitHub.from_environment(args.repository)
+        issues = api.pages('issues?state=open&labels=full-suite')
+        if not args.merged_prs and classify(tests, previous.get('tests', {}),
+                                           quarantine_entries(args.quarantine))['new']:
+            prs = merged_prs(api, previous.get('sha'), args.sha)
+    result = build_report(tests, previous, quarantine_entries(args.quarantine), issues,
+                          args.sha, prs, args.run_url, complete=not args.incomplete)
     result['dry_run'] = args.dry_run
-    result['planned_actions'] = [{k: v for k, v in p.items() if k != 'body'} for p in plans]
-    result['filed'] = [] if args.dry_run else apply_plan(api, plans)
-    (args.output / 'results.json').write_text(json.dumps(result, sort_keys=True) + '\n')
-    summary = {'complete': result['complete'], 'missing_shards': result['missing_shards'],
-               'classification': {k: len(v) for k, v in result['classification'].items()},
-               'dry_run': args.dry_run, 'actions': len(plans)}
-    print(json.dumps(summary, sort_keys=True))
-    if os.environ.get('GITHUB_STEP_SUMMARY'):
-        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as handle:
-            handle.write('Full suite report\n\n```json\n' + json.dumps(summary, indent=2) + '\n```\n\n')
-            handle.write('| Shard | Wall seconds | Verdict |\n|---|---|---|\n')
-            for row in result['shards']:
-                handle.write(f"| {row['shard']} | {row['wall_seconds']} | {row['verdict']} |\n")
-    return int(not result['complete'] or any(row['outcome'] == 'failed' for row in result['tests'].values()))
+    result['filed'] = apply_plan(api, result['plans']) if api else []
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    # Report artifacts must not contain the publishing credential either.
+    serialized = json.dumps(result, sort_keys=True)
+    token = os.environ.get('GITHUB_TOKEN')
+    if token:
+        serialized = serialized.replace(token, '[REDACTED]')
+    args.output.write_text(serialized + '\n')
+    print(json.dumps({'complete': result['complete'], 'dry_run': args.dry_run,
+                      'classification': {k: len(v) for k, v in result['classification'].items()},
+                      'actions': len(result['plans'])}, sort_keys=True))
+    return 2 if args.incomplete else int(any(r['outcome'] == 'failed' for r in tests.values()))
 
 
 if __name__ == '__main__':
     try:
         raise SystemExit(main())
-    except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
-        # Never print exception strings from authenticated requests or signed URLs.
+    except (OSError, ValueError, KeyError, ET.ParseError) as exc:
         print(f'Full-suite report could not complete ({type(exc).__name__}).', file=sys.stderr)
         raise SystemExit(2)
