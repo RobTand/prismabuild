@@ -1,0 +1,1 @@
+"""Test-first recorder stub."""
