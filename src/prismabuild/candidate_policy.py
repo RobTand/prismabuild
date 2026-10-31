@@ -289,12 +289,12 @@ class Silent:
     pass
 
 
-def prepare_adaptive_refusal(
-    source: str | None, decision: Mapping[str, object] | None,
-    verdict: Mapping[str, object] | None, *, order: ScanOrder,
-    dependent_owner: object, room_taken: Mapping[str, object] | None,
-) -> CountAdaptive | Uncounted | Silent:
-    if (verdict is not None and verdict["withhold"]
+def _measurement_refusal_verdict(
+    decision: Mapping[str, object] | None, verdict: Mapping[str, object] | None,
+) -> Mapping[str, object] | None:
+    if (verdict is not None
+            and (verdict["withhold"]
+                 or verdict.get("eligible") and verdict.get("why") == "holder_does_not_drain_soon")
             and isinstance(decision, Mapping)
             and decision.get("reason") == "measurement_holder"
             and decision.get("isolated_by")):
@@ -302,6 +302,15 @@ def prepare_adaptive_refusal(
         # would stop the holder from making the progress its drain waits on.
         verdict = dict(verdict, withhold=False,
                        why="measurement_admits_only_its_dependents")
+    return verdict
+
+
+def prepare_adaptive_refusal(
+    source: str | None, decision: Mapping[str, object] | None,
+    verdict: Mapping[str, object] | None, *, order: ScanOrder,
+    dependent_owner: object, room_taken: Mapping[str, object] | None,
+) -> CountAdaptive | Uncounted | Silent:
+    verdict = _measurement_refusal_verdict(decision, verdict)
     reason = source or "adaptive_refused"
     evidence: dict[str, object] = {"decision": decision or {}}
     if source == "deferred_behind_withholding":

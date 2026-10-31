@@ -1,6 +1,7 @@
 """Exercise #1895 through real claim, offer, shim and ending paths with fakes."""
 import importlib.machinery
 import importlib.util
+import itertools
 import json
 import os
 from pathlib import Path
@@ -158,6 +159,7 @@ def test_shim_preserves_native_auto_removal_and_binds_each_launch(tmp_path, monk
     assert [op for op, _ in calls] == ['container_begin', 'container_watch', 'container_outcome', *(['container_end'] if status == 0 else [])]
 
 
+@pytest.mark.parametrize('scoped', [{'execution_timeout_s': 1e-9}], indirect=True)
 def test_host_fault_evidence_preserves_an_explicit_deadline(scoped, monkeypatch):
     from prismabuild import resource_scope
     monkeypatch.setattr(gpu_capacity, 'runtime_fence_enabled', lambda: True)
@@ -165,9 +167,26 @@ def test_host_fault_evidence_preserves_an_explicit_deadline(scoped, monkeypatch)
     _process(monkeypatch, queue, item, calls, ticks=1)
     monkeypatch.setattr(resource_scope.ResourceScope, 'container_host_fault', lambda self: {
         'reason': gpu_capacity.RUNTIME_REASON, 'subtype': 'cdi_mount_missing', 'attempt': self.nonce})
-    outcome = queue.execute(item, containment=True, timeout_s=1e-9)
+    ticks = itertools.count()
+    clock = pool.ExecutionClock(lambda: float(next(ticks)), lambda: 1_000_000.0)
+    outcome = queue.execute(item, containment=True, timeout_s=1e-9, clock=clock)
     assert outcome['status'] == 'timeout'
     assert outcome['termination_reason'] == 'execution_deadline'
+    assert outcome['host_fault']['subtype'] == 'cdi_mount_missing'
+
+
+def test_host_fault_evidence_preserves_a_stall_without_a_sealed_deadline(scoped, monkeypatch):
+    from prismabuild import resource_scope
+    monkeypatch.setattr(gpu_capacity, 'runtime_fence_enabled', lambda: True)
+    queue, item, calls = scoped
+    _process(monkeypatch, queue, item, calls, ticks=1)
+    monkeypatch.setattr(resource_scope.ResourceScope, 'container_host_fault', lambda self: {
+        'reason': gpu_capacity.RUNTIME_REASON, 'subtype': 'cdi_mount_missing', 'attempt': self.nonce})
+    ticks = itertools.count()
+    clock = pool.ExecutionClock(lambda: float(next(ticks)), lambda: 1_000_000.0)
+    outcome = queue.execute(item, containment=True, timeout_s=1e-9, clock=clock)
+    assert outcome['status'] == 'timeout'
+    assert outcome['termination_reason'] == 'no_progress'
     assert outcome['host_fault']['subtype'] == 'cdi_mount_missing'
 
 

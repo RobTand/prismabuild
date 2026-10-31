@@ -212,6 +212,7 @@ ACTION_RESIDENCY_ENV = (ACTION_KEY_ENV, RESIDENCY_MAP_ENV, QUEUE_ROOT_ENV,
 #: key like ``PROFILE_PARAM``: an action admitted under the progress contract
 #: is a different action from its unbounded twin, so nothing already in the
 #: store is answered by a receipt filed under the other policy.
+STALL_ALLOWANCE_PARAM = "stall_allowance_s"
 PROGRESS_PARAM = "progress"
 PROGRESS_POLICY_SCHEMA_V1 = "prismabuild.action_progress_policy.v1"
 #: Mirrored from :mod:`prismabuild.progress`; see the note above.
@@ -2393,6 +2394,12 @@ def _normalize_action_body(value: object) -> dict[str, object]:
         if awaited != normalized_params[AWAITED_BATCH_PARAM]:
             _fail("action.params.progress_awaited_batch is valid but not in "
                   "normalized form")
+    if STALL_ALLOWANCE_PARAM in normalized_params:
+        # Refused here rather than at the worker, like the progress policy:
+        # an unreadable allowance would seal a key no worker can honestly run.
+        validate_stall_allowance(normalized_params[STALL_ALLOWANCE_PARAM])
+        if PROGRESS_PARAM in normalized_params:
+            _fail("action.params.stall_allowance_s cannot combine with action.params.progress")
     normalized_inputs = _normalize_inputs(body["inputs"])
     if PRODUCED_OUTPUT_TEMPLATE_PARAM in normalized_params:
         # A tampered binding (declaration without its input row, or with a
@@ -6706,6 +6713,25 @@ def action_progress_policy(action: Mapping[str, object]) -> dict[str, object] | 
     return validate_progress_policy(declared)
 
 
+def validate_stall_allowance(value: object, *, where: str = "action.params.stall_allowance_s") -> float:
+    """The sealed default stall allowance of a validated action (#1707)."""
+
+    if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+        _fail(f"{where} must be a positive finite number")
+    return float(value)
+
+
+def action_stall_allowance(action: Mapping[str, object]) -> float | None:
+    """The sealed stall allowance of a validated action, if it declared one."""
+
+    params = action["params"]
+    assert isinstance(params, Mapping)
+    declared = params.get(STALL_ALLOWANCE_PARAM)
+    if declared is None:
+        return None
+    return validate_stall_allowance(declared)
+
+
 def _progress_environment(
     action: Mapping[str, object], sealed: Mapping[str, str]
 ) -> dict[str, str]:
@@ -7084,6 +7110,9 @@ __all__ = [
     "action_pool_contention",
     "validate_pool_contention",
     "action_progress_policy",
+    "STALL_ALLOWANCE_PARAM",
+    "action_stall_allowance",
+    "validate_stall_allowance",
     "report_action_progress",
     "validate_progress_policy",
     "CAS_RECEIPT_SCHEMA_V3",

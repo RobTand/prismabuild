@@ -599,64 +599,47 @@ def test_a_single_read_never_allocates_past_the_chunk_bound():
             os.close(write_fd)
 
 
-def test_a_probe_descendant_does_not_survive_the_deadline(tmp_path):
-    """The leader can exit while its child still holds the stdout pipe.
+def test_a_probe_descendant_does_not_survive_the_deadline(monkeypatch):
+    import select
+    import signal
 
-    A deadline failure must signal the exact process group the probe was
-    spawned under, not only when the leader has not been reaped: polling the
-    leader first retires its pid, and a descendant that inherited the pipe
-    would otherwise outlive the read (#714 review).
-    """
+    child = "import os, signal; print(os.getpid(), flush=True); signal.pause()"
+    leader = ("import os, subprocess, sys; "
+              "subprocess.Popen([sys.executable, '-c', sys.argv[1]]); os._exit(0)")
+    processes = []
+    child_fd = None
+    spawn = ci.subprocess.Popen
 
-    child_script = tmp_path / "child.py"
-    child_script.write_text(
-        "import sys, time\n"
-        "with open(sys.argv[1], 'a') as stream:\n"
-        "    while True:\n"
-        "        stream.write('tick\\n')\n"
-        "        stream.flush()\n"
-        "        time.sleep(0.05)\n",
-        encoding="utf-8",
-    )
-    leader_script = tmp_path / "leader.py"
-    leader_script.write_text(
-        "import os, subprocess, sys\n"
-        "child = subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2]])\n"
-        "with open(sys.argv[3], 'w') as stream:\n"
-        "    stream.write(str(child.pid))\n"
-        "os._exit(0)\n",
-        encoding="utf-8",
-    )
-    marker = tmp_path / "child.log"
-    pid_file = tmp_path / "child.pid"
+    def capture_process(*args, **kwargs):
+        process = spawn(*args, **kwargs)
+        processes.append(process)
+        return process
 
-    assert ci._run_bounded(
-        [sys.executable, str(leader_script), str(child_script), str(marker),
-         str(pid_file)],
-        env=dict(os.environ), timeout_s=0.6, limit=4096) is None
+    def expire_after_leader_exit(stream, *, limit, deadline):
+        nonlocal child_fd
+        child_fd = os.pidfd_open(int(stream.readline()))
+        exited = os.waitid(os.P_PID, processes[0].pid, os.WEXITED | os.WNOWAIT)
+        assert exited.si_code == os.CLD_EXITED and exited.si_status == 0
+        assert processes[0].returncode is None
+        return None
 
-    deadline = time.monotonic() + 5.0
-    child_pid = None
-    while time.monotonic() < deadline and child_pid is None:
-        if pid_file.exists():
-            child_pid = int(pid_file.read_text(encoding="utf-8").strip())
-        else:
-            time.sleep(0.05)
-    assert child_pid is not None, "the leader never named its child"
-
-    def marker_size() -> int:
-        return marker.stat().st_size if marker.exists() else 0
-
-    time.sleep(0.5)
-    settled = marker_size()
-    time.sleep(1.0)
-    assert marker_size() == settled, "the orphaned probe child kept running"
-
-    status = Path(f"/proc/{child_pid}/stat")
-    if status.exists():
-        text = status.read_text(encoding="utf-8")
-        state = text[text.rindex(")") + 2:].split()[0]
-        assert state == "Z", f"probe child still running in state {state!r}"
+    monkeypatch.setattr(ci.subprocess, "Popen", capture_process)
+    monkeypatch.setattr(ci, "_read_capped", expire_after_leader_exit)
+    try:
+        assert ci._run_bounded(
+            [sys.executable, "-c", leader, child], env=dict(os.environ),
+            timeout_s=60, limit=4096) is None
+        assert child_fd is not None
+        exited = select.poll()
+        exited.register(child_fd, select.POLLIN)
+        assert exited.poll(60_000), "the orphaned probe child survived cleanup"
+    finally:
+        if child_fd is not None:
+            try:
+                signal.pidfd_send_signal(child_fd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.close(child_fd)
 
 
 def test_a_real_probe_read_returns_output_under_the_cap():

@@ -94,7 +94,7 @@ from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
 import argparse
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import nullcontext, contextmanager
 import contextvars
 import errno
@@ -218,7 +218,45 @@ def _relative_under(stage: Path, resolved: str) -> str | None:
         return None
 
 
-def live_claims(queue: pool.PoolQueue, *, store=None) -> tuple[set[str], dict[str, str]]:
+def _evidence_live_claims(
+    evidence: Iterable[Mapping[str, object]], *, live_roots: set[Path],
+    plan_root: Path,
+) -> tuple[set[str], dict[str, str]]:
+    """Join already-read census documents without performing any I/O.
+
+    Record location establishes row liveness; a plan's consumer_action_key
+    binds its movers to that row. Evidence order is immaterial, including for
+    single-pass iterables. Resolved byte paths are not liveness evidence.
+    """
+    wanted: set[str] = set()
+    owners: dict[str, str] = {}
+    plans: list[Mapping[str, object]] = []
+    for record in evidence:
+        document = record.get("document")
+        origin = record.get("record_path")
+        if not isinstance(document, dict) or not isinstance(origin, (str, Path)):
+            continue
+        path = Path(origin)
+        if path.parent in live_roots:
+            key = document.get("action_key")
+            if not isinstance(key, str) or not key:
+                continue
+            owners[key] = key
+            residency = document.get("residency")
+            if isinstance(residency, dict):
+                wanted.update(str(lead) for lead in residency.get("leads") or [])
+        elif plan_root in path.parents:
+            plans.append(document)
+    for plan in plans:
+        key = plan.get("consumer_action_key")
+        if isinstance(key, str) and key in owners:
+            wanted.update(residency_plan.mover_keys(plan))
+    return wanted, owners
+
+
+def live_claims(queue: pool.PoolQueue, *, store=None,
+                evidence: Iterable[Mapping[str, object]] | None = None,
+                ) -> tuple[set[str], dict[str, str]]:
     """Every mover key a ready or claimed item still wants, and those items.
 
     Two answers because they mean different things.  ``wanted`` is the movers:
@@ -232,8 +270,24 @@ def live_claims(queue: pool.PoolQueue, *, store=None) -> tuple[set[str], dict[st
     nobody's", and the adoption asks the same question the other way round --
     a range only a *finished* consumer still names is one a successor may take
     over (#598).  One walk of ``ready/`` and ``claimed/`` answers both.
+
+    With ``evidence``, reuse the report's bounded reference census records
+    (record_path, document, paths), without scanning or reading anything else.
+    This is intentionally read-only liveness evidence, not sweep authority:
+    owners includes *all* ready/claimed action keys, even bare fragment
+    consumers without residency. Only their declared leads and matching frozen
+    plan movers enter wanted. Missing evidence is not fetched or repaired;
+    census errors remain the report caller's responsibility. The default
+    sweep/adoption path and its narrower residency owners are unchanged.
     """
     store = queue.records if store is None else store
+    if evidence is not None:
+        return _evidence_live_claims(
+            evidence,
+            live_roots={store.dir(state) for state in
+                        (pool.record_store.READY, pool.record_store.CLAIMED)},
+            plan_root=residency_plan.registry_root(queue),
+        )
 
     wanted: set[str] = set()
     owners: dict[str, str] = {}

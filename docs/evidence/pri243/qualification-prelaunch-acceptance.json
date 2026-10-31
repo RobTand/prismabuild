@@ -1,0 +1,429 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "prelaunch",
+  "prepared_at": "2026-10-27T12:21:28.331197+00:00",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "08eeec252e099286168d8572711d87c6e1e21c3e",
+  "scope": [
+    "SC-01",
+    "SC-03",
+    "ID-08",
+    "ID-09",
+    "VER-01"
+  ],
+  "source": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+  "prelaunch": {
+    "submission": {
+      "declares": [
+        "inputs",
+        "runtime",
+        "CPU1",
+        "mem_gb4",
+        "GPU0",
+        "native_threads1",
+        "priority-10",
+        "payload600s",
+        "ordinary portable admission"
+      ],
+      "commands": [
+        {
+          "name": "integration-guards",
+          "argv": [
+            "python3",
+            "/mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py",
+            "--checkout",
+            "/home/rob/paperclip-worktrees/prismabuild/v21-integrate-2363",
+            "--python",
+            "/home/rob/venvs/pb-cpu/bin/python",
+            "--threads-per-shard",
+            "1",
+            "--cpus-per-shard",
+            "1",
+            "--mem-gb",
+            "4",
+            "--priority",
+            "-10",
+            "--timeout-s",
+            "600",
+            "--wait-s",
+            "7200",
+            "--pytest-args",
+            "[\"--durations=20\"]",
+            "--json",
+            "/mnt/shared/paperclip-runs/PRI-243/integration-guards.json",
+            "tests/test_canary_placement_preflight.py",
+            "tests/test_barrier_activation_boundary.py",
+            "tests/test_compat_capture_intake.py",
+            "tests/test_wire_inventory.py",
+            "tests/test_fleet_tool_flags_have_help.py",
+            "tests/test_duplication_baseline.py",
+            "tests/test_design_doc_line_references.py"
+          ]
+        },
+        {
+          "name": "compatibility",
+          "argv": [
+            "python3",
+            "/mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py",
+            "--checkout",
+            "/home/rob/paperclip-worktrees/prismabuild/v21-integrate-2363",
+            "--python",
+            "/home/rob/venvs/pb-cpu/bin/python",
+            "--threads-per-shard",
+            "1",
+            "--cpus-per-shard",
+            "1",
+            "--mem-gb",
+            "4",
+            "--priority",
+            "-10",
+            "--timeout-s",
+            "600",
+            "--wait-s",
+            "7200",
+            "--pytest-args",
+            "[\"-k\", \"upgrade-intent or upgrade-attestation\", \"--durations=20\"]",
+            "--json",
+            "/mnt/shared/paperclip-runs/PRI-243/compatibility.json",
+            "tests/test_record_compatibility_controller_upgrade.py"
+          ]
+        }
+      ]
+    },
+    "readiness_gate": "PB-owned verdict at claim; no human readiness substitute",
+    "tier_policy": "strict",
+    "window_fit": "bounded component fixtures only; no campaign/workset qualification"
+  },
+  "merge": {
+    "status": "not-this-step"
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "requirement_ledger_rows_retained": [
+    {
+      "acceptance_assertion": "Manual review: each lifecycle-affecting change names its PB decision point; no PQ-side placement knob lands.",
+      "deployment": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "id": "SC-01",
+      "implementation": {
+        "commit": "PB:ca0f5555",
+        "path": "src/prismabuild/pool.py claim/admission paths",
+        "state": "yes"
+      },
+      "owner": "PB:pool-claim",
+      "text": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+      "validation": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "scoped_repair_1929": {
+        "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+        "implemented_source": {
+          "commit": "73eeb59b7b2af624afd87df580a1f16a83c4a69a",
+          "state": "component-implemented",
+          "scope": "Idle GPU CPU guests with interruption-only shard retry, restored ordinary preemption, bounded guest retry liveness, useful collective drains and charged timed placement."
+        },
+        "validation": {
+          "state": "component-qualified-with-baselines",
+          "acceptance_record": "docs/evidence/issue1929_round2_acceptance_2026-10-21.json",
+          "detail": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below.",
+          "test_commit": "2f8befb618fb846477b0f671ea62684155af7ded"
+        },
+        "deployment": "not deployed; no runtime publication in this lane",
+        "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
+        "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
+        "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+      },
+      "scoped_repair_2267": {
+        "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+        "implemented_source": {
+          "commit": "7dbd1079152621df08c4c5558560fbc250471f0a",
+          "state": "component-implemented",
+          "scope": "PassCensus suspends only the exact refreshed measurement election within a claim pass after fresh affirmative foreign CPU refusal, without resetting its opportunity."
+        },
+        "validation": {
+          "state": "component-qualified",
+          "acceptance_record": "docs/evidence/issue2267/merge-acceptance.json",
+          "detail": "One- and two-measurement deterministic RED. Integrated x86/Python 3.14 and ARM/Python 3.12: five executed runs per architecture, two xdist each; 103 tests in each broad row and 29 in each other row. No skips. Source trees, logs, execution receipts and CAS payloads read back."
+        },
+        "deployment": "not deployed; release train owns publication after independent review and merge",
+        "workload_proof": "not run; no staged-only campaign or live-host reproduction",
+        "remaining_scope": "Whole-requirement implementation, deployment and workload axes retain their existing states."
+      },
+      "scoped_repair_2270": {
+        "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+        "implemented_source": {
+          "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+          "state": "component-implemented",
+          "scope": "PB owns obligation verification and reconciliation; the operator supplies identity only."
+        },
+        "validation": {
+          "state": "scoped-component-qualified-with-main-baselines",
+          "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+          "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+          "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+          "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
+        },
+        "deployment": "not deployed; no publication, activation or service restart in this task",
+        "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+        "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
+      },
+      "scoped_repair_2323": {
+        "target": "PB keeps admission and withdrawal in PoolQueue; no producer placement control.",
+        "implemented_source": {
+          "commit": "ef29f71e2e1352be45b5c5d78e9ca97d7b83809c",
+          "state": "component-implemented"
+        },
+        "validation": {
+          "state": "component-qualified",
+          "acceptance_record": "docs/evidence/issue2323/merge-acceptance.json",
+          "evidence": "docs/evidence/issue2323/qualification.json",
+          "detail": "443 passes per architecture in 17 files; four more 44-pass rounds per architecture. All 50 actions executed with zero failures/skips, native completion, cleanup, logs, receipts/results and source trees verified."
+        },
+        "deployment": "not deployed by this task; no publication, activation or restart",
+        "workload_proof": "not established; no live gang or staged-only campaign proof",
+        "remaining_target": "Whole-requirement axes are unchanged. Component tests do not establish full staged-read conformance."
+      },
+      "scoped_repair_2014": {
+        "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+        "implemented_source": {
+          "commit": "47f79a2f3da2ef4d15aa6de9dc97234a1f99b53f",
+          "state": "component-implemented",
+          "scope": "Fresh bounded interpreter evidence and fail-closed UNKNOWN advisory CPU-peer placement; strict execution capability remains positive-only."
+        },
+        "validation": {
+          "state": "component-qualified",
+          "acceptance_record": "docs/evidence/issue2014/source-acceptance.json",
+          "detail": "355 unique tests per architecture, plus four additional full-file repeats of both touched files. Five runs per file per architecture include two xdist runs. Terminal records, report binding, complete log digests and CAS receipts verified. Original fixture failures are retained."
+        },
+        "deployment": "not established; no runtime publication authorized in this task",
+        "workload_proof": "not run; no staged-only campaign or live GPU latency claim",
+        "remaining_scope": "Whole-requirement axes unchanged. #2162 remains owned by PRI-49/#2191. Independent Principal review and batch merge are pending."
+      },
+      "scoped_repair_2343": {
+        "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+        "implemented_source": {
+          "state": "component-implemented-dependency-integrated",
+          "commit": "290042085b1e73e71d11c05f17038989acba6a29",
+          "scope": "PB observes dual absence and owns every loan, resource gate and queue-wait cancellation."
+        },
+        "validation": {
+          "state": "integrated-component-qualified-awaiting-independent-review",
+          "tested_composition": "eb0eb392fc43228756727b79f91f66150d6b3c3a",
+          "acceptance_record": "docs/evidence/issue2343/merge-acceptance.json",
+          "evidence": "docs/evidence/issue2343/integrated-qualification.json",
+          "detail": "Final integrated main-base source passes 388 tests per architecture in 17 files, 776 verified native executions in 34 actions with no failures/skips. Historical composition retains 1056 executions in 74 actions, including five fresh rounds per architecture for all four new files and two xdist rounds each. Merged #2344 supplies exact-publication cleanup. Native populations, settled cleanup, immutable logs, execution receipts/CAS payloads and source bytes verified; worker attestation signatures unchecked.",
+          "integrated_source": "290042085b1e73e71d11c05f17038989acba6a29"
+        },
+        "deployment": "not deployed; no runtime publication, activation or restart",
+        "workload_proof": "not established; no live gang or staged-only campaign",
+        "remaining_target": "Whole-requirement axes unchanged; independent review, approved-head intake and actual source merge remain owed."
+      }
+    },
+    {
+      "acceptance": [
+        "manual-review:unknown axes stay unknown-worded per change"
+      ],
+      "acceptance_assertion": "Manual review: every unknown axis below stays unknown-worded; no prose claim of deployment.",
+      "deployment": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "id": "SC-03",
+      "implementation": {
+        "commit": null,
+        "path": null,
+        "state": "no"
+      },
+      "owner": "PB:docs-process",
+      "target_enforcement": "ledger plus AGENTS hook reviewed per change",
+      "text": "Contract is target plus ledger; unknown axes are owed work, never claims.",
+      "validation": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      }
+    },
+    {
+      "acceptance_assertion": "Manual review: behavior deltas cite (runtime_commit, generation_id), never source merge alone.",
+      "deployment": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): Offers from sparky, sparklina and dl380g10 announced runtime_commit 81d95cba8d91 at 1790169703 and a0fdcd2f7482 from 1790171012 to 1790171023 (13:43Z); the dl380g10 tier role runs the a0fdcd2f7482-1790170897-121d887b4732 tree; DESKTOP-P5UOGNJ is offline (PB#900) and stale on a80eea97.",
+        "state": "partial"
+      },
+      "id": "ID-08",
+      "implementation": {
+        "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
+        "path": "runtime generation link; worker attestations; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",
+        "state": "yes"
+      },
+      "owner": "PB:fleet-runtime",
+      "text": "Behavior attributed per (runtime_commit, generation_id).",
+      "validation": {
+        "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
+        "state": "partial"
+      },
+      "workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "scoped_repair_1929": {
+        "target": "Behavior attributed per (runtime_commit, generation_id).",
+        "implemented_source": {
+          "commit": "73eeb59b7b2af624afd87df580a1f16a83c4a69a",
+          "state": "component-implemented",
+          "scope": "Idle GPU CPU guests with interruption-only shard retry, restored ordinary preemption, bounded guest retry liveness, useful collective drains and charged timed placement."
+        },
+        "validation": {
+          "state": "component-qualified-with-baselines",
+          "acceptance_record": "docs/evidence/issue1929_round2_acceptance_2026-10-21.json",
+          "detail": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below.",
+          "test_commit": "2f8befb618fb846477b0f671ea62684155af7ded"
+        },
+        "deployment": "not deployed; no runtime publication in this lane",
+        "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
+        "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
+        "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+      },
+      "scoped_repair_1707_review2": {
+        "target": "Behavior attributed per (runtime_commit, generation_id).",
+        "implemented_source": "eca345a74ea4c7d5f83d6898d351e515d9cd31af; same complete tree as 5482fb5e2ee3887ca08eb0acded230a96361c3f8",
+        "validation": {
+          "state": "source-component-qualified",
+          "manifest": "docs/evidence/pb1707/counter-qualification.json",
+          "outcome": "54 executed actions, 1,500 passed, zero failures/skips, 54 verified success receipts. Five rounds per architecture for all three changed test files, two xdist rounds each; final 12-file integration passed on x86 and ARM."
+        },
+        "deployment": "not deployed; runtime publication and restart excluded",
+        "workload_proof": "not run; whole-requirement axes unchanged",
+        "remaining_target": "Whole staged-read contract, live GPU, daemon-load, NFS-fault and production-soak evidence remain outside this source/component correction. Current-main composition belongs to the merge train."
+      },
+      "scoped_repair_2270": {
+        "target": "Behavior attributed per (runtime_commit, generation_id).",
+        "implemented_source": {
+          "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+          "state": "component-implemented",
+          "scope": "Source validation is attributed to a checkout snapshot; no runtime activation of this repair is claimed."
+        },
+        "validation": {
+          "state": "scoped-component-qualified-with-main-baselines",
+          "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+          "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+          "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+          "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
+        },
+        "deployment": "not deployed; no publication, activation or service restart in this task",
+        "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+        "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
+      },
+      "scoped_repair_1707_batch_history": {
+        "scope": "Historical source/component evidence only; whole-requirement states retain incoming main. No deployment or workload promotion.",
+        "source_pr": 2069,
+        "approved_head": "efff85c6f1c49d789afa733b36364be4a3b0d5c0",
+        "accepted_axis_text": {
+          "validation": {
+            "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json. 2026-10-25 PB #1707 source/component scope: default activity and semantic phase supervision, explicit deadline/D30 precedence, bounded per-claim running logs, and an explicit-allowance capability fence. Focused PB actions 9f9f5df619064cfba4ab07cb30a429090b19ee5a5a9d39667d2e6c7f0ad8219d, 3efc60d73c7f39cb8e4dc63c574b08f4a4b510ad0046d53f9c6b6e5b3597417f, 0d048f35f829158680cff9447cfda56acd9d0f41a25911f9077cabdd92a817e1, aaa3f4424c9d3cd70196d150eef9a75b2d3fd0bd780d55e4294f0bb8f64429dd: 72 passed. The scoped acceptance record is docs/evidence/pb1707/merge-acceptance.json. This does not establish the whole requirement, staged-reader behavior or workload proof.",
+            "state": "partial"
+          },
+          "deployment": {
+            "detail": "2026-09-23 update (snapshot 13:50Z): Offers from sparky, sparklina and dl380g10 announced runtime_commit 81d95cba8d91 at 1790169703 and a0fdcd2f7482 from 1790171012 to 1790171023 (13:43Z); the dl380g10 tier role runs the a0fdcd2f7482-1790170897-121d887b4732 tree; DESKTOP-P5UOGNJ is offline (PB#900) and stale on a80eea97. PB #1707 candidate is not deployed; this task prohibits runtime publication.",
+            "state": "partial"
+          }
+        }
+      }
+    },
+    {
+      "acceptance": [
+        "ACC-06"
+      ],
+      "acceptance_assertion": "PB720 repro record shows ack/exit/receipt distinct; application validity separately gated (partial, PB side only).",
+      "deployment": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): #831 and #887 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs).",
+        "state": "yes"
+      },
+      "id": "ID-09",
+      "scoped_repair_1106": {
+        "target": "Canary waits/unknown observations never become passes or generation-defect verdicts.",
+        "implementation": "astra/pb-1106 proposes typed observation/staging waits and nonzero not_run rollout status; per-leg keys and reasons retained. Not merged; verdict/envelope changes require owner review.",
+        "validation": "CPU RED 1dd885185db095e3dd180541132e83f426bedfe0367f3975176957a69623d4ab: 4 failed/4 passed. Final GREEN 42219d9189565c5f9777d19825020ab8f33a8df2501aef700591e199b69a4c63: 133 passed/no skips; receipt 44d514987752fe8c4335c3579d720bb5bedead496fe061610771abc7bd5a01e2. Terminal and claim/payload checks verified; no full-attestation claim from MCP.",
+        "deployment": "not deployed; no runtime publish or live canary performed",
+        "workload_proof": "unknown; #1171 historical chunk-mover starvation hypothesis not established"
+      },
+      "implementation": {
+        "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:cd7e1b97e5dc (#831) reads a generation's ending from its immutable attempts; 44098612105d (#887) counts a claim whose finish is in flight as outstanding.",
+        "path": "src/prismabuild/pool.py terminal records + CAS receipts (a-c); (d) application-side, referenced",
+        "state": "partial"
+      },
+      "owner": "PB:queue",
+      "target_enforcement": "application-side validity gate on campaign outputs",
+      "text": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
+      "validation": {
+        "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0 attests a-c for its own record 2026-09-23 update (snapshot 13:50Z): #831 fail-before 6a8645b2e7f4 (9 failed), green 79adabbb74f9 (11 passed), 838c1c51a36d (185 passed).",
+        "state": "partial"
+      },
+      "workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "scoped_repair_2270": {
+        "target": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
+        "implemented_source": {
+          "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+          "state": "component-implemented",
+          "scope": "Cleanup resolution remains separate from command failure and creates no command-success receipt."
+        },
+        "validation": {
+          "state": "scoped-component-qualified-with-main-baselines",
+          "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+          "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+          "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+          "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
+        },
+        "deployment": "not deployed; no publication, activation or service restart in this task",
+        "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+        "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
+      }
+    },
+    {
+      "acceptance": [
+        "manual-review:\u00a711 applied per step with stated bounds"
+      ],
+      "acceptance_assertion": "Manual review per step: index, filters, window, truncation stated; authoritative indexes queried; counts/timings never sole verification.",
+      "deployment": {
+        "detail": "contains no proof of current deployment 2026-09-23 update (snapshot 13:50Z): #957 and #967 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
+        "state": "yes"
+      },
+      "historical_context": "PB720 final shards 263957bf71ea\u2026/a62a13a366ca\u2026/0b5d2fa45ed8\u2026 done dl380g10 rc 0, recovered via pbmcp pb_actions snapshot_parent=31abdf251b38f259892acbabf222f74cdd26c935; content equality vs fd939cc6a5 root-verified; done/-index timings matched pbtest stdout",
+      "id": "VER-01",
+      "implementation": {
+        "commit": "PB:d3c6b4241e86 (#967) reconciles each shard's outcomes with its collection by node ID; d1e217607942 (#957) records each skip's node ID and reason. These cover test receipts only.",
+        "path": null,
+        "state": "partial"
+      },
+      "owner": "PB:docs-process",
+      "target_enforcement": "contract \u00a710 checklist step plus acceptance-record template",
+      "text": "Bounded search completeness: state index, filters, window, truncation before declaring missing; authoritative indexes first; counts/timings alone are not verification.",
+      "validation": {
+        "detail": "manual-reviewed correction precedent in this lane, scoped example only - not runtime property proof PBMCP's withdrawn-row view omitted attempt history (attempts_detail=[]) for the withdrawn produced mover 6fbc96301c6c; the retained pre-withdrawal readback (produced-mover-snapshot-root-diagnosis.json; issue 790) proves one actual failed attempt, so 'never claimed' must not be concluded from current ready/withdrawn state. Counts alone are not verification, and neither is an empty view whose read scope is not stated. 2026-09-23 update (snapshot 13:50Z): #967 b31c34b551fd and 9 more shards (567 passed), PQ full suite 63ebbe7e42cf and 39 more shards; #957 c749c91fcae9, cfb88c896310.",
+        "state": "partial"
+      },
+      "workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      }
+    }
+  ],
+  "claims": "Targets, implemented/deployed/workload axes stay exactly as recorded. Scoped integration qualification only; no publisher execution, staging, activation, canary, R6 change or campaign completion."
+}

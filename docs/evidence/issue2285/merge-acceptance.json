@@ -1,0 +1,228 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "18e3324d3d6f9a113a0b9f5f65e48e918794bc23",
+  "scope": [
+    "SC-01",
+    "SC-03",
+    "ID-08",
+    "ID-09",
+    "VER-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-2285",
+    "issue": "https://github.com/RobTand/prismabuild/issues/2285",
+    "source_commit": "aa4ade710927ec66279825f209244dcd75775ef6",
+    "acceptance_status": "source-component validated; independent PR review and batch merge pending",
+    "validated_repairs": [
+      {
+        "id": "SC-01",
+        "actions": [
+          "f2cc646748ded197a953de8682172912c7d7554f644f20012d59ad7f289df1fb",
+          "c1a3210a7b53d0a6142c1a0609a366ba87011fc1d617cc9e960c51fb9559283d",
+          "077573bb71ebd1775db565d4d9f0345ef79189404d786c135c6550ed5d396e2d",
+          "af36a45bc36513407c45ba15a904f0f61a96a1bb12ae826a323cbf9fb9a08a11",
+          "ef4c231dab871c20d59eac30fded7c0d32a42f13405e57638f526edf3d0ec3d4",
+          "f18fb49f176eb90692b98c024587836269d0d2c60a8978135ee2a18ae310e8cc",
+          "ccfad960cc1ef5721619d6a15faa69083e6e1cc506c821e93243fa078e7e01f9",
+          "a8584f4e11daa85a9e4fcd4cac815c1b53759f2e4ba9c5fc239bd35b427f219d",
+          "284208e46ae5ce9fe9881de283cd59258740cc8cb79ff2968eef09de6e3775d6",
+          "1b44696afb419a3df4cf3d7af29cfb4ff2164793fdf8e023b587b32d209d2cf7",
+          "3d2bce6731de747129dad773e2ae3e24ceb2854a2cd3b7746c0ce449a64d9d4b",
+          "a26b695577b953e5e9e311d9e12581802f6cebb12fe896e020fb46e4b8fdf31f",
+          "440565ad239b332e761669648c6213d11444a5e6fcbbb38c169c3aed0346b967",
+          "b52aac76f3efb7dd0e22961b5ead75902ebf205aaff285b3486dec4955096d00"
+        ],
+        "outcome": "PB driver constructs the actual publisher-host GPU requirement and asks the existing bounded-offer matcher. This preflight neither submits nor reserves."
+      },
+      {
+        "id": "SC-03",
+        "actions": [
+          "f2cc646748ded197a953de8682172912c7d7554f644f20012d59ad7f289df1fb",
+          "c1a3210a7b53d0a6142c1a0609a366ba87011fc1d617cc9e960c51fb9559283d",
+          "077573bb71ebd1775db565d4d9f0345ef79189404d786c135c6550ed5d396e2d",
+          "af36a45bc36513407c45ba15a904f0f61a96a1bb12ae826a323cbf9fb9a08a11",
+          "ef4c231dab871c20d59eac30fded7c0d32a42f13405e57638f526edf3d0ec3d4",
+          "f18fb49f176eb90692b98c024587836269d0d2c60a8978135ee2a18ae310e8cc",
+          "ccfad960cc1ef5721619d6a15faa69083e6e1cc506c821e93243fa078e7e01f9",
+          "a8584f4e11daa85a9e4fcd4cac815c1b53759f2e4ba9c5fc239bd35b427f219d",
+          "284208e46ae5ce9fe9881de283cd59258740cc8cb79ff2968eef09de6e3775d6",
+          "1b44696afb419a3df4cf3d7af29cfb4ff2164793fdf8e023b587b32d209d2cf7",
+          "3d2bce6731de747129dad773e2ae3e24ceb2854a2cd3b7746c0ce449a64d9d4b",
+          "a26b695577b953e5e9e311d9e12581802f6cebb12fe896e020fb46e4b8fdf31f",
+          "440565ad239b332e761669648c6213d11444a5e6fcbbb38c169c3aed0346b967",
+          "b52aac76f3efb7dd0e22961b5ead75902ebf205aaff285b3486dec4955096d00"
+        ],
+        "outcome": "This record distinguishes tested source from deployed support and leaves whole-requirement axes unchanged."
+      },
+      {
+        "id": "ID-08",
+        "actions": [
+          "f2cc646748ded197a953de8682172912c7d7554f644f20012d59ad7f289df1fb",
+          "c1a3210a7b53d0a6142c1a0609a366ba87011fc1d617cc9e960c51fb9559283d",
+          "077573bb71ebd1775db565d4d9f0345ef79189404d786c135c6550ed5d396e2d",
+          "af36a45bc36513407c45ba15a904f0f61a96a1bb12ae826a323cbf9fb9a08a11",
+          "ef4c231dab871c20d59eac30fded7c0d32a42f13405e57638f526edf3d0ec3d4",
+          "f18fb49f176eb90692b98c024587836269d0d2c60a8978135ee2a18ae310e8cc",
+          "ccfad960cc1ef5721619d6a15faa69083e6e1cc506c821e93243fa078e7e01f9",
+          "a8584f4e11daa85a9e4fcd4cac815c1b53759f2e4ba9c5fc239bd35b427f219d",
+          "284208e46ae5ce9fe9881de283cd59258740cc8cb79ff2968eef09de6e3775d6",
+          "1b44696afb419a3df4cf3d7af29cfb4ff2164793fdf8e023b587b32d209d2cf7",
+          "3d2bce6731de747129dad773e2ae3e24ceb2854a2cd3b7746c0ce449a64d9d4b",
+          "a26b695577b953e5e9e311d9e12581802f6cebb12fe896e020fb46e4b8fdf31f",
+          "440565ad239b332e761669648c6213d11444a5e6fcbbb38c169c3aed0346b967",
+          "b52aac76f3efb7dd0e22961b5ead75902ebf205aaff285b3486dec4955096d00"
+        ],
+        "outcome": "Every green action was checked against checkout parent aa4ade710927ec66279825f209244dcd75775ef6. No activation or executing-worker attestation is claimed."
+      },
+      {
+        "id": "ID-09",
+        "actions": [
+          "f2cc646748ded197a953de8682172912c7d7554f644f20012d59ad7f289df1fb",
+          "c1a3210a7b53d0a6142c1a0609a366ba87011fc1d617cc9e960c51fb9559283d",
+          "077573bb71ebd1775db565d4d9f0345ef79189404d786c135c6550ed5d396e2d",
+          "af36a45bc36513407c45ba15a904f0f61a96a1bb12ae826a323cbf9fb9a08a11",
+          "ef4c231dab871c20d59eac30fded7c0d32a42f13405e57638f526edf3d0ec3d4",
+          "f18fb49f176eb90692b98c024587836269d0d2c60a8978135ee2a18ae310e8cc",
+          "ccfad960cc1ef5721619d6a15faa69083e6e1cc506c821e93243fa078e7e01f9",
+          "a8584f4e11daa85a9e4fcd4cac815c1b53759f2e4ba9c5fc239bd35b427f219d",
+          "284208e46ae5ce9fe9881de283cd59258740cc8cb79ff2968eef09de6e3775d6",
+          "1b44696afb419a3df4cf3d7af29cfb4ff2164793fdf8e023b587b32d209d2cf7",
+          "3d2bce6731de747129dad773e2ae3e24ceb2854a2cd3b7746c0ce449a64d9d4b",
+          "a26b695577b953e5e9e311d9e12581802f6cebb12fe896e020fb46e4b8fdf31f",
+          "440565ad239b332e761669648c6213d11444a5e6fcbbb38c169c3aed0346b967",
+          "b52aac76f3efb7dd0e22961b5ead75902ebf205aaff285b3486dec4955096d00"
+        ],
+        "outcome": "Action exit and test completion, CAS receipt, payload digest and application test verdict were checked separately."
+      },
+      {
+        "id": "VER-01",
+        "actions": [
+          "f2cc646748ded197a953de8682172912c7d7554f644f20012d59ad7f289df1fb",
+          "c1a3210a7b53d0a6142c1a0609a366ba87011fc1d617cc9e960c51fb9559283d",
+          "077573bb71ebd1775db565d4d9f0345ef79189404d786c135c6550ed5d396e2d",
+          "af36a45bc36513407c45ba15a904f0f61a96a1bb12ae826a323cbf9fb9a08a11",
+          "ef4c231dab871c20d59eac30fded7c0d32a42f13405e57638f526edf3d0ec3d4",
+          "f18fb49f176eb90692b98c024587836269d0d2c60a8978135ee2a18ae310e8cc",
+          "ccfad960cc1ef5721619d6a15faa69083e6e1cc506c821e93243fa078e7e01f9",
+          "a8584f4e11daa85a9e4fcd4cac815c1b53759f2e4ba9c5fc239bd35b427f219d",
+          "284208e46ae5ce9fe9881de283cd59258740cc8cb79ff2968eef09de6e3775d6",
+          "1b44696afb419a3df4cf3d7af29cfb4ff2164793fdf8e023b587b32d209d2cf7",
+          "3d2bce6731de747129dad773e2ae3e24ceb2854a2cd3b7746c0ce449a64d9d4b",
+          "a26b695577b953e5e9e311d9e12581802f6cebb12fe896e020fb46e4b8fdf31f",
+          "440565ad239b332e761669648c6213d11444a5e6fcbbb38c169c3aed0346b967",
+          "b52aac76f3efb7dd0e22961b5ead75902ebf205aaff285b3486dec4955096d00"
+        ],
+        "outcome": "Exact full action keys from ten named reports plus four negative controls were queried with pb_action; pb_log and pb_verify_claim completed without timeout or ambiguity. No global queue-completeness claim."
+      }
+    ],
+    "remaining_gaps": [
+      "No deployment, role convergence, live canary, full worker-attestation verification or staged-only campaign qualification.",
+      "Recorded-offer feasibility is not a reservation or guarantee of current free capacity. Ordinary postactivation placement and generation checks remain required."
+    ],
+    "note": "1514 passing tests, zero skips; 66 successful actions have verified claims, receipts and payload hashes. Four expected failures have terminal/log evidence and no successful receipt."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "requirement_status": [
+    {
+      "id": "SC-01",
+      "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+      "ledger_axes_at_review": {
+        "implementation": "yes",
+        "validation": "unknown",
+        "deployment": "unknown",
+        "workload_proof": "unknown"
+      },
+      "scoped_implementation": "PB driver constructs the actual publisher-host GPU requirement and asks the existing bounded-offer matcher. This preflight neither submits nor reserves.",
+      "scoped_validation": "source-component tested; exact records in actions.jsonl",
+      "deployment": "not deployed by this task",
+      "workload_proof": "not established by this task",
+      "remaining_target": "Existing whole-requirement axes and proposed work remain unchanged."
+    },
+    {
+      "id": "SC-03",
+      "target": "Contract is target plus ledger; unknown axes are owed work, never claims.",
+      "ledger_axes_at_review": {
+        "implementation": "no",
+        "validation": "unknown",
+        "deployment": "unknown",
+        "workload_proof": "unknown"
+      },
+      "scoped_implementation": "This record distinguishes tested source from deployed support and leaves whole-requirement axes unchanged.",
+      "scoped_validation": "source-component tested; exact records in actions.jsonl",
+      "deployment": "not deployed by this task",
+      "workload_proof": "not established by this task",
+      "remaining_target": "Existing whole-requirement axes and proposed work remain unchanged."
+    },
+    {
+      "id": "ID-08",
+      "target": "Behavior attributed per (runtime_commit, generation_id).",
+      "ledger_axes_at_review": {
+        "implementation": "yes",
+        "validation": "partial",
+        "deployment": "partial",
+        "workload_proof": "unknown"
+      },
+      "scoped_implementation": "Every green action was checked against checkout parent aa4ade710927ec66279825f209244dcd75775ef6. No activation or executing-worker attestation is claimed.",
+      "scoped_validation": "source-component tested; exact records in actions.jsonl",
+      "deployment": "not deployed by this task",
+      "workload_proof": "not established by this task",
+      "remaining_target": "Existing whole-requirement axes and proposed work remain unchanged."
+    },
+    {
+      "id": "ID-09",
+      "target": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
+      "ledger_axes_at_review": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "unknown"
+      },
+      "scoped_implementation": "Action exit and test completion, CAS receipt, payload digest and application test verdict were checked separately.",
+      "scoped_validation": "source-component tested; exact records in actions.jsonl",
+      "deployment": "not deployed by this task",
+      "workload_proof": "not established by this task",
+      "remaining_target": "Existing whole-requirement axes and proposed work remain unchanged."
+    },
+    {
+      "id": "VER-01",
+      "target": "Bounded search completeness: state index, filters, window, truncation before declaring missing; authoritative indexes first; counts/timings alone are not verification.",
+      "ledger_axes_at_review": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "unknown"
+      },
+      "scoped_implementation": "Exact full action keys from ten named reports plus four negative controls were queried with pb_action; pb_log and pb_verify_claim completed without timeout or ambiguity. No global queue-completeness claim.",
+      "scoped_validation": "source-component tested; exact records in actions.jsonl",
+      "deployment": "not deployed by this task",
+      "workload_proof": "not established by this task",
+      "remaining_target": "Existing whole-requirement axes and proposed work remain unchanged."
+    }
+  ],
+  "evidence": {
+    "manifest": "actions.jsonl",
+    "retained_root": "/mnt/shared/paperclip-runs/PRI-173",
+    "readback_bounds": {
+      "action_keys": 70,
+      "stdout_tail_lines": 1000,
+      "stdout_byte_cap": 131072,
+      "per_call_deadline_s": 10,
+      "timed_out": false,
+      "unavailable": false,
+      "terminal_ambiguous": false
+    },
+    "checks_passed": true,
+    "attestation_verified": null
+  }
+}

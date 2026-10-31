@@ -1,0 +1,54 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "b8723b1f21ad5f302fde61e97a764f3bed403f39",
+  "ledger_commit": "b8723b1f21ad5f302fde61e97a764f3bed403f39",
+  "scope": [
+    "LIVE-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-2307",
+    "issue": "https://github.com/RobTand/prismabuild/issues/2307",
+    "validated_repairs": [
+      {
+        "id": "LIVE-01",
+        "actions": [
+          "20dbe0123e997eaf54ba0f330e2b03be0a4be92dc16117c2b0b3da55ffd1da63",
+          "06a4cc9fec45e995e8a5c45a0853c214fefa6e8725db318e1086e1d203d7dc4e",
+          "91f11fe7fbd512ce45f44dbb032f8e5b4da3627eb16a712b1d5ac03d1d5fa398",
+          "cc5833492570ba2599d766d51dcf4c773fb3f5a13f471c27fc37d2af0271312b",
+          "33d3a80b3c7224cfa387176aad8c25d03a8366a4b587d994a99dc6152fe8d5ea",
+          "264b6aecbd203566a285468e9ac289ff2940bc6ced32028d330ae0c68df585c6",
+          "9753cea960ef5368f75d5d8409923f89f1a9df5d5dd50792496c66c2dcc45dff",
+          "a949b937a0f2f39fafb11155a1aba44aad8ab90fc184f5b2b1747c05bbbdf545",
+          "bdb340c9eda1462496eff51c4be1ab01e30a80205a9dd03c7921acb5f303e098",
+          "a5cf7e2d9a6936dde65d1b082678020672900d5acc9ade73ccbba5944c365822",
+          "92c22b5460c3141d2930af4323e4f1998135d6851e003c3e6d964ee24ccb4adb",
+          "049174a68e8fadf00c415f2ca6dd71d8efa5019bd3f1f67a3c0649f57829800a",
+          "6b5c909ee15f288346869703c08c85e754b0b9d4bd30f5c2e617887dd8a94537",
+          "25046bfbc8fe554fc2e7ebb8c65316310269b5cf0914dd3abf44a0d487c63e5e",
+          "f3a73bda77cc09c9ba7905e2d56c65a70508dd1cfae3292747fb686b74b7f8eb",
+          "3bd8a120ff01563af17cb1a632cd51ba2a6215df49fdc0dab2507452597f98c8",
+          "425a319ff454dbe2864d5115ade91b46dc173101fdda60b0b44b09c490540370"
+        ],
+        "outcome": "216 passing test executions, zero failures/skips. 168 distinct tests in the focused and adjacent selection; 48 also passed on x86 under xdist2. Terminal status, cleanup, immutable logs, CAS execution receipt body/result bytes, source bundle and src/tools/tests tree IDs read back."
+      }
+    ],
+    "remaining_gaps": [
+      "LIVE-01 remains a whole-system target with implementation no, validation unknown, deployment unknown and workload proof no at the ledger top level. This repair qualifies only ordinary admission proof reader custody and its fallback.",
+      "No live NFS fault, runtime activation, cross-generation running-loop test or staged workload qualification occurred. Host-local rendezvous and cache I/O retain their local-filesystem assumptions."
+    ],
+    "evidence": "docs/evidence/issue2307_ordinary_proof_validation_2026-10-26.json",
+    "note": "Scoped source-merge evidence ready for independent review. No merge or deployment claimed. The deterministic socket gate injects reader wait expiry and retained child cleanup; it asserts state/order rather than elapsed time. Failed-before action 5afce3dfa4bc457c2f965bcbdf82d461a4cc90628a6b1f7bc06fe5ded5766057 failed all five phases; failed actions have no success receipt. No staged-only waiver."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}

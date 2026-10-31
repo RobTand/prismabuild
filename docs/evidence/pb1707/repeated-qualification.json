@@ -1,0 +1,804 @@
+{
+  "schema": "pb.1707_repeated_qualification.v1",
+  "source_commit": "b530faad8d8218fe7e9bb805cc94f399a81dfda1",
+  "audit_path": "/mnt/shared/paperclip-runs/PRI-43/repeated-audit-b530faad.json",
+  "audit_sha256": "440c763612ed76e628dac07423c2e61bab77e1bdd3d22e2451ee20d8edb4b56e",
+  "plan_path": "/mnt/shared/paperclip-runs/PRI-43/repeated-plan-b530faad.json",
+  "plan_sha256": "ff6a0e437f2a40bba3813fe93bc5df2c00737642e2454c5a73f57dc891fc51e9",
+  "distinct_executed_actions": 95,
+  "counts": {
+    "passed": 2211,
+    "failed": 1
+  },
+  "rounds_per_architecture": {
+    "x86_64": 5,
+    "aarch64": 5
+  },
+  "xdist_rounds_per_architecture": {
+    "x86_64": 2,
+    "aarch64": 2
+  },
+  "checks": [
+    "terminal request and source Git objects",
+    "both log sizes and hashes",
+    "complete native populations",
+    "scope cleanup",
+    "success CAS receipts and payload hashes",
+    "unique keys and executed reports",
+    "architecture placement, resources and native thread limits"
+  ],
+  "known_baseline_failure": {
+    "nodeid": "tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned",
+    "baseline_action": "e20895da5295c81770c8d1cca04dd19227a4e37441da191cd6e99c1e2f31d17c",
+    "candidate_action": "04e0dd88fd4ebbfc0eb24c820f7a9da4bfdd86032dcaea391aa45b59be6ff3b3",
+    "reason": "Pinned field-set inventory lacks the unchanged maintenance observe_inventory_process entry. Assertion and fixture remain unchanged."
+  },
+  "scope": "Source/component qualification only. No deployment, staged-read campaign, real GPU, Docker daemon-load or NFS-fault proof. Eight crash-era actions stay excluded. CAS receipts do not prove power-loss durability.",
+  "groups": [
+    {
+      "id": "x86_64-1",
+      "workers_per_shard": 1,
+      "counts": {
+        "passed": 215
+      },
+      "actions": [
+        {
+          "key": "862fdc13d453766511331b1d08840c6e089499b0db7b0c948492f225ff2abae3",
+          "receipt": "0efdc322ea012ff84e2e0ebe382dd058108d75b38d561245af4a4db511d1256e",
+          "worker": "dl380g10",
+          "selected": 19,
+          "returncode": 0
+        },
+        {
+          "key": "d2b942492a5427b0935c504947287cffc146049c113dbd302924afeb30980c45",
+          "receipt": "5b8e30f5924d55318ce84e0c6540aee64ea916ad47668d06eb0a978738eb9160",
+          "worker": "dl380g10",
+          "selected": 5,
+          "returncode": 0
+        },
+        {
+          "key": "2ebdca2120b91f18259dfe882ea65825f176c16873726181dd3a2fc2d135e5ed",
+          "receipt": "77f26b6b5c535d5ea6d53e4df15f305a9cff8f1aea3e4fad10f78521e30f911e",
+          "worker": "dl380g10",
+          "selected": 27,
+          "returncode": 0
+        },
+        {
+          "key": "00f5be53bad28ce300c61a734b9ab69a065688b07dac3d8b7f799b464724e952",
+          "receipt": "5727b484704f604870fe2ae0ab54a2033e0044901e2c1b84e7a3e4c8f7af40ec",
+          "worker": "dl380g10",
+          "selected": 53,
+          "returncode": 0
+        },
+        {
+          "key": "d4be33ce7822b393f000d524197a1d154e7237ba23ddefd6d7198d61ea2f4a87",
+          "receipt": "f312cde5d6de1ec86f6ee0d0201b409f0873d28b6f47d210013f54b7973945fe",
+          "worker": "dl380g10",
+          "selected": 9,
+          "returncode": 0
+        },
+        {
+          "key": "ff63a934b7378bcf2b7f538d822a65a3485b72d5ceca772b28c67c210d122df3",
+          "receipt": "7aacedcfa551ef5572d96107cae9f02858c3c28f536b3b7d5932e6aa5ad533d6",
+          "worker": "dl380g10",
+          "selected": 21,
+          "returncode": 0
+        },
+        {
+          "key": "9a28ef52226926fb7826d079f830ee60891d73c3d53c04e0dd473e164c481ad4",
+          "receipt": "81b8b1c121d048790354b5c20801d11a83f9ebcc212d8f30e51773437e292983",
+          "worker": "dl380g10",
+          "selected": 25,
+          "returncode": 0
+        },
+        {
+          "key": "124bda31513dd61e246ef636b3a79ae696537d8d03e94c13aa93817f57a6e0fe",
+          "receipt": "1ccd11581a7c361e215390b25321721586b3de62bfce39b5bd05172b9e203af4",
+          "worker": "dl380g10",
+          "selected": 6,
+          "returncode": 0
+        },
+        {
+          "key": "d5867efec63f81bc62e10fa9cea95fdcb29338c470f9dd115486ae583c452585",
+          "receipt": "8ffeca8446aff3c14f23656222d88fee0e8da6167f282a72ab4767066a5c54d4",
+          "worker": "dl380g10",
+          "selected": 50,
+          "returncode": 0
+        }
+      ]
+    },
+    {
+      "id": "aarch64-1",
+      "workers_per_shard": 1,
+      "counts": {
+        "passed": 215
+      },
+      "actions": [
+        {
+          "key": "666cb9746a53101d7e6a4a77f36a82c3b5d26c113cb2e962fe6a99e8e35942a3",
+          "receipt": "ba54ad155f4cad4fe4ac91f728d3ef87eb246fd634a98c55873d598fdb94c6ee",
+          "worker": "sparklina",
+          "selected": 19,
+          "returncode": 0
+        },
+        {
+          "key": "e1386cdf08b618c839908abdb596ae3a53f16a78e4b8dd626e8dba376cfb01c9",
+          "receipt": "48247f01f8a5a5a1e991510381d4779fe8039d43ecb87882458589c63b09add0",
+          "worker": "sparky",
+          "selected": 5,
+          "returncode": 0
+        },
+        {
+          "key": "0d412d89fc3a40b26c382e9d721947c02cdb53f50a0bb70e8ba0eab961ed101c",
+          "receipt": "c6136fe3454eff90feb5e4fe537439fe4f100b3ac0f3eaae62aa63a9d30c548f",
+          "worker": "sparklina",
+          "selected": 27,
+          "returncode": 0
+        },
+        {
+          "key": "f3292852b8610ec358181aa608ca314e6a3052cae62c8dd9d2e21a5f720ce622",
+          "receipt": "38686ffba35a07e9d5e4b3ba9bbe0c45ca0528fd1e12f1d412bbf4616be6f773",
+          "worker": "sparklina",
+          "selected": 53,
+          "returncode": 0
+        },
+        {
+          "key": "30ba37189499f4fe3041318f1d30c2342bbccbac309b8f09f11e0b87bec89411",
+          "receipt": "6008bc978047d39da956f0ecc55b1fef098a82e21c5d0be82ec4db404712364e",
+          "worker": "sparky",
+          "selected": 9,
+          "returncode": 0
+        },
+        {
+          "key": "f126bee8b46f5d00c478878aabd2cb1668a62762eaaaece96698814c8446db6d",
+          "receipt": "f98aa2f1627cf39375ec313daf0427faaba4d56fd15e5f431a8db5cd3f4182f0",
+          "worker": "sparklina",
+          "selected": 21,
+          "returncode": 0
+        },
+        {
+          "key": "29dd4e78c6dcb9e0ffdff4f99a7091eb51db3596c84de7624f2c735608c7a829",
+          "receipt": "fc0e36f07b29582a6543eb4b88436be7accef10f62c7363d26394059b6836620",
+          "worker": "sparklina",
+          "selected": 25,
+          "returncode": 0
+        },
+        {
+          "key": "19f5593cd67bf4d370a2384124761fdeff10f4dcbbf8efac40c44172abc59d48",
+          "receipt": "a7399a931f1c81c4babb9f42295b5b8db634bf38c3736ac16a06b9b8e4b8dbe6",
+          "worker": "sparky",
+          "selected": 6,
+          "returncode": 0
+        },
+        {
+          "key": "897074972f752ce1da50568a1527ef190872cecb7bb462da8898e7a03576827a",
+          "receipt": "d1e1e0538a1a87161e5280443f7a96bc8450337a43cd695210e1f9fe7c130742",
+          "worker": "sparklina",
+          "selected": 50,
+          "returncode": 0
+        }
+      ]
+    },
+    {
+      "id": "x86_64-2",
+      "workers_per_shard": 2,
+      "counts": {
+        "passed": 215
+      },
+      "actions": [
+        {
+          "key": "cdcc091d2ce781bf393debacc0e6544ce75a1ac73d000c83528c0f1d10c1709c",
+          "receipt": "731d794fc4345b1aa062a99e16fa3a00dddf640ee90efe2238815f8787d5f00a",
+          "worker": "dl380g10",
+          "selected": 19,
+          "returncode": 0
+        },
+        {
+          "key": "6cd27e302527de5cf63eb248738abeaec7997326c4fee0eb3f818ff7eee7cef0",
+          "receipt": "6b49e10cbd16d4fbe3c4fbfa0a9434c6adae17751a1c65efcd9ed1e4884d56ec",
+          "worker": "dl380g10",
+          "selected": 5,
+          "returncode": 0
+        },
+        {
+          "key": "30cd083d338cae66fbdece88442babb093ca07e0d324d7bb699f97f5602a31c8",
+          "receipt": "a32ab445937b4ee2e9d7712571f0bf556b9e40752b53e1fa9cf28394fce93a11",
+          "worker": "dl380g10",
+          "selected": 27,
+          "returncode": 0
+        },
+        {
+          "key": "a8bf6d58a43dcd6a0857c171fcfa056ebafac318db7a339153348bc85c4408c4",
+          "receipt": "25ca39e5f78ae2c16d924cd705eff345b3e427e4232181801ce9d7f90fa60c6b",
+          "worker": "dl380g10",
+          "selected": 53,
+          "returncode": 0
+        },
+        {
+          "key": "2373507ec61f90afdaee23d32c512a46dd6372c73780566e32a4f052924fb483",
+          "receipt": "e324118dd6955de16780b5ab277f829c76b6cda9008958e70c8c52028c863c75",
+          "worker": "dl380g10",
+          "selected": 9,
+          "returncode": 0
+        },
+        {
+          "key": "ee70b8051ce29e16e75e7a48b0cb5d35fc443d5fec03953945e8e00fff5be74e",
+          "receipt": "20b6a6d8b21b59b8a32d18d9307690492804ce80e67b471b9921be82e9646621",
+          "worker": "dl380g10",
+          "selected": 21,
+          "returncode": 0
+        },
+        {
+          "key": "3f4e8ed36bd55a82f97ca21757cbb1e7bd380dc31933da46d629c39e58b5a255",
+          "receipt": "22930fdfa0a70eb3378f3ba9d377ae0932a84d58fcbdd3f88b07531c647f7da1",
+          "worker": "dl380g10",
+          "selected": 25,
+          "returncode": 0
+        },
+        {
+          "key": "30f956dcec814f68e6d7c3da93ba841b26d93033f32b1b64aecd622defc71b74",
+          "receipt": "4ca2bc5d8dfb9c713da4edb1ff06ce7519e18e8316a71db12d9f28a6e6737bd0",
+          "worker": "dl380g10",
+          "selected": 6,
+          "returncode": 0
+        },
+        {
+          "key": "30da6ee41cd2be0255a1bff5ea4fc533fe1e05d121469a719ba87e3a0f763412",
+          "receipt": "663b26f00e39803e7839763a947145d648301e3d8808d0e4035713a8a8c0181e",
+          "worker": "dl380g10",
+          "selected": 50,
+          "returncode": 0
+        }
+      ]
+    },
+    {
+      "id": "aarch64-2",
+      "workers_per_shard": 2,
+      "counts": {
+        "passed": 215
+      },
+      "actions": [
+        {
+          "key": "0a057b97bfd97e6e6afecf9005ea8abd1d29e30e74b1bbd6e844867f8e532046",
+          "receipt": "f2404c70007d1ae5b0a705b6df7d1930954db0e9e4e2cb09520fe12f9e6eaf4b",
+          "worker": "sparklina",
+          "selected": 19,
+          "returncode": 0
+        },
+        {
+          "key": "e0b96cda54af7902cff5decb0a336c12df0e456eddc4df6ef73ef2b5d1ea2d4b",
+          "receipt": "21450a4e81e454c737ddb612fbbd01e9d9592546a0bf06967de2c2d4aa98f34c",
+          "worker": "sparky",
+          "selected": 5,
+          "returncode": 0
+        },
+        {
+          "key": "d2494f1cf422b8abd9b6ebf063d66cc705c11a63a836a46164d12e2c4c6da64b",
+          "receipt": "e202a298fd44df74f34da2db8220fb6ab4119a53c646dcb76793d0e63dee90bf",
+          "worker": "sparklina",
+          "selected": 27,
+          "returncode": 0
+        },
+        {
+          "key": "f373fa0e6937b52e6e23c5b63df3d458e04fc0053aee8fc26617bd4c1edc2267",
+          "receipt": "568db5a000dc73a66fa4c94b7592d3c9f796509446ed84becc2a5fe71b3840bc",
+          "worker": "sparky",
+          "selected": 53,
+          "returncode": 0
+        },
+        {
+          "key": "92b9fb73b372a11e299df8de03e0b2a2d7ac75e8d9c333e408eb0923ae7b113b",
+          "receipt": "534910c9e45290588777e54b85fbebd81d6e2707da28938f5b5d44bfb0ea0880",
+          "worker": "sparky",
+          "selected": 9,
+          "returncode": 0
+        },
+        {
+          "key": "c02a4eb83a7bef9591d5b282386c18af2bb06af4ca9e0f70d262ce558c4887f5",
+          "receipt": "d2f68a5fe7eb155d2ecb99beb93965e9d2dbd49be1175cb2e7d83128316cbbdd",
+          "worker": "sparky",
+          "selected": 21,
+          "returncode": 0
+        },
+        {
+          "key": "e0492e6849985f0bfe7c7b9f33cd332d8d5af883ea0514816674a605d219f39f",
+          "receipt": "10dde8edbda6a8d8917a6fab6f1509d6ebf3c6993035f6aac9228ed3bddfca56",
+          "worker": "sparky",
+          "selected": 25,
+          "returncode": 0
+        },
+        {
+          "key": "e3254aba8de11a9e3112f0172752abf1d8a143ec74574fa589bd507c344e7317",
+          "receipt": "1684bee8d8f650a4774aa015775df8429e56a23916a9ea52d3d4f40b52a09e41",
+          "worker": "sparklina",
+          "selected": 6,
+          "returncode": 0
+        },
+        {
+          "key": "f5f553d5e4aa8abb6039e4270bacd7650bac915aa24e3868084e7ecbdf5043a4",
+          "receipt": "9231b55e9c52949ced294bd7450593c80d05abebeaadcc920cce49b8555106b5",
+          "worker": "sparklina",
+          "selected": 50,
+          "returncode": 0
+        }
+      ]
+    },
+    {
+      "id": "x86_64-3",
+      "workers_per_shard": 1,
+      "counts": {
+        "passed": 215
+      },
+      "actions": [
+        {
+          "key": "69bb1d1e365b22c82816f5928e19727e5e30d6d99fe51fad551ad93af1a1e400",
+          "receipt": "51ba70d916d40005338355812b706ba30b95d1ceea00e6315f725843e098db08",
+          "worker": "dl380g10",
+          "selected": 19,
+          "returncode": 0
+        },
+        {
+          "key": "da4f3a13e5f5b30f4160389e20fd0c57cec9a9ef3d649915ecda342118da94a4",
+          "receipt": "a4dc76de725252ed8d20664f7495244c5faec7d7b58b0de13be199384ba20f22",
+          "worker": "dl380g10",
+          "selected": 5,
+          "returncode": 0
+        },
+        {
+          "key": "5331b053b1ff72a7f28745a88d4a01cd1e4d7c0e65f204914780213ba5322217",
+          "receipt": "f7a15ea7f4954cfd46d60ffc7275425561f305e78119c630175c06637be5c019",
+          "worker": "dl380g10",
+          "selected": 27,
+          "returncode": 0
+        },
+        {
+          "key": "83b7991b0688cca7af5de0595d838053d12db68eef9765aed398954710cd7044",
+          "receipt": "600937edad142f7e90b83e3289526ac829951e696125bcdbd0982013ce199ea7",
+          "worker": "dl380g10",
+          "selected": 53,
+          "returncode": 0
+        },
+        {
+          "key": "1df426dcc12bbe15ab6767d512d1b7fcfbff97e9118bbfbed8d79e0ab81337fb",
+          "receipt": "e9740d2cdf55b6102c736879f466346162510d526a264e2bb5fb302f12f09d68",
+          "worker": "dl380g10",
+          "selected": 9,
+          "returncode": 0
+        },
+        {
+          "key": "98005f2a601ccd8608e86c279ffddcb944abb55f40aef50083068251dd956a23",
+          "receipt": "d8dc55633f43a93049d14362d77106cf88d6e63bb35f9dab194b32cd78255546",
+          "worker": "dl380g10",
+          "selected": 21,
+          "returncode": 0
+        },
+        {
+          "key": "cfb9f3987f2ffa1a0b4b238b7d9cf361d1f82a28a03e10beb2c1177fcb71214b",
+          "receipt": "53ff32b90991cec73e007668d27561efdb5162c6d828f1675cb9b6b8db239a88",
+          "worker": "dl380g10",
+          "selected": 25,
+          "returncode": 0
+        },
+        {
+          "key": "9920e5c7dd7c49791620f3a6901f53a7cbd869a0ac0a390ed0867fba230720ed",
+          "receipt": "420e72d32e50f1dc343958ae6504283dc0a5536eca7684210e82e659ec2cb5ea",
+          "worker": "dl380g10",
+          "selected": 6,
+          "returncode": 0
+        },
+        {
+          "key": "999bb0215b85d09bb1ef747c899f16b10aff6a42a452cf1768de4df0a6278372",
+          "receipt": "288f5f019e2ca09bb277f82b3dbfcec46b2f8dc469b9461a9a4412b66e2b1b41",
+          "worker": "dl380g10",
+          "selected": 50,
+          "returncode": 0
+        }
+      ]
+    },
+    {
+      "id": "aarch64-3",
+      "workers_per_shard": 1,
+      "counts": {
+        "passed": 215
+      },
+      "actions": [
+        {
+          "key": "105900251e2b8ba4582f2bc0f1601994a85ee157c15b9c0dbeb21c0e77be76d4",
+          "receipt": "62573b73049598de290fb4da7e75923ae33f3f019b934b3da03a8c713ef6eec8",
+          "worker": "sparklina",
+          "selected": 19,
+          "returncode": 0
+        },
+        {
+          "key": "4b2850fc17e899999e00c3a512abd28db4b039e67a0a93d97785235d1d8e5a4b",
+          "receipt": "a3aa4bf150a780f64571e3b12abb446c766bcbe5cc9ae46fcd68e11d48142a8f",
+          "worker": "sparklina",
+          "selected": 5,
+          "returncode": 0
+        },
+        {
+          "key": "cae10727522ea7fd6245c1ad0b11d8ff2f6b311fbb6aca71c2951ce8395eb2d4",
+          "receipt": "00b2c57b4e6e50d51b704ff26467c868a59d3c951082fe8f0914d8db489f6170",
+          "worker": "sparklina",
+          "selected": 27,
+          "returncode": 0
+        },
+        {
+          "key": "468aba152b9ff7d201dbdb90056d85e2f0d81f1fc906dec79c2190876889587d",
+          "receipt": "0799903871afd433c81adbbed0663cb442e843fdd8d9e4c1169b2bffa724590b",
+          "worker": "sparklina",
+          "selected": 53,
+          "returncode": 0
+        },
+        {
+          "key": "f198cdca2b885db68f3d9a1f1faec9c3703192ff2cecbc2a328e7507321587dc",
+          "receipt": "a0daa9cabb820ab22650c4c097e4ea1071d5bf0da99a2ab60a0301f9703397be",
+          "worker": "sparklina",
+          "selected": 9,
+          "returncode": 0
+        },
+        {
+          "key": "e5cc2239b2bd6331789c4546c2dbad5ba957117ff33b59e7c8cbf9587be6d785",
+          "receipt": "2dea90f5d969fddabbe7e2d05fd78ce8bde036195a8a0155b07faaf9910ebc7b",
+          "worker": "sparklina",
+          "selected": 21,
+          "returncode": 0
+        },
+        {
+          "key": "de6513ae36974e6215c9f616445eceb83848911750aeb4a0163f232494c545bb",
+          "receipt": "11214f8a36e5cd59d2e2991013bfe138c3fa5d0983f6877a3a72c7f545e81a2f",
+          "worker": "sparklina",
+          "selected": 25,
+          "returncode": 0
+        },
+        {
+          "key": "841c26a51e31693de01b03d96cd6370f2c292872b69ffa28e70de263bd69d2d3",
+          "receipt": "fe766640547e1b2f5eacc77c50fe80d9a85d9dd5e55fa15ddfbcd875ca4b3d49",
+          "worker": "sparky",
+          "selected": 6,
+          "returncode": 0
+        },
+        {
+          "key": "e35560852749224ab6b8e73532c1b76e1d63d050154217636a176d3fa12e7923",
+          "receipt": "f03dd762a62c8b674792841b5b6220a93339ecae474ebd692bdbedbb8570193b",
+          "worker": "sparky",
+          "selected": 50,
+          "returncode": 0
+        }
+      ]
+    },
+    {
+      "id": "x86_64-4",
+      "workers_per_shard": 2,
+      "counts": {
+        "passed": 215
+      },
+      "actions": [
+        {
+          "key": "341cc6acc8e3e5b6c3e2a5faf3fc2edc72c9611fa969cc44937695c4154a23f5",
+          "receipt": "1cd1bfb2cacc7ad15d4674270a146b2b963c69bbe7a7055b1972e33809a726b5",
+          "worker": "dl380g10",
+          "selected": 19,
+          "returncode": 0
+        },
+        {
+          "key": "f1e54b8392ca4d4d5378663cf5f4a7e516a147a096c45ad4b9e38571359d09b4",
+          "receipt": "6044eeb0c9d4bebff39e60bc469c979a109c75f1e17a420659ea8ce909f057f2",
+          "worker": "dl380g10",
+          "selected": 5,
+          "returncode": 0
+        },
+        {
+          "key": "6550f3ea31f743a11740c241427564b8fb1197d565d28e75f5ff602712bc0011",
+          "receipt": "2cdac504e1a682f8bac9c32d790450c12905fac5f8f65354b77f6b9293cf619a",
+          "worker": "dl380g10",
+          "selected": 27,
+          "returncode": 0
+        },
+        {
+          "key": "c97db0268d4733fe588651a36bcc26ed5f8bfe7c49b4602ded6628371fd57a5e",
+          "receipt": "bcee0db733efe586fa9a8d2791652e751c27b522956d2b44107d35850e8dfd6d",
+          "worker": "dl380g10",
+          "selected": 53,
+          "returncode": 0
+        },
+        {
+          "key": "9b41957b9a9ec159d96ff16a0cf16e7d3a688d84e29960ebdcaf74eeef2904e3",
+          "receipt": "ff9466a6f19d1ac9c3b4f041c030b2d1a0b2acfdf1753ace7969fbbea29ac2d6",
+          "worker": "dl380g10",
+          "selected": 9,
+          "returncode": 0
+        },
+        {
+          "key": "efebddebb8d0b0aa8792e6edd069cd5c6604fac4e27d6eb0bb967a86883e9837",
+          "receipt": "a5206be6d62329074bf3bbf11bd52a2aa7eb7aba8e080c71254ecc0528d7100d",
+          "worker": "dl380g10",
+          "selected": 21,
+          "returncode": 0
+        },
+        {
+          "key": "c2192767a0d1ec3c533b87baf6cbe60e7528e5890d13425ebbeac6ed6a7ed34d",
+          "receipt": "b6d3734202188b0bf797f0cc31cc37c61a951cb7553bef34972f4d8cf955ecf7",
+          "worker": "dl380g10",
+          "selected": 25,
+          "returncode": 0
+        },
+        {
+          "key": "c29fe0d057a0a7d8ffd36e0116394cbb8c520bd8e38e79d184a8f42859260c6a",
+          "receipt": "a320fa5e4ebfe6884ced94450db9c3785163347aaace4c9255ebc44b1ddbde04",
+          "worker": "dl380g10",
+          "selected": 6,
+          "returncode": 0
+        },
+        {
+          "key": "619ced5dc24c5b28a35bed3f7840c776084844a36a52a39b9ef4d97d4a1438c6",
+          "receipt": "1ae17050c95191274ad52ecfa618a67fdcdd642640301dbfedf9ccdb5363c5a9",
+          "worker": "dl380g10",
+          "selected": 50,
+          "returncode": 0
+        }
+      ]
+    },
+    {
+      "id": "aarch64-4",
+      "workers_per_shard": 2,
+      "counts": {
+        "passed": 215
+      },
+      "actions": [
+        {
+          "key": "529a64a335cb7ffc6f1c3ebb3dddebe4c1513f389345cae343d26508f25c6d73",
+          "receipt": "79e1d9993d4dc81c64e7a5e36f8eb8cf2e963f4279f75aeeeea62832150e09db",
+          "worker": "sparky",
+          "selected": 19,
+          "returncode": 0
+        },
+        {
+          "key": "97da2b15dfd6669c670ca1f1fb86291cfaf354d5f24c0279208aba5b042386c4",
+          "receipt": "11badad35a6e8d953be8146e8954741f2dee633ac91263c91fbace9054330cd5",
+          "worker": "sparky",
+          "selected": 5,
+          "returncode": 0
+        },
+        {
+          "key": "3ded1685f857fca79f86a11ea8439d86f4d1e2c4ebce60961e787b9bbd9bf97f",
+          "receipt": "b18760997ebdb97848588796d97e9a4198cb2574f516e28ab45a23208aa2a025",
+          "worker": "sparky",
+          "selected": 27,
+          "returncode": 0
+        },
+        {
+          "key": "5e743ccc4c1c58507383e8eedfc5b04b60ceb755563c9944692581df04124a0d",
+          "receipt": "00e18b65358e6e4487121952858f132a46bedec7a3d731e1b58c9c6188fd6d46",
+          "worker": "sparklina",
+          "selected": 53,
+          "returncode": 0
+        },
+        {
+          "key": "234eae04014e558d5707d66d8b67ee60bf9cff2a04a74a5dd8ffdf28dd15f905",
+          "receipt": "a3f0c0df7bb94306d4f8e8660572d3abd1cb2d6fd830d601491694f09056926b",
+          "worker": "sparky",
+          "selected": 9,
+          "returncode": 0
+        },
+        {
+          "key": "882f845c32b6870ba309fc2deb95d3bc232c30c164d32fbc687b3495dac1d286",
+          "receipt": "1642db4d51ebc56c7354dc287f72bf3d646827a6e4c9122df0a2066bced6daa7",
+          "worker": "sparklina",
+          "selected": 21,
+          "returncode": 0
+        },
+        {
+          "key": "55578d4986bc68d0ec1ab5230a09bb1a95643e7ed157009560d303bf9f58cf30",
+          "receipt": "b45279831390c8dbbb3f63fe386117a0aec9855a850b7a6de1a5ef56729154a0",
+          "worker": "sparklina",
+          "selected": 25,
+          "returncode": 0
+        },
+        {
+          "key": "f494dafee6d9821c08b38530201f2ee2f5dc0ef92d5f2e4d90b836cb885659b9",
+          "receipt": "8ce2e01acdfb63fbae3daff140a5b078d3dab736cf74327ae0d074133de36b1b",
+          "worker": "sparklina",
+          "selected": 6,
+          "returncode": 0
+        },
+        {
+          "key": "8af3db2e22c8d59612f3c3b1a7ffb341cc027ce6492ddcc07fccef758670b937",
+          "receipt": "c35584658b660a5bbfbee104ffb541d13ff44babc94777ababce5ae9f11e28cb",
+          "worker": "sparky",
+          "selected": 50,
+          "returncode": 0
+        }
+      ]
+    },
+    {
+      "id": "x86_64-5",
+      "workers_per_shard": 1,
+      "counts": {
+        "passed": 215
+      },
+      "actions": [
+        {
+          "key": "d17173d409576db81aa9505c2deb426ea8a7c499fff93f726788b75ba1c30386",
+          "receipt": "484674a4d9ac0ffaf0ba69f1446ca99096920597d185fc3155a415e7d42b0f1c",
+          "worker": "dl380g10",
+          "selected": 19,
+          "returncode": 0
+        },
+        {
+          "key": "f7f0bfccc646644be25e5df7ee8cfaea68a05cf508bcc5523005795b0d409cbb",
+          "receipt": "0009e9a3d725e6482272a08e5b7a48417c0403af591c6b8ada025188f94a3b1e",
+          "worker": "dl380g10",
+          "selected": 5,
+          "returncode": 0
+        },
+        {
+          "key": "4328d52bc5cc48f7666317f6d7a0fb8b8a2967d38867650ed0d51f6d6c1cc25e",
+          "receipt": "2904d291dbd0770c641e743ac16fe98e3610273f12c672e595f4dc15e7e59399",
+          "worker": "dl380g10",
+          "selected": 27,
+          "returncode": 0
+        },
+        {
+          "key": "028c5f6fd74e3526f6e70e0871271519041f6858970e9f88fd4bea8425c66a62",
+          "receipt": "d56c58722553044be9606e34c2a85a7e305984f5611a6a1ff5e963ff5a0b0a4f",
+          "worker": "dl380g10",
+          "selected": 53,
+          "returncode": 0
+        },
+        {
+          "key": "f09fb43573325016e8f291ea50c79845257ea5d6c40eeb57523d293955b84cfc",
+          "receipt": "27b6c04b5dc4a15f3e981192d583a244235ec6fc14ce65c87351bda020d126d0",
+          "worker": "dl380g10",
+          "selected": 9,
+          "returncode": 0
+        },
+        {
+          "key": "9533a05a9c6e37293c9cdf08da2fd25583e00bc1995168e27885523fe8d6cd27",
+          "receipt": "8fe885857a8ede1e5d59bee72b2c1c2774d3beea0784e7b4b3c89649f53ef21b",
+          "worker": "dl380g10",
+          "selected": 21,
+          "returncode": 0
+        },
+        {
+          "key": "a609334e3782d0a9013f41c76b066481ea825fda6e04a4759514d234d66c7ca9",
+          "receipt": "d396a794f3b956909ff9e135e0402d1a6dbdcbdab399862615332813c9076bfc",
+          "worker": "dl380g10",
+          "selected": 25,
+          "returncode": 0
+        },
+        {
+          "key": "d1f70c2c3b4d1ec1a48546cc726c818823e15bb904cf0d12db1f995a2020ec34",
+          "receipt": "0898a6e3ae93cd5d38a182f60921b440ed8c77cb3043b05a46c97786f648c9fa",
+          "worker": "dl380g10",
+          "selected": 6,
+          "returncode": 0
+        },
+        {
+          "key": "74a179313f40c8779e2757b8041ec0c6023d55b8b6d2476a81901d974fc7cb79",
+          "receipt": "95be538a2e485c37dff816e3bdcb42b4eb9773b58ad314cb001cb0f78776307f",
+          "worker": "dl380g10",
+          "selected": 50,
+          "returncode": 0
+        }
+      ]
+    },
+    {
+      "id": "aarch64-5",
+      "workers_per_shard": 1,
+      "counts": {
+        "passed": 215
+      },
+      "actions": [
+        {
+          "key": "121e69fa9f7ca7bdd66e426d26eae2796dbffe323f1db9a558ee5d44d58cb1e7",
+          "receipt": "51f7f315a6aa1a41e4bdddb8fe2461adc92c0cd412c4e78f187db03343c58b89",
+          "worker": "sparky",
+          "selected": 19,
+          "returncode": 0
+        },
+        {
+          "key": "de135c298c4863e9c33cadafac137ac785efbd790b132184e1fb5736aa008334",
+          "receipt": "d5569189e2d89076630c68710b870bfe7ab5cf89edf0198a7c371d3062133a0c",
+          "worker": "sparky",
+          "selected": 5,
+          "returncode": 0
+        },
+        {
+          "key": "c87764d80ccfc8b0791413f03c486be8db6a1bcc45f59b63bd9799c68ee3b594",
+          "receipt": "dee4d0aca2a4ecc5d34bbc9f0571fc260693f71ece51852414a662e9cdd91f0a",
+          "worker": "sparky",
+          "selected": 27,
+          "returncode": 0
+        },
+        {
+          "key": "242ee784b9c25e91b02e5a8a1dbe680d62c5a2546d0c488c4a793cfec99cb91c",
+          "receipt": "4ddb63efe7e7bf6388c284bec36cfbaf0e0750d8b57494c84210d0bc49e41879",
+          "worker": "sparklina",
+          "selected": 53,
+          "returncode": 0
+        },
+        {
+          "key": "74509d1086c4ed514ec93d5be0376188a34694c88ba4817153c3c2e3f7d90808",
+          "receipt": "b09682a7a05f511cc798b16b46a5fb61417107c6c5c19fdcf14cc0357fc65f33",
+          "worker": "sparklina",
+          "selected": 9,
+          "returncode": 0
+        },
+        {
+          "key": "554c21d47c21a10a4eea1ede9823faf5a98be047e20d023f340d375d0827e92a",
+          "receipt": "fff814141c78d41b503ef240fa3fa94025d91ef659b540b00eceabcae2f79885",
+          "worker": "sparklina",
+          "selected": 21,
+          "returncode": 0
+        },
+        {
+          "key": "1e6369c8b9421a8e5156bfdea88c2eb8629e69c911626c53dc6b1c7db5384259",
+          "receipt": "a12fb6b1eab0b1305f42c66bed479cf4a0cceea0bef918ff4058258b76ccbe4a",
+          "worker": "sparky",
+          "selected": 25,
+          "returncode": 0
+        },
+        {
+          "key": "19749095e780cf2d98ddfba7a65e4dca90f4ff3787940bed918300ea97de5c03",
+          "receipt": "a045dd8ae198083e56f9749520a8499e103a6d6836012b3e2aef2f09787193b8",
+          "worker": "sparklina",
+          "selected": 6,
+          "returncode": 0
+        },
+        {
+          "key": "5e8243454e6494b2c2a5978f2de612d0a00908cca15b139a597cfa88c8f7c6c1",
+          "receipt": "53bb08ceff267167cf2bf89cacc081afe92bb7cb201766aa7e23b212dccaf45c",
+          "worker": "sparky",
+          "selected": 50,
+          "returncode": 0
+        }
+      ]
+    },
+    {
+      "id": "main-integration",
+      "workers_per_shard": 1,
+      "counts": {
+        "passed": 61,
+        "failed": 1
+      },
+      "actions": [
+        {
+          "key": "25383a63f081e281d28db1b2d0fe06bfb94505f5b886adcdcbb34645b94ae513",
+          "receipt": "6803453ce49d4be806e8c4608dd96fcde6313bd268f1b2cfdca4967acda5c21a",
+          "worker": "dl380g10",
+          "selected": 6,
+          "returncode": 0
+        },
+        {
+          "key": "04e0dd88fd4ebbfc0eb24c820f7a9da4bfdd86032dcaea391aa45b59be6ff3b3",
+          "receipt": null,
+          "worker": "dl380g10",
+          "selected": 8,
+          "returncode": 1
+        },
+        {
+          "key": "81848205aee62f0116ce3d2927d71c3cbaa6774ef2fdbc7df84b1891ca14e653",
+          "receipt": "b506ee1281a53e84d7dbafdbb82091a8142870044d3b962222015620d66052d1",
+          "worker": "dl380g10",
+          "selected": 16,
+          "returncode": 0
+        },
+        {
+          "key": "4253a73f8a25b1f92712a28b16a6ad64db21aa42e601f0d8aec3fbe549ae8d8c",
+          "receipt": "ae95c4174be2b7937be092d530ea38cf1dfb7cc2c0dabed722d761d7a8d656ec",
+          "worker": "dl380g10",
+          "selected": 13,
+          "returncode": 0
+        },
+        {
+          "key": "a79d6299a2b698362429818baafcefb397bfcdc8b20e15c4638082ba6c4c65f9",
+          "receipt": "858eb630bf048fcd3a4e0227201910f08f28feb4963b29f5dc78142ed1803276",
+          "worker": "dl380g10",
+          "selected": 19,
+          "returncode": 0
+        }
+      ]
+    }
+  ]
+}

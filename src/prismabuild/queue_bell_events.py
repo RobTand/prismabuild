@@ -15,8 +15,9 @@ import uuid
 
 from .queue_bell import Cursor, MAX_WAIT_S, REQUIRED_STATE_DIRS
 from .queue_bell_topics import (OutcomeNamespaces, WorkerOffers, HostReservations,
-                                AdaptiveInputs, ClaimDenials, TOPICS)
-from .queue_bell_input_shapes import HostInputShapes
+                                AdaptiveInputs, ClaimDenials, TierInputs, GangInputs,
+                                NamespaceInputs, TOPICS)
+from .queue_bell_input_shapes import InputShapes
 
 IN_MODIFY = 0x00000002
 IN_ATTRIB = 0x00000004
@@ -203,7 +204,7 @@ class InotifyQueue:
         self.directories = {}
         self.root_watches = {}
         self.adapters = (OutcomeNamespaces(), WorkerOffers(), HostReservations(),
-                         AdaptiveInputs(), ClaimDenials())
+                         AdaptiveInputs(), ClaimDenials(), TierInputs(), GangInputs())
         self.absent_roots = set()
         self.incomplete_topics = set()
         self.file_watches = {}
@@ -261,7 +262,7 @@ class InotifyQueue:
         path = self.root / relative if parent_fd is None else relative.name
         descriptor = os.open(path, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
         try:
-            if not HostInputShapes.watchable("file", os.fstat(descriptor)):
+            if not InputShapes.watchable("file", os.fstat(descriptor)):
                 self.incomplete_topics.update(self._host_topics_at(relative))
                 return
             mask = IN_MODIFY | IN_ATTRIB | IN_CLOSE_WRITE | IN_DELETE_SELF | IN_MOVE_SELF
@@ -311,13 +312,13 @@ class InotifyQueue:
             os.close(descriptor)
 
     def _check_host_input(self, relative, *, entry=None, parent_fd=None, watch_file=True):
-        kind = HostInputShapes.kind(relative)
+        kind = InputShapes.kind(relative)
         if kind is None:
             return
         try:
             info = (entry.stat(follow_symlinks=False) if entry is not None
                     else (self.root / relative).lstat())
-            if not HostInputShapes.watchable(kind, info):
+            if not InputShapes.watchable(kind, info):
                 self.incomplete_topics.update(self._host_topics_at(relative))
             elif kind == "file" and watch_file:
                 self._watch_host_file(relative, parent_fd)
@@ -419,10 +420,10 @@ class InotifyQueue:
                     self._tree(Path(directory), ring, descriptor)
             root_names = set()
             with os.scandir(descriptor) as entries:
-                for entry in HostReservations.reconstruction_inputs(relative, entries):
+                for entry in NamespaceInputs.reconstruction_inputs(relative, entries):
                     child = relative / entry.name
                     self._check_host_input(child, entry=entry, parent_fd=descriptor)
-                    if entry.name.startswith(".") and not HostReservations.hidden_input(child):
+                    if entry.name.startswith(".") and not NamespaceInputs.hidden_input(child):
                         continue
                     if relative == Path():
                         if self._allowed(child):
@@ -470,9 +471,9 @@ class InotifyQueue:
                 ring.reset()
                 # An overflow can hide a move out of the queue. Rebuild host
                 # coverage without retaining watches on those old inodes.
-                self._drop_host_tree(Path("workers"))
-                self._drop_host_tree(Path("reservations"))
-                for directory in AdaptiveInputs.action_directories:
+                directories = dict.fromkeys(topic.directory for adapter in self.adapters
+                                            for topic in adapter.topics if not topic.legacy)
+                for directory in directories:
                     self._drop_host_tree(Path(directory))
                 self._tree(Path(), ring)  # Overflow may have hidden mkdir events.
                 ring.set_coverage(self.covered_topics)
@@ -535,6 +536,8 @@ class InotifyQueue:
                 if relative == Path() and mask & IN_ATTRIB:
                     ring.reset_v2()
                 elif host_topics:
+                    self._check_host_input(relative, watch_file=False)
+                    ring.set_coverage(self.covered_topics)
                     if len(relative.parts) == 1:
                         ring.reset_v2()
                     elif mask & IN_ATTRIB:
@@ -547,7 +550,7 @@ class InotifyQueue:
                 continue
             self._check_host_input(child)
             ring.set_coverage(self.covered_topics)
-            if name.startswith(".") and not HostReservations.hidden_input(child):
+            if name.startswith(".") and not NamespaceInputs.hidden_input(child):
                 continue
             affected = self._topics_at(child)
             host_change = self._host_topics_at(child)

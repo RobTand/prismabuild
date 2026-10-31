@@ -190,7 +190,10 @@ def test_broker_publishes_root_readable_idle_sample_and_reuses_device_query(tmp_
     state.mkdir(parents=True)
     authority = SimpleNamespace(state_dir=state, records={}, lock=threading.RLock())
     monitor = broker.ResourceMonitor(authority, Memory(), capacity_module=Capacity())
-    monitor.poll_once()
+    try:
+        monitor.poll_once()
+    finally:
+        monitor.close()
     public = state.parent / 'gpu-capacity.json'
     assert json.loads(public.read_text())['complete']
     assert public.stat().st_mode & 0o777 == 0o644
