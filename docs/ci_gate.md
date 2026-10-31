@@ -108,8 +108,10 @@ infrastructure failures. A shard's first attempt uploads its result and xunit1
 JUnit with file attributes. The retry planner chooses only missing or invalid
 verdicts, including a lost runner or failed setup. A test failure is never retried.
 A separate job retries each chosen shard once, so retry can survive loss of the
-first runner. The final `gate` job fails on any test failure or a missing verdict
-after retry. A valid first verdict cannot be overwritten by a later artifact.
+first runner. A JUnit failure or error is final even if pytest then exits 2
+or 3, or its timing evidence is incomplete. The final `gate` job fails on
+explicit failure evidence from either attempt, even if the other passed, or
+on a missing verdict after retry.
 
 Artifacts are separated by workflow attempt and shard/attempt index to avoid
 stale evidence on reruns. Plans include base/head SHAs, population version,
