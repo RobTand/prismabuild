@@ -43,3 +43,56 @@ def test_dependencies_retries_and_circleci_timing_contract():
     assert '--workers 4' in text
     assert 'store_test_results' in text and 'store_artifacts' in text
     assert 'NO_VERDICT' in text
+
+
+def run_command(tmp_path, command, *, setup=False, plan_exit=0, runner_exit=0):
+    """Execute the configured shell, replacing external services with local commands."""
+    import os
+    import subprocess
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    programs = {
+        'uv': '#!/bin/bash\nif [ "$1 $2" = "python find" ]; then echo /unused/python; exit 0; fi\nexit 9\n',
+        'git': '#!/bin/bash\nif [ "$1" != fetch ]; then printf "%040d\\n" 1; fi\n',
+        'python': '#!/bin/bash\ncase "$1" in\n'
+                  ' *gate_select.py) if [ "$PLAN_EXIT" != 0 ]; then exit "$PLAN_EXIT"; fi; '
+                  'printf "tests/test_selected.py\\n" > gate-artifacts/population.txt;;\n'
+                  ' *gate_run.py) exit "$RUNNER_EXIT";;\nesac\n',
+    }
+    for name, source in programs.items():
+        path = bin_dir / name
+        path.write_text(source)
+        path.chmod(0o755)
+    environment = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ['PATH'],
+                       BASH_ENV=str(tmp_path / 'bash-env'), PLAN_EXIT=str(plan_exit), RUNNER_EXIT=str(runner_exit))
+    return subprocess.run(['bash', '-c', command], cwd=tmp_path, env=environment,
+                          text=True, capture_output=True, check=False)
+
+
+def execution_command():
+    command = config()['commands']['gate-execute']['steps'][0]['run']['command']
+    return command.replace('<< parameters.mode >>', 'selection').replace('<< parameters.lane >>', 'selection')
+
+
+def test_environment_setup_failure_exits_no_verdict(tmp_path):
+    command = config()['commands']['gate-setup']['steps'][1]['run']['command']
+    result = run_command(tmp_path, command, setup=True)
+    assert result.returncode == 75
+    assert 'NO_VERDICT' in result.stdout
+
+
+def test_planning_failure_exits_no_verdict(tmp_path):
+    result = run_command(tmp_path, execution_command(), plan_exit=1)
+    assert result.returncode == 75
+    assert 'NO_VERDICT' in result.stdout
+
+
+import pytest
+
+
+@pytest.mark.parametrize('code,marker', [(0, 'GATE_PASS'), (1, 'GATE_TEST_FAILURE'), (75, 'NO_VERDICT')])
+def test_explicit_runner_verdict_is_preserved(tmp_path, code, marker):
+    result = run_command(tmp_path, execution_command(), runner_exit=code)
+    assert result.returncode == code
+    assert marker in result.stdout
+    assert 'planning or execution infrastructure failed' not in result.stdout

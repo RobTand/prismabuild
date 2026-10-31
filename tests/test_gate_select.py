@@ -218,3 +218,60 @@ def test_always_fast_tests_do_not_seed_helper_change_propagation(tmp_path):
     root = tree(tmp_path)
     (root / 'tests/test_consumer.py').write_text('from test_fast import fixture_builder\n')
     assert selected(plan(root, ['docs/ci_gate.md'])) == {'tests/test_fast.py'}
+
+
+@pytest.fixture(scope='module')
+def repository_path_index():
+    return select.dependency_index(ROOT)
+
+
+@pytest.mark.parametrize('changed,consumer', [
+    ('tools/fleet/pbtest.py', 'tests/test_pbtest_native_directory_collection_1458.py'),
+    ('tests/test_worker_loop_proves_it_parked.py', 'tests/test_458_reboot_gate_regression.py'),
+    ('src/prismabuild/role_session.py', 'tests/test_458_reboot_gate_regression.py'),
+    ('tools/fleet/50-prismabuild-resource-broker.conf', 'tests/test_needrestart_broker_restart_exclusion.py'),
+    ('tests/fixtures/container_images/sparky_image_ls.txt', 'tests/test_container_image_inventory.py'),
+])
+def test_repository_path_loading_regressions(repository_path_index, changed, consumer):
+    result = plan(ROOT, [changed], index=repository_path_index)
+    assert consumer in selected(result)
+
+
+@pytest.mark.parametrize('directory,expression', [
+    ('ROOT = Path(__file__).resolve().parents[1]\nFLEET = ROOT / "tools" / "fleet"', 'FLEET / "pbtest.py"'),
+    ('FLEET = Path(__file__).parent.parent / "tools/fleet"', 'FLEET.joinpath("pbtest.py")'),
+    ('ROOT = Path(__file__).resolve().parents[1]', 'Path(ROOT, "tools", "fleet", "pbtest.py")'),
+    ('FLEET = Path(__file__).parent / "../tools/fleet"', 'FLEET / "pbtest.py"'),
+    ('import os\nFLEET = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools", "fleet")',
+     'os.path.join(FLEET, "pbtest.py")'),
+])
+def test_named_directory_and_path_constructor_forms(tmp_path, directory, expression):
+    root = tree(tmp_path)
+    (root / 'tests/test_bound.py').write_text('from pathlib import Path\n' + directory + '\nP = ' + expression + '\n')
+    assert 'tests/test_bound.py' in selected(plan(root, ['tools/fleet/pbtest.py']))
+    assert 'tests/test_bound.py' not in selected(plan(root, ['docs/unrelated.md']))
+
+
+@pytest.mark.parametrize('expression', [
+    'Path(__file__).with_name("support.py")',
+    'Path(__file__).parent / "support.py"',
+    'Path(__file__).parent.joinpath("support.py")',
+])
+def test_test_relative_path_loaded_helper_closure(tmp_path, expression):
+    root = tree(tmp_path)
+    (root / 'tests/support.py').write_text('ASSET = "deploy/helper.json"\n')
+    (root / 'tests/test_bound.py').write_text('from pathlib import Path\nP = ' + expression + '\n')
+    assert 'tests/test_bound.py' in selected(plan(root, ['tests/support.py']))
+    assert 'tests/test_bound.py' in selected(plan(root, ['deploy/helper.json']))
+
+
+@pytest.mark.parametrize('tail', ['f"{box}_image_{name}"', 'name', '"{}_image_{}".format(box, name)',
+                                  '"%s_image_%s" % (box, name)', 'box + "_image_" + name'])
+def test_unresolved_fixture_names_cover_the_known_directory(tmp_path, tail):
+    root = tree(tmp_path)
+    (root / 'tests/test_bound.py').write_text(
+        'from pathlib import Path\nFIXTURES = Path(__file__).parent / "fixtures" / "container_images"\n'
+        'def fixture(box, name):\n    return (FIXTURES / ' + tail + ').read_bytes()\n')
+    result = plan(root, ['tests/fixtures/container_images/sparky_image_ls.txt'])
+    assert 'tests/test_bound.py' in selected(result)
+    assert 'tests/test_bound.py' not in selected(plan(root, ['tests/fixtures/other/input.txt']))
