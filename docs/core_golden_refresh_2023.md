@@ -87,8 +87,14 @@ eighteen archive and retention entries, plus two existing main expressions
 in the issue-link parser and GPU placement policy. Neither of those two
 expressions constrains durable record fields. The inventory is tool output.
 
-The merge also changes Core's source identity. Existing capture evidence
-retains its original source identity and does not qualify this merged Core.
-A fresh capture and strict adoption are required before merge readiness.
+The retained current golden already binds the merged Core exactly: 306,962
+bytes and SHA-256
+`96aeff415bf2a2cc4f93a2c89a20f4d6382df4d5ad00bf3ace06e993e54a95c5`.
+The merged immutable helper also retains the exact pin recorded above.
+No capture bytes need regeneration or adoption. Fresh reproduction action
+`e6ddb020e6f5bfdbfd430b844c8b1e32a1e24e47286c611f4512e8dd8c89d925`
+is submitted against source head
+`e789ae5c33fe72e3191b22f8df1303a717848427`; it carries no result credit until
+its terminal, logs and CAS receipt verify.
 Source review and tests grant no live retention, unlink, runtime publication,
 rollout, or service-install authority. Issues #2023 and #2025 remain open.
