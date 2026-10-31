@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import argparse
 import ast
-import hashlib
 import json
 from pathlib import Path
 import subprocess
 
+try:
+    from .tia_bytes import raw_sha256, compact_ascii_json_bytes, sorted_json
+except ImportError:
+    from tia_bytes import raw_sha256, compact_ascii_json_bytes, sorted_json
 
-def digest(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
-
-def definitions(source: str) -> tuple[dict[str, list[str]], str]:
+def function_definitions(source: str) -> tuple[dict[str, list[str]], str]:
     tree = ast.parse(source)
     functions: dict[str, list[str]] = {}
 
@@ -47,10 +47,10 @@ def definitions(source: str) -> tuple[dict[str, list[str]], str]:
     return functions, ast.dump(skeleton, include_attributes=False)
 
 
-def compare(before: str, after: str) -> dict:
+def compare_functions(before: str, after: str) -> dict:
     try:
-        old, old_module = definitions(before)
-        new, new_module = definitions(after)
+        old, old_module = function_definitions(before)
+        new, new_module = function_definitions(after)
     except SyntaxError as error:
         return {'changed': [], 'added': [], 'deleted': [], 'renamed': [],
                 'module_changed': True, 'parse_error': str(error)}
@@ -68,7 +68,7 @@ def compare(before: str, after: str) -> dict:
             'module_changed': old_module != new_module}
 
 
-def git(root: Path, *args: str) -> bytes:
+def git_bytes(root: Path, *args: str) -> bytes:
     return subprocess.check_output(['git', *args], cwd=root)
 
 
@@ -76,22 +76,22 @@ def source(root: Path, revision: str, path: str) -> bytes:
     result = subprocess.run(['git', 'show', f'{revision}:{path}'], cwd=root, capture_output=True)
     if result.returncode:
         # A missing path is an addition/deletion; other git errors must not look empty.
-        listing = git(root, 'ls-tree', '-z', revision, '--', path)
+        listing = git_bytes(root, 'ls-tree', '-z', revision, '--', path)
         if listing:
             raise ValueError(result.stderr.decode(errors='replace'))
         return b''
     return result.stdout
 
 
-def analyze(root: Path, base: str, head: str, *, merge_base: bool = True) -> dict:
-    base = git(root, 'merge-base', base, head).decode().strip() if merge_base else base
-    names = git(root, 'diff', '--name-only', '--no-renames', '-z', base, head, '--').decode().split('\0')
+def analyze_changes(root: Path, base: str, head: str, *, merge_base: bool = True) -> dict:
+    base = git_bytes(root, 'merge-base', base, head).decode().strip() if merge_base else base
+    names = git_bytes(root, 'diff', '--name-only', '--no-renames', '-z', base, head, '--').decode().split('\0')
     python, other, hashes = {}, [], {}
     for path in sorted(set(names) - {''}):
         if path.endswith('.py'):
             before, after = source(root, base, path), source(root, head, path)
-            python[path] = compare(before.decode(), after.decode())
-            hashes[path] = digest(before)
+            python[path] = compare_functions(before.decode(), after.decode())
+            hashes[path] = raw_sha256(before)
         else:
             other.append(path)
     return {'schema': 'prismabuild.tia_diff.v1', 'base': base, 'head': head,
@@ -104,7 +104,7 @@ def main():
     parser.add_argument('--base', required=True)
     parser.add_argument('--head', default='HEAD')
     args = parser.parse_args()
-    print(json.dumps(analyze(args.root, args.base, args.head), sort_keys=True, indent=2))
+    print(sorted_json(analyze_changes(args.root, args.base, args.head)))
 
 
 if __name__ == '__main__':

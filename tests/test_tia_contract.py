@@ -12,9 +12,10 @@ import sys
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools/ci'))
 
 
-def load(name):
+def load_tia_module(name):
     spec = importlib.util.spec_from_file_location(name, ROOT / 'tools/ci' / f'{name}.py')
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
@@ -23,7 +24,7 @@ def load(name):
 
 
 def test_diff_ignores_comments_and_formatting():
-    diff = load('tia_diff').compare('def f(x):\n return x + 1\n',
+    diff = load_tia_module('tia_diff').compare_functions('def f(x):\n return x + 1\n',
                                     '# comment\ndef f( x ):\n    return x+1\n')
     assert diff['changed'] == []
     assert diff['module_changed'] is False
@@ -32,7 +33,7 @@ def test_diff_ignores_comments_and_formatting():
 def test_diff_nested_decorator_signature_and_rename():
     before = 'X = 1\nclass C:\n @wrap\n def f(self, x=1):\n  def inner():\n   return 1\n  return inner()\ndef old():\n return 3\n'
     after = before.replace('x=1', 'x=2').replace('return 1', 'return 2').replace('old()', 'new()')
-    diff = load('tia_diff').compare(before, after)
+    diff = load_tia_module('tia_diff').compare_functions(before, after)
     assert diff['changed'] == ['C.f', 'C.f.<locals>.inner']
     assert diff['added'] == ['new']
     assert diff['deleted'] == ['old']
@@ -46,11 +47,11 @@ def test_diff_nested_decorator_signature_and_rename():
     ('def f():\n pass\n', '@decorate\ndef f():\n pass\n'),
 ])
 def test_definition_time_changes_use_module_fallback(before, after):
-    assert load('tia_diff').compare(before, after)['module_changed'] is True
+    assert load_tia_module('tia_diff').compare_functions(before, after)['module_changed'] is True
 
 
 def test_map_reproducible_and_rejects_mixed_sources(tmp_path):
-    mod = load('tia_map')
+    mod = load_tia_module('tia_map')
     record = {'schema': 'prismabuild.tia_record.v1', 'source_commit': 'a' * 40,
               'python': '3.12.8', 'unattributed': [], 'files': {'src/a.py': 'abc'},
               'tests': {'tests/test_a.py::test_a': ['src/a.py::f', 'src/a.py::f']}}
@@ -71,7 +72,7 @@ def test_map_reproducible_and_rejects_mixed_sources(tmp_path):
 
 
 def selection(tmp_path, *, changed=('f',), module=False, hashes=None, mapped=True, unattributed=()):
-    mod = load('tia_select')
+    mod = load_tia_module('tia_select')
     path = 'src/a.py'
     mapping = {'schema': 'prismabuild.tia_map.v1', 'source_commit': 'a' * 40,
                'python': ['3.12.8'], 'files': {path: 'abc'},
@@ -157,7 +158,7 @@ def test_nested_pytest(tmp_path):
 
 
 def test_non_python_uses_static_rule(tmp_path):
-    mod = load('tia_select')
+    mod = load_tia_module('tia_select')
     seen = []
     def static(paths):
         seen.extend(paths)
@@ -180,16 +181,16 @@ def test_record_schema_rejects_out_of_range_function_indices(tmp_path):
     path.write_bytes(gzip.compress(json.dumps({'schema': 'prismabuild.tia_map.v1',
                      'functions': ['src/a.py::f'], 'tests': {'tests/test_a.py::test_a': [1]}}).encode()))
     with pytest.raises(ValueError, match='indices'):
-        load('tia_map').read_map(path)
+        load_tia_module('tia_map').read_impact_map(path)
 
 
 def test_mutation_sample_preserves_bytes_and_function_identity(tmp_path):
-    mod = load('tia_evaluate')
+    mod = load_tia_module('tia_evaluate')
     directory = tmp_path / 'src/prismabuild'
     directory.mkdir(parents=True)
     path = directory / 'example.py'
     path.write_text('# é\ndef choose(x):\n    if x == 3:\n        return 7\n    return 9\n')
-    mapping = {'files': {'src/prismabuild/example.py': mod.digest(path.read_bytes())},
+    mapping = {'files': {'src/prismabuild/example.py': mod.raw_sha256(path.read_bytes())},
                'functions': ['src/prismabuild/example.py::choose']}
     rows = list(mod.mutations(tmp_path, mapping))
     assert len(rows) == 1
@@ -210,7 +211,7 @@ def test_import_time_function_calls_require_static_fallback(tmp_path):
 def test_recorder_does_not_retain_transient_code_objects(tmp_path):
     import gc
     import weakref
-    mod = load('tia_record')
+    mod = load_tia_module('tia_record')
     recorder = mod.Recorder(tmp_path, tmp_path / 'out', 'a' * 40)
     try:
         code = compile('value = 41', 'generated.py', 'exec')
@@ -224,7 +225,7 @@ def test_recorder_does_not_retain_transient_code_objects(tmp_path):
 
 
 def test_unmapped_test_retains_static_import_and_path_rules():
-    mod = load('tia_select')
+    mod = load_tia_module('tia_select')
     mapping = {'source_commit': 'a' * 40, 'files': {'src/a.py': 'abc'},
                'functions': ['src/a.py::f'], 'unattributed': [],
                'tests': {'tests/test_a.py::test_f': [0]},
@@ -242,3 +243,24 @@ def test_unmapped_test_retains_static_import_and_path_rules():
     assert unrelated['targets'] == []
     literal = mod.select(mapping, {'python': {}, 'non_python': ['data/golden.json']}, **args)
     assert literal['targets'] == ['tests/test_archive.py']
+
+
+def test_child_reuses_parent_source_catalog(tmp_path, monkeypatch):
+    mod = load_tia_module('tia_record')
+    (tmp_path / 'src').mkdir()
+    (tmp_path / 'src/example.py').write_text('def work(): return 1')
+    catalog = tmp_path / 'catalog.json'
+    catalog.write_text(json.dumps({'root': str(tmp_path), 'files': {
+        str(tmp_path / 'src/example.py'): ['src/example.py', 'known-parent-hash']}}))
+    monkeypatch.setenv('PB_TIA_CATALOG', str(catalog))
+    def reject_walk(*args, **kwargs):
+        raise AssertionError('child must reuse prehashed parent catalog')
+    monkeypatch.setattr(Path, 'rglob', reject_walk)
+    recorder = mod.Recorder(tmp_path, tmp_path / 'records', 'a' * 40)
+    try:
+        code = compile('def work(): return 1', str(tmp_path / 'src/example.py'), 'exec')
+        function = next(value for value in code.co_consts if hasattr(value, 'co_qualname'))
+        assert recorder.key(function) == 'src/example.py::work'
+        assert recorder.files == {'src/example.py': 'known-parent-hash'}
+    finally:
+        recorder.close()

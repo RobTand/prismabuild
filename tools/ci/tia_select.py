@@ -8,8 +8,13 @@ import json
 from pathlib import Path
 import sys
 
+try:
+    from .tia_bytes import raw_sha256, compact_ascii_json_bytes, sorted_json
+except ImportError:
+    from tia_bytes import raw_sha256, compact_ascii_json_bytes, sorted_json
 
-def load(path: Path, name: str):
+
+def load_tia_module(path: Path, name: str):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
@@ -94,8 +99,8 @@ def select(mapping: dict, diff: dict, *, file_hashes: dict, fast: list[str],
             'fallbacks': [{'path': path, 'reason': reason} for path, reason in sorted(fallbacks.items())]}
 
 
-def prepare(root: Path, gate_dir: Path, *, exclude: set[str] | None = None, duration_updates: dict | None = None) -> dict:
-    gate = load(gate_dir / 'gate_select.py', 'tia_gate_select')
+def prepare_selection(root: Path, gate_dir: Path, *, exclude: set[str] | None = None, duration_updates: dict | None = None) -> dict:
+    gate = load_tia_module(gate_dir / 'gate_select.py', 'tia_gate_select')
     durations = gate.read_json(gate_dir / 'gate_durations.json')
     fills = {name: value for name, value in (duration_updates or {}).items() if name not in durations['files']}
     durations = dict(durations, files={**durations['files'], **fills},
@@ -113,7 +118,7 @@ def prepare(root: Path, gate_dir: Path, *, exclude: set[str] | None = None, dura
 
 
 def plan(root: Path, gate_dir: Path, mapping: dict, diff: dict, *, context: dict | None = None) -> dict:
-    prepared = prepare(root, gate_dir, duration_updates=mapping.get('duration_updates')) if context is None else context
+    prepared = prepare_selection(root, gate_dir, duration_updates=mapping.get('duration_updates')) if context is None else context
     static, full = prepared['static'], prepared['full']
     population, fast = prepared['population'], prepared['fast']
     durations, gate = prepared['durations'], prepared['gate']
@@ -139,10 +144,10 @@ def main():
     parser.add_argument('--head', default='HEAD')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
-    diff = load(Path(__file__).with_name('tia_diff.py'), 'tia_diff')
-    maps = load(Path(__file__).with_name('tia_map.py'), 'tia_map')
-    result = plan(args.root, args.gate_dir, maps.read_map(args.map), diff.analyze(args.root, args.base, args.head))
-    rendered = json.dumps(result, sort_keys=True, indent=2) + '\n'
+    diff = load_tia_module(Path(__file__).with_name('tia_diff.py'), 'tia_diff')
+    maps = load_tia_module(Path(__file__).with_name('tia_map.py'), 'tia_map')
+    result = plan(args.root, args.gate_dir, maps.read_impact_map(args.map), diff.analyze_changes(args.root, args.base, args.head))
+    rendered = sorted_json(result) + '\n'
     if args.output:
         args.output.write_text(rendered)
     else:

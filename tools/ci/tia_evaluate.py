@@ -22,9 +22,14 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from tia_select import load, plan, prepare
-from tia_map import read_map, write_map
-from tia_diff import analyze, compare, digest, source
+from tia_select import load_tia_module, plan, prepare_selection
+from tia_map import read_impact_map, write_map
+from tia_diff import analyze_changes, compare_functions, raw_sha256, source
+
+try:
+    from .tia_bytes import raw_sha256, compact_ascii_json_bytes, sorted_json
+except ImportError:
+    from tia_bytes import raw_sha256, compact_ascii_json_bytes, sorted_json
 
 
 def extract(reports: list[Path], output: Path):
@@ -53,7 +58,7 @@ def extract_cas(inputs: list[dict], output: Path):
         paths = []
         for entry in inputs:
             payload = Path(entry['blob_path']).read_bytes()
-            if digest(payload) != entry['blob_sha256']:
+            if raw_sha256(payload) != entry['blob_sha256']:
                 raise ValueError('CAS result hash mismatch')
             found = False
             for line in payload.decode().splitlines():
@@ -73,11 +78,11 @@ def extract_cas(inputs: list[dict], output: Path):
                       'bytes': output.stat().st_size, 'source_commit': result['source_commit']}), flush=True)
 
 
-def replay(root: Path, gate_dir: Path, mapping: dict, history: dict) -> dict:
-    gate_replay = load(gate_dir / 'gate_replay.py', 'tia_gate_replay')
+def replay_impact(root: Path, gate_dir: Path, mapping: dict, history: dict) -> dict:
+    gate_replay = load_tia_module(gate_dir / 'gate_replay.py', 'tia_gate_replay')
     # Reuse its population, static rule, estimates and nearest-rank statistics.
     excluded = set(mapping.get('unmapped', {}))
-    context = prepare(root, gate_dir, exclude=excluded, duration_updates=mapping.get('duration_updates'))
+    context = prepare_selection(root, gate_dir, exclude=excluded, duration_updates=mapping.get('duration_updates'))
     # The existing replay has no input-injection arguments. Adapt its reads for this call,
     # preserving its selector, estimates, replay loop and percentile calculation unchanged.
     original_index = gate_replay.select.dependency_index
@@ -93,7 +98,7 @@ def replay(root: Path, gate_dir: Path, mapping: dict, history: dict) -> dict:
     for pull in history['pulls']:
         merge = pull['merge_commit_sha']
         parent = subprocess.check_output(['git', 'rev-parse', merge + '^'], cwd=root, text=True).strip()
-        changes = analyze(root, parent, merge, merge_base=False)
+        changes = analyze_changes(root, parent, merge, merge_base=False)
         selected = plan(root, gate_dir, mapping, changes, context=context)
         rows.append({'number': pull['number'], 'selected_files': len(selected['selected']),
                      'wall_seconds': selected['estimate']['wall_seconds'],
@@ -112,7 +117,7 @@ def mutations(root: Path, mapping: dict):
         if not path.startswith(('src/prismabuild/', 'tools/fleet/')):
             continue
         original = (root / path).read_text()
-        if digest(original.encode()) != mapping['files'][path]:
+        if raw_sha256(original.encode()) != mapping['files'][path]:
             continue
         tree = ast.parse(original)
         def visit(node, prefix=''):
@@ -156,8 +161,8 @@ def mutations(root: Path, mapping: dict):
                                 except SyntaxError:
                                     continue
                                 yield {'path': path, 'function': name, 'kind': kind, 'line': candidate.lineno,
-                                       'before': digest(original.encode()), 'start': start, 'end': end,
-                                       'replacement': changed, 'diff': compare(original, mutant)}
+                                       'before': raw_sha256(original.encode()), 'start': start, 'end': end,
+                                       'replacement': changed, 'diff': compare_functions(original, mutant)}
                                 break
                             pending.extend(ast.iter_child_nodes(candidate))
                     yield from visit(child, name + '.<locals>.')
@@ -169,8 +174,8 @@ def mutations(root: Path, mapping: dict):
 
 
 def campaign(root: Path, gate_dir: Path, mapping: dict, map_path: Path, output: Path, count: int):
-    gate = load(gate_dir / 'gate_select.py', 'tia_campaign_gate')
-    durations = prepare(root, gate_dir, duration_updates=mapping.get('duration_updates'))['durations']
+    gate = load_tia_module(gate_dir / 'gate_select.py', 'tia_campaign_gate')
+    durations = prepare_selection(root, gate_dir, duration_updates=mapping.get('duration_updates'))['durations']
     quarantine = gate.read_json(gate_dir / 'gate_quarantine.json')
     index = gate.dependency_index(root)
     graph = gate.helper_importers(index, [])
@@ -211,7 +216,7 @@ def campaign(root: Path, gate_dir: Path, mapping: dict, map_path: Path, output: 
                      'demand': {'cpu': 1, 'mem_gb': 4}, 'priority': -10, 'anywhere': True, 'timeout_s': 900,
                      'env': {'OMP_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1',
                              'PB_TIA_MAP': packed_map, 'PB_TIA_MUTATION': str(number)}})
-    output.write_text(json.dumps(rows, sort_keys=True, indent=2) + '\n')
+    output.write_text(sorted_json(rows) + '\n')
     print(json.dumps({'mutations': len(rows), 'src': sum(m['path'].startswith('src/') for m in chosen),
                       'fleet': sum(m['path'].startswith('tools/') for m in chosen)}))
 
@@ -251,11 +256,11 @@ def run_mutation(root: Path, gate_dir: Path, mutation: dict) -> dict:
     mapping = json.loads(gzip.decompress(base64.b64decode(os.environ['PB_TIA_MAP'])))
     path = mutation['path']
     original = (root / path).read_bytes()
-    if digest(original) != mutation['before']:
+    if raw_sha256(original) != mutation['before']:
         raise ValueError('mutation source hash mismatch')
     diff = {'python': {path: mutation['diff']}, 'non_python': [], 'base_hashes': {path: mutation['before']}}
     selected = plan(root, gate_dir, mapping, diff)
-    gate = load(gate_dir / 'gate_select.py', 'tia_mutation_gate')
+    gate = load_tia_module(gate_dir / 'gate_select.py', 'tia_mutation_gate')
     static = gate.create_plan(root, [path], durations=gate.read_json(gate_dir / 'gate_durations.json'),
                               quarantine=gate.read_json(gate_dir / 'gate_quarantine.json'))
     excluded = set(mapping.get('unmapped', {}))
@@ -285,7 +290,7 @@ def run_mutation(root: Path, gate_dir: Path, mutation: dict) -> dict:
 
 
 def overhead(root: Path, gate_dir: Path) -> dict:
-    gate = load(gate_dir / 'gate_select.py', 'tia_overhead_gate')
+    gate = load_tia_module(gate_dir / 'gate_select.py', 'tia_overhead_gate')
     fast, _ = gate.tier_declarations(root)
     arms = []
     with tempfile.TemporaryDirectory() as temporary:
@@ -335,12 +340,12 @@ def main():
     elif args.mode == 'extract':
         extract(args.reports, args.output)
     elif args.mode == 'campaign':
-        campaign(root, gate_dir, read_map(args.map), args.map, args.output, args.count)
+        campaign(root, gate_dir, read_impact_map(args.map), args.map, args.output, args.count)
     else:
         result = (overhead(root, gate_dir) if args.mode == 'overhead' else
                   run_mutation(root, gate_dir, json.loads(args.mutation)) if args.mode == 'mutation'
-                  else replay(root, gate_dir, read_map(args.map), json.loads(args.history.read_text())))
-        rendered = json.dumps(result, sort_keys=True)
+                  else replay_impact(root, gate_dir, read_impact_map(args.map), json.loads(args.history.read_text())))
+        rendered = sorted_json(result)
         if args.output:
             args.output.write_text(rendered + '\n')
         print('tia-evaluation: ' + rendered, flush=True)

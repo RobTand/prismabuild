@@ -9,13 +9,17 @@ import atexit
 import base64
 from dataclasses import replace
 import gzip
-import hashlib
 import json
 import os
 from pathlib import Path
 import platform
 import sys
 import uuid
+
+try:
+    from .tia_bytes import raw_sha256, compact_ascii_json_bytes, sorted_json
+except ImportError:
+    from tia_bytes import raw_sha256, compact_ascii_json_bytes, sorted_json
 
 _STATE = None
 
@@ -33,7 +37,7 @@ class Recorder:
         for directory in ('src', 'tools'):
             for path in sorted((self.root / directory).rglob('*.py')):
                 self.catalog[str(path)] = (path.relative_to(self.root).as_posix(),
-                                          hashlib.sha256(path.read_bytes()).hexdigest())
+                                          raw_sha256(path.read_bytes()))
         self.fixture_calls: list[set[str]] = []
         self.node = os.environ.get('PB_TIA_NODE', '')
         self.tool = None
@@ -107,7 +111,7 @@ class Recorder:
                   'tests': {node: sorted(values) for node, values in sorted(self.tests.items())}}
         target = self.output / f'{self.pid}-{self.token}.json'
         temporary = target.with_suffix('.tmp')
-        temporary.write_text(json.dumps(record, sort_keys=True, separators=(',', ':')) + '\n')
+        temporary.write_text(compact_ascii_json_bytes(record).decode() + '\n')
         temporary.replace(target)
 
     def close(self):
@@ -133,7 +137,7 @@ def bootstrap():
     return _STATE
 
 
-def pytest_configure(config):
+def record_pytest_configure(config):
     # Workers need an explicit plugin argument; unrelated child pytest invocations do not.
     name = config.pluginmanager.get_name(sys.modules[__name__])
     config.invocation_params = replace(config.invocation_params, args=('-p', name, *config.invocation_params.args))
@@ -160,18 +164,18 @@ def pytest_configure(config):
     os.environ['PYTHONPATH'] = os.pathsep.join(entries)
 
 
-def pytest_runtest_setup(item):
+def record_pytest_runtest_setup(item):
     _STATE.boundary(item.nodeid)
 
 
-def pytest_runtest_call(item):
+def record_pytest_runtest_call(item):
     # Cached fixtures execute once but can affect every consumer. Preserve their dependencies.
     for fixture in item._request._fixture_defs.values():
         _STATE.tests[item.nodeid].update(getattr(fixture, '_pb_tia_calls', set()))
     sys.monitoring.restart_events()
 
 
-def pytest_fixture_setup(fixturedef, request):
+def record_pytest_fixture_setup(fixturedef, request):
     calls: set[str] = set()
     _STATE.fixture_calls.append(calls)
     sys.monitoring.restart_events()
@@ -182,25 +186,31 @@ def pytest_fixture_setup(fixturedef, request):
         fixturedef._pb_tia_calls = calls
 
 
-pytest_fixture_setup.pytest_impl = {'wrapper': True}
+record_pytest_fixture_setup.pytest_impl = {'specname': 'pytest_fixture_setup', 'wrapper': True}
 
 
-def pytest_runtest_teardown(item, nextitem):
+def record_pytest_runtest_teardown(item, nextitem):
     try:
         return (yield)
     finally:
         _STATE.boundary('')
 
 
-pytest_runtest_teardown.pytest_impl = {'wrapper': True}
+record_pytest_runtest_teardown.pytest_impl = {'specname': 'pytest_runtest_teardown', 'wrapper': True}
 
 
-def pytest_sessionfinish(session, exitstatus):
+def record_pytest_sessionfinish(session, exitstatus):
     _STATE.flush()
     if os.environ.get('PB_TIA_EMIT') == '1':
         # PB's CAS-captured stdout retains the data without a shared output directory.
         records = [json.loads(path.read_text()) for path in sorted(_STATE.output.glob('*.json'))]
-        encoded = gzip.compress(json.dumps(records, sort_keys=True).encode(), mtime=0)
+        encoded = gzip.compress(sorted_json(records).encode(), mtime=0)
         print('tia-record: ' + base64.b64encode(encoded).decode(), flush=True)
 
-pytest_runtest_setup.pytest_impl = {'tryfirst': True}
+record_pytest_runtest_setup.pytest_impl = {'specname': 'pytest_runtest_setup', 'tryfirst': True}
+
+record_pytest_configure.pytest_impl = {'specname': 'pytest_configure'}
+
+record_pytest_runtest_call.pytest_impl = {'specname': 'pytest_runtest_call'}
+
+record_pytest_sessionfinish.pytest_impl = {'specname': 'pytest_sessionfinish'}

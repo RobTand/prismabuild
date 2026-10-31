@@ -9,6 +9,11 @@ from pathlib import Path
 
 SCHEMA = 'prismabuild.tia_map.v1'
 
+try:
+    from .tia_bytes import raw_sha256, compact_ascii_json_bytes, sorted_json
+except ImportError:
+    from tia_bytes import raw_sha256, compact_ascii_json_bytes, sorted_json
+
 
 def write_map(records: list[Path], destination: Path, *, unmapped: dict | None = None, duration_updates: dict | None = None) -> dict:
     if not records:
@@ -35,13 +40,13 @@ def write_map(records: list[Path], destination: Path, *, unmapped: dict | None =
     result = {'schema': SCHEMA, 'source_commit': commits.pop(), 'python': sorted(versions),
               'unmapped': dict(sorted((unmapped or {}).items())), 'duration_updates': dict(sorted((duration_updates or {}).items())), 'files': dict(sorted(hashes.items())), 'functions': functions, 'unattributed': sorted(unattributed),
               'tests': {node: sorted(ids[name] for name in values) for node, values in sorted(tests.items())}}
-    encoded = (json.dumps(result, sort_keys=True, separators=(',', ':')) + '\n').encode()
+    encoded = (compact_ascii_json_bytes(result).decode() + '\n').encode()
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(gzip.compress(encoded, mtime=0))
     return result
 
 
-def read_map(path: Path) -> dict:
+def read_impact_map(path: Path) -> dict:
     result = json.loads(gzip.decompress(path.read_bytes()))
     if result['schema'] != SCHEMA:
         raise ValueError('unsupported TIA map schema')
@@ -60,8 +65,8 @@ def main():
     args = parser.parse_args()
     paths = [record for path in args.records for record in (sorted(path.glob('*.json')) if path.is_dir() else [path])]
     result = write_map(paths, args.output, unmapped=json.loads(args.unmapped.read_text()) if args.unmapped else None)
-    print(json.dumps({'functions': len(result['functions']), 'tests': len(result['tests']),
-                      'bytes': args.output.stat().st_size, 'source_commit': result['source_commit']}, sort_keys=True))
+    print(sorted_json({'functions': len(result['functions']), 'tests': len(result['tests']),
+                      'bytes': args.output.stat().st_size, 'source_commit': result['source_commit']}))
 
 
 if __name__ == '__main__':

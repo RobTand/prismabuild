@@ -10,12 +10,12 @@ import json
 from pathlib import Path
 
 
-def pytest_configure(config):
+def population_pytest_configure(config):
     name = config.pluginmanager.get_name(sys.modules[__name__])
     config.invocation_params = replace(config.invocation_params, args=('-p', name, *config.invocation_params.args))
 
 
-def pytest_collection_modifyitems(config, items):
+def population_pytest_collection_modifyitems(config, items):
     root = Path.cwd()
     path = root / 'tools/ci/gate_select.py'
     spec = importlib.util.spec_from_file_location('tia_population_gate', path)
@@ -29,3 +29,7 @@ def pytest_collection_modifyitems(config, items):
     items[:] = kept
     if removed:
         config.hook.pytest_deselected(items=removed)
+
+population_pytest_configure.pytest_impl = {'specname': 'pytest_configure'}
+
+population_pytest_collection_modifyitems.pytest_impl = {'specname': 'pytest_collection_modifyitems'}
