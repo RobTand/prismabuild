@@ -171,3 +171,20 @@ def test_record_schema_rejects_out_of_range_function_indices(tmp_path):
                      'functions': ['src/a.py::f'], 'tests': {'tests/test_a.py::test_a': [1]}}).encode()))
     with pytest.raises(ValueError, match='indices'):
         load('tia_map').read_map(path)
+
+
+def test_mutation_sample_preserves_bytes_and_function_identity(tmp_path):
+    mod = load('tia_evaluate')
+    directory = tmp_path / 'src/prismabuild'
+    directory.mkdir(parents=True)
+    path = directory / 'example.py'
+    path.write_text('# é\ndef choose(x):\n    if x == 3:\n        return 7\n    return 9\n')
+    mapping = {'files': {'src/prismabuild/example.py': mod.digest(path.read_bytes())},
+               'functions': ['src/prismabuild/example.py::choose']}
+    rows = list(mod.mutations(tmp_path, mapping))
+    assert len(rows) == 1
+    assert rows[0]['function'] == 'choose'
+    assert rows[0]['kind'] == 'condition'
+    assert rows[0]['replacement'] == 'if not x == 3:\n        return 7'
+    assert rows[0]['diff']['changed'] == ['choose']
+    assert rows[0]['diff']['module_changed'] is False

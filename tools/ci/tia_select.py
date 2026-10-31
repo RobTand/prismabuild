@@ -81,7 +81,7 @@ def select(mapping: dict, diff: dict, *, file_hashes: dict, fast: list[str],
             'fallbacks': [{'path': path, 'reason': reason} for path, reason in sorted(fallbacks.items())]}
 
 
-def plan(root: Path, gate_dir: Path, mapping: dict, diff: dict) -> dict:
+def prepare(root: Path, gate_dir: Path) -> dict:
     gate = load(gate_dir / 'gate_select.py', 'tia_gate_select')
     durations = gate.read_json(gate_dir / 'gate_durations.json')
     quarantine = gate.read_json(gate_dir / 'gate_quarantine.json')
@@ -93,6 +93,14 @@ def plan(root: Path, gate_dir: Path, mapping: dict, diff: dict) -> dict:
     full = static([], 'full')
     population = [row['path'] for row in full['selected']]
     fast, _ = gate.tier_declarations(root)
+    return {'static': static, 'full': full, 'population': population, 'fast': fast, 'durations': durations, 'gate': gate}
+
+
+def plan(root: Path, gate_dir: Path, mapping: dict, diff: dict, *, context: dict | None = None) -> dict:
+    prepared = prepare(root, gate_dir) if context is None else context
+    static, full = prepared['static'], prepared['full']
+    population, fast = prepared['population'], prepared['fast']
+    durations, gate = prepared['durations'], prepared['gate']
     changed = [*diff['python'], *diff['non_python']]
     result = select(mapping, diff, file_hashes=diff['base_hashes'], fast=sorted(fast),
                     changed_tests=[name for name in changed if name.startswith('tests/')],

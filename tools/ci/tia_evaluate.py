@@ -20,7 +20,9 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 
-from tia_select import load, plan
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from tia_select import load, plan, prepare
 from tia_map import read_map, write_map
 from tia_diff import analyze, compare, digest, source
 
@@ -45,16 +47,41 @@ def extract(reports: list[Path], output: Path):
                       'bytes': output.stat().st_size, 'source_commit': result['source_commit']}))
 
 
+def extract_cas(inputs: list[dict], output: Path):
+    with tempfile.TemporaryDirectory() as temporary:
+        paths = []
+        for entry in inputs:
+            payload = Path(entry['blob_path']).read_bytes()
+            if digest(payload) != entry['blob_sha256']:
+                raise ValueError('CAS result hash mismatch')
+            found = False
+            for line in payload.decode().splitlines():
+                if line.startswith('tia-record: '):
+                    found = True
+                    records = json.loads(gzip.decompress(base64.b64decode(line.split(': ', 1)[1])))
+                    for record in records:
+                        path = Path(temporary) / f'{len(paths)}.json'
+                        path.write_text(json.dumps(record))
+                        paths.append(path)
+            if not found:
+                raise ValueError(f"missing recorder output: {entry['action_key']}")
+        result = write_map(paths, output)
+    print('tia-map: ' + base64.b64encode(output.read_bytes()).decode(), flush=True)
+    print(json.dumps({'tests': len(result['tests']), 'functions': len(result['functions']),
+                      'bytes': output.stat().st_size, 'source_commit': result['source_commit']}), flush=True)
+
+
 def replay(root: Path, gate_dir: Path, mapping: dict, history: dict) -> dict:
     gate_replay = load(gate_dir / 'gate_replay.py', 'tia_gate_replay')
     # Reuse its population, static rule, estimates and nearest-rank statistics.
     static = gate_replay.replay(root, history)
     rows = []
+    context = prepare(root, gate_dir)
     for pull in history['pulls']:
         merge = pull['merge_commit_sha']
         parent = subprocess.check_output(['git', 'rev-parse', merge + '^'], cwd=root, text=True).strip()
         changes = analyze(root, parent, merge, merge_base=False)
-        selected = plan(root, gate_dir, mapping, changes)
+        selected = plan(root, gate_dir, mapping, changes, context=context)
         rows.append({'number': pull['number'], 'selected_files': len(selected['selected']),
                      'wall_seconds': selected['estimate']['wall_seconds'],
                      'serial_seconds': selected['estimate']['serial_seconds'],
@@ -200,7 +227,7 @@ def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Pat
             if case.find('error') is not None:
                 errors.append(node)
             skips += case.find('skipped') is not None
-    return {'returncode': run.returncode, 'complete': run.returncode in (0, 1),
+    return {'returncode': run.returncode, 'complete': run.returncode in (0, 1, 2) and xml.exists(),
             'failures': sorted(failures), 'errors': sorted(errors), 'tests': tests, 'skipped': skips,
             'files': len(files), 'elapsed_s': time.monotonic() - start,
             'tail': (run.stdout + run.stderr)[-4000:] if run.returncode else ''}
@@ -275,7 +302,7 @@ def overhead(root: Path, gate_dir: Path) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['extract', 'replay', 'campaign', 'mutation', 'overhead'])
+    parser.add_argument('mode', choices=['extract', 'replay', 'campaign', 'mutation', 'overhead', 'extract-cas'])
     parser.add_argument('--root', type=Path, default=Path.cwd())
     parser.add_argument('--gate-dir', type=Path, default=Path('tools/ci'))
     parser.add_argument('--map', type=Path)
@@ -287,7 +314,9 @@ def main():
     args = parser.parse_args()
     root = args.root.resolve()
     gate_dir = args.gate_dir.resolve()
-    if args.mode == 'extract':
+    if args.mode == 'extract-cas':
+        extract_cas(json.loads(os.environ['PB_TIA_CAS_INPUTS']), args.output)
+    elif args.mode == 'extract':
         extract(args.reports, args.output)
     elif args.mode == 'campaign':
         campaign(root, gate_dir, read_map(args.map), args.map, args.output, args.count)
