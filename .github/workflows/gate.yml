@@ -74,6 +74,9 @@ jobs:
           gate_python_prefix=$(python -c 'import sys; print(sys.base_prefix)')
           sudo install -d /usr/local/pb-gate-python
           sudo cp -a "$gate_python_prefix"/. /usr/local/pb-gate-python/
+          sudo chown -R root:root /usr/local/pb-gate-python
+          printf '%s\n' /usr/local/pb-gate-python/lib | sudo tee /etc/ld.so.conf.d/pb-gate-python.conf >/dev/null
+          sudo ldconfig
           env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/local/pb-gate-python/bin/python --version
           echo /usr/local/pb-gate-python/bin >> "$GITHUB_PATH"
           sudo apt-get -o Acquire::Retries=3 update -qq
@@ -206,6 +209,9 @@ jobs:
           gate_python_prefix=$(python -c 'import sys; print(sys.base_prefix)')
           sudo install -d /usr/local/pb-gate-python
           sudo cp -a "$gate_python_prefix"/. /usr/local/pb-gate-python/
+          sudo chown -R root:root /usr/local/pb-gate-python
+          printf '%s\n' /usr/local/pb-gate-python/lib | sudo tee /etc/ld.so.conf.d/pb-gate-python.conf >/dev/null
+          sudo ldconfig
           env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/local/pb-gate-python/bin/python --version
           echo /usr/local/pb-gate-python/bin >> "$GITHUB_PATH"
           sudo apt-get -o Acquire::Retries=3 update -qq
@@ -287,6 +293,9 @@ jobs:
           gate_python_prefix=$(python -c 'import sys; print(sys.base_prefix)')
           sudo install -d /usr/local/pb-gate-python
           sudo cp -a "$gate_python_prefix"/. /usr/local/pb-gate-python/
+          sudo chown -R root:root /usr/local/pb-gate-python
+          printf '%s\n' /usr/local/pb-gate-python/lib | sudo tee /etc/ld.so.conf.d/pb-gate-python.conf >/dev/null
+          sudo ldconfig
           env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/local/pb-gate-python/bin/python --version
           echo /usr/local/pb-gate-python/bin >> "$GITHUB_PATH"
           sudo apt-get -o Acquire::Retries=3 update -qq
@@ -307,7 +316,8 @@ jobs:
         run: |
           env -u LD_LIBRARY_PATH -u LD_PRELOAD python -m pytest -n 4 --dist=loadfile -q -ra \
             -o junit_family=xunit1 --junitxml=capability-artifacts/namespace.xml \
-            tests/test_record_compatibility.py tests/test_current_receipt_compat_composition.py
+            tests/test_record_compatibility.py tests/test_current_receipt_compat_composition.py \
+            tests/test_proof_runtime_observation.py::test_host_customization_file_root_selection
       - name: Measure the complete root population using passwordless sudo
         continue-on-error: true
         env:
@@ -403,6 +413,9 @@ jobs:
           gate_python_prefix=$(python -c 'import sys; print(sys.base_prefix)')
           sudo install -d /usr/local/pb-gate-python
           sudo cp -a "$gate_python_prefix"/. /usr/local/pb-gate-python/
+          sudo chown -R root:root /usr/local/pb-gate-python
+          printf '%s\n' /usr/local/pb-gate-python/lib | sudo tee /etc/ld.so.conf.d/pb-gate-python.conf >/dev/null
+          sudo ldconfig
           env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/local/pb-gate-python/bin/python --version
           echo /usr/local/pb-gate-python/bin >> "$GITHUB_PATH"
           sudo apt-get -o Acquire::Retries=3 update -qq
