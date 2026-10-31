@@ -50,8 +50,14 @@ def test_definition_time_changes_use_module_fallback(before, after):
     assert load_tia_module('tia_diff').compare_functions(before, after)['module_changed'] is True
 
 
-def test_map_reproducible_and_rejects_mixed_sources(tmp_path):
+def test_map_reproducible_and_rejects_mixed_sources(tmp_path, monkeypatch):
     mod = load_tia_module('tia_map')
+    original_compress = gzip.compress
+    def legacy_header(*args, **kwargs):
+        data = bytearray(original_compress(*args, **kwargs))
+        data[9] = 3
+        return bytes(data)
+    monkeypatch.setattr(gzip, 'compress', legacy_header)
     record = {'schema': 'prismabuild.tia_record.v1', 'source_commit': 'a' * 40,
               'python': '3.12.8', 'unattributed': [], 'files': {'src/a.py': 'abc'},
               'tests': {'tests/test_a.py::test_a': ['src/a.py::f', 'src/a.py::f']}}
