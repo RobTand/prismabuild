@@ -347,22 +347,6 @@
    ],
    "name": "utc_now",
    "reason": "GitHub receipt collection records ISO UTC strings with a Z suffix. The D38 evidence gate returns aware datetime objects for freshness arithmetic; importing that domain gate would couple unrelated contracts."
-  },
-  {
-   "name": "check_pull_request",
-   "modules": [
-    "tools/ci/check_regression_test.py",
-    "tools/ci/issue_link.py"
-   ],
-   "reason": "Regression evidence and issue references are independent pull request checks with different validation contracts."
-  },
-  {
-   "name": "issue_numbers",
-   "modules": [
-    "tools/ci/issue_link.py",
-    "tools/fleet/pbmergeq.py"
-   ],
-   "reason": "Issue linking validates body references while the retired merge client enumerates its own admission references."
   }
  ],
  "same_name_helpers": {
