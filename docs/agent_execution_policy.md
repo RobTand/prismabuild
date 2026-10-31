@@ -1,16 +1,17 @@
 # Agent execution through PrismaBuild
 
-PrismaBuild admission is for computational work by agents and subagents:
+Agents and subagents run their tests and computational work through
+PrismaBuild (Rob, 2026-09-05, amended 2026-10-29): targeted tests, full suites,
 GPU jobs, benchmarks, and large or long-running compute. This applies across
-projects and hosts, including computational work inside containers. The
-coordinator submits; a worker executes after admission. Tests and subprocesses
-already inside an admitted action do not submit themselves recursively.
+projects and hosts, including work inside containers. The coordinator
+submits; a worker executes after admission. Tests and subprocesses already
+inside an admitted action do not submit themselves recursively.
 
-PrismaBuild is not the CI system. CI and integration tests run as GitHub checks
-in the Mergify merge queue on the integrated SHA.
-While developing, run the fast relevant tests in your worktree;
-a local run is evidence, not the merge gate. Merge only through the Mergify
-queue; never bypass required checks, reviews or branch protections.
+PrismaBuild is not the CI system. CI runs on CircleCI, and pull requests merge
+through the Mergify queue, which gates on CircleCI's checks of the integrated
+SHA. Do not route CI through PrismaBuild. A PrismaBuild run is development
+evidence, not the merge gate. Merge only through the Mergify queue; never
+bypass required checks, reviews or branch protections.
 
 Use the published runtime at `/mnt/shared/prismabuild-fleet/repo/tools`:
 
@@ -263,8 +264,8 @@ Check the exit status, terminal record, logs and CAS receipt. A submission
 acknowledgement is not a passing test. Record skips and missing tooling. Install
 scoped tooling where required instead of silently skipping qualification.
 
-Read-only inspection, source edits, Git operations, fast relevant development
-tests and submission commands may run on the coordinator. Do not hide work
+Read-only inspection, source edits, Git operations and submission commands may
+run on the coordinator; tests run through PrismaBuild. Do not hide work
 requiring admission in SSH commands, shell scripts, containers, inline Python
 or another agent to evade admission. If PrismaBuild
 cannot admit work, diagnose and repair its availability; do not silently fall
@@ -325,8 +326,8 @@ feels like a test or divides into quanta.
 
 This does not exempt the work *around* it. Non-vLLM GPU jobs, benchmarks, and
 large or long-running compute still require admission, including exports,
-probes or cost stages that merely run on the same box. Fast relevant local
-development tests follow the CI routing at the start of this policy.
+probes or cost stages that merely run on the same box, and so do development
+tests, as the start of this policy says.
 
 A directly started serve remains **external load for batch admission**. It is
 outside the ledger, so no reservation accounts for the CPU, memory and GPU it
