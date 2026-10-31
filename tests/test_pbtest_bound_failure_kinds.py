@@ -25,31 +25,34 @@ def test_bound_cause_survives_worker_reports_and_shard_verdict(
     # The budget includes the plugin's 30-second reporting margin. Pin the
     # plugin's start, rather than waiting for a real shard to run out of time.
     (checkout / "conftest.py").write_text('''
-import time
-import threading
+import signal
+from types import SimpleNamespace
 import pytest
+import prismabuild.pytest_test_bound as bound
 pytest_plugins = ["prismabuild.pytest_test_bound"]
 
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config):
-    config._prismabuild_test_bound = 2.0
+    bound.time = SimpleNamespace(monotonic=lambda: 100.0)
+    bound.signal.setitimer = lambda *_args: None
+    config._prismabuild_test_bound = 120.0
     config._prismabuild_shard_budget = 31.0 if BUDGETED else 0.0
-    config._prismabuild_session_start = time.monotonic() - 5.0
+    config._prismabuild_session_start = 95.0
 
 @pytest.fixture
 def fixture():
     if PHASE == "setup":
-        threading.Event().wait()
+        signal.getsignal(signal.SIGALRM)(signal.SIGALRM, None)
     yield
     if PHASE == "teardown":
-        threading.Event().wait()
+        signal.getsignal(signal.SIGALRM)(signal.SIGALRM, None)
 '''.replace("BUDGETED", repr(budgeted)).replace("PHASE", repr(phase)))
     (checkout / "test_bound.py").write_text('''
-import threading
+import signal
 
 def test_bound(fixture):
     if PHASE == "call":
-        threading.Event().wait()
+        signal.getsignal(signal.SIGALRM)(signal.SIGALRM, None)
 
 def test_assertion():
     assert False, "The bound was tightened to the time this test had left in its shard"
@@ -78,9 +81,7 @@ def test_assertion():
         "test_bound.py::test_assertion", "test_bound.py::test_bound"]
     assert not verdict["green"] and not verdict["unobserved_files"]
     if budgeted:
-        # Raw sealed budget left, before the 30-second margin and 1-second
-        # minimum alarm. Worker startup can lower it; it cannot increase it.
-        assert 0 < record["first_tightened_test_budget_remaining_s"] <= 26
+        assert record["first_tightened_test_budget_remaining_s"] == 26.0
         assert verdict["first_tightened_test_budget_remaining_s"] == record[
             "first_tightened_test_budget_remaining_s"]
     else:

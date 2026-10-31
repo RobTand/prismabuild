@@ -6,6 +6,7 @@ import base64
 import csv
 import hashlib
 import json
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -265,9 +266,23 @@ def pip_installed(tmp_path, pins_repo):
     return site, commit
 
 
+@pytest.fixture(scope="module")
+def installed_template(tmp_path_factory, pins_repo):
+    return pip_installed(tmp_path_factory.mktemp("installed-template"), pins_repo)
+
+
+@pytest.fixture
+def installed_copy(tmp_path, installed_template):
+    site, commit = installed_template
+    template = site.parents[2]
+    venv = tmp_path / "venv"
+    shutil.copytree(template, venv, symlinks=True)
+    return venv / site.relative_to(template), commit
+
+
 def test_default_identity_refusal_is_unchanged(tmp_path, monkeypatch,
-                                               pins_module, pins_repo):
-    site, commit = pip_installed(tmp_path, pins_repo)
+                                               pins_module, installed_copy):
+    site, commit = installed_copy
     monkeypatch.syspath_prepend(str(site))
     with pytest.raises(ValueError) as excinfo:
         pins_module.verify_install("pinsbyte1544", OTHER)
@@ -278,8 +293,8 @@ def test_default_identity_refusal_is_unchanged(tmp_path, monkeypatch,
 
 
 def test_tolerant_policy_accepts_a_real_install_at_another_commit(
-        tmp_path, monkeypatch, pins_module, pins_repo):
-    site, commit = pip_installed(tmp_path, pins_repo)
+        tmp_path, monkeypatch, pins_module, installed_copy):
+    site, commit = installed_copy
     monkeypatch.syspath_prepend(str(site))
     seen = {}
 
@@ -298,8 +313,8 @@ def test_tolerant_policy_accepts_a_real_install_at_another_commit(
 
 
 def test_tolerant_policy_still_refuses_corrupt_installed_bytes(
-        tmp_path, monkeypatch, pins_module, pins_repo):
-    site, commit = pip_installed(tmp_path, pins_repo)
+        tmp_path, monkeypatch, pins_module, installed_copy):
+    site, commit = installed_copy
     init = site / "pinsbyte1544/__init__.py"
     init.write_text(init.read_text() + "# corrupted\n")
     monkeypatch.syspath_prepend(str(site))
@@ -317,8 +332,8 @@ def test_tolerant_policy_still_refuses_corrupt_installed_bytes(
 
 
 def test_tolerant_policy_still_refuses_a_deleted_non_imported_file(
-        tmp_path, monkeypatch, pins_module, pins_repo):
-    site, commit = pip_installed(tmp_path, pins_repo)
+        tmp_path, monkeypatch, pins_module, installed_copy):
+    site, commit = installed_copy
     (site / "pinsbyte1544/data.py").unlink()
     monkeypatch.syspath_prepend(str(site))
     calls = []
@@ -352,8 +367,8 @@ def console_record_path(site):
 
 
 def test_a_deleted_console_script_outside_the_package_refuses(
-        tmp_path, monkeypatch, pins_module, pins_repo):
-    site, commit = pip_installed(tmp_path, pins_repo)
+        tmp_path, monkeypatch, pins_module, installed_copy):
+    site, commit = installed_copy
     (site / console_record_path(site)).unlink()
     monkeypatch.syspath_prepend(str(site))
     with pytest.raises(ValueError, match="recorded file is missing"):
@@ -361,8 +376,8 @@ def test_a_deleted_console_script_outside_the_package_refuses(
 
 
 def test_tolerant_policy_still_refuses_a_deleted_console_script(
-        tmp_path, monkeypatch, pins_module, pins_repo):
-    site, commit = pip_installed(tmp_path, pins_repo)
+        tmp_path, monkeypatch, pins_module, installed_copy):
+    site, commit = installed_copy
     (site / console_record_path(site)).unlink()
     monkeypatch.syspath_prepend(str(site))
     calls = []
@@ -375,8 +390,8 @@ def test_tolerant_policy_still_refuses_a_deleted_console_script(
 
 
 def test_restored_recorded_bytes_are_accepted_again(
-        tmp_path, monkeypatch, pins_module, pins_repo):
-    site, commit = pip_installed(tmp_path, pins_repo)
+        tmp_path, monkeypatch, pins_module, installed_copy):
+    site, commit = installed_copy
     data = site / "pinsbyte1544/data.py"
     original = data.read_bytes()
     data.unlink()
@@ -423,9 +438,9 @@ def invalidate_record_row(site, defect):
 
 @pytest.mark.parametrize("defect", ["empty_name", "four_columns", "nonnumeric_size"])
 def test_a_malformed_record_row_refuses(tmp_path, monkeypatch, pins_module,
-                                        pins_repo, defect):
+                                        installed_copy, defect):
     """Valid installed bytes cannot hide invalid RECORD grammar."""
-    site, commit = pip_installed(tmp_path, pins_repo)
+    site, commit = installed_copy
     invalidate_record_row(site, defect)
     monkeypatch.syspath_prepend(str(site))
     with pytest.raises(ValueError):
@@ -434,8 +449,8 @@ def test_a_malformed_record_row_refuses(tmp_path, monkeypatch, pins_module,
 
 @pytest.mark.parametrize("defect", ["empty_name", "four_columns", "nonnumeric_size"])
 def test_a_malformed_record_row_refuses_after_tolerated_drift(
-        tmp_path, monkeypatch, pins_module, pins_repo, defect):
-    site, commit = pip_installed(tmp_path, pins_repo)
+        tmp_path, monkeypatch, pins_module, installed_copy, defect):
+    site, commit = installed_copy
     invalidate_record_row(site, defect)
     monkeypatch.syspath_prepend(str(site))
     calls = []
@@ -450,8 +465,8 @@ def test_a_malformed_record_row_refuses_after_tolerated_drift(
                                     pytest.param("\r\n", id="carriage_return_line_feed")])
 @pytest.mark.parametrize("tolerant", [False, True], ids=["strict", "tolerant"])
 def test_intact_quoted_carriage_return_name_accepts(
-        tmp_path, monkeypatch, pins_module, pins_repo, newline, tolerant):
-    site, commit = pip_installed(tmp_path, pins_repo)
+        tmp_path, monkeypatch, pins_module, installed_copy, newline, tolerant):
+    site, commit = installed_copy
     monkeypatch.syspath_prepend(str(site))
     before = pins_module.verify_install("pinsbyte1544", commit)
     payload = b"quoted filename bytes\n"
@@ -473,8 +488,8 @@ def test_intact_quoted_carriage_return_name_accepts(
                                     pytest.param("\r\n", id="carriage_return_line_feed")])
 @pytest.mark.parametrize("tolerant", [False, True], ids=["strict", "tolerant"])
 def test_missing_quoted_carriage_return_name_refuses_with_recorded_line_feed_alias(
-        tmp_path, monkeypatch, pins_module, pins_repo, newline, tolerant):
-    site, commit = pip_installed(tmp_path, pins_repo)
+        tmp_path, monkeypatch, pins_module, installed_copy, newline, tolerant):
+    site, commit = installed_copy
     payload = b"same bytes in two distinct files\n"
     named = site / "pinsbyte1544" / f"carriage{newline}return.bin"
     alias = site / "pinsbyte1544/carriage\nreturn.bin"
@@ -492,7 +507,7 @@ def test_missing_quoted_carriage_return_name_refuses_with_recorded_line_feed_ali
 
 
 def test_quoted_record_names_stay_the_bytes_they_name(
-        tmp_path, monkeypatch, pins_module, pins_repo):
+        tmp_path, monkeypatch, pins_module, installed_copy):
     """A quoted newline filename is one entry naming one file.
 
     Pre-fix failure at bae247818a: splitlines() reassembled the recorded
@@ -500,7 +515,7 @@ def test_quoted_record_names_stay_the_bytes_they_name(
     refused on the unrecorded real file and deleting the real file went
     unnoticed while the same-bytes alias was hashed in its place.
     """
-    site, commit = pip_installed(tmp_path, pins_repo)
+    site, commit = installed_copy
     package = site / "pinsbyte1544"
     payload = b"same bytes\n"
     named = package / "line\nbreak.bin"
@@ -519,8 +534,8 @@ def test_quoted_record_names_stay_the_bytes_they_name(
 
 
 def test_quoted_newline_name_refuses_after_tolerated_drift(
-        tmp_path, monkeypatch, pins_module, pins_repo):
-    site, commit = pip_installed(tmp_path, pins_repo)
+        tmp_path, monkeypatch, pins_module, installed_copy):
+    site, commit = installed_copy
     package = site / "pinsbyte1544"
     payload = b"same bytes\n"
     named = package / "line\nbreak.bin"
@@ -541,14 +556,14 @@ def test_quoted_newline_name_refuses_after_tolerated_drift(
 
 
 def test_a_deleted_non_imported_package_file_should_be_refused(
-        tmp_path, monkeypatch, pins_module, pins_repo):
+        tmp_path, monkeypatch, pins_module, installed_copy):
     """A hashed RECORD entry deleted from disk refuses, though nothing imports it.
 
     Pre-fix failure (the strict xfail this marker replaces): importlib.metadata's
     Distribution.files silently drops RECORD entries whose files are missing,
     so the deleted data.py was never hashed and the install reported intact.
     """
-    site, commit = pip_installed(tmp_path, pins_repo)
+    site, commit = installed_copy
     (site / "pinsbyte1544/data.py").unlink()
     monkeypatch.syspath_prepend(str(site))
     with pytest.raises(ValueError, match="recorded file is missing"):
@@ -562,9 +577,9 @@ def test_a_deleted_non_imported_package_file_should_be_refused(
     ("shadow", "not owned by its RECORD"),
 ])
 def test_tolerant_policy_never_weakens_integrity(tmp_path, monkeypatch,
-                                                 pins_module, pins_repo,
+                                                 pins_module, installed_copy,
                                                  change, diagnostic):
-    site, commit = pip_installed(tmp_path, pins_repo)
+    site, commit = installed_copy
     if change == "missing_record":
         (site / "pinsbyte1544-1.0.dist-info/RECORD").unlink()
     elif change == "unsupported_hash":
@@ -593,8 +608,8 @@ def test_tolerant_policy_never_weakens_integrity(tmp_path, monkeypatch,
 
 
 def test_standalone_byte_phase_ignores_identity_and_refuses_corruption(
-        tmp_path, monkeypatch, pins_module, pins_repo):
-    site, commit = pip_installed(tmp_path, pins_repo)
+        tmp_path, monkeypatch, pins_module, installed_copy):
+    site, commit = installed_copy
     monkeypatch.syspath_prepend(str(site))
     # The byte entry point takes no pin at all, so it cannot read one: it
     # passes on intact bytes of an install whose recorded commit differs
