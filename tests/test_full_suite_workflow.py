@@ -115,3 +115,34 @@ def test_plan_uses_shared_partition_interface_and_round_robin_runners(tmp_path, 
     manifest = json.loads((tmp_path / 'out/manifest.json').read_text())
     assert manifest['include'][0]['files'] == ['tests/test_b.py']
     assert manifest['sha'] == 'a' * 40
+
+
+@pytest.mark.parametrize('codes, expected_code, attempts', [
+    ('75,0', 0, 2), ('75,75', 75, 2), ('1,0', 1, 1), ('0,1', 0, 1)])
+def test_live_shell_retries_only_infrastructure(tmp_path, codes, expected_code, attempts):
+    import os
+    import subprocess
+    import yaml
+    value = yaml.safe_load((ROOT / '.github/workflows/full-suite.yml').read_text())
+    script = next(step['run'] for step in value['jobs']['suite']['steps']
+                  if step.get('name', '').startswith('Run assigned CPU tests'))
+    executable = tmp_path / 'python'
+    executable.write_text('''#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+if 'tools/ci/gate_run.py' not in sys.argv:
+    raise SystemExit(0)
+log = Path(os.environ['ATTEMPT_LOG'])
+count = len(log.read_text().splitlines()) if log.exists() else 0
+with log.open('a') as handle:
+    handle.write('attempt\\n')
+raise SystemExit(int(os.environ['ATTEMPT_CODES'].split(',')[count]))
+''')
+    executable.chmod(0o755)
+    log = tmp_path / 'attempts'
+    environment = dict(os.environ, PATH=str(tmp_path) + os.pathsep + os.environ['PATH'],
+                       ATTEMPT_CODES=codes, ATTEMPT_LOG=str(log), SHARD_INDEX='0')
+    done = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', script], cwd=tmp_path,
+                          env=environment, capture_output=True, text=True, timeout=30)
+    assert done.returncode == expected_code, done.stdout + done.stderr
+    assert len(log.read_text().splitlines()) == attempts
