@@ -8,6 +8,13 @@ name: Full suite
         description: Classify without filing issues or comments
         type: boolean
         default: false
+  pull_request:
+    types:
+    - opened
+    - synchronize
+    - reopened
+    branches:
+    - main
 permissions:
   contents: read
 concurrency:
@@ -41,6 +48,8 @@ jobs:
       with:
         name: full-suite-plan-${{ github.run_attempt }}
         path: full-suite-plan
+    if: github.event_name != 'pull_request' || (github.head_ref == 'prismabuild-2428-full-suite' && github.event.pull_request.head.repo.full_name
+      == github.repository)
   suite:
     needs:
     - plan
@@ -290,8 +299,8 @@ jobs:
         path: verdicts
     - name: Select complete verdicts after infrastructure retry
       continue-on-error: true
-      run: python3 tools/ci/gate_actions.py finish --plan gate-artifacts/plan.json --matrix gate-artifacts/matrix.json --artifacts verdicts --prefix full-suite-result-${{
-        github.run_attempt }} --output gate-artifacts/final.json --effective-output full-suite-effective --summary "$GITHUB_STEP_SUMMARY"
+      run: python3 tools/ci/gate_actions.py finish --plan gate-artifacts/plan.json --matrix gate-artifacts/matrix.json --artifacts verdicts --prefix
+        full-suite-result-${{ github.run_attempt }} --output gate-artifacts/final.json --effective-output full-suite-effective --summary "$GITHUB_STEP_SUMMARY"
     - name: Classify and report through GitHub REST
       env:
         GITHUB_TOKEN: ${{ github.token }}
