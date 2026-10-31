@@ -61,6 +61,7 @@ def test_map_reproducible_and_rejects_mixed_sources(tmp_path):
     mod.write_impact_map([source], first)
     mod.write_impact_map([source], second)
     assert first.read_bytes() == second.read_bytes()
+    assert first.read_bytes()[9] == 255  # Canonical gzip OS byte across Python 3.12 and 3.14.
     result = json.loads(gzip.decompress(first.read_bytes()))
     assert result['functions'] == ['src/a.py::f']
     assert result['tests'] == {'tests/test_a.py::test_a': [0]}
