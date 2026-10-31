@@ -85,3 +85,25 @@ def test_helper_refuses_scratch_inside_a_git_checkout(tmp_path):
         with pytest_basetemp(scratch):
             pytest.fail("in-checkout scratch was accepted")
     assert list(scratch.iterdir()) == []
+
+
+def test_cli_preserves_tmpdir_and_removes_its_external_base(tmp_path):
+    checkout = tmp_path / "checkout"
+    (checkout / ".git").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (checkout / "test_one.py").write_text(
+        "import os, pathlib, subprocess\n"
+        "def test_one(tmp_path):\n"
+        "    assert pathlib.Path(os.environ['TMPDIR']) in tmp_path.parents\n"
+        "    assert pathlib.Path.cwd() not in tmp_path.parents\n"
+        "    probe = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=tmp_path, capture_output=True)\n"
+        "    assert probe.returncode != 0\n"
+        "    (tmp_path / 'marker').write_text('owned')\n")
+    entry = Path(__file__).resolve().parents[1] / "tools/fleet/pytest_action.py"
+    run = subprocess.run([sys.executable, str(entry), "-q", "-p", "no:cacheprovider"],
+                         cwd=checkout, env={**os.environ, "TMPDIR": str(scratch), "PYTEST_ADDOPTS": ""},
+                         text=True, capture_output=True, timeout=120)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "1 passed" in run.stdout
+    assert list(scratch.iterdir()) == []
