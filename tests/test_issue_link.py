@@ -1,5 +1,7 @@
 """Issue policy decisions use recorded API data, never the network."""
-from copy import deepcopy
+import io
+import json
+from urllib.error import HTTPError
 
 import pytest
 
@@ -168,3 +170,57 @@ def test_api_errors_do_not_turn_into_acceptance():
         raise RuntimeError('API unavailable')
     with pytest.raises(RuntimeError, match='API unavailable'):
         check_pull_request(pull(), REPO, unavailable, lambda number: None, lambda number: ())
+
+
+@pytest.mark.parametrize('branch', ['ig/x', 'pg/x', 'pg-train/x', 'tl/x', 'release'])
+@pytest.mark.parametrize('body,issues', [('', {}), ('Refs #98', {}), ('Refs #99', {99: {'pull_request': {}}})])
+def test_exempt_branches_reject_missing_or_pr_issues(branch, body, issues):
+    verdict = check(pull(branch, body), issues=issues)
+    assert not verdict.allowed
+    assert 'sidebar' in verdict.reason
+
+
+def test_batch_exempt_member_can_use_sidebar():
+    assert check(batch(), members={11: pull(number=11), 12: pull('tl/legacy', '', number=12)},
+                 sidebar=[{'number': 2406, 'repository': {'nameWithOwner': REPO}}]).allowed
+
+
+@pytest.mark.parametrize('body', ['Refs #2406', 'Refs #98', 'Refs #99', 'No issue'])
+def test_workflow_entrypoint_uses_rest_data(tmp_path, monkeypatch, capsys, body):
+    from tools.ci import issue_link
+    event = tmp_path / 'event.json'
+    event.write_text(json.dumps({'pull_request': pull(body=body)}))
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(event))
+    monkeypatch.setenv('GITHUB_REPOSITORY', REPO)
+    monkeypatch.setenv('GITHUB_TOKEN', 'test-token')
+
+    def fake_urlopen(request, *, timeout):
+        if request.full_url.endswith('/issues/2406'):
+            return io.BytesIO(b'{"number": 2406}')
+        if request.full_url.endswith('/issues/99'):
+            return io.BytesIO(b'{"number": 99, "pull_request": {}}')
+        raise HTTPError(request.full_url, 404, 'Not Found', {}, None)
+
+    monkeypatch.setattr(issue_link, 'urlopen', fake_urlopen)
+    assert issue_link.main() == (0 if body == 'Refs #2406' else 1)
+    output = capsys.readouterr().out
+    assert ('Accepted the pull request body' in output) is (body == 'Refs #2406')
+    assert 'test-token' not in output
+
+
+def test_rest_errors_fail_the_workflow_without_leaking_credentials(tmp_path, monkeypatch, capsys):
+    from tools.ci import issue_link
+    event = tmp_path / 'event.json'
+    event.write_text(json.dumps({'pull_request': pull()}))
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(event))
+    monkeypatch.setenv('GITHUB_REPOSITORY', REPO)
+    monkeypatch.setenv('GITHUB_TOKEN', 'test-token')
+
+    def refused(request, *, timeout):
+        raise HTTPError(request.full_url, 403, 'Forbidden test-token', {}, None)
+
+    monkeypatch.setattr(issue_link, 'urlopen', refused)
+    assert issue_link.main() == 1
+    output = capsys.readouterr().out
+    assert 'unavailable' in output
+    assert 'test-token' not in output
