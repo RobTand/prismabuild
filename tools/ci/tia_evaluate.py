@@ -112,10 +112,12 @@ def replay_impact(root: Path, gate_dir: Path, mapping: dict, history: dict) -> d
                       'historical source hashes must match the current map, otherwise static fallback'}
 
 
-def mutations(root: Path, mapping: dict):
+def mutations(root: Path, mapping: dict, *, paths: set[str] | None = None):
     """One deterministic operator flip per function, including both requested trees."""
     known = set(mapping['functions'])
     for path in sorted(mapping['files']):
+        if paths is not None and path not in paths:
+            continue
         if not path.startswith(('src/prismabuild/', 'tools/fleet/')):
             continue
         original = (root / path).read_text()
@@ -181,13 +183,16 @@ def campaign(root: Path, gate_dir: Path, mapping: dict, map_path: Path, output: 
     quarantine = gate.read_json(gate_dir / 'gate_quarantine.json')
     index = gate.dependency_index(root)
     graph = gate.helper_importers(index, [])
-    candidates = []
-    for mutation in mutations(root, mapping):
-        selected = gate.create_plan(root, [mutation['path']], durations=durations,
-                                    quarantine=quarantine, index=index, helper_graph=graph)
-        cost = selected['estimate']['serial_seconds']
-        if cost is not None and cost <= 30:
-            candidates.append((cost, mutation['path'], mutation['function'], mutation))
+    costs = {}
+    for path in sorted(mapping['files']):
+        if path.startswith(('src/prismabuild/', 'tools/fleet/')):
+            selected = gate.create_plan(root, [path], durations=durations,
+                                        quarantine=quarantine, index=index, helper_graph=graph)
+            cost = selected['estimate']['serial_seconds']
+            if cost is not None and cost <= 30:
+                costs[path] = cost
+    candidates = [(costs[mutation['path']], mutation['path'], mutation['function'], mutation)
+                  for mutation in mutations(root, mapping, paths=set(costs))]
     candidates.sort(key=lambda item: item[:3])
     groups = [[row[-1] for row in candidates if row[1].startswith(prefix)]
               for prefix in ('src/prismabuild/', 'tools/fleet/')]
