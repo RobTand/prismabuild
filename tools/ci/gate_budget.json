@@ -1,0 +1,122 @@
+{
+  "seconds": 20,
+  "slow": {
+    "tests/test_a_stalled_mover_ends_no_progress.py::test_a_slow_copy_on_a_pool_over_its_caps_is_not_a_stall": 65,
+    "tests/test_a_terminal_receipt_retires_behind_a_covered_fold.py::test_a_batch_retirement_replaces_the_checkpoint_once": 98,
+    "tests/test_claimed_consumers_drain_a_tier_in_admission_order.py::test_eight_claimed_consumers_drain_the_tier_in_claim_order": 50,
+    "tests/test_duplication_baseline.py::test_near_duplicate_pairs_only_shrink": 99,
+    "tests/test_fleet_membership_busy_resign.py::test_resign_preserves_newer_unrelated_publication": 51,
+    "tests/test_gate_select.py::test_repository_path_loading_regressions[src/prismabuild/role_session.py-tests/test_458_reboot_gate_regression.py]": 49,
+    "tests/test_gate_select.py::test_repository_path_loading_regressions[tests/test_worker_loop_proves_it_parked.py-tests/test_458_reboot_gate_regression.py]": 51,
+    "tests/test_gate_select.py::test_repository_path_loading_regressions[tools/fleet/50-prismabuild-resource-broker.conf-tests/test_needrestart_broker_restart_exclusion.py]": 44,
+    "tests/test_gate_select.py::test_repository_path_loading_regressions[tools/fleet/pbtest.py-tests/test_pbtest_native_directory_collection_1458.py]": 116,
+    "tests/test_history_inputs.py::test_historical_inputs_come_from_the_committed_tree": 76,
+    "tests/test_pbtest_publishes_its_own_shards.py::test_an_offer_timeout_at_publication_is_retried_off_the_same_snapshot": 62,
+    "tests/test_staged_path_epoch_bytes.py::test_the_original_prune_epoch_bytes_and_effect_order[case0]": 65,
+    "tests/test_steady_tier_gate_portability_1961.py::test_portable_steady_gate_keeps_read_guards_without_a_machine_cpu_budget": 47
+  },
+  "source": {
+    "method": "Each hosted canary JUnit maximum above 20 seconds; exception seconds = ceil(2 * maximum)",
+    "runs": [
+      41240788649,
+      41242040262,
+      41242876374,
+      41243455746,
+      41244414908
+    ],
+    "measurements": {
+      "tests/test_a_stalled_mover_ends_no_progress.py::test_a_slow_copy_on_a_pool_over_its_caps_is_not_a_stall": {
+        "max_hosted_seconds": 32.419,
+        "seconds": 65,
+        "run": 41244414908,
+        "artifact": "gate-result-1-a1-1",
+        "artifact_sha256": "20e42f0bc4dfaa3409c61fc764583ab9c23e6d86a7cca72fbd3fab76dfbf0bbd"
+      },
+      "tests/test_a_terminal_receipt_retires_behind_a_covered_fold.py::test_a_batch_retirement_replaces_the_checkpoint_once": {
+        "max_hosted_seconds": 48.721,
+        "seconds": 98,
+        "run": 41243455746,
+        "artifact": "gate-result-1-a1-3",
+        "artifact_sha256": "b3284f75d10c60de5985db794a312d39d48286bdbdac4bbadfeed6aa868f9553"
+      },
+      "tests/test_claimed_consumers_drain_a_tier_in_admission_order.py::test_eight_claimed_consumers_drain_the_tier_in_claim_order": {
+        "max_hosted_seconds": 24.604,
+        "seconds": 50,
+        "run": 41242876374,
+        "artifact": "gate-result-1-a1-9",
+        "artifact_sha256": "bdf2a6c6ead37b475089bb651328f3ed9dc3d25a60fcde167da3af88a215da75"
+      },
+      "tests/test_duplication_baseline.py::test_near_duplicate_pairs_only_shrink": {
+        "max_hosted_seconds": 49.002,
+        "seconds": 99,
+        "run": 41242040262,
+        "artifact": "gate-result-1-a1-2",
+        "artifact_sha256": "1c1b77ba6a07dbc4c1a957f68ce40a005ee91b54ae26efef256d0c6240c658be"
+      },
+      "tests/test_fleet_membership_busy_resign.py::test_resign_preserves_newer_unrelated_publication": {
+        "max_hosted_seconds": 25.268,
+        "seconds": 51,
+        "run": 41243455746,
+        "artifact": "gate-result-1-a1-7",
+        "artifact_sha256": "901d9e2c443aa0e0281e23e4a0742f3b610913e43f5e81d64e7c722c62ae7d28"
+      },
+      "tests/test_gate_select.py::test_repository_path_loading_regressions[src/prismabuild/role_session.py-tests/test_458_reboot_gate_regression.py]": {
+        "max_hosted_seconds": 24.193,
+        "seconds": 49,
+        "run": 41242040262,
+        "artifact": "gate-result-1-a1-0",
+        "artifact_sha256": "bd7c959029b0e54bd79abb32da0018f9edd769409961b2e7150ff5ba44b2eecf"
+      },
+      "tests/test_gate_select.py::test_repository_path_loading_regressions[tests/test_worker_loop_proves_it_parked.py-tests/test_458_reboot_gate_regression.py]": {
+        "max_hosted_seconds": 25.295,
+        "seconds": 51,
+        "run": 41242040262,
+        "artifact": "gate-result-1-a1-0",
+        "artifact_sha256": "bd7c959029b0e54bd79abb32da0018f9edd769409961b2e7150ff5ba44b2eecf"
+      },
+      "tests/test_gate_select.py::test_repository_path_loading_regressions[tools/fleet/50-prismabuild-resource-broker.conf-tests/test_needrestart_broker_restart_exclusion.py]": {
+        "max_hosted_seconds": 21.709,
+        "seconds": 44,
+        "run": 41242040262,
+        "artifact": "gate-result-1-a1-0",
+        "artifact_sha256": "bd7c959029b0e54bd79abb32da0018f9edd769409961b2e7150ff5ba44b2eecf"
+      },
+      "tests/test_gate_select.py::test_repository_path_loading_regressions[tools/fleet/pbtest.py-tests/test_pbtest_native_directory_collection_1458.py]": {
+        "max_hosted_seconds": 57.68,
+        "seconds": 116,
+        "run": 41242040262,
+        "artifact": "gate-result-1-a1-0",
+        "artifact_sha256": "bd7c959029b0e54bd79abb32da0018f9edd769409961b2e7150ff5ba44b2eecf"
+      },
+      "tests/test_history_inputs.py::test_historical_inputs_come_from_the_committed_tree": {
+        "max_hosted_seconds": 37.809,
+        "seconds": 76,
+        "run": 41242040262,
+        "artifact": "gate-result-1-a1-8",
+        "artifact_sha256": "1d99bbf79ff506ab8a6403e879bf78732d18f82887363d97d177a0421d0da3cc"
+      },
+      "tests/test_pbtest_publishes_its_own_shards.py::test_an_offer_timeout_at_publication_is_retried_off_the_same_snapshot": {
+        "max_hosted_seconds": 30.605,
+        "seconds": 62,
+        "run": 41242040262,
+        "artifact": "gate-result-1-a1-8",
+        "artifact_sha256": "1d99bbf79ff506ab8a6403e879bf78732d18f82887363d97d177a0421d0da3cc"
+      },
+      "tests/test_staged_path_epoch_bytes.py::test_the_original_prune_epoch_bytes_and_effect_order[case0]": {
+        "max_hosted_seconds": 32.341,
+        "seconds": 65,
+        "run": 41242040262,
+        "artifact": "gate-result-1-a1-8",
+        "artifact_sha256": "1d99bbf79ff506ab8a6403e879bf78732d18f82887363d97d177a0421d0da3cc"
+      },
+      "tests/test_steady_tier_gate_portability_1961.py::test_portable_steady_gate_keeps_read_guards_without_a_machine_cpu_budget": {
+        "max_hosted_seconds": 23.426,
+        "seconds": 47,
+        "run": 41242876374,
+        "artifact": "gate-result-1-a1-3",
+        "artifact_sha256": "7dfceb410fddb4425f59ddf5937a2e26d181794d776af39555b2e541a4dfd166"
+      }
+    },
+    "cost_issue": 2448
+  }
+}

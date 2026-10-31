@@ -1,0 +1,1538 @@
+{
+  "schema": "prismabuild.gate_quarantine.v1",
+  "status": "inventory-based exclusions; historical entries remain provisional pending hosted qualification",
+  "entries": [
+    {
+      "target": "tests/test_qualify_scratch_lifetime.py::test_launcher_exit_after_pin_never_signals_replacement",
+      "issue": 2434,
+      "source_issues": [
+        1782
+      ],
+      "reason": "Historical flake cluster #1782 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_an_owner_waiting_on_its_own_export_is_not_no_progress.py",
+      "issue": 2434,
+      "source_issues": [
+        1783
+      ],
+      "reason": "Historical flake cluster #1783 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_a_staged_wait_is_not_no_progress.py",
+      "issue": 2434,
+      "source_issues": [
+        1784
+      ],
+      "reason": "Historical flake cluster #1784 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_an_egress_holds_the_stage_lock_only_for_its_act.py",
+      "issue": 2434,
+      "source_issues": [
+        1785
+      ],
+      "reason": "Historical flake cluster #1785 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_a_yielding_copy_neither_deadlocks_nor_stalls.py",
+      "issue": 2434,
+      "source_issues": [
+        1786
+      ],
+      "reason": "Historical flake cluster #1786 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_progress_keeps_a_working_action_alive.py",
+      "issue": 2434,
+      "source_issues": [
+        1787
+      ],
+      "reason": "Historical flake cluster #1787 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_sample_profile.py",
+      "issue": 2434,
+      "source_issues": [
+        2246
+      ],
+      "reason": "Historical flake cluster #2246 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_profile_primary_checkpoint.py",
+      "issue": 2434,
+      "source_issues": [
+        2246
+      ],
+      "reason": "Historical flake cluster #2246 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_sample_docker_coverage.py",
+      "issue": 2434,
+      "source_issues": [
+        2246
+      ],
+      "reason": "Historical flake cluster #2246 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_contained_deadline_profile.py",
+      "issue": 2434,
+      "source_issues": [
+        2246
+      ],
+      "reason": "Historical flake cluster #2246 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_profile_window_deadline.py",
+      "issue": 2434,
+      "source_issues": [
+        2246
+      ],
+      "reason": "Historical flake cluster #2246 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_a_steady_tier_cycle_rereads_only_what_changed.py::test_a_steady_cycle_reads_only_what_changed",
+      "issue": 2434,
+      "source_issues": [
+        2247
+      ],
+      "reason": "Historical flake cluster #2247 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_a_wedged_egress_ends_no_progress.py::test_a_wedged_egress_is_killed_and_the_mover_at_its_gate_proceeds",
+      "issue": 2434,
+      "source_issues": [
+        2247
+      ],
+      "reason": "Historical flake cluster #2247 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_progress_reporting_boundaries.py::test_corrupt_report_ends_as_a_stall_with_terminal_evidence",
+      "issue": 2434,
+      "source_issues": [
+        2247
+      ],
+      "reason": "Historical flake cluster #2247 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_progress_reporting_boundaries.py::test_completion_samples_the_final_report_before_removing_it",
+      "issue": 2434,
+      "source_issues": [
+        2247
+      ],
+      "reason": "Historical flake cluster #2247 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_the_ram_leg_reports_only_what_the_bound_would_publish.py::test_adopted_ram_tail_still_asks_for_missing_lead_admission_relief",
+      "issue": 2434,
+      "source_issues": [
+        2247
+      ],
+      "reason": "Historical flake cluster #2247 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_pool_withdrawn_retention_1533.py::test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup",
+      "issue": 2434,
+      "source_issues": [
+        2247
+      ],
+      "reason": "Historical flake cluster #2247 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_queue_bell.py::test_filters_and_timeout_ignore_other_keys_dirs_and_temporary_files",
+      "issue": 2434,
+      "source_issues": [
+        2248
+      ],
+      "reason": "Historical flake cluster #2248 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_queue_bell.py::test_namespace_entry_changes_wake_waiters[unlink]",
+      "issue": 2434,
+      "source_issues": [
+        2248
+      ],
+      "reason": "Historical flake cluster #2248 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_receipt_activation_direction.py::test_fresh_publication_refuses_unaware_installed_reader_before_writes",
+      "issue": 2434,
+      "source_issues": [
+        2248
+      ],
+      "reason": "Historical flake cluster #2248 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_pbtest_reconciles_outcomes.py::test_a_summary_that_exceeds_its_tests_reconciles_by_name[xdist]",
+      "issue": 2434,
+      "source_issues": [
+        2248
+      ],
+      "reason": "Historical flake cluster #2248 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_census_sections.py::test_original_fact_values_and_observable_capture_order_match",
+      "issue": 2434,
+      "source_issues": [
+        2248
+      ],
+      "reason": "Historical flake cluster #2248 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_pbstatus_cancellation_review.py::test_signal_to_parent_reaps_the_reader[15]",
+      "issue": 2434,
+      "source_issues": [
+        2248
+      ],
+      "reason": "Historical flake cluster #2248 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_archival.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_broker.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_config.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_edges.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_floor.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_gang.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_inputs.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_markers.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_outcomes.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_preflight.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_prelaunch.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_prelaunch_release.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_prelaunch_turns.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_reclaim.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_rollout.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_slurm.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_state.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller_upgrade.py",
+      "issue": 1997,
+      "source_issues": [
+        1997,
+        2253
+      ],
+      "reason": "Archival replay requires retained runtime inputs unavailable in the gate image and can refuse the admitted TMPDIR (#1997). Historical cost cluster #2253 is closed after splitting. Requalify each split before gate admission."
+    },
+    {
+      "target": "tests/test_record_compat_profile.py",
+      "issue": 1997,
+      "source_issues": [
+        1997
+      ],
+      "reason": "The archival-replay capability requires retained runtime inputs absent from the gate image. Archival TMPDIR qualification is tracked by #1997."
+    },
+    {
+      "target": "tests/test_record_compatibility_controller.py",
+      "issue": 1997,
+      "source_issues": [
+        1997
+      ],
+      "reason": "The archival-replay capability requires retained runtime inputs absent from the gate image. Archival TMPDIR qualification is tracked by #1997."
+    },
+    {
+      "target": "tests/test_record_compatibility_core.py",
+      "issue": 1997,
+      "source_issues": [
+        1997
+      ],
+      "reason": "The archival-replay capability requires retained runtime inputs absent from the gate image. Archival TMPDIR qualification is tracked by #1997."
+    },
+    {
+      "target": "tests/test_record_compatibility_decomposition.py",
+      "issue": 1997,
+      "source_issues": [
+        1997
+      ],
+      "reason": "The archival-replay capability requires retained runtime inputs absent from the gate image. Archival TMPDIR qualification is tracked by #1997."
+    },
+    {
+      "target": "tests/test_record_compatibility_host.py",
+      "issue": 1997,
+      "source_issues": [
+        1997
+      ],
+      "reason": "The archival-replay capability requires retained runtime inputs absent from the gate image. Archival TMPDIR qualification is tracked by #1997."
+    },
+    {
+      "target": "tests/test_record_compatibility_outputs.py",
+      "issue": 1997,
+      "source_issues": [
+        1997
+      ],
+      "reason": "The archival-replay capability requires retained runtime inputs absent from the gate image. Archival TMPDIR qualification is tracked by #1997."
+    },
+    {
+      "target": "tests/test_record_compatibility_ownership.py",
+      "issue": 1997,
+      "source_issues": [
+        1997
+      ],
+      "reason": "The archival-replay capability requires retained runtime inputs absent from the gate image. Archival TMPDIR qualification is tracked by #1997."
+    },
+    {
+      "target": "tests/test_record_compatibility_queue.py",
+      "issue": 1997,
+      "source_issues": [
+        1997
+      ],
+      "reason": "The archival-replay capability requires retained runtime inputs absent from the gate image. Archival TMPDIR qualification is tracked by #1997."
+    },
+    {
+      "target": "tests/test_record_compatibility_storage.py",
+      "issue": 1997,
+      "source_issues": [
+        1997
+      ],
+      "reason": "The archival-replay capability requires retained runtime inputs absent from the gate image. Archival TMPDIR qualification is tracked by #1997."
+    },
+    {
+      "target": "tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned",
+      "issue": 2436,
+      "reason": "Failed in all three inventory repeats at 22e9d752; PR #2422 is a candidate repair.",
+      "evidence": {
+        "source_commit": "22e9d75298608078c91d331a646f6446352577f6",
+        "outcomes": {
+          "failed": 3
+        },
+        "action_keys": [
+          "e04bdecf4113a7a86081326703358fe8df3901a630075b129e936dffbd903249",
+          "4d782f428f08fe3aaca8fb9caccf0aa4b183f38317c9016ed6eb01c57f996030",
+          "e2ffd364b6ee1fbc737850fd97b1b999e9854f75a84b7af5113fd2db1eb7e4bc"
+        ]
+      }
+    },
+    {
+      "target": "tests/test_a_shared_mount_row_without_a_data_manifest_is_warned_or_refused.py::test_require_data_manifest_refuses_a_logical_requests_common_before_it_is_cut",
+      "issue": 2437,
+      "reason": "Failed in all three inventory repeats at 22e9d752; logical-plan fixture or contract needs diagnosis.",
+      "evidence": {
+        "source_commit": "22e9d75298608078c91d331a646f6446352577f6",
+        "outcomes": {
+          "failed": 3
+        },
+        "action_keys": [
+          "4db86fd3f2666e25b62f69536b0e6e314b97c53653ee6844c599efabbbc72c57",
+          "442443ad95ff7c560bac2b15b6a5e591e6aea3b08c1f72b4710a9ec395d251cf",
+          "061f1fde31b6f802e391d2a5d36fec3f8a76ae0e9164b5ae72cc754eb1706217"
+        ]
+      }
+    },
+    {
+      "target": "tests/test_a_shared_mount_row_without_a_data_manifest_is_warned_or_refused.py::test_require_data_manifest_passes_a_common_half_that_names_its_bytes",
+      "issue": 2437,
+      "reason": "Failed in all three inventory repeats at 22e9d752; logical-plan fixture or contract needs diagnosis.",
+      "evidence": {
+        "source_commit": "22e9d75298608078c91d331a646f6446352577f6",
+        "outcomes": {
+          "failed": 3
+        },
+        "action_keys": [
+          "4db86fd3f2666e25b62f69536b0e6e314b97c53653ee6844c599efabbbc72c57",
+          "442443ad95ff7c560bac2b15b6a5e591e6aea3b08c1f72b4710a9ec395d251cf",
+          "061f1fde31b6f802e391d2a5d36fec3f8a76ae0e9164b5ae72cc754eb1706217"
+        ]
+      }
+    },
+    {
+      "target": "tests/test_worker_adapter_requires_known_receipts.py::test_public_adapter_requires_a_known_pair[real-contained-child-match]",
+      "reason": "Deterministic hosted four-CPU topology exposes a changed adapter caller affinity at worker_adapter_fixture.py:183; not established as flaky.",
+      "issue": 2446,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
+    },
+    {
+      "target": "tests/test_worker_adapter_requires_known_receipts.py::test_public_adapter_requires_a_known_pair[loop-commit-drift]",
+      "reason": "Deterministic hosted four-CPU topology exposes a changed adapter caller affinity at worker_adapter_fixture.py:183; not established as flaky.",
+      "issue": 2446,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
+    },
+    {
+      "target": "tests/test_compat_bundle_cache_isolation.py",
+      "issue": 2435,
+      "reason": "All three collected cases are the inventory-proven bundle-cache flakes already owned by #2435; whole-file exclusion prevents a zero-case assignment from making the shadow audit inconclusive.",
+      "node_evidence": [
+        {
+          "target": "tests/test_compat_bundle_cache_isolation.py::test_replay_uses_its_own_sealed_bundle_cache[checkout-recovery-plan/banked]",
+          "issue": 2435,
+          "reason": "Passed twice and failed once in the three-repeat inventory at 22e9d752.",
+          "evidence": {
+            "source_commit": "22e9d75298608078c91d331a646f6446352577f6",
+            "outcomes": {
+              "passed": 2,
+              "failed": 1
+            },
+            "action_keys": [
+              "bb71f46720c293dfad8b83137ae007a40eca64c6a3d47f34f326df660453bbd4",
+              "9fbe6bece5f3e62984c10e0e2949a958319cf64aa2184721e38669557782cf6d",
+              "d3d5c7767a061064e2c56819c67029bb013dc9f99e06ae46e761074cc949cbd1"
+            ]
+          }
+        },
+        {
+          "target": "tests/test_compat_bundle_cache_isolation.py::test_replay_uses_its_own_sealed_bundle_cache[checkout-snapshot/clean]",
+          "issue": 2435,
+          "reason": "Passed twice and failed once in the three-repeat inventory at 22e9d752.",
+          "evidence": {
+            "source_commit": "22e9d75298608078c91d331a646f6446352577f6",
+            "outcomes": {
+              "passed": 2,
+              "failed": 1
+            },
+            "action_keys": [
+              "bb71f46720c293dfad8b83137ae007a40eca64c6a3d47f34f326df660453bbd4",
+              "9fbe6bece5f3e62984c10e0e2949a958319cf64aa2184721e38669557782cf6d",
+              "d3d5c7767a061064e2c56819c67029bb013dc9f99e06ae46e761074cc949cbd1"
+            ]
+          }
+        },
+        {
+          "target": "tests/test_compat_bundle_cache_isolation.py::test_replay_uses_its_own_sealed_bundle_cache[checkout-snapshot/dirty]",
+          "issue": 2435,
+          "reason": "Passed twice and failed once in the three-repeat inventory at 22e9d752.",
+          "evidence": {
+            "source_commit": "22e9d75298608078c91d331a646f6446352577f6",
+            "outcomes": {
+              "passed": 2,
+              "failed": 1
+            },
+            "action_keys": [
+              "bb71f46720c293dfad8b83137ae007a40eca64c6a3d47f34f326df660453bbd4",
+              "9fbe6bece5f3e62984c10e0e2949a958319cf64aa2184721e38669557782cf6d",
+              "d3d5c7767a061064e2c56819c67029bb013dc9f99e06ae46e761074cc949cbd1"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "cost_exclusions": [],
+  "environment_lanes": [
+    {
+      "target": "tests/test_a_dead_producers_held_mover_is_retired.py::test_a_withdrawn_mover_of_a_failed_producer_is_retired",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_dead_producers_held_mover_is_retired.py::test_a_succeeded_producer_that_left_its_batch_staged_is_retired",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_dead_producers_held_mover_is_retired.py::test_a_queued_mover_of_a_dead_producer_is_kept",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_dead_producers_held_mover_is_retired.py::test_an_unresolvable_produced_holder_is_reported_once_and_kept",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_batch_record_has_a_public_reader.py::test_a_retiring_batch_says_so",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_local_scratch_retained_review_boundaries.py",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_superseded_origin_consumers.py::test_a_deferred_resubmission_takes_over_once_it_is_released",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_dead_producers_spool_is_retired.py::test_a_withdrawn_owners_acknowledged_and_failed_groups_are_retired",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_dead_producers_spool_is_retired.py::test_a_claimed_export_is_never_touched",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_dead_producers_spool_is_retired.py::test_a_finished_owners_released_records_are_removed",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_empty_retirement_intent_is_filed_before_unlink.py::test_the_delete_intent_is_durable_before_unlink[absent]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes[None]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes[interruption]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_released_consumer_receives_its_manifest_path_and_digest",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_consumer_detects_a_manifest_changed_after_its_release",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_failed_producer_never_releases_its_consumer",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_chain_resolves_a_deferred_producer_through_its_release",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_superseded_producer_releases_its_consumer_under_the_new_key",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_superseded_pending_id_is_never_released_and_a_loop_refuses",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_an_unreleased_consumer_holds_the_batch_its_producer_committed",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_cache_hit_producer_is_read_from_the_attempt_that_committed",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_pinned_release_resumes_as_pinned_after_a_crash",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_release_published_before_a_crash_records_that_generation",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_consumer_is_sealed_into_the_retained_generation_that_froze_it",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_publish_keeps_the_generation_an_unreleased_consumer_froze",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_burst_of_releases_is_bounded_per_cycle_and_after_the_windows",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_deferred_action_edges.py::test_a_malformed_record_is_reported_once_and_kept",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_missing_produced_input_terminal.py::test_terminal_failed_producer_missing_input_ends_ready_mover",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_missing_produced_input_terminal.py::test_terminal_failed_producer_with_present_input_is_not_cancelled",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_missing_produced_input_terminal.py::test_unknown_producer_evidence_does_not_prove_death",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_missing_produced_input_terminal.py::test_the_ended_mover_releases_its_funding_and_the_batch_retires",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_missing_produced_input_terminal.py::test_an_unreadable_origin_is_unknown_not_missing",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_missing_produced_input_terminal.py::test_a_busy_transition_lock_does_not_block_the_claim_pass",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_missing_produced_input_terminal.py::test_a_crashed_dead_input_transition_is_recovered_by_the_sweep",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_missing_produced_input_terminal.py::test_claim_fails_the_mover_before_any_admission",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_missing_produced_input_terminal.py::test_a_malformed_template_does_not_end_the_claim_pass",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_missing_produced_input_terminal.py::test_the_dead_input_hold_is_timed_into_the_pass",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_missing_produced_input_terminal.py::test_a_transient_funding_read_fault_retries_instead_of_stranding",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_nested_prefix_successors_adopted_file_survives_retirement.py",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_claim_completion_histories.py::test_late_scratch_boundary_refuses_before_any_probe_or_borrow[late-expiry]",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_claim_completion_histories.py::test_late_scratch_boundary_refuses_before_any_probe_or_borrow[generation-before-expiry]",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_pbcanary_legs12.py::test_missing_queue_is_exit_2_before_any_submission",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_write_only_produced_output.py::test_the_write_only_producer_commits_at_its_origin_and_keeps_no_prewrite",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_write_only_produced_output.py::test_two_batches_over_one_origin_path_cannot_be_declared_together",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_dead_producers_origin_files_survive_every_sweep.py",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_produced_output_lifecycle.py::test_wrong_nonce_terminal_retains",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_the_origin_retirement_tick_reads_each_scope_once.py::test_a_replacement_between_batches_is_read",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_the_origin_retirement_tick_reads_each_scope_once.py::test_a_corrupt_replacement_between_batches_refuses",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_the_origin_retirement_tick_reads_each_scope_once.py::test_a_failed_write_leaves_no_cached_mutation",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_v2_read_plan_places_produced_batches.py::test_a_deferred_plan_reads_the_batch_at_the_phase_it_names",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_v2_read_plan_places_produced_batches.py::test_a_crashed_v2_release_resumes_as_pinned",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_v2_read_plan_places_produced_batches.py::test_a_v1_manifest_is_released_and_checked_as_before",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_spool_poll_repin_evidence.py::test_commit_retains_poll_repins_after_namespace_retirement[False-_recall_ctime]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_spool_poll_repin_evidence.py::test_commit_retains_poll_repins_after_namespace_retirement[False-_recall_mtime]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_spool_poll_repin_evidence.py::test_commit_retains_poll_repins_after_namespace_retirement[True-_recall_ctime]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_spool_poll_repin_evidence.py::test_commit_retains_poll_repins_after_namespace_retirement[True-_recall_mtime]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_output_window_obligation.py::test_a_finished_owner_is_owed_nothing",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_output_window_obligation.py::test_a_dead_owners_torn_records_are_never_read",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_failed_producers_exports_do_not_block_its_successor.py::test_a_new_key_retires_a_failed_groups_other_bytes_and_copies",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_failed_producers_exports_do_not_block_its_successor.py::test_an_interrupted_retirement_is_finished_by_the_next_run",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_failed_producers_exports_do_not_block_its_successor.py::test_every_dead_attempt_in_a_retry_chain_is_asked_about_its_export",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_submission_review_lifetimes.py::test_deferred_release_uses_its_private_queue_for_gates_and_publication",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_submission_review_lifetimes.py::test_deferred_release_preserves_the_records_declared_cas",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_the_retirement_tick_reads_each_owner_once.py::test_an_ended_attempts_sweep_and_retirement_share_one_snapshot",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_withdraw_end_to_end.py",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_local_scratch_core_recipes.py::test_local_scratch_core_adapter_preserves_accepted_declaration_and_profile_types[60]",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_local_scratch_core_recipes.py::test_local_scratch_core_adapter_preserves_accepted_declaration_and_profile_types[60.0]",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_local_scratch_core_recipes.py::test_real_isolated_tiny_profile_receipt_and_loader_accept_all_four_sources",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_local_scratch_core_recipes.py::test_harmless_changed_recipe_core_snapshot_executes_but_three_source_qualification_refuses",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_local_scratch_core_recipes.py::test_installed_recipe_core_change_after_cached_success_invalidates_all_same_root_profiles",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_record_store_liveness_controls.py::test_unorderable_generation_keeps_real_origin_and_foreign_prewrite[10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_record_store_liveness_controls.py::test_unorderable_generation_keeps_real_origin_and_foreign_prewrite[nan]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_record_store_liveness_controls.py::test_unorderable_generation_keeps_real_origin_and_foreign_prewrite[inf]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_record_store_liveness_controls.py::test_unorderable_generation_keeps_real_origin_and_foreign_prewrite[-inf]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_record_store_liveness_controls.py::test_unorderable_generation_keeps_real_origin_and_foreign_prewrite[True]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_peer_placement_histories.py::test_scratch_measured_fit_and_replacement_offer[fresh]",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_peer_placement_histories.py::test_scratch_measured_fit_and_replacement_offer[partial]",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_peer_placement_histories.py::test_scratch_measured_fit_and_replacement_offer[stale]",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_peer_placement_histories.py::test_scratch_measured_fit_and_replacement_offer[zero]",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_peer_placement_histories.py::test_scratch_measured_fit_and_replacement_offer[map_mismatch]",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_peer_placement_histories.py::test_scratch_measured_fit_and_replacement_offer[ledger_failure]",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_peer_placement_histories.py::test_scratch_measured_fit_and_replacement_offer[replacement]",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_consumed_origin_retirement.py::test_a_failed_attempts_undeclared_batch_is_swept",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_consumed_origin_retirement.py::test_an_origin_changed_in_place_is_refused_once_and_kept",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_consumed_origin_retirement.py::test_a_path_a_retried_attempt_wrote_again_is_left_to_it",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_consumed_origin_retirement.py::test_an_unreachable_output_prefix_is_never_read_as_gone",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_consumed_origin_retirement.py::test_the_tier_cycle_logs_one_line_per_retired_batch",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_an_origin_batch_survives_a_delegation_recall.py::test_a_recalled_handoff_is_declared_again_and_then_retired[ctime]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_an_origin_batch_survives_a_delegation_recall.py::test_a_recalled_handoff_is_declared_again_and_then_retired[mtime-and-ctime]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_an_origin_batch_survives_a_delegation_recall.py::test_a_recalled_orphan_retires_on_its_first_tick[ctime]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_an_origin_batch_survives_a_delegation_recall.py::test_a_recalled_orphan_retires_on_its_first_tick[mtime-and-ctime]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_an_origin_batch_survives_a_delegation_recall.py::test_a_changed_origin_is_read_once_across_retirement_ticks",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_successors_committed_identity_survives_a_link_back.py::test_a_writers_file_the_retirement_may_not_link_goes_back_to_its_path",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_successors_committed_identity_survives_a_link_back.py::test_an_interrupted_delete_puts_a_writers_file_back_without_a_link",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_successors_committed_identity_survives_a_link_back.py::test_a_file_nothing_can_put_back_is_kept_named_and_put_back_later",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_an_identity_refusal_names_the_entry_and_both_identities.py::test_a_refused_groups_copy_proofs_outlive_the_retirement_tick",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_retry_reclaims_its_dead_attempts_prewrite.py::test_files_no_attempt_committed_are_reported_until_removed",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_retry_reclaims_its_dead_attempts_prewrite.py::test_the_orphan_event_names_what_the_tick_found",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_retry_reclaims_its_dead_attempts_prewrite.py::test_a_prewrite_is_kept_while_its_attempt_can_still_commit",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_retry_reclaims_its_dead_attempts_prewrite.py::test_an_unreachable_output_prefix_is_never_read_as_absent",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_dead_producers_batches_and_paths_are_released.py::test_a_dead_producers_no_token_batch_is_retired_and_keeps_its_origin",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_dead_producers_batches_and_paths_are_released.py::test_an_ended_staged_attempts_prewrites_are_swept",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_dead_producers_batches_and_paths_are_released.py::test_a_successor_supersedes_a_dead_actions_batch_on_the_record",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_hold_by_an_unknown_attempt_is_named.py",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_prepaid_writer_integration.py::test_second_batch_window_reuse_and_cleanup",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_stage_stranded_funding_rolls_back_1555.py::test_stranded_intent_rolls_back_after_producer_failure",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_stage_stranded_funding_rolls_back_1555.py::test_republished_mover_keeps_its_reservation",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_stage_stranded_funding_rolls_back_1555.py::test_claimed_mover_keeps_its_reservation",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_stage_stranded_funding_rolls_back_1555.py::test_present_prewrite_path_keeps_its_charge",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_stage_stranded_funding_rolls_back_1555.py::test_release_fault_recovers_on_next_cycle[token-release-False]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_stage_stranded_funding_rolls_back_1555.py::test_release_fault_recovers_on_next_cycle[token-release-True]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_stage_stranded_funding_rolls_back_1555.py::test_release_fault_recovers_on_next_cycle[funding-write-False]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_stage_stranded_funding_rolls_back_1555.py::test_release_fault_recovers_on_next_cycle[funding-write-True]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_stage_stranded_funding_rolls_back_1555.py::test_released_record_with_held_tokens_recovers_after_restart",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_stage_stranded_funding_rolls_back_1555.py::test_released_record_keeps_prewrite_during_release_failure",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_stage_stranded_funding_rolls_back_1555.py::test_release_rechecks_safety_for_both_states[unknown-producer-transferring]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_stage_stranded_funding_rolls_back_1555.py::test_release_rechecks_safety_for_both_states[unknown-producer-released]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_stage_stranded_funding_rolls_back_1555.py::test_partial_token_release_retries_without_settling_marker",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_stage_stranded_funding_rolls_back_1555.py::test_unknown_token_release_keeps_marker_open",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_lifecycle_review_repairs.py::test_withdrawn_recovery_preserves_real_containment_and_live_successor[lease_lost]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_lifecycle_review_repairs.py::test_withdrawn_recovery_preserves_real_containment_and_live_successor[executed]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_lifecycle_review_repairs.py::test_claim_recovery_starts_with_documented_interpreter_and_no_pythonpath",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_an_unpublished_declaration_is_released_once_nothing_can_publish_it.py::test_a_pinned_deferred_release_still_lands_so_its_key_is_refused",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_a_read_back_owners_local_group_is_committed.py::test_a_consumed_read_back_batch_is_retired_when_its_owner_succeeds",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_produced_output_scope.py::test_binding_both_halves_declared_and_refusals",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_produced_output_scope.py::test_owner_superseded_retain",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_pbcanary_integration.py::test_run_canary_generation_kwarg_is_exit2_without_queue",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_spent_output_retry_disposition.py::test_failed_copy_with_spent_credit_is_terminal[True]",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_scratch_lifetime_ownership.py::test_lifetime_edits_preserve_real_profile_acceptance_but_producer_edits_refuse",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_local_scratch_decorated_refusals.py",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_local_scratch_measured_placement.py",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_claim_qualification_histories.py::test_scratch_yield_publication_failure_is_caught_before_handler_publication",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_claim_qualification_histories.py::test_scratch_yield_publication_preserves_an_uncaught_error_and_diagnostic",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_claim_qualification_histories.py::test_scratch_root_replacement_after_placement_keeps_boundary_exception_context",
+      "lane": "fleet_runtime",
+      "reason": "Requires the real published runtime and wrapper under /mnt/shared/prismabuild-fleet/repo, absent on hosted workers.",
+      "issue": 1182,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_submission_ownership_c14.py::test_deferred_release_enters_the_common_gate_before_publishing",
+      "lane": "fleet_broker",
+      "reason": "Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41240788649"
+    },
+    {
+      "target": "tests/test_pbrun_d38_gate.py::test_a_release_re_checks_the_gate_for_a_record_an_old_client_filed",
+      "lane": "fleet_broker",
+      "reason": "Deferred-release fixture needs the broker-backed producer cleanup to conclude; a hosted worker has no PB broker.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
+    },
+    {
+      "target": "tests/test_pbrun_d38_setting_1649.py::test_disabled_deferred_release_audits_the_completed_identity",
+      "lane": "fleet_broker",
+      "reason": "Deferred-release fixture needs the broker-backed producer cleanup to conclude; a hosted worker has no PB broker.",
+      "issue": 2442,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
+    },
+    {
+      "target": "tests/test_proof_runtime_observation.py::test_host_customization_file_root_selection[selected-sitecustomize.py]",
+      "lane": "root_owned_runtime",
+      "reason": "The selected-runtime positive control requires a root-owned interpreter; setup-python supplies a runner-owned interpreter on hosted CI.",
+      "issue": 1831,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
+    },
+    {
+      "target": "tests/test_proof_runtime_observation.py::test_host_customization_file_root_selection[selected-usercustomize.py]",
+      "lane": "root_owned_runtime",
+      "reason": "The selected-runtime positive control requires a root-owned interpreter; setup-python supplies a runner-owned interpreter on hosted CI.",
+      "issue": 1831,
+      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
+    },
+    {
+      "target": "tests/test_record_compatibility.py",
+      "lane": "namespace_compatibility",
+      "reason": "Both hosted architectures refuse bubblewrap uid-map setup before the stable-path consumer enters or attests its source. Requires a qualified namespace environment, not flake quarantine.",
+      "issue": 2447,
+      "evidence": [
+        "https://github.com/RobTand/prismabuild/actions/runs/41242040262",
+        "https://github.com/RobTand/prismabuild/actions/runs/41242876374"
+      ]
+    },
+    {
+      "target": "tests/test_current_receipt_compat_composition.py",
+      "lane": "namespace_compatibility",
+      "reason": "Both hosted architectures refuse bubblewrap uid-map setup before the stable-path consumer enters or attests its source. Requires a qualified namespace environment, not flake quarantine.",
+      "issue": 2447,
+      "evidence": [
+        "https://github.com/RobTand/prismabuild/actions/runs/41242040262",
+        "https://github.com/RobTand/prismabuild/actions/runs/41242876374"
+      ]
+    }
+  ]
+}
