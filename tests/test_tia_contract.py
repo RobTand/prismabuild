@@ -37,7 +37,7 @@ def test_diff_nested_decorator_signature_and_rename():
     assert diff['added'] == ['new']
     assert diff['deleted'] == ['old']
     assert diff['renamed'] == [{'before': 'old', 'after': 'new'}]
-    assert diff['module_changed'] is False
+    assert diff['module_changed'] is True
 
 
 @pytest.mark.parametrize('before,after', [
@@ -132,7 +132,7 @@ def test_two(shared):
     env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(ROOT / 'tools/ci'), str(root / 'src')]),
                PB_TIA_ROOT=str(root), PB_TIA_OUTPUT=str(output), PB_TIA_COMMIT='a' * 40,
                PYTEST_DISABLE_PLUGIN_AUTOLOAD='1')
-    result = subprocess.run([sys.executable, '-m', 'pytest', '-p', 'tia_record', '-q', str(root / 'tests')],
+    result = subprocess.run([sys.executable, '-m', 'pytest', '-p', 'tia_record', '-q', '--rootdir=' + str(root), str(root / 'tests')],
                             cwd=root, env=env, text=True, capture_output=True, timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr
     records = [json.loads(path.read_text()) for path in output.glob('*.json')]

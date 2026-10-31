@@ -1,7 +1,66 @@
-"""Test-first contract stub."""
-def compare(*args, **kwargs):
-    raise NotImplementedError('TIA contract not implemented')
-def write_map(*args, **kwargs):
-    raise NotImplementedError('TIA contract not implemented')
-def select(*args, **kwargs):
-    raise NotImplementedError('TIA contract not implemented')
+#!/usr/bin/env python3
+"""Merge process records into a reproducible, gzip JSON function impact map."""
+from __future__ import annotations
+
+import argparse
+import gzip
+import json
+from pathlib import Path
+
+SCHEMA = 'prismabuild.tia_map.v1'
+
+
+def write_map(records: list[Path], destination: Path) -> dict:
+    if not records:
+        raise ValueError('no recorder output')
+    tests: dict[str, set[str]] = {}
+    hashes, versions, commits = {}, set(), set()
+    for path in sorted(records):
+        record = json.loads(path.read_text())
+        if record['schema'] != 'prismabuild.tia_record.v1':
+            raise ValueError(f'unsupported record: {path}')
+        commits.add(record['source_commit'])
+        versions.add(record['python'])
+        for name, content_hash in record['files'].items():
+            if name in hashes and hashes[name] != content_hash:
+                raise ValueError(f'inconsistent source hash: {name}')
+            hashes[name] = content_hash
+        for node, functions in record['tests'].items():
+            tests.setdefault(node, set()).update(functions)
+    if len(commits) != 1:
+        raise ValueError('records have different source commits')
+    functions = sorted({function for values in tests.values() for function in values})
+    ids = {name: index for index, name in enumerate(functions)}
+    result = {'schema': SCHEMA, 'source_commit': commits.pop(), 'python': sorted(versions),
+              'files': dict(sorted(hashes.items())), 'functions': functions,
+              'tests': {node: sorted(ids[name] for name in values) for node, values in sorted(tests.items())}}
+    encoded = (json.dumps(result, sort_keys=True, separators=(',', ':')) + '\n').encode()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(gzip.compress(encoded, mtime=0))
+    return result
+
+
+def read_map(path: Path) -> dict:
+    result = json.loads(gzip.decompress(path.read_bytes()))
+    if result['schema'] != SCHEMA:
+        raise ValueError('unsupported TIA map schema')
+    functions = result['functions']
+    for node, ids in result['tests'].items():
+        if not node.startswith('tests/') or any(type(index) is not int or not 0 <= index < len(functions) for index in ids):
+            raise ValueError(f'invalid function indices or test node: {node}')
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('records', type=Path, nargs='+', help='record files or directories')
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    paths = [record for path in args.records for record in (sorted(path.glob('*.json')) if path.is_dir() else [path])]
+    result = write_map(paths, args.output)
+    print(json.dumps({'functions': len(result['functions']), 'tests': len(result['tests']),
+                      'bytes': args.output.stat().st_size, 'source_commit': result['source_commit']}, sort_keys=True))
+
+
+if __name__ == '__main__':
+    main()
