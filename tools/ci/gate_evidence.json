@@ -686,6 +686,139 @@
     "schema": "prismabuild.gate_implementation_evidence.v1",
     "tested_commit": "32ea92f268cc2347fbd70df53669b1043eb12db0"
   },
+  "review_round": {
+    "changes": [
+      "resolve named and test-relative paths",
+      "retain known-directory and literal-suffix matches for computed paths",
+      "preserve helper closure for path loads",
+      "map setup/planning errors to 75 while preserving runner verdicts",
+      "reuse helper graph in replay"
+    ],
+    "ci_shell_green": {
+      "action_key": "8c5cbdb7bc3e7accfed5c6ba1a46b6e2133dd5df98bbfd07039b0e6921927175",
+      "cas_receipt": {
+        "sha256": "6fe310790c33cb74eec4446e17e21d36f7bbb40e1c5390155f6e8e9715bfdcf8",
+        "verified": true
+      },
+      "completion": "complete",
+      "exit_code": 0,
+      "failing_nodes": [],
+      "files": [
+        "tests/test_gate_circleci.py"
+      ],
+      "green": true,
+      "report": "green",
+      "skipped": [],
+      "summary": "8 passed in 0.42s"
+    },
+    "expected_reds": [
+      {
+        "action_key": "8929bee8ac5870af82d129337d9f77d369afbf97388840c47d4e4f894831bc4d",
+        "cas_receipt": null,
+        "completion": "complete",
+        "exit_code": 1,
+        "failing_nodes": [
+          "tests/test_gate_select.py::test_repository_path_loading_regressions[tools/fleet/pbtest.py-tests/test_pbtest_native_directory_collection_1458.py]",
+          "tests/test_gate_select.py::test_repository_path_loading_regressions[tests/test_worker_loop_proves_it_parked.py-tests/test_458_reboot_gate_regression.py]",
+          "tests/test_gate_select.py::test_named_directory_and_path_constructor_forms[ROOT = Path(__file__).resolve().parents[1]\\nFLEET = ROOT / \"tools\" / \"fleet\"-FLEET / \"pbtest.py\"]",
+          "tests/test_gate_select.py::test_named_directory_and_path_constructor_forms[FLEET = Path(__file__).parent.parent / \"tools/fleet\"-FLEET.joinpath(\"pbtest.py\")]",
+          "tests/test_gate_select.py::test_named_directory_and_path_constructor_forms[ROOT = Path(__file__).resolve().parents[1]-Path(ROOT, \"tools\", \"fleet\", \"pbtest.py\")]",
+          "tests/test_gate_select.py::test_named_directory_and_path_constructor_forms[FLEET = Path(__file__).parent / \"../tools/fleet\"-FLEET / \"pbtest.py\"]",
+          "tests/test_gate_select.py::test_named_directory_and_path_constructor_forms[import os\\nFLEET = os.path.join(os.path.dirname(os.path.dirname(__file__)), \"tools\", \"fleet\")-os.path.join(FLEET, \"pbtest.py\")]",
+          "tests/test_gate_select.py::test_repository_path_loading_regressions[src/prismabuild/role_session.py-tests/test_458_reboot_gate_regression.py]",
+          "tests/test_gate_select.py::test_test_relative_path_loaded_helper_closure[Path(__file__).with_name(\"support.py\")]",
+          "tests/test_gate_select.py::test_test_relative_path_loaded_helper_closure[Path(__file__).parent / \"support.py\"]",
+          "tests/test_gate_select.py::test_test_relative_path_loaded_helper_closure[Path(__file__).parent.joinpath(\"support.py\")]",
+          "tests/test_gate_select.py::test_repository_path_loading_regressions[tools/fleet/50-prismabuild-resource-broker.conf-tests/test_needrestart_broker_restart_exclusion.py]",
+          "tests/test_gate_select.py::test_unresolved_fixture_names_cover_the_known_directory[f\"{box}_image_{name}\"]",
+          "tests/test_gate_select.py::test_unresolved_fixture_names_cover_the_known_directory[name]",
+          "tests/test_gate_select.py::test_repository_path_loading_regressions[tests/fixtures/container_images/sparky_image_ls.txt-tests/test_container_image_inventory.py]",
+          "tests/test_gate_select.py::test_unresolved_fixture_names_cover_the_known_directory[\"%s_image_%s\" % (box, name)]",
+          "tests/test_gate_select.py::test_unresolved_fixture_names_cover_the_known_directory[\"{}_image_{}\".format(box, name)]",
+          "tests/test_gate_select.py::test_unresolved_fixture_names_cover_the_known_directory[box + \"_image_\" + name]"
+        ],
+        "files": [
+          "tests/test_gate_select.py"
+        ],
+        "green": false,
+        "report": "red",
+        "skipped": [],
+        "summary": "18 failed, 24 passed in 4.85s"
+      },
+      {
+        "action_key": "9c044ef5e93fd60a37fa87401d95921a719cf0d986ed2ea961cf9f7da3e8541a",
+        "cas_receipt": null,
+        "completion": "complete",
+        "exit_code": 1,
+        "failing_nodes": [
+          "tests/test_gate_circleci.py::test_environment_setup_failure_exits_no_verdict",
+          "tests/test_gate_circleci.py::test_planning_failure_exits_no_verdict",
+          "tests/test_gate_circleci.py::test_explicit_runner_verdict_is_preserved[75-NO_VERDICT]",
+          "tests/test_gate_circleci.py::test_explicit_runner_verdict_is_preserved[1-GATE_TEST_FAILURE]"
+        ],
+        "files": [
+          "tests/test_gate_circleci.py"
+        ],
+        "green": false,
+        "report": "red",
+        "skipped": [],
+        "summary": "4 failed, 4 passed in 0.41s"
+      },
+      {
+        "action_key": "829b1a125cd2a22ec57721f0a34c029b4eeaf388b01ec0fccc69e92590e8fa92",
+        "cas_receipt": null,
+        "completion": "complete",
+        "exit_code": 1,
+        "failing_nodes": [
+          "tests/test_gate_select.py::test_unresolved_fixture_names_cover_the_known_directory[\"%s_image_%s\" % (box, name)]",
+          "tests/test_gate_select.py::test_computed_descendant_of_a_directory_with_unresolved_base"
+        ],
+        "files": [
+          "tests/test_gate_select.py"
+        ],
+        "green": false,
+        "report": "red-suffix",
+        "skipped": [],
+        "summary": "2 failed, 41 passed in 16.86s"
+      }
+    ],
+    "historical_red_correction": {
+      "action_key": "052659b0b86628d3c8433181627ced361dee7c597b2ed05e78969ed49eb5ac5a",
+      "owner_assertion": "Error-message assertion only: regex owner did not match unowned. The test already rejected owner #2428; this red does not prove an owner-validation behavioral change."
+    },
+    "intermediate_attempts": "An intermediate percent-format edit also changed the survey branch, causing collection errors. Those attempts are not green evidence. The corrected source is queued for validation.",
+    "main_merged": "90332a0e",
+    "red_receipts": "none; failures publish terminal records and logs, not CAS success receipts",
+    "red_terminal_records_complete": true,
+    "replay_and_path_survey": {
+      "action_key": "dbec798afd3eeb713b15b23d7ec741f726bb2c2f4f1f63738ba06dd6d772baa1",
+      "cpu": 1,
+      "history_capture": "review/history-capture/history.json",
+      "memory_gib": 4,
+      "portable": true,
+      "priority": -10,
+      "state": "pending fleet admission"
+    },
+    "source_commit": "1b7ca39417b23835c3f0d1ec090a1df04b6f4eaf",
+    "validation": {
+      "action_keys": [
+        "a2b41963b1573f65fc79bfbbdd4028bbc6ddc9196f809abd4bbac3db2b320edd",
+        "2d7f15127a9e747b72ad021557fe42ef278f2cca1f9dc161791277e65bb62171",
+        "18d1ecbdb8e113bb2ed98fdd072f021d48bcb29d6982350aa4cdf3ca66cf7f5e",
+        "74f6d4e7fff8999d30c955f6874e47da7650ff9ce01925efd2c85c9ef837725c",
+        "ad86cff1669d6d07e07cb9a0e689d371b5abd1f80bcf303864fe74505900ea4d",
+        "620b24540af4f2fa1eef438c920b3596128d9cfacb5b24b0a4d015e604a12fe3",
+        "c369b536dde0577d7b8ad0be33c543142351fa8ae4986eef6576200bd80b430b"
+      ],
+      "cpu_per_shard": 2,
+      "memory_gib_per_shard": 4,
+      "native_threads": 1,
+      "portable": true,
+      "priority": -10,
+      "state": "pending fleet admission"
+    },
+    "x86_confirmation": "pending: x86 PrismaBuild admission unavailable since 19:28Z"
+  },
   "schema": "prismabuild.gate_implementation_evidence.v2",
   "tested_commit": "2a306516d8067aa2653ab441e38eba0397c824d9"
 }
