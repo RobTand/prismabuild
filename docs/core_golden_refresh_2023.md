@@ -76,3 +76,19 @@ The tool imports no product module and executes no tests. Its source-only
 contract permits coordinator execution. No field-set metadata was hand-edited.
 This PR still retires logs only. It does not satisfy metadata retention for
 #2023 and does not authorize runtime publication or live retirement.
+
+## Finish merge on 2026-10-31
+
+The finish pass merges main `90332a0eb844e46920593eb61efeee0a2c63905b`.
+The source-only field-set generator starts from main's 592 entries and emits
+612. The exact review in
+`docs/evidence/issue2023_finish_field_review_2026-10-31.json` covers the
+eighteen archive and retention entries, plus two existing main expressions
+in the issue-link parser and GPU placement policy. Neither of those two
+expressions constrains durable record fields. The inventory is tool output.
+
+The merge also changes Core's source identity. Existing capture evidence
+retains its original source identity and does not qualify this merged Core.
+A fresh capture and strict adoption are required before merge readiness.
+Source review and tests grant no live retention, unlink, runtime publication,
+rollout, or service-install authority. Issues #2023 and #2025 remain open.
