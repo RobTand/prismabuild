@@ -51,6 +51,9 @@ def test_nightly_workflow_uses_hosted_gate_tools_and_always_reports():
     assert set(triggers) == {'schedule', 'workflow_dispatch'}
     assert value['concurrency']['cancel-in-progress'] is False
     assert value['jobs']['suite']['strategy']['fail-fast'] is False
+    assert value['env']['FULL_SUITE_SHARDS'] == '16'
+    assert value['jobs']['retry-plan']['needs'] == ['plan', 'suite']
+    assert value['jobs']['retry-suite']['strategy']['fail-fast'] is False
     assert value['jobs']['report']['if'] == 'always()'
     assert value['jobs']['report']['permissions']['issues'] == 'write'
     assert 'gate_run.py' in source
@@ -93,59 +96,26 @@ def test_signed_artifact_download_drops_authorization(tmp_path, monkeypatch):
     assert workflow.artifact_results(api, 7)['sha'] == 'old'
 
 
-def test_plan_uses_shared_partition_interface_and_round_robin_runners(tmp_path, monkeypatch):
+def test_plan_uses_real_partition_cli_and_round_robin_runners(tmp_path, monkeypatch):
     (tmp_path / 'tests').mkdir()
     for name in ['a', 'b']:
         (tmp_path / 'tests' / f'test_{name}.py').write_text('')
+    durations = tmp_path / 'tools/ci/gate_durations.json'
+    durations.parent.mkdir(parents=True)
+    durations.write_text(json.dumps({'files': {'tests/test_a.py': 3, 'tests/test_b.py': 7}}))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(workflow.gate_select, 'tier_declarations', lambda root: (set(), {}))
-    monkeypatch.setattr(workflow.gate_select, 'read_json', lambda path: {'files': {'tests/test_a.py': 3}})
-    monkeypatch.setattr(workflow.gate_partition, 'default_unknown_seconds', lambda durations: 7, raising=False)
-    def shared_shards(files, durations, count, *, unknown_seconds):
-        assert files == ['tests/test_a.py', 'tests/test_b.py']
-        assert durations == {'tests/test_a.py': 3} and count == 2 and unknown_seconds == 7
-        return [{'index': 0, 'files': ['tests/test_b.py'], 'estimated_seconds': 7, 'unknown_files': ['tests/test_b.py']},
-                {'index': 1, 'files': ['tests/test_a.py'], 'estimated_seconds': 3, 'unknown_files': []}]
-    monkeypatch.setattr(workflow.gate_partition, 'shards', shared_shards, raising=False)
     monkeypatch.setenv('GITHUB_OUTPUT', str(tmp_path / 'outputs'))
     workflow.main(['plan', '--sha', 'a' * 40, '--shards', '2', '--output', str(tmp_path / 'out')])
-    matrix = json.loads((tmp_path / 'outputs').read_text().removeprefix('matrix='))
-    assert matrix == {'include': [{'index': 0, 'runner': 'ubuntu-latest'},
-                                  {'index': 1, 'runner': 'ubuntu-24.04-arm'}]}
+    matrix = json.loads((tmp_path / 'outputs').read_text().splitlines()[0].removeprefix('matrix='))
+    assert [(row['index'], row['runner']) for row in matrix['include']] == [
+        (0, 'ubuntu-24.04'), (1, 'ubuntu-24.04-arm')]
     manifest = json.loads((tmp_path / 'out/manifest.json').read_text())
     assert manifest['include'][0]['files'] == ['tests/test_b.py']
+    assert manifest['include'][1]['files'] == ['tests/test_a.py']
     assert manifest['sha'] == 'a' * 40
 
 
-@pytest.mark.parametrize('codes, expected_code, attempts', [
-    ('75,0', 0, 2), ('75,75', 75, 2), ('1,0', 1, 1), ('0,1', 0, 1)])
-def test_live_shell_retries_only_infrastructure(tmp_path, codes, expected_code, attempts):
-    import os
-    import subprocess
-    import yaml
-    value = yaml.safe_load((ROOT / '.github/workflows/full-suite.yml').read_text())
-    script = next(step['run'] for step in value['jobs']['suite']['steps']
-                  if step.get('name', '').startswith('Run assigned CPU tests'))
-    executable = tmp_path / 'python'
-    executable.write_text('''#!/usr/bin/env python3
-import os, sys
-from pathlib import Path
-if 'tools/ci/gate_run.py' not in sys.argv:
-    raise SystemExit(0)
-log = Path(os.environ['ATTEMPT_LOG'])
-count = len(log.read_text().splitlines()) if log.exists() else 0
-with log.open('a') as handle:
-    handle.write('attempt\\n')
-raise SystemExit(int(os.environ['ATTEMPT_CODES'].split(',')[count]))
-''')
-    executable.chmod(0o755)
-    log = tmp_path / 'attempts'
-    environment = dict(os.environ, PATH=str(tmp_path) + os.pathsep + os.environ['PATH'],
-                       ATTEMPT_CODES=codes, ATTEMPT_LOG=str(log), SHARD_INDEX='0')
-    done = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', script], cwd=tmp_path,
-                          env=environment, capture_output=True, text=True, timeout=30)
-    assert done.returncode == expected_code, done.stdout + done.stderr
-    assert len(log.read_text().splitlines()) == attempts
 
 
 def test_incomplete_ci_writes_a_result_without_requesting_or_filing_issues(tmp_path, monkeypatch):
@@ -167,3 +137,16 @@ def test_incomplete_ci_writes_a_result_without_requesting_or_filing_issues(tmp_p
     assert result['filed'] == []
     assert result['plans'] == []
     assert result['classification'] == {'new': [], 'known': [], 'quarantined': [], 'recovered': []}
+
+
+def test_cpu_plan_defers_capability_controls_without_dropping_quarantined_files(tmp_path):
+    (tmp_path / 'tests').mkdir()
+    for name in ['portable', 'quarantined', 'fleet', 'mixed', 'archival']:
+        (tmp_path / 'tests' / f'test_{name}.py').write_text('')
+    capabilities = [{'target': 'tests/test_fleet.py', 'lane': 'fleet_runtime', 'issue': 1182},
+                    {'target': 'tests/test_mixed.py::test_needs_broker', 'lane': 'fleet_broker', 'issue': 2442}]
+    plan = workflow.cpu_plan(tmp_path, {}, 'a' * 40, environment_lanes=capabilities)
+    assert 'tests/test_quarantined.py' in [row['path'] for row in plan['selected']]
+    assert 'tests/test_fleet.py' not in [row['path'] for row in plan['selected']]
+    assert plan['deselect'] == ['tests/test_mixed.py::test_needs_broker']
+    assert plan['deferred'] == capabilities
