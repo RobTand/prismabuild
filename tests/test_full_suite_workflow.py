@@ -56,6 +56,11 @@ def test_nightly_workflow_uses_hosted_gate_tools_and_always_reports():
     assert value['jobs']['retry-suite']['strategy']['fail-fast'] is False
     assert value['jobs']['report']['if'] == 'always()'
     assert value['jobs']['report']['permissions']['issues'] == 'write'
+    report_steps = value['jobs']['report']['steps']
+    finish = next(s for s in report_steps if s.get('name') == 'Select complete verdicts after infrastructure retry')
+    classify = next(s for s in report_steps if s.get('name') == 'Classify and report through GitHub REST')
+    assert not finish.get('continue-on-error', False)
+    assert classify['if'] == 'always()'
     assert 'gate_run.py' in source
     assert 'self-hosted' not in source
     assert 'CircleCI' not in source
