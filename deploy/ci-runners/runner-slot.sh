@@ -53,7 +53,7 @@ echo "Starting $runner"
 printf '%s\n' "$jit_config" | podman run --rm --interactive \
     --name "pb-ci-runner-$slot" --pull=never \
     --memory="$memory" --memory-swap="$memory" --pids-limit=1024 \
-    --network=private --pid=private --ipc=private --userns=private \
+    --network=private --pid=private --ipc=private --userns=keep-id:uid=1001,gid=1001 \
     --http-proxy=false --sdnotify=ignore --cap-drop=all \
     --security-opt=no-new-privileges --label "io.prismabuild.ci-slot=$slot" \
     "${options[@]}" "$PB_CI_IMAGE"

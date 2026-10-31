@@ -26,7 +26,9 @@ stay within 40. PB's admission can still use SMT overflow. CI is external load,
 not a reservation in PB's ledger. Each container limits total memory plus swap
 to the memory limit and permits at most 1,024 processes.
 
-Containers have private process, user, IPC, and network namespaces. They have
+Containers have private process, user, IPC, and network namespaces.
+The user namespace maps the rootless owner to the image's runner UID and GID
+1001 with `--userns=keep-id:uid=1001,gid=1001`. They have
 no host mounts, shared storage, device access, container sockets, or host
 credentials. All capabilities are dropped and privilege escalation is disabled.
 Host proxy variables are not forwarded. The image runs as the unprivileged
