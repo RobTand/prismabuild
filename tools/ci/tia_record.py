@@ -6,6 +6,8 @@ Subprocess bootstrapping is installed only into this run's output directory.
 from __future__ import annotations
 
 import atexit
+import base64
+import gzip
 import hashlib
 import json
 import os
@@ -25,6 +27,11 @@ class Recorder:
         self.tests: dict[str, set[str]] = {}
         self.files: dict[str, str] = {}
         self.codes: dict[object, str | None] = {}
+        self.catalog = {}
+        for directory in ('src', 'tools'):
+            for path in sorted((self.root / directory).rglob('*.py')):
+                self.catalog[str(path)] = (path.relative_to(self.root).as_posix(),
+                                          hashlib.sha256(path.read_bytes()).hexdigest())
         self.fixture_calls: list[set[str]] = []
         self.node = os.environ.get('PB_TIA_NODE', '')
         self.tool = None
@@ -59,15 +66,14 @@ class Recorder:
             return self.codes[code]
         result = None
         if code.co_name != '<module>':
-            path = Path(code.co_filename)
-            try:
-                relative = path.resolve().relative_to(self.root).as_posix()
-            except (ValueError, OSError):
-                relative = ''
-            if relative.startswith(('src/', 'tools/')) and path.is_file():
+            filename = code.co_filename
+            if not filename.startswith('/'):
+                filename = str(self.root / filename)
+            entry = self.catalog.get(filename)
+            if entry:
+                relative, content_hash = entry
                 result = relative + '::' + code.co_qualname
-                if relative not in self.files:
-                    self.files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+                self.files[relative] = content_hash
         self.codes[code] = result
         return result
 
@@ -114,6 +120,8 @@ def bootstrap():
             raise RuntimeError('TIA recording requires Python 3.12 or later')
         _STATE = Recorder(Path(os.environ['PB_TIA_ROOT']), Path(os.environ['PB_TIA_OUTPUT']),
                           os.environ['PB_TIA_COMMIT'])
+        os.environ['PB_TIA_ROOT'] = str(_STATE.root)
+        os.environ['PB_TIA_OUTPUT'] = str(_STATE.output)
     return _STATE
 
 
@@ -163,7 +171,6 @@ def pytest_runtest_teardown(item, nextitem):
     try:
         return (yield)
     finally:
-        _STATE.flush()
         _STATE.boundary('')
 
 
@@ -172,5 +179,10 @@ pytest_runtest_teardown.pytest_impl = {'wrapper': True}
 
 def pytest_sessionfinish(session, exitstatus):
     _STATE.flush()
+    if os.environ.get('PB_TIA_EMIT') == '1':
+        # PB's CAS-captured stdout retains the data without a shared output directory.
+        records = [json.loads(path.read_text()) for path in sorted(_STATE.output.glob('*.json'))]
+        encoded = gzip.compress(json.dumps(records, sort_keys=True).encode(), mtime=0)
+        print('tia-record: ' + base64.b64encode(encoded).decode(), flush=True)
 
 pytest_runtest_setup.pytest_impl = {'tryfirst': True}
