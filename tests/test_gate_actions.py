@@ -23,14 +23,14 @@ def record(path, verdict='pass', **changes):
 
 
 def test_missing_verdict_retries_only_the_missing_shard():
-    result = actions.assess(PLAN, ASSIGNMENTS, {1: {0: record('a.py')}})
+    result = actions.assess_attempts(PLAN, ASSIGNMENTS, {1: {0: record('a.py')}})
     assert result['retry_indices'] == [1]
     assert result['missing_indices'] == [1]
     assert result['exit_code'] == 75
 
 
 def test_test_failure_is_never_retried_or_overwritten_by_a_later_pass():
-    result = actions.assess(PLAN, ASSIGNMENTS, {
+    result = actions.assess_attempts(PLAN, ASSIGNMENTS, {
         1: {0: record('a.py', 'fail'), 1: record('b.py')},
         2: {0: record('a.py')}})
     assert result['retry_indices'] == []
@@ -40,7 +40,7 @@ def test_test_failure_is_never_retried_or_overwritten_by_a_later_pass():
 
 
 def test_second_attempt_can_supply_a_missing_verdict():
-    result = actions.assess(PLAN, ASSIGNMENTS, {
+    result = actions.assess_attempts(PLAN, ASSIGNMENTS, {
         1: {0: record('a.py'), 1: record('b.py', verdict=None, pytest_exit_code=3)},
         2: {1: record('b.py')}})
     assert result['exit_code'] == 0
@@ -49,7 +49,7 @@ def test_second_attempt_can_supply_a_missing_verdict():
 
 
 def test_no_verdict_after_retry_cannot_pass():
-    result = actions.assess(PLAN, ASSIGNMENTS, {1: {}, 2: {0: record('a.py')}})
+    result = actions.assess_attempts(PLAN, ASSIGNMENTS, {1: {}, 2: {0: record('a.py')}})
     assert result['exit_code'] == 75 and result['missing_indices'] == [1]
 
 
@@ -59,7 +59,7 @@ def test_no_verdict_after_retry_cannot_pass():
     {'pytest_exit_code': 1}, {'pytest_exit_code': False}, {'files': [None]}, {'verdict': []},
 ])
 def test_invalid_or_stale_result_is_not_a_verdict(changes):
-    result = actions.assess(PLAN, ASSIGNMENTS, {
+    result = actions.assess_attempts(PLAN, ASSIGNMENTS, {
         1: {0: record('a.py', **changes), 1: record('b.py')}})
     assert result['retry_indices'] == [0] and result['exit_code'] == 75
 
@@ -72,7 +72,7 @@ def test_invalid_or_stale_result_is_not_a_verdict(changes):
 ])
 def test_incomplete_or_duplicate_assignments_are_refused(assignments):
     with pytest.raises(ValueError):
-        actions.assess(PLAN, assignments, {1: {}, 2: {}})
+        actions.assess_attempts(PLAN, assignments, {1: {}, 2: {}})
 
 
 def cli_fixture(tmp_path):

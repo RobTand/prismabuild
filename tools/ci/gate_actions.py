@@ -31,7 +31,7 @@ def _verdict(plan, files, record):
     return verdict if (verdict, code) in {('pass', 0), ('fail', 1)} else None
 
 
-def assess(plan, assignments, attempts):
+def assess_attempts(plan, assignments, attempts):
     """Return retry indices and the final verdict, preserving the first test verdict."""
     indices = [row['index'] for row in assignments]
     assigned = Counter(path for row in assignments for path in row['files'])
@@ -94,13 +94,13 @@ def main(argv=None):
         attempts = {attempt: {row['index']: _read_result(args.artifacts /
                     f"{args.prefix}-a{attempt}-{row['index']}" / 'result.json') for row in assignments}
                     for attempt in (1, 2)}
-        result = assess(plan, assignments, attempts)
+        result = assess_attempts(plan, assignments, attempts)
         if args.command == 'retries':
             include = [row for row in matrix['include'] if row['index'] in result['retry_indices']]
             # Keep a valid nonempty expression even when the job's `if` skips the matrix.
             output = {'include': include or matrix['include'][:1]}
             args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(json.dumps(output, sort_keys=True) + '\n')
+            args.output.write_text(json.dumps(output) + '\n')
             print('retry=' + str(bool(include)).lower())
             print('matrix=' + json.dumps(output, separators=(',', ':')))
             return 0
@@ -113,7 +113,7 @@ def main(argv=None):
                     if (source / name).is_file():
                         shutil.copyfile(source / name, target / name)
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
+        args.output.write_text(json.dumps(result, indent=2) + '\n')
         marker = {0: 'GATE_PASS', 1: 'GATE_TEST_FAILURE', 75: 'NO_VERDICT'}[result['exit_code']]
         message = f"{marker}: failed shards {result['failed_indices']}; missing verdicts {result['missing_indices']}"
         print(message)

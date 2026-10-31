@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
                                    'files': len(row['files']), 'estimated_seconds': row['estimated_seconds']}
                                   for row in result]}
             args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(json.dumps(output, sort_keys=True, indent=2) + '\n')
+            args.output.write_text(json.dumps(output, indent=2) + '\n')
         else:
             if not 0 <= args.index < args.shards:
                 raise ValueError('index is outside the shard range')

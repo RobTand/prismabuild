@@ -34,6 +34,9 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
         record['workers'] = workers
         environment = dict(os.environ, PRISMABUILD_TEST_TIMEOUT_S='60',
                            OMP_NUM_THREADS='1', MKL_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1')
+        # setup-python exports loader overrides; proof capture must see the actual
+        # installed interpreter rather than an ambient dynamic-loader override.
+        environment = {name: value for name, value in environment.items() if not name.startswith('LD_')}
         junit.parent.mkdir(parents=True, exist_ok=True)
         command = [sys.executable, '-m', 'pytest', '-n', str(workers), '--dist=loadfile',
                    '-q', '-ra', '--junitxml=' + str(junit), '-o', 'junit_family=xunit1',
@@ -49,7 +52,7 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
         record['infrastructure_reason'] = str(error)
         code = NO_VERDICT
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
+    output.write_text(json.dumps(record, indent=2) + '\n')
     return code
 
 

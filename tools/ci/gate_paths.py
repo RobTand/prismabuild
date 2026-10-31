@@ -26,7 +26,7 @@ def dotted(node):
     return ''
 
 
-def join(base, tail):
+def join_reference(base, tail):
     if base and (base.endswith('/**') or base == '**'):
         return base
     if tail is None:
@@ -50,7 +50,7 @@ def resolve(node, bindings, filename):
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         left, right = resolve(node.left, bindings, filename), resolve(node.right, bindings, filename)
         return {value for base in left or {None} for tail in right or {None}
-                if (value := join(base, tail)) is not None}
+                if (value := join_reference(base, tail)) is not None}
     if isinstance(node, ast.Attribute) and node.attr == 'parent':
         return {value if value.endswith('/**') else posixpath.dirname(value)
                 for value in resolve(node.value, bindings, filename)}
@@ -78,7 +78,7 @@ def resolve(node, bindings, filename):
         for arg in node.args[1:] if leaf in PATH_TYPES else []:
             tails = resolve(arg, bindings, filename)
             values = {value for base in values or {None} for tail in tails or {None}
-                      if (value := join(base, tail)) is not None}
+                      if (value := join_reference(base, tail)) is not None}
         return values
     if leaf == 'dirname' and node.args:
         return {posixpath.dirname(value) for value in resolve(node.args[0], bindings, filename)}
@@ -87,7 +87,7 @@ def resolve(node, bindings, filename):
         for arg in node.args[1:]:
             tails = resolve(arg, bindings, filename)
             values = {value for base in values or {None} for tail in tails or {None}
-                      if (value := join(base, tail)) is not None}
+                      if (value := join_reference(base, tail)) is not None}
         return values
     if isinstance(node.func, ast.Attribute):
         bases = resolve(node.func.value, bindings, filename)
@@ -104,7 +104,7 @@ def resolve(node, bindings, filename):
                     # Filename transformations cannot narrow below the containing directory.
                     tails = set()
                 bases = {value for base in bases or {None} for tail in tails or {None}
-                         if (value := join(base, tail)) is not None}
+                         if (value := join_reference(base, tail)) is not None}
             return bases
     return set()
 
@@ -180,7 +180,7 @@ def matches(path: str, references: set[str]) -> bool:
 
 
 
-def survey(root: Path) -> dict:
+def survey_path_idioms(root: Path) -> dict:
     """Count syntactic idioms, including temporary/generated paths, without claiming coverage."""
     counts = Counter()
     files = defaultdict(set)
@@ -223,7 +223,7 @@ def main(argv=None):
     parser.add_argument('--root', type=Path, default=Path.cwd())
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args(argv)
-    args.output.write_text(json.dumps(survey(args.root), sort_keys=True, indent=2) + '\n')
+    args.output.write_text(json.dumps(survey_path_idioms(args.root), indent=2) + '\n')
     return 0
 
 
