@@ -1,0 +1,20 @@
+{
+  "run": "integrated-final",
+  "source_head": "6cef1e12efbb2610c8186fd2ab304bcfc1f55726",
+  "population": {
+    "collected": 386,
+    "passed": 386,
+    "failed": 0,
+    "skipped": 0
+  },
+  "snapshots": [
+    {
+      "commit": "b8a3a484b587706cbc2ca63cb6cd941ed387685b",
+      "bundle_sha256": "6e97b9566fde65d9ef3f73f9ce931c635b7d7f32c2c6f0dee1919916e97e9cde",
+      "source_tools_tests_equal": true
+    }
+  ],
+  "architecture": "portable",
+  "reports_and_resources_match": true,
+  "unique_population_sha256": "56df722831d418cca81dc5dc514f36ef089a98e648982d231595be2d792ca3b8"
+}

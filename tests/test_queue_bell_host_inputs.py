@@ -246,12 +246,12 @@ def test_holder_commit_rename_and_release_keep_the_service_covered(host_feed):
 
 @pytest.mark.parametrize("confirm_after", [3, None])
 def test_nfs_visibility_keeps_dirty_host_and_original_budget(monkeypatch, confirm_after):
-    from prismabuild import queue_bell_host_reads
+    from prismabuild import queue_bell_input_reads
     now = [0.0]
-    monkeypatch.setattr(queue_bell_host_reads.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(queue_bell_input_reads.time, "monotonic", lambda: now[0])
     attempts = []
     waits = []
-    pending = queue_bell_host_reads.DirtyHostInputs()
+    pending = queue_bell_input_reads.DirtyInputs()
     pending.invalidate("reservations", "worker.lab", deadline=4.0)
 
     def confirm_host(topic, host, deadline):
@@ -288,8 +288,8 @@ def test_nfs_visibility_keeps_dirty_host_and_original_budget(monkeypatch, confir
 def test_nfs_visibility_stop_preserves_unknown_host():
     import threading
     import time
-    from prismabuild.queue_bell_host_reads import DirtyHostInputs
-    pending = DirtyHostInputs()
+    from prismabuild.queue_bell_input_reads import DirtyInputs
+    pending = DirtyInputs()
     pending.invalidate("workers", "worker.lab", deadline=time.monotonic() + 5)
     stop = threading.Event()
     stop.set()

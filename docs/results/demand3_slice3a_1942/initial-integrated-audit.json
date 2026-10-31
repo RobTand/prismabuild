@@ -1,0 +1,1392 @@
+{
+  "report": "/mnt/shared/paperclip-runs/PRI-64/slice3a/integrated.json",
+  "actions": [
+    {
+      "action_key": "88cf401c602cae3b16f9fc42a827f79e8262980301b1fcb9d79cdf060f6403ed",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/88cf401c602cae3b16f9fc42a827f79e8262980301b1fcb9d79cdf060f6403ed.json",
+      "terminal_sha256": "8e2dd7728f1414436fe5c09436a98774c092c77fb9c5a838d602523ba5b60474",
+      "status": "executed",
+      "returncode": 0,
+      "host": "sparky",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/88cf401c602cae3b16f9fc42a827f79e8262980301b1fcb9d79cdf060f6403ed/c191c8eb37c88fc5d6756a3d3b5ca6a4bae280393470fc0b5f6f1c2d2bbe6b50/00000001.stdout.721fbc28c0acb3cfd9282ad9a837445aeb04967ec54381cc232b85890554d165.log",
+          "sha256": "721fbc28c0acb3cfd9282ad9a837445aeb04967ec54381cc232b85890554d165",
+          "bytes": 47144
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/88cf401c602cae3b16f9fc42a827f79e8262980301b1fcb9d79cdf060f6403ed/c191c8eb37c88fc5d6756a3d3b5ca6a4bae280393470fc0b5f6f1c2d2bbe6b50/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        }
+      },
+      "collected": 48,
+      "passed": 48,
+      "failed": 0,
+      "skipped": 0,
+      "failed_nodes": [],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_queue_bell_tier_inputs.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_queue_bell_tier_inputs.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_queue_bell_tier_inputs.py": "006d7dbbaf71155a40d6807ecc8e48a64e1f2f7fcedd909e67dd7b23e5c39d60"
+        },
+        "exitstatus": 0
+      },
+      "files": [
+        "tests/test_queue_bell_tier_inputs.py"
+      ],
+      "summary": "48 passed in 0.83s",
+      "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/88/88cf401c602cae3b16f9fc42a827f79e8262980301b1fcb9d79cdf060f6403ed.json",
+      "receipt_sha256": "24998e41d997fd4bfd074494d46e4bfea68ce6e40bef9d39b4fedb215ff6ec0e",
+      "payload_sha256": "a06717abe9e6c92cd1621b37292964ebb8302907c722cca1f8f311f2c217b752"
+    },
+    {
+      "action_key": "d17b613999365532af37e5ecf5c4e2b426ce4fc5f39b35c2b1b64e001339b778",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/d17b613999365532af37e5ecf5c4e2b426ce4fc5f39b35c2b1b64e001339b778.json",
+      "terminal_sha256": "1ab84d2cc58f65125ed7f81ca06eec10eb6678065084d3790234d4e0ff2f372d",
+      "status": "executed",
+      "returncode": 0,
+      "host": "sparky",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/d17b613999365532af37e5ecf5c4e2b426ce4fc5f39b35c2b1b64e001339b778/5af05a0a77322a07fc88ca9ab7a57a1ec061058c2c0142ae49dc339b2990c563/00000001.stdout.5977091e958cf5b8d27ece16ac1cece8c577a78d2e3916382ecaba3570a794d2.log",
+          "sha256": "5977091e958cf5b8d27ece16ac1cece8c577a78d2e3916382ecaba3570a794d2",
+          "bytes": 34796
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/d17b613999365532af37e5ecf5c4e2b426ce4fc5f39b35c2b1b64e001339b778/5af05a0a77322a07fc88ca9ab7a57a1ec061058c2c0142ae49dc339b2990c563/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        }
+      },
+      "collected": 49,
+      "passed": 49,
+      "failed": 0,
+      "skipped": 0,
+      "failed_nodes": [],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_queue_bell_host_inputs.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_queue_bell_host_inputs.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_queue_bell_host_inputs.py": "89ef2eed8e8735f47abad2ec15bdf83459ad4a7865475819d674ebb7ecb4e618"
+        },
+        "exitstatus": 0
+      },
+      "files": [
+        "tests/test_queue_bell_host_inputs.py"
+      ],
+      "summary": "49 passed in 0.79s",
+      "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/d1/d17b613999365532af37e5ecf5c4e2b426ce4fc5f39b35c2b1b64e001339b778.json",
+      "receipt_sha256": "f03d592825531488d26b0bb1df96d3fbe0b1459083ebe48069d6cc30893b806e",
+      "payload_sha256": "3727450360bc36e9d9de0be2e3c033028bf2e01930b47dceede41ac271294606"
+    },
+    {
+      "action_key": "473e05e474f09fddb247e30772770364772b8a44f85608fe92102d0e9b4fc909",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/473e05e474f09fddb247e30772770364772b8a44f85608fe92102d0e9b4fc909.json",
+      "terminal_sha256": "8d0875d7c68f11cb0b2c4c0d8ec341b86132d4db3db292f48748ce7c0ca9b00c",
+      "status": "executed",
+      "returncode": 0,
+      "host": "sparklina",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/473e05e474f09fddb247e30772770364772b8a44f85608fe92102d0e9b4fc909/9ce6a89fb1d6b11c522aa5848ae0564ddaddb593ebb4f094de4d2bd71263b586/00000001.stdout.4438f6885b694ce38067f55c2db26e5145d93a3f8944c306113206741ef3d33a.log",
+          "sha256": "4438f6885b694ce38067f55c2db26e5145d93a3f8944c306113206741ef3d33a",
+          "bytes": 9078
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/473e05e474f09fddb247e30772770364772b8a44f85608fe92102d0e9b4fc909/9ce6a89fb1d6b11c522aa5848ae0564ddaddb593ebb4f094de4d2bd71263b586/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        }
+      },
+      "collected": 7,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "failed_nodes": [],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_queue_bell_host_regressions.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_queue_bell_host_regressions.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_queue_bell_host_regressions.py": "b3ab2a3b99a4e107c2636e939b11c00eacb0a170925385cb345ae6a2a15308fb"
+        },
+        "exitstatus": 0
+      },
+      "files": [
+        "tests/test_queue_bell_host_regressions.py"
+      ],
+      "summary": "7 passed in 0.18s",
+      "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/47/473e05e474f09fddb247e30772770364772b8a44f85608fe92102d0e9b4fc909.json",
+      "receipt_sha256": "3a2384cfeb47655d3208be50e51c3589d0b8102aa7c7f95bf811b21832aff2c8",
+      "payload_sha256": "422d7ccca93503ca1a090e8a6c6530a4428071f4cba2c76bf44626577053a94c"
+    },
+    {
+      "action_key": "4b137de21b151ca220b6284fe3ab4d79c64dae5b296b3d04003b8d56e33d69d9",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/4b137de21b151ca220b6284fe3ab4d79c64dae5b296b3d04003b8d56e33d69d9.json",
+      "terminal_sha256": "b1d56f4875e10a9df124b8f91ae66b270e0d978e48536f222c5346c5003cd14f",
+      "status": "executed",
+      "returncode": 0,
+      "host": "sparky",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/4b137de21b151ca220b6284fe3ab4d79c64dae5b296b3d04003b8d56e33d69d9/261db8f0389483c20f3f72b431e08812f32c55dc0af8dba8cbe89cdccf8363e6/00000001.stdout.2b33aab431a0bf5226afbfd9b37391dc81646ef292e83a50dfa124b5b94d086a.log",
+          "sha256": "2b33aab431a0bf5226afbfd9b37391dc81646ef292e83a50dfa124b5b94d086a",
+          "bytes": 17417
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/4b137de21b151ca220b6284fe3ab4d79c64dae5b296b3d04003b8d56e33d69d9/261db8f0389483c20f3f72b431e08812f32c55dc0af8dba8cbe89cdccf8363e6/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        }
+      },
+      "collected": 19,
+      "passed": 19,
+      "failed": 0,
+      "skipped": 0,
+      "failed_nodes": [],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_queue_bell_host_review_edges.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_queue_bell_host_review_edges.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_queue_bell_host_review_edges.py": "6594b5466f656a92861a378be4edf2f96f920052da53a8b2ef71ea6550ef75b2"
+        },
+        "exitstatus": 0
+      },
+      "files": [
+        "tests/test_queue_bell_host_review_edges.py"
+      ],
+      "summary": "19 passed in 0.43s",
+      "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/4b/4b137de21b151ca220b6284fe3ab4d79c64dae5b296b3d04003b8d56e33d69d9.json",
+      "receipt_sha256": "356e9b29b9f37a83ee1105d0e303df4b974545a7df201ebfc9c12a8a34ae295a",
+      "payload_sha256": "c2eb180a117bf3f82aa41c82ecca4078f9aec5875d44696b8472c2bf7965b8d8"
+    },
+    {
+      "action_key": "ad416ad833e7c9171722e3186967400c3e6ec63f308cf158910a271d643fdf74",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/ad416ad833e7c9171722e3186967400c3e6ec63f308cf158910a271d643fdf74.json",
+      "terminal_sha256": "e63b82a0ece60039c8e5f7c7cd49b35ebff7457d7cb9e4ceffeea4e54896fbae",
+      "status": "executed",
+      "returncode": 0,
+      "host": "sparklina",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/ad416ad833e7c9171722e3186967400c3e6ec63f308cf158910a271d643fdf74/2eb69b652d801098dcfe6d431376b550d6f1033dbb7492fec49f6f1a1cd23d77/00000001.stdout.fbd538887932195165e867318f81c56ec8bb79a10e88d9ef01b739938debeaf3.log",
+          "sha256": "fbd538887932195165e867318f81c56ec8bb79a10e88d9ef01b739938debeaf3",
+          "bytes": 35832
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/ad416ad833e7c9171722e3186967400c3e6ec63f308cf158910a271d643fdf74/2eb69b652d801098dcfe6d431376b550d6f1033dbb7492fec49f6f1a1cd23d77/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        }
+      },
+      "collected": 33,
+      "passed": 33,
+      "failed": 0,
+      "skipped": 0,
+      "failed_nodes": [],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_queue_bell_adaptive_inputs.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_queue_bell_adaptive_inputs.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_queue_bell_adaptive_inputs.py": "85085522a36d9cdf02955ee46ff6929859973e9f24d5d2873f4561f751ec5c9c"
+        },
+        "exitstatus": 0
+      },
+      "files": [
+        "tests/test_queue_bell_adaptive_inputs.py"
+      ],
+      "summary": "33 passed in 0.83s",
+      "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/ad/ad416ad833e7c9171722e3186967400c3e6ec63f308cf158910a271d643fdf74.json",
+      "receipt_sha256": "db0524a09cf13fe2660f022c6eb698ca02d70e8fd3503d52dc7089de4107e321",
+      "payload_sha256": "85888698cdf5118d5958e9d100caa1543f151b11557567547352e1e45580b27e"
+    },
+    {
+      "action_key": "cda874863fc5a5845490f6e474d94e4468ecd3c37e488516cbd7c51282ff49b0",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/cda874863fc5a5845490f6e474d94e4468ecd3c37e488516cbd7c51282ff49b0.json",
+      "terminal_sha256": "6726d7a11434b8f61df91cfa9e9d26329f4f3ac2d8f0bacfdab60216ba615132",
+      "status": "executed",
+      "returncode": 0,
+      "host": "sparky",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/cda874863fc5a5845490f6e474d94e4468ecd3c37e488516cbd7c51282ff49b0/26c374797fe5c888161ce9ad73cb165b716aa1aaa74d47cca9da7c655394074f/00000001.stdout.4847be7449bdaba4f225c0f6c41c1f0eec8ed9372b1639386090d0665a1de3ef.log",
+          "sha256": "4847be7449bdaba4f225c0f6c41c1f0eec8ed9372b1639386090d0665a1de3ef",
+          "bytes": 48074
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/cda874863fc5a5845490f6e474d94e4468ecd3c37e488516cbd7c51282ff49b0/26c374797fe5c888161ce9ad73cb165b716aa1aaa74d47cca9da7c655394074f/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        }
+      },
+      "collected": 79,
+      "passed": 79,
+      "failed": 0,
+      "skipped": 0,
+      "failed_nodes": [],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_queue_bell.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_queue_bell.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_queue_bell.py": "ce88da445738bd67ea7e5462b1033b106ecf3c9c1c62a068055eeda9b7bdb958"
+        },
+        "exitstatus": 0
+      },
+      "files": [
+        "tests/test_queue_bell.py"
+      ],
+      "summary": "79 passed, 2 warnings in 2.36s",
+      "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/cd/cda874863fc5a5845490f6e474d94e4468ecd3c37e488516cbd7c51282ff49b0.json",
+      "receipt_sha256": "303657a71cc61397e9087b031c08f3d99ef8edfc669f0c3d1128c0733b5cd3c4",
+      "payload_sha256": "5b2751e42740a7104f8e2399d8a56de7433d0d6bc54bf689ebd6f28743663156"
+    },
+    {
+      "action_key": "987266d592848ba52064e359e12a44e35cd2f92a1684e731ac05ddd361e06d70",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/987266d592848ba52064e359e12a44e35cd2f92a1684e731ac05ddd361e06d70.json",
+      "terminal_sha256": "d89ac16da3b7b41a82c60c50c22e17141cc53d785c772d43da31936d7320c664",
+      "status": "executed",
+      "returncode": 0,
+      "host": "dl380g10",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/987266d592848ba52064e359e12a44e35cd2f92a1684e731ac05ddd361e06d70/cda31c15b0d22c0885e413ddb319226256471a068f779d203fdd2e0229ef25db/00000001.stdout.1bc55b535dc6f9b21e7cf7bdedb4250038f17c1a9a592ee457c993d15d53055b.log",
+          "sha256": "1bc55b535dc6f9b21e7cf7bdedb4250038f17c1a9a592ee457c993d15d53055b",
+          "bytes": 20898
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/987266d592848ba52064e359e12a44e35cd2f92a1684e731ac05ddd361e06d70/cda31c15b0d22c0885e413ddb319226256471a068f779d203fdd2e0229ef25db/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c",
+          "bytes": 46
+        }
+      },
+      "collected": 28,
+      "passed": 28,
+      "failed": 0,
+      "skipped": 0,
+      "failed_nodes": [],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_queue_bell_v1_compat.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          4
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_queue_bell_v1_compat.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_queue_bell_v1_compat.py": "b631298ee8ea5ee688836ecf17e81fdd3ff7b5486df5c215f36f5cd841b66aee"
+        },
+        "exitstatus": 0
+      },
+      "files": [
+        "tests/test_queue_bell_v1_compat.py"
+      ],
+      "summary": "28 passed in 0.94s",
+      "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/98/987266d592848ba52064e359e12a44e35cd2f92a1684e731ac05ddd361e06d70.json",
+      "receipt_sha256": "f6a4be7a6e362a79a004759ada0953ec4e93e9d31aae6cf4b89eb4e2439ceebb",
+      "payload_sha256": "d1c6b1990dd86bf5e1a1bbbdedf542afe778d933d20e17655fef03fe91849e18"
+    },
+    {
+      "action_key": "be0551cf69dea3cfa1a184b9f273ab4a48b06793b1d5bbddaac8228480ce1876",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/failed/be0551cf69dea3cfa1a184b9f273ab4a48b06793b1d5bbddaac8228480ce1876.json",
+      "terminal_sha256": "d1564d5957e84e12a19caf9034b3b65cf617cc1e3a75554a09909eeb14495903",
+      "status": "failed",
+      "returncode": 1,
+      "host": "sparky",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/be0551cf69dea3cfa1a184b9f273ab4a48b06793b1d5bbddaac8228480ce1876/639fa864308ffa132358e6858f7e939a785a345c89d9a801b281a1579f3929ca/00000001.stdout.f487c3c2f64a2202853e8da56990a7b4ad1b2a3c4b7194cf49acca7893ab4cdc.log",
+          "sha256": "f487c3c2f64a2202853e8da56990a7b4ad1b2a3c4b7194cf49acca7893ab4cdc",
+          "bytes": 20442
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/be0551cf69dea3cfa1a184b9f273ab4a48b06793b1d5bbddaac8228480ce1876/639fa864308ffa132358e6858f7e939a785a345c89d9a801b281a1579f3929ca/00000001.stderr.2542d44c71caa12d608aa650135e893c3cdb2e5f11b2e8ce920b23d7c5de2356.log",
+          "sha256": "2542d44c71caa12d608aa650135e893c3cdb2e5f11b2e8ce920b23d7c5de2356",
+          "bytes": 831
+        }
+      },
+      "collected": 35,
+      "passed": 33,
+      "failed": 2,
+      "skipped": 0,
+      "failed_nodes": [
+        "tests/test_queue_bell_v2.py::test_v2_loss_never_reports_complete_wait[partial]",
+        "tests/test_queue_bell_v2.py::test_v2_positive_client_negotiation_and_wrong_queue"
+      ],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_queue_bell_v2.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_queue_bell_v2.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_queue_bell_v2.py": "8809269aa9a1cd0c2ec85f7b6b87f886787774311220dc1f26ad656af08a5540"
+        },
+        "exitstatus": 1
+      },
+      "files": [
+        "tests/test_queue_bell_v2.py"
+      ],
+      "summary": "2 failed, 33 passed in 0.83s",
+      "receipt": "no success receipt expected"
+    },
+    {
+      "action_key": "d9716546373e6297b5d36bcee2e654f0d1abdb037028c308f6d4809676665ee0",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/d9716546373e6297b5d36bcee2e654f0d1abdb037028c308f6d4809676665ee0.json",
+      "terminal_sha256": "e880e08b8e64a08b31c8b4d936ac1c96ee61a7eddb9c73d77ad15143a569c7c8",
+      "status": "executed",
+      "returncode": 0,
+      "host": "sparklina",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/d9716546373e6297b5d36bcee2e654f0d1abdb037028c308f6d4809676665ee0/028cbc998dbabee41f1bbc9b3da2e67bcacf669b61fea1b7919cab9b22a59518/00000001.stdout.128b9a321075b4ee38ce3c4b182a058bbe120e53b35ac9ded1b26f7c6fbe64e3.log",
+          "sha256": "128b9a321075b4ee38ce3c4b182a058bbe120e53b35ac9ded1b26f7c6fbe64e3",
+          "bytes": 28375
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/d9716546373e6297b5d36bcee2e654f0d1abdb037028c308f6d4809676665ee0/028cbc998dbabee41f1bbc9b3da2e67bcacf669b61fea1b7919cab9b22a59518/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        }
+      },
+      "collected": 37,
+      "passed": 37,
+      "failed": 0,
+      "skipped": 0,
+      "failed_nodes": [],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_queue_bell_installed_coverage.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_queue_bell_installed_coverage.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_queue_bell_installed_coverage.py": "80c1eba7b86f684f5cad525ad012e21d8157a59ca454d1c0d9f13769660c6fe2"
+        },
+        "exitstatus": 0
+      },
+      "files": [
+        "tests/test_queue_bell_installed_coverage.py"
+      ],
+      "summary": "37 passed in 0.97s",
+      "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/d9/d9716546373e6297b5d36bcee2e654f0d1abdb037028c308f6d4809676665ee0.json",
+      "receipt_sha256": "a21229b9a31855191615c3f5ab6f63f6d07e00717001c9e99c9a2f4d685ef508",
+      "payload_sha256": "29b69b76aa68bacde2e466867a1d3c4a93766935fed9e36a30ea64935537d47c"
+    },
+    {
+      "action_key": "7114b08c91394d738b2dc52da53e9346ef66bd035c38abd0cc4dc2863b72c5f7",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/7114b08c91394d738b2dc52da53e9346ef66bd035c38abd0cc4dc2863b72c5f7.json",
+      "terminal_sha256": "e26bf4d13a11653d677408f0ff561379710208e126bca643818a45f93bfcafe9",
+      "status": "executed",
+      "returncode": 0,
+      "host": "sparklina",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/7114b08c91394d738b2dc52da53e9346ef66bd035c38abd0cc4dc2863b72c5f7/1810f1f6a8880ac5dd8017ecee9206907271c7d70800a6c818ca8b6a7767418a/00000001.stdout.ec74d88235b8b17273a5c0e93a36c2fe5bb48da72f931cb27ab58440d1bab1b0.log",
+          "sha256": "ec74d88235b8b17273a5c0e93a36c2fe5bb48da72f931cb27ab58440d1bab1b0",
+          "bytes": 5621
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/7114b08c91394d738b2dc52da53e9346ef66bd035c38abd0cc4dc2863b72c5f7/1810f1f6a8880ac5dd8017ecee9206907271c7d70800a6c818ca8b6a7767418a/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        }
+      },
+      "collected": 1,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "failed_nodes": [],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_queue_bell_lazy_coverage.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          16
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_queue_bell_lazy_coverage.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_queue_bell_lazy_coverage.py": "c2ee4cee401e1f7a2edbab41d2bc22924cd2ebbf2687f97afe97c6bb7c1d950d"
+        },
+        "exitstatus": 0
+      },
+      "files": [
+        "tests/test_queue_bell_lazy_coverage.py"
+      ],
+      "summary": "1 passed in 0.07s",
+      "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/71/7114b08c91394d738b2dc52da53e9346ef66bd035c38abd0cc4dc2863b72c5f7.json",
+      "receipt_sha256": "5528cedff563bb8d4aa421e834ae3e6d4a08d9874f185405edfa285998217130",
+      "payload_sha256": "962e96f28bfa8c45c2f53ffbb75129a963e3f7ad30e1d9753ae2f95b871888c9"
+    },
+    {
+      "action_key": "5d8bb60f8ebb81898e027d377c8b00f0175e44c228811c608a182946c44b54eb",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/5d8bb60f8ebb81898e027d377c8b00f0175e44c228811c608a182946c44b54eb.json",
+      "terminal_sha256": "57a14f9f5c564ab59613c9db66b778ca1b2b98f5f3274c10a0a56c6c22b14c1b",
+      "status": "executed",
+      "returncode": 0,
+      "host": "sparky",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/5d8bb60f8ebb81898e027d377c8b00f0175e44c228811c608a182946c44b54eb/59442b3073ad3e9a03c4549f1c363bade878c5f7fd0351ac05206b4c033eed25/00000001.stdout.284e945527aecfaca91638eebc6aee743cda80dc2e17b3664ef007327f3e9c03.log",
+          "sha256": "284e945527aecfaca91638eebc6aee743cda80dc2e17b3664ef007327f3e9c03",
+          "bytes": 6292
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/5d8bb60f8ebb81898e027d377c8b00f0175e44c228811c608a182946c44b54eb/59442b3073ad3e9a03c4549f1c363bade878c5f7fd0351ac05206b4c033eed25/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        }
+      },
+      "collected": 2,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "failed_nodes": [],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_queue_bell_startup_coverage.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_queue_bell_startup_coverage.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_queue_bell_startup_coverage.py": "be21c3e67435e923741e420123b5346af5f19a4f5b48d1994be76ce777bede05"
+        },
+        "exitstatus": 0
+      },
+      "files": [
+        "tests/test_queue_bell_startup_coverage.py"
+      ],
+      "summary": "2 passed in 0.09s",
+      "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/5d/5d8bb60f8ebb81898e027d377c8b00f0175e44c228811c608a182946c44b54eb.json",
+      "receipt_sha256": "2b24e0f3959068b7d2699b5e30fbdbabfe51c177a077dd2bdeca501d62983c65",
+      "payload_sha256": "43d797575c843fc166213704b06a306e8b3f6bd15049e85c3161ad0ea776efb4"
+    },
+    {
+      "action_key": "1cb95a928c044476789e9d2671e95a92a7c4ebf2e6380bfad18d934fcb0ff7b2",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/1cb95a928c044476789e9d2671e95a92a7c4ebf2e6380bfad18d934fcb0ff7b2.json",
+      "terminal_sha256": "b22c06f4a26d9dfde7870a3ab0c9d74b7c3ccbac17bee1004977cb8f4257f92d",
+      "status": "executed",
+      "returncode": 0,
+      "host": "sparky",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/1cb95a928c044476789e9d2671e95a92a7c4ebf2e6380bfad18d934fcb0ff7b2/7d25f9c7a534863be5d15c9ca37bde1239b7e43a108e36c5e5da10c566b79f81/00000001.stdout.9b192da8473e1d60d498b55c480c8065e7b0471c795f322acac5e3b45f753a31.log",
+          "sha256": "9b192da8473e1d60d498b55c480c8065e7b0471c795f322acac5e3b45f753a31",
+          "bytes": 15139
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/1cb95a928c044476789e9d2671e95a92a7c4ebf2e6380bfad18d934fcb0ff7b2/7d25f9c7a534863be5d15c9ca37bde1239b7e43a108e36c5e5da10c566b79f81/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        }
+      },
+      "collected": 15,
+      "passed": 15,
+      "failed": 0,
+      "skipped": 0,
+      "failed_nodes": [],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_queue_bell_watch_lifecycle.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          8
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_queue_bell_watch_lifecycle.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_queue_bell_watch_lifecycle.py": "780be4b81c8e3587b3ae1ed285f50fd2c7caeafd7ceb50b190f39a4bc9e6be2c"
+        },
+        "exitstatus": 0
+      },
+      "files": [
+        "tests/test_queue_bell_watch_lifecycle.py"
+      ],
+      "summary": "15 passed in 0.35s",
+      "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/1c/1cb95a928c044476789e9d2671e95a92a7c4ebf2e6380bfad18d934fcb0ff7b2.json",
+      "receipt_sha256": "0830c4e2004f723828467b38a198d851af5f85eba0e200416461090ef59101e9",
+      "payload_sha256": "82270cedfb4977786fcf17446f18456025d4f8db08a4d175ba3555f312f198c5"
+    },
+    {
+      "action_key": "563d083f76e192742a8088ac0888896b096035b0226362bd4bde7466368be03b",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/563d083f76e192742a8088ac0888896b096035b0226362bd4bde7466368be03b.json",
+      "terminal_sha256": "d95e859c16a0b1b6ee5946628a87e6c991971fcb2fa9128d586f1736238b8702",
+      "status": "executed",
+      "returncode": 0,
+      "host": "sparklina",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/563d083f76e192742a8088ac0888896b096035b0226362bd4bde7466368be03b/425df21c91bda4e44fb981d7f6ecdd18bafc43bd5e830c7af3a75f3d62163694/00000001.stdout.e6cc356367dccb991ab87a8f61ce585a5df489bf54442c2da4d853ef6ddc600b.log",
+          "sha256": "e6cc356367dccb991ab87a8f61ce585a5df489bf54442c2da4d853ef6ddc600b",
+          "bytes": 12674
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/563d083f76e192742a8088ac0888896b096035b0226362bd4bde7466368be03b/425df21c91bda4e44fb981d7f6ecdd18bafc43bd5e830c7af3a75f3d62163694/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        }
+      },
+      "collected": 14,
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
+      "failed_nodes": [],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_bell_input_changes.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_bell_input_changes.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_bell_input_changes.py": "da65799f33d2c09a38e2cf3524ba38cf3500f43770d0512d1709d7cbc03e23e2"
+        },
+        "exitstatus": 0
+      },
+      "files": [
+        "tests/test_bell_input_changes.py"
+      ],
+      "summary": "14 passed in 0.14s",
+      "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/56/563d083f76e192742a8088ac0888896b096035b0226362bd4bde7466368be03b.json",
+      "receipt_sha256": "2815fe5d3795be347ddc9e913e0570c9d625d62904e989ce8a4fa56daf5fd49e",
+      "payload_sha256": "e18741a577f28243344a60787bc819f9d32e407659449a93a00b3c8d89f61458"
+    },
+    {
+      "action_key": "d5344ebabbfc0395f7d7067d785a72facc88407378be4fdd8f4316ebeee9dc43",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/d5344ebabbfc0395f7d7067d785a72facc88407378be4fdd8f4316ebeee9dc43.json",
+      "terminal_sha256": "eee7950f823570492821dc94ff95cbf674e6a43a22ea90e5f12eacee4279194e",
+      "status": "executed",
+      "returncode": 0,
+      "host": "sparky",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/d5344ebabbfc0395f7d7067d785a72facc88407378be4fdd8f4316ebeee9dc43/428398c068273d0c84ea3a24cc498931b6813d50f826854ae2d80f93c28c2465/00000001.stdout.ef2c413fca9a3bd739d2a60156ea91dc9a0da66d41e4d42637202c8be77d20ee.log",
+          "sha256": "ef2c413fca9a3bd739d2a60156ea91dc9a0da66d41e4d42637202c8be77d20ee",
+          "bytes": 8912
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/d5344ebabbfc0395f7d7067d785a72facc88407378be4fdd8f4316ebeee9dc43/428398c068273d0c84ea3a24cc498931b6813d50f826854ae2d80f93c28c2465/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        }
+      },
+      "collected": 8,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "failed_nodes": [],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_duplication_baseline.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_duplication_baseline.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_duplication_baseline.py": "c844a44dcec35e59bb4a0f375128a07f1354ed804479c39ecfc04ea149f71013"
+        },
+        "exitstatus": 0
+      },
+      "files": [
+        "tests/test_duplication_baseline.py"
+      ],
+      "summary": "8 passed in 10.02s",
+      "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/d5/d5344ebabbfc0395f7d7067d785a72facc88407378be4fdd8f4316ebeee9dc43.json",
+      "receipt_sha256": "a83f1ff388cd677dc1c84b8545bc7cfd1568d3826d748055610ce3e50f0aa81e",
+      "payload_sha256": "8c7317e34507549039187d476b071cd8ae1156abda58f9ed68f284502acab08b"
+    },
+    {
+      "action_key": "2698de9615d88145c95c41f8eb1fa412929fefbcd853e846646547bcf57148ec",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/2698de9615d88145c95c41f8eb1fa412929fefbcd853e846646547bcf57148ec.json",
+      "terminal_sha256": "804808c239a4505578b81ba3f2258644fe3d72c4adf6f6f76173c0334dd4a57b",
+      "status": "executed",
+      "returncode": 0,
+      "host": "sparklina",
+      "snapshot": {
+        "commit": "eb38883608d491258450d24f4055b5a13063a40c",
+        "input": {
+          "bytes": 45870860,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "9104410053f7daee4067acd22c747f43140523ba01c18cbf3294fb84eaa965a4"
+        },
+        "parent": "7cec101154de517b7ded399ca2adaf8afc33f8de",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "cleanup_complete": true,
+      "logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2698de9615d88145c95c41f8eb1fa412929fefbcd853e846646547bcf57148ec/deeafca0dd2de53da6a6d6d694ad476e479a19278c9ce412ba50e67967cc32d3/00000001.stdout.77727170e95b2e643c3385a3b474b85c43a451f38cf94cb8ca5df13fb7fc0a2d.log",
+          "sha256": "77727170e95b2e643c3385a3b474b85c43a451f38cf94cb8ca5df13fb7fc0a2d",
+          "bytes": 11721
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2698de9615d88145c95c41f8eb1fa412929fefbcd853e846646547bcf57148ec/deeafca0dd2de53da6a6d6d694ad476e479a19278c9ce412ba50e67967cc32d3/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        }
+      },
+      "collected": 11,
+      "passed": 11,
+      "failed": 0,
+      "skipped": 0,
+      "failed_nodes": [],
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_record_store_mutation_controls.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_record_store_mutation_controls.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_record_store_mutation_controls.py": "95f3276f5d08ae37d1a27cf9f94e1c1b970ab9868c75c284830d38516db2287c"
+        },
+        "exitstatus": 0
+      },
+      "files": [
+        "tests/test_record_store_mutation_controls.py"
+      ],
+      "summary": "11 passed in 0.42s",
+      "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/26/2698de9615d88145c95c41f8eb1fa412929fefbcd853e846646547bcf57148ec.json",
+      "receipt_sha256": "88507b6ab94e2dc98b5b0d55761fed7ca4b2244b5ac778d334b6b88e02712e37",
+      "payload_sha256": "122c41defb36741e1b250ecb7c9c7aeec966b079ea54554c325e69658672ebcb"
+    }
+  ],
+  "population": {
+    "collected": 386,
+    "passed": 384,
+    "failed": 2,
+    "skipped": 0
+  }
+}

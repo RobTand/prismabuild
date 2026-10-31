@@ -923,6 +923,7 @@ def _expired_claim(queue, policy: ExpiredClaim) -> Path | None:
         queue._note_cleanup_attempt(pending, record, container_cleanup)
         queue.records.replace_record_at(path, pending)
         return None
+    record.pop("container_cleanup_pending", None)
     terminal = queue.terminal_outcome_covers(
         record, action_key=key, terminal=terminal_keys
     )

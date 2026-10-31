@@ -1,0 +1,163 @@
+{
+  "source_parent": "efff85c6f1c49d789afa733b36364be4a3b0d5c0",
+  "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/repro.json",
+  "entries": [
+    {
+      "action_key": "a27a9d3d543439b9a236cb905332d85d7d49e5f95b8db48cd74e4ecc3ee35ff9",
+      "status": "failed",
+      "exit_code": 1,
+      "host": "sparky",
+      "snapshot_commit": "021171baf10f8c6cf3bd76e9b4a371fff17273c7",
+      "snapshot": {
+        "bytes": 46774045,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "247892041d134490ae18e47b5ce8926e6c476f8b6f41317c5c092d3c01cd02f9"
+      },
+      "request_sha256": "6fa0039dcc1bed59d76efc6550e3c316ea4e31634bebf7406a8403ee23c0a739",
+      "logs": {
+        "stdout": {
+          "bytes": 7145,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/a27a9d3d543439b9a236cb905332d85d7d49e5f95b8db48cd74e4ecc3ee35ff9/7ee07cb309d5fac90eabac43255500b085a5669ed647cf6f3d6f101538762dd3/00000001.stdout.c2cf5a2e1629b6467ab8cb1f1305114813297713fc499bafb0cfafd2216ba8ae.log",
+          "sha256": "c2cf5a2e1629b6467ab8cb1f1305114813297713fc499bafb0cfafd2216ba8ae"
+        },
+        "stderr": {
+          "bytes": 831,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/a27a9d3d543439b9a236cb905332d85d7d49e5f95b8db48cd74e4ecc3ee35ff9/7ee07cb309d5fac90eabac43255500b085a5669ed647cf6f3d6f101538762dd3/00000001.stderr.2d2184093eee1f95843a00c7f3410f1d7a2600d701e7b7c264fadcaf2c32f689.log",
+          "sha256": "2d2184093eee1f95843a00c7f3410f1d7a2600d701e7b7c264fadcaf2c32f689"
+        }
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_a_producers_export_rates_are_learned_per_family.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_a_producers_export_rates_are_learned_per_family.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_a_producers_export_rates_are_learned_per_family.py": "846e6fcdae2cdd7b771d29a0399ab96bbb6168c6456a060c946fa31a5a0b09de"
+        },
+        "exitstatus": 1
+      },
+      "native_complete": true,
+      "cleanup_complete": true,
+      "receipt_sha256": null,
+      "failed_nodeids": [
+        "tests/test_a_producers_export_rates_are_learned_per_family.py::test_a_funded_export_runs_under_a_withhold_and_an_unfunded_one_waits"
+      ],
+      "outcome_counts": {
+        "call:failed": 1
+      }
+    },
+    {
+      "action_key": "73fd61e9a113880dc903b21f8b35484e259791ee238164ff5fbc925f2f5aebae",
+      "status": "failed",
+      "exit_code": 1,
+      "host": "sparklina",
+      "snapshot_commit": "021171baf10f8c6cf3bd76e9b4a371fff17273c7",
+      "snapshot": {
+        "bytes": 46774045,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "247892041d134490ae18e47b5ce8926e6c476f8b6f41317c5c092d3c01cd02f9"
+      },
+      "request_sha256": "8bc6de093e2f0a13439162db5030e588284ec98adaf7199dd7eee48b7ffb83b8",
+      "logs": {
+        "stdout": {
+          "bytes": 7672,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/73fd61e9a113880dc903b21f8b35484e259791ee238164ff5fbc925f2f5aebae/3da84f8fec8bf3bc9a648c788a8836e72682eb96909f9b8faa453f3459010da9/00000001.stdout.e333a6d598bb21b68652a234b6527bfd60fb813e7835b28aeb6e189ec8941676.log",
+          "sha256": "e333a6d598bb21b68652a234b6527bfd60fb813e7835b28aeb6e189ec8941676"
+        },
+        "stderr": {
+          "bytes": 831,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/73fd61e9a113880dc903b21f8b35484e259791ee238164ff5fbc925f2f5aebae/3da84f8fec8bf3bc9a648c788a8836e72682eb96909f9b8faa453f3459010da9/00000001.stderr.2d2184093eee1f95843a00c7f3410f1d7a2600d701e7b7c264fadcaf2c32f689.log",
+          "sha256": "2d2184093eee1f95843a00c7f3410f1d7a2600d701e7b7c264fadcaf2c32f689"
+        }
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_gpu_runtime_integration.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gpu_runtime_integration.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gpu_runtime_integration.py": "a5c97d499102a56f89dfb7639573af02d9bf0b94d9c8bc8ecb2563b35b015324"
+        },
+        "exitstatus": 1
+      },
+      "native_complete": true,
+      "cleanup_complete": true,
+      "receipt_sha256": null,
+      "failed_nodeids": [
+        "tests/test_gpu_runtime_integration.py::test_host_fault_evidence_preserves_an_explicit_deadline"
+      ],
+      "outcome_counts": {
+        "call:failed": 1
+      }
+    }
+  ],
+  "worker_signing_keys": "not checked; no cryptographic attestation claim"
+}

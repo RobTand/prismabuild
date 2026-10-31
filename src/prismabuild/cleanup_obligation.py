@@ -5,7 +5,7 @@ import secrets
 import socket
 from weakref import WeakKeyDictionary
 
-from . import claim_identity, core, immutable_files, record_store, resource_scope
+from . import claim_identity, core, immutable_files, record_store, resource_scope, scratch_lifetime
 from .produced_output import _broker_scope_id
 
 OBLIGATION_SCHEMA = 'prismabuild.cleanup_obligation.v1'
@@ -88,7 +88,9 @@ def _cleanup_owner(queue, key, generation, attempt):
         invalid=record_store.PoolContractError)
     if terminal is not None:
         archived = queue.attempt_ending(record)  # Verifies immutable attempt and log bytes.
-        if (archived['attempt'] != attempt or archived['status'] != 'failed'
+        if (archived['attempt'] != attempt
+                or archived['status'] not in {'failed', 'lease_lost_max_attempts'}
+                or archived['status'] != record.get('status')
                 or archived['detail'] != record.get('detail')):
             raise record_store.PoolContractError('cleanup recovery differs from immutable attempt')
         identity = queue.attempt_outcomes(record)[-1]
@@ -205,5 +207,8 @@ def _publish_cleanup_permit(queue, permit):
         record.update(resource_scope_cleanup=previous['resource_scope_cleanup'],
                       container_cleanup=previous['container_cleanup'],
                       cleanup_obligation={**obligation, 'state': 'resolved'})
+        if ('scratch_declaration_record' not in record
+                and scratch_lifetime.SCRATCH_LIFETIME_FIELD not in record):
+            record.pop('container_cleanup_pending', None)
         queue.records.replace_record_at(path, record)
         return record

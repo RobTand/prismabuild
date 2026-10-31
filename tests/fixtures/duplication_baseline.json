@@ -74,8 +74,6 @@
   "hashlib:tools/fleet/pbcanary_legs/common.py::sha256_stream_hex",
   "hashlib:tools/fleet/pbcanary_legs/leg1.py::<module>",
   "hashlib:tools/fleet/pbcanary_legs/leg1.py::verify",
-  "hashlib:tools/fleet/pbcanary_legs/leg2.py::<module>",
-  "hashlib:tools/fleet/pbcanary_legs/leg2.py::verify",
   "hashlib:tools/fleet/pbcanary_legs/leg3.py::_hash_fd",
   "hashlib:tools/fleet/pbcanary_legs/leg3.py::run_action",
   "hashlib:tools/fleet/pbmcp.py::_blob_identity",
@@ -162,6 +160,22 @@
   "sorted-json:tools/fleet/upgrade_client.py::canonical_json"
  ],
  "same_name_distinct": [
+  {
+   "modules": [
+    "src/prismabuild/action_edges.py",
+    "src/prismabuild/tautology.py"
+   ],
+   "name": "_name",
+   "reason": "The unchanged upstream tautology scanner extracts AST identifier or attribute names and returns an empty string for other nodes. Action edges validate produced-output names and translate validation failures into ActionEdgeError; their inputs and refusal contracts differ."
+  },
+  {
+   "modules": [
+    "src/prismabuild/tautology.py",
+    "tools/duplication_inventory.py"
+   ],
+   "name": "scan",
+   "reason": "The unchanged upstream tautology scanner returns assertion findings from Python test files. The duplication inventory returns structural duplicate pairs, helper ownership groups and primitive digest sites from production and tool modules; their scanned populations and result contracts differ."
+  },
   {
    "modules": [
     "src/prismabuild/_measurement_reservation.py"
@@ -287,6 +301,52 @@
    ],
    "name": "missing",
    "reason": "The container-image helper subtracts a present set from required image names. The local dependency helper compares declared path kinds with a worker's per-path answers and fails closed on an unreadable answer. The inputs, domains and results differ."
+  },
+  {
+   "modules": [
+    "tools/backlog_census/hindsight.py"
+   ],
+   "name": "collect",
+   "reason": "Backlog collection binds candidate queries and resumable Hindsight receipts to census inputs. GPU collect helpers sample device processes and scope telemetry; neither accepts these inputs or produces recall evidence."
+  },
+  {
+   "modules": [
+    "tools/backlog_census/census.py"
+   ],
+   "name": "reconcile",
+   "reason": "Backlog reconciliation compares ticket membership against a saved planning rollup. Queue, staged-path, outcome and prelaunch reconciliation repair live execution state or compare native test outcomes, with different inputs and effects."
+  },
+  {
+   "modules": [
+    "tools/backlog_census/census.py",
+    "tools/fleet/pbwait.py"
+   ],
+   "name": "render",
+   "reason": "The backlog renderer produces census Markdown from report dictionaries. The pbwait renderer formats queue status rows for operators; their report schemas and output contracts differ."
+  },
+  {
+   "modules": [
+    "tools/backlog_census/hindsight.py",
+    "tools/maintenance/watch_issues.py"
+   ],
+   "name": "save",
+   "reason": "Hindsight saves identity-bound sorted JSON receipts through process-specific temporary names. Issue watching saves unsorted polling state through a fixed temporary suffix; sharing that writer would change historical receipt bytes or concurrent-write behavior."
+  },
+  {
+   "modules": [
+    "tools/backlog_census/census.py",
+    "tools/fleet/pbresident.py"
+   ],
+   "name": "timestamp",
+   "reason": "Census timestamps normalize to aware UTC datetime objects and reject invalid evidence with ValueError. Resident lease arguments return epoch seconds and report argparse errors; their result and boundary contracts differ."
+  },
+  {
+   "modules": [
+    "tools/backlog_census/fetch_open_issues.py",
+    "src/prismabuild/d38_gate.py"
+   ],
+   "name": "utc_now",
+   "reason": "GitHub receipt collection records ISO UTC strings with a Z suffix. The D38 evidence gate returns aware datetime objects for freshness arithmetic; importing that domain gate would couple unrelated contracts."
   }
  ],
  "same_name_helpers": {
