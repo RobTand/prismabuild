@@ -242,10 +242,15 @@ def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Pat
                *['--deselect=' + node for node in deselect], *files]
     start = time.monotonic()
     complete = True
-    with tempfile.TemporaryDirectory(prefix=label + '-', dir=directory) as scratch:
+    scratch_root = os.environ.get('PB_TIA_SCRATCH_ROOT')
+    if scratch_root is not None and not Path(scratch_root).is_absolute():
+        raise ValueError('PB_TIA_SCRATCH_ROOT must be absolute')
+    with tempfile.TemporaryDirectory(prefix='tia-', dir=scratch_root or directory) as scratch:
         temporary = Path(scratch) / 'tmp'
         temporary.mkdir()
         env['TMPDIR'] = str(temporary)
+        if scratch_root is not None:
+            command[command.index('--basetemp=.pytest-basetemp')] = '--basetemp=' + str(Path(scratch) / 'pytest')
         try:
             try:
                 run = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=1000)
