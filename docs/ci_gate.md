@@ -64,11 +64,18 @@ each architecture. Timeouts include setup margin and never truncate coverage.
 
 ## Per-test cost limits
 
-`tools/ci/gate_budget.json` sets a 20-second default and eight measured slow
-exceptions, ranging from 52 to 217 seconds. The seed uses all 20,021 inventory
-tests: every maximum above 20 seconds receives `ceil(2 * max_s)`. The inventory
-digest and seed method are retained in the policy. The 217-second exception is
-for the batch-retirement test whose measured maximum was 108.5 seconds.
+`tools/ci/gate_budget.json` sets a 20-second default. Its bootstrap slow list
+uses hosted canary timings, not the PrismaBuild-worker inventory. Runs
+41240788649, 41242040262, 41242876374, 41243455746 and 41244414908 measured
+13 tests above 20 seconds. Every exception is `ceil(2 * largest_hosted_time)`,
+ranging from 44 to 116 seconds. The policy records the maximum, run ID,
+artifact name and verified download digest for each entry. These measurements
+include an earlier 49.002-second duplication audit and 37.809-second history
+audit, larger than the latest 21.952 and 34.428-second observations.
+
+Issue #2448, under #2328, owns reducing these costs and shrinking the slow list.
+The per-file scheduling table still uses the PB inventory's summed medians;
+it estimates shard balance, rather than setting per-test cost limits.
 
 The gate runner checks xunit1 JUnit times, including setup and teardown, after
 pytest completes. It prints every overrun with its precise node ID and limit.
