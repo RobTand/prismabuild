@@ -53,6 +53,7 @@ def test_junit_retains_exact_parameterized_nodeid_and_failure(tmp_path):
     (0, {'x': {'outcome': 'passed'}}, True),
     (1, {'x': {'outcome': 'failed'}}, True),
     (2, {'x': {'outcome': 'failed'}}, True),
+    (1, {'x': {'outcome': 'passed'}}, False),
     (3, {'x': {'outcome': 'passed'}}, False), (0, {}, False), (5, {}, False),
 ])
 def test_retry_only_without_test_verdict(code, rows, expected):
@@ -71,7 +72,7 @@ def test_value(value):
     xml = tmp_path / 'junit.xml'
     env = dict(os.environ, PYTHONPATH=str(ROOT / 'tools/ci'), PYTEST_DISABLE_PLUGIN_AUTOLOAD='1')
     done = subprocess.run([sys.executable, '-m', 'pytest', '-p', 'xdist.plugin', '-p',
-        'full_suite_shard', '-n', '2', '--junitxml', str(xml), str(tmp_path / 'test_example.py')],
+        'full_suite_shard', '-n', '1', '--junitxml', str(xml), str(tmp_path / 'test_example.py')],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
     assert done.returncode == 1, done.stdout + done.stderr
     rows = shard.read_junit(xml)

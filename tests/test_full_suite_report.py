@@ -174,3 +174,40 @@ def test_summary_reuses_owners_but_still_files_unowned_failures():
     assert len(api.issues) == 2
     assert report.owners(api.issues)['new20'] == 2
     assert report.owners(api.issues)['x'] == 1
+
+
+def test_retry_result_replaces_unverdictable_partial_results(tmp_path):
+    import json
+    for attempt, verdict, outcome in ((1, False, 'passed'), (2, True, 'failed')):
+        directory = tmp_path / f'attempt-{attempt}'
+        directory.mkdir()
+        (directory / 'result.json').write_text(json.dumps({'shard': 0, 'verdict': verdict,
+            'tests': {'x': row(outcome)}, 'wall_seconds': 2}))
+    result = report.collect_results(tmp_path, 1)
+    assert result['complete'] is True
+    assert result['tests']['x']['outcome'] == 'failed'
+
+
+def test_last_passing_sha_survives_a_skipped_baseline():
+    before = {'x': dict(row('skipped'), last_pass_sha='last-good')}
+    plan = report.issue_plan({'x': row('failed')}, before, set(), {}, 'previous', 'bad', [], 'run')
+    assert 'last-good...bad' in plan[0]['body']
+
+
+def test_workflow_keeps_suite_off_gate_and_privileges_in_report():
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/full-suite.yml').read_text())
+    triggers = workflow.get('on', workflow.get(True))
+    assert set(triggers) == {'push', 'schedule', 'workflow_dispatch'}
+    assert triggers['schedule'] == [{'cron': '23 2 * * *'}]
+    assert workflow['concurrency'] == {'group': 'full-suite-main', 'cancel-in-progress': False}
+    for name in ('shards', 'retry'):
+        job = workflow['jobs'][name]
+        assert job['runs-on'] == ['self-hosted', 'pb-fleet', 'pb-suite']
+        assert job['strategy']['matrix']['shard'] == [0, 1, 2, 3]
+    report_job = workflow['jobs']['report']
+    assert report_job['runs-on'] == 'ubuntu-latest'
+    assert report_job['permissions']['issues'] == 'write'
+    assert report_job['if'] == 'always()'
+    assert set(report_job['needs']) >= {'shards', 'retry'}
+    assert 'issues' not in workflow['permissions']

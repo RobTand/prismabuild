@@ -70,7 +70,7 @@ def read_junit(path: Path) -> dict[str, dict]:
 
 
 def has_verdict(code: int, rows: dict[str, dict]) -> bool:
-    return bool(rows) and (code in (0, 1) or any(r['outcome'] == 'failed' for r in rows.values()))
+    return bool(rows) and (code == 0 or any(r['outcome'] == 'failed' for r in rows.values()))
 
 
 def file_durations(results: dict) -> dict[str, float]:
@@ -112,7 +112,7 @@ def main(argv=None) -> int:
     code, rows, error = 0, {}, ''
     if files:
         command = [sys.executable, '-m', 'pytest', '-p', 'full_suite_shard', '-n', str(args.workers),
-                   '--dist', 'loadfile', '--junitxml', str(xml), '--durations', '30', *files]
+                   '--dist', 'loadfile', '--continue-on-collection-errors', '--junitxml', str(xml), '--durations', '30', *files]
         try:
             code = subprocess.run(command, cwd=root, env=env, check=False).returncode
             rows = read_junit(xml)
