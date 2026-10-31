@@ -1,0 +1,21 @@
+{
+  "configuration_captures": 0,
+  "current_captures": 1,
+  "failures": [],
+  "finished_at": "2026-10-27T12:18:43.313771+00:00",
+  "historical_captures": 2,
+  "historical_participant_absences": 0,
+  "independent_writer_reproduction_required": true,
+  "passed": true,
+  "selected_cases": [
+    "upgrade-intent/armed"
+  ],
+  "source_git": {
+    "parents": [
+      "7585278f635e4e1d7cd7dc8eb324125b07969f40"
+    ],
+    "snapshot": "52c340ed47d6ab92afbb5ba63e9e8bd9bf5b550f",
+    "tree": "4ed3f0cbe246aea163dd7d02e1686e6a819fb636"
+  },
+  "started_at": "2026-10-27T12:18:27.866081+00:00"
+}

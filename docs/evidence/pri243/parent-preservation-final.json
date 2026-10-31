@@ -1,0 +1,86 @@
+[
+  {
+    "bytes": 19371,
+    "parent": "a1bac460f128cbd7872349c8a679277efd8c485c",
+    "preserved": "tests/compat/history-controls/parent-rollout-a1bac460f128/goldens-rollout.jsonl",
+    "sha256": "17b358c93459631952268e0a3f47d68498a2df51d26c8166eb08c7ecbbfc4c45",
+    "source": "tests/compat/goldens-rollout.jsonl"
+  },
+  {
+    "bytes": 1591,
+    "parent": "a1bac460f128cbd7872349c8a679277efd8c485c",
+    "preserved": "tests/compat/history-controls/parent-rollout-a1bac460f128/capture-rollout.json",
+    "sha256": "b7f6033be2f46dca63a58b74a0541303b4427bd33dc0b3394524e98c69ef1654",
+    "source": "tests/compat/capture-rollout.json"
+  },
+  {
+    "bytes": 41492,
+    "parent": "a1bac460f128cbd7872349c8a679277efd8c485c",
+    "preserved": "tests/compat/history-controls/parent-rollout-a1bac460f128/historical-rollout.jsonl",
+    "sha256": "21747cd531def42bc9faef0384861e1195d24b8d62d2fc3f145a27df9c3bc401",
+    "source": "tests/compat/historical-rollout.jsonl"
+  },
+  {
+    "bytes": 1588,
+    "parent": "a1bac460f128cbd7872349c8a679277efd8c485c",
+    "preserved": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54-a1bac460f128/capture-rollout.json",
+    "sha256": "8b728f4f20e12bde1fe597c6e86bf0fd5bed6beae89374be70a77aa071bc4b62",
+    "source": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/capture-rollout.json"
+  },
+  {
+    "bytes": 19371,
+    "parent": "a1bac460f128cbd7872349c8a679277efd8c485c",
+    "preserved": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54-a1bac460f128/goldens-rollout.jsonl",
+    "sha256": "f1d6ce6052c13d5487310f1614592a9e00936d3613f8ca3205f5d667342d8983",
+    "source": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/goldens-rollout.jsonl"
+  },
+  {
+    "bytes": 864,
+    "parent": "a1bac460f128cbd7872349c8a679277efd8c485c",
+    "preserved": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54-a1bac460f128/provenance.json",
+    "sha256": "1a2df2072cc35a50cfd9321bb7ba514e18edf2d57916315e879681beda7c4164",
+    "source": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/provenance.json"
+  },
+  {
+    "bytes": 19371,
+    "parent": "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036",
+    "preserved": "tests/compat/history-controls/parent-rollout-8be4d4056fbc/goldens-rollout.jsonl",
+    "sha256": "b54cb2fa908103ff665b940e758bf0b7041d1ea2959b070dbaeeb785d24dcce5",
+    "source": "tests/compat/goldens-rollout.jsonl"
+  },
+  {
+    "bytes": 1575,
+    "parent": "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036",
+    "preserved": "tests/compat/history-controls/parent-rollout-8be4d4056fbc/capture-rollout.json",
+    "sha256": "bda9d8589d149010f9ced700133d811afa1c85beb61fd7712590b6d3c23bdb3e",
+    "source": "tests/compat/capture-rollout.json"
+  },
+  {
+    "bytes": 41492,
+    "parent": "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036",
+    "preserved": "tests/compat/history-controls/parent-rollout-8be4d4056fbc/historical-rollout.jsonl",
+    "sha256": "21747cd531def42bc9faef0384861e1195d24b8d62d2fc3f145a27df9c3bc401",
+    "source": "tests/compat/historical-rollout.jsonl"
+  },
+  {
+    "bytes": 1588,
+    "parent": "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036",
+    "preserved": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/capture-rollout.json",
+    "sha256": "8b728f4f20e12bde1fe597c6e86bf0fd5bed6beae89374be70a77aa071bc4b62",
+    "source": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/capture-rollout.json"
+  },
+  {
+    "bytes": 19371,
+    "parent": "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036",
+    "preserved": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/goldens-rollout.jsonl",
+    "sha256": "f1d6ce6052c13d5487310f1614592a9e00936d3613f8ca3205f5d667342d8983",
+    "source": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/goldens-rollout.jsonl"
+  },
+  {
+    "bytes": 864,
+    "parent": "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036",
+    "preserved": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/provenance.json",
+    "sha256": "c0efe9c379b78579261b784488dbb3a186c2146aa320ffc30a72243b1f37bf11",
+    "source": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/provenance.json"
+  }
+]

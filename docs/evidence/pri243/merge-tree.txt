@@ -1,0 +1,18 @@
+5d5624053940c30dc35a6c1515b2945cc80c0a77
+100644 cb0fd1a713d68c56ea7ff34a60b72073f095e51f 1	tests/compat/capture-rollout.json
+100644 72cc70f0f7cb56bbeef42dc05aeddb58ef02e0d5 2	tests/compat/capture-rollout.json
+100644 549a436ec4cda99777aef49ae17719c5f932800d 3	tests/compat/capture-rollout.json
+100644 9f954ad0ca1fcb22a121f992d2174702c6060d15 1	tests/compat/goldens-rollout.jsonl
+100644 f3a5a7c52e3a47420ef42583e277de9f81ecf3bd 2	tests/compat/goldens-rollout.jsonl
+100644 38993ab507308596f7da16303f3795b2c7907354 3	tests/compat/goldens-rollout.jsonl
+100644 bb65323abbdc6a98cf184f31dd2c7d2507f399a0 2	tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/provenance.json
+100644 d5299f13f938e113e03a7d7680b03dc073c2a1b7 3	tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/provenance.json
+
+Auto-merging docs/design.md
+Auto-merging tests/compat/capture-rollout.json
+CONFLICT (content): Merge conflict in tests/compat/capture-rollout.json
+Auto-merging tests/compat/goldens-rollout.jsonl
+CONFLICT (content): Merge conflict in tests/compat/goldens-rollout.jsonl
+Auto-merging tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/provenance.json
+CONFLICT (add/add): Merge conflict in tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/provenance.json
+Auto-merging tools/fleet/publish_runtime.py
