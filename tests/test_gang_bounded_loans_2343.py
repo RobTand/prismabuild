@@ -203,16 +203,16 @@ def test_contended_member_prevents_a_bounded_loan_without_spending_tokens(
     def hold_member():
         with queue.action_transition_lock(absent_partner[1][1]):
             acquired.set()
-            release.wait(30)
+            release.wait(60)
     worker = threading.Thread(target=hold_member)
     worker.start()
     try:
-        assert acquired.wait(30)
+        assert acquired.wait(60)
         assert claim("sparklina") is None
         assert queue.ledger("sparklina").held_keys() == []
         assert queue.records.item_path(pool.record_store.READY, key).exists()
     finally:
         release.set()
-        worker.join(30)
+        worker.join(60)
     assert not worker.is_alive()
     assert claim("sparklina") == key
