@@ -285,7 +285,6 @@ pbrun.configured_store = lambda: submit_core.FleetStore(Path(Path(private)), pbr
 pool.is_box_local_path = lambda _path: False
 socket.gethostname = lambda: 'sparky' if transport == 'pool' and intent == 'demand' else 'dl380g10'
 d38_gate.utc_now = lambda: datetime.datetime(2026, 10, 8, 16, 30, tzinfo=datetime.timezone.utc)
-assert d38_gate.INVOCATIONS == {}
 assert d38_gate.enforcement_enabled(store=pbrun.configured_store()) is False
 queue = pool.PoolQueue(Path(private) / 'pb-queue')
 queue.announce(host='sparky', tags=['sparky', 'gb10'], has_gpu=True,

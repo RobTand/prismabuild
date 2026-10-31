@@ -6,8 +6,8 @@ grant) and fails closed.  Everything here is a private fixture: a real sealed
 target, a real PrismaBuildCAS receipt published through ``publish_result``, a
 real PoolQueue, and a tmp decision store.  No GPU and no live queue.
 
-The producer that makes receipts (``--d38-plan``, ``--d38-preflight-for``) is a
-later change; these tests fabricate the preflight action it will declare.
+These consumer fixtures fabricate receipts; producer tests exercise the
+source-owned canary completion contract separately.
 """
 from __future__ import annotations
 from submission_support import patch_store
@@ -1074,15 +1074,15 @@ def test_a_receipt_for_an_entry_point_with_no_reviewed_descriptor_is_refused(
     assert _ready(tmp_path) == []
 
 
-def test_the_shipped_registry_is_empty() -> None:
+def test_the_shipped_registry_names_only_the_reviewed_canary() -> None:
     import subprocess
 
     shipped = subprocess.run(
         [sys.executable, "-c",
          "import sys; sys.path[:0] = ['src', 'tools/fleet'];"
-         "import pbrun; from prismabuild import d38_gate; print(len(d38_gate.INVOCATIONS))"],
+         "import pbrun; from prismabuild import d38_gate; print(*sorted(d38_gate.INVOCATIONS))"],
         cwd=REPOSITORY, capture_output=True, text=True)
-    assert shipped.stdout.strip() == "0", shipped.stderr
+    assert shipped.stdout.strip() == "script:/usr/bin/python3:tools/fleet/pbcanary_legs/leg2.py", shipped.stderr
 
 
 def test_a_decomposed_gpu_child_without_evidence_publishes_nothing(

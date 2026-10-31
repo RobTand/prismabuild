@@ -93,6 +93,30 @@ def test_a_falsey_decision_still_contributes_its_original_post_count_reason():
     assert prefix.decision is decision
 
 
+def test_unbounded_measurement_isolation_keeps_its_reason_and_holder_evidence():
+    verdict = {"eligible": True, "withhold": False, "mode": "exclusive",
+               "why": "holder_does_not_drain_soon", "holders": [{"action_key": "producer"}],
+               "drain_resolves": False}
+    prefix = policy.prepare_adaptive_refusal(
+        "adaptive_cpu_refused", {"reason": "measurement_holder", "isolated_by": "producer"},
+        verdict, order=policy.ScanOrder(), dependent_owner=None, room_taken=None)
+    assert prefix.verdict == dict(verdict, why="measurement_admits_only_its_dependents")
+    assert verdict["why"] == "holder_does_not_drain_soon"
+
+
+@pytest.mark.parametrize("eligible,why", [
+    (False, "holder_does_not_drain_soon"),
+    (True, "verdict_unreadable"),
+    (True, "foreign_load"),
+])
+def test_measurement_isolation_preserves_ineligible_and_unreadable_verdicts(eligible, why):
+    verdict = {"eligible": eligible, "withhold": False, "why": why, "error": "retained"}
+    prefix = policy.prepare_adaptive_refusal(
+        "adaptive_cpu_refused", {"reason": "measurement_holder", "isolated_by": "producer"},
+        verdict, order=policy.ScanOrder(), dependent_owner=None, room_taken=None)
+    assert prefix.verdict is verdict
+
+
 @pytest.mark.parametrize("eligible,withhold,reason", [
     (False, False, "reservation_unavailable"),
     (True, False, "reservation_unavailable_starved"),

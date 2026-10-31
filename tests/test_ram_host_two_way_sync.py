@@ -34,7 +34,7 @@ def _queue(tmp_path: Path) -> pool.PoolQueue:
     queue = FleetWorld(tmp_path, queue_name='queue').queue
     ledger = queue.ledger(HOST)
     ledger.ensure_capacity({"cpu": 80, "mem_gb": 256})
-    queue.tier(RAM_TIER).mint({'ram_gib': 300, storage_tiers.FILL_KIND: 4096})
+    queue.tier(RAM_TIER).mint({'ram_gib': 200, storage_tiers.FILL_KIND: 31})
     return queue
 
 

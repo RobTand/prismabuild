@@ -4,13 +4,42 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+import math
 import time
+
+
+@dataclass(frozen=True)
+class CpuLoad:
+    load1: float
+    preferred: int
+
+    @property
+    def headroom(self) -> float:
+        return self.preferred - self.load1
+
+
+def cpu_load(offer: Mapping, *, now: float, max_age_s: float) -> CpuLoad | None:
+    detail = offer.get("observed_detail")
+    tiers = offer.get("cpu_tiers")
+    if not isinstance(detail, Mapping) or not isinstance(tiers, Mapping):
+        return None
+    stamp, load = detail.get("observed_unix"), detail.get("load1")
+    preferred = tiers.get("preferred")
+    if (type(stamp) not in (int, float) or not math.isfinite(stamp) or stamp < 0
+            or not 0 <= now - stamp <= max_age_s
+            or type(load) not in (int, float) or not math.isfinite(load) or load < 0
+            or not isinstance(preferred, list) or not preferred
+            or any(type(cpu) is not int or cpu < 0 for cpu in preferred)
+            or len(set(preferred)) != len(preferred)):
+        return None
+    return CpuLoad(float(load), len(preferred))
 
 
 class TimedPreference(Enum):
     PREFERRED_CPU = "preferred_cpu"
     CROSS_RESOURCE = "cross_resource"
     IDLE_GPU_HOST = "idle_gpu_host"
+    CPU_LOAD = "cpu_load"
 
 
 class PlacementHistory:

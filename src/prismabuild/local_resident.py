@@ -11,7 +11,7 @@ import json
 import shutil
 import socket
 import uuid
-from . import posix_lock
+from . import posix_lock, filesystem_floor
 
 from . import core, local_tier, movement_actions, pool, reader_lease, resident_sets, residency_map
 
@@ -73,7 +73,6 @@ def hash_file(path):
 
 def copy_file(source, destination, entry):
     """Hash the bytes written, then fsync before any file is considered landed."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
     source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
     dest_fd = None
     try:
@@ -142,9 +141,11 @@ def sources(store, record, reader_context):
     try:
         if pinned:
             paths = {entry["key"]: entry["stage_path"] for entry in pinned["pin"]["entries"]}
-            yield {path: paths[residency_map.residency_map_key(path, 0)] for path in canonical}
+            selected = {path: paths[residency_map.residency_map_key(path, 0)] for path in canonical}
         else:
-            yield canonical
+            selected = canonical
+        filesystem_floor.enforce_paths(queue.root, selected.values(), label="resident copy sources")
+        yield selected
     finally:
         if pinned:
             released = reader_lease.release(queue, pinned["pin_id"], pinned["ref_id"],
@@ -162,7 +163,12 @@ def _paths(set_id, spec):
     return root, root / set_id, root / (set_id + ".partial"), root / (set_id + ".evicting")
 
 
-def _verify_tree(root, record):
+def _verify_tree(queue_root, root, record):
+    paths = []
+    for entry in record["manifest"]["entries"]:
+        leaf = root / Path(entry["path"]).relative_to(record["canonical_root"])
+        paths.extend((leaf.parent, leaf))
+    filesystem_floor.enforce_paths(queue_root, paths, label="resident tree files")
     expected = {str(Path(entry["path"]).relative_to(record["canonical_root"])): entry["bytes"]
                 for entry in record["manifest"]["entries"]}
     if resident_sets.directory_files(root) != expected:
@@ -195,9 +201,11 @@ def copy(store, set_id, host, spec, *, reader_context=None, now=None):
             raise ValueError("resident lease expired")
         local_tier.reserve(queue, set_id, [host], record["manifest"]["total_bytes"])
         if final.exists():
-            verification = _verify_tree(final, record)
+            filesystem_floor.enforce_paths(queue.root, [root, final], label="resident copy reuse")
+            verification = _verify_tree(queue.root, final, record)
         else:
             partial.mkdir(exist_ok=True)
+            filesystem_floor.enforce_paths(queue.root, [root, partial], label="resident copy destination")
             if partial.is_symlink():
                 raise ValueError("unsafe partial tree")
             # A resumed tree must not smuggle extra files into the final directory.
@@ -215,6 +223,9 @@ def copy(store, set_id, host, spec, *, reader_context=None, now=None):
                 for entry in record["manifest"]["entries"]:
                     relative = Path(entry["path"]).relative_to(record["canonical_root"])
                     destination = partial / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    filesystem_floor.enforce_paths(queue.root, [destination.parent, destination],
+                                                   label="resident copy file")
                     if destination.exists():
                         size, digest = hash_file(destination)
                         reusable = size == entry["bytes"] and digest == entry["sha256"]
@@ -517,6 +528,8 @@ def adopt_resident_copy(store, set_id, host, spec, source, *, now=None):
     record = store.read(set_id)
     root, final, partial, evicting = _paths(set_id, spec)
     source = Path(source).absolute()
+    filesystem_floor.enforce_paths(store.queue_root,
+        [root, final if final.exists() else root, source], label="resident adoption")
     if source == Path(record["canonical_root"]) or Path(record["canonical_root"]).is_relative_to(source):
         raise ValueError("adoption must not move the authoritative canonical directory")
     if root.is_relative_to(source) or source.is_relative_to(root):
@@ -531,12 +544,12 @@ def adopt_resident_copy(store, set_id, host, spec, source, *, now=None):
         if final.exists():
             if source.exists():
                 raise ValueError("adoption destination already exists")
-            verification = _verify_tree(final, record)
+            verification = _verify_tree(store.queue_root, final, record)
         else:
             if not same_filesystem(source, root):
                 raise ValueError("adoption requires the same filesystem")
             require_adoption_unmounted(record, source)
-            verification = _verify_tree(source, record)
+            verification = _verify_tree(store.queue_root, source, record)
             for entry in record["manifest"]["entries"]:
                 file = source / Path(entry["path"]).relative_to(record["canonical_root"])
                 with file.open("rb") as stream:

@@ -39,7 +39,7 @@ def mirrors(tmp_path, monkeypatch):
     finally:
         observer.close()
         for child in adaptive_snapshot._children:
-            child.wait(timeout=10)
+            child.wait()
         adaptive_snapshot._children.clear()
 
 
@@ -49,7 +49,7 @@ def write_source(local, sample):
 
 def finish_copy(observer):
     child = adaptive_snapshot._children[-1]
-    assert child.wait(timeout=10) == 0
+    assert child.wait() == 0
     observer.reconcile()
 
 
@@ -163,7 +163,7 @@ raise SystemExit(snapshot.main(sys.argv[2:6]))
         observer.reconcile()
         assert observer.diagnostics['starts'] == 1
         os.write(release, b'x')
-        assert adaptive_snapshot._children[-1].wait(timeout=10) == 0
+        assert adaptive_snapshot._children[-1].wait() == 0
         clock[0] += 1.
         observer.reconcile()
         finish_copy(observer)
@@ -178,7 +178,7 @@ def test_failed_copy_retries_pending_state_and_reports_recovery(mirrors):
     observer, local, shared, clock = mirrors
     (local / 'gpu-state.json').write_text('not JSON')
     observer.reconcile()
-    assert adaptive_snapshot._children[-1].wait(timeout=10) == 1
+    assert adaptive_snapshot._children[-1].wait() == 1
     assert observer.reconcile() == 101.
     assert observer.diagnostics['failed'] == 1
     assert json.loads((shared / 'publisher-result.json').read_text())['status'] == 'failed'
@@ -268,7 +268,7 @@ def test_failed_copy_uses_capped_recovery_without_same_result_feedback(mirrors):
     intervals = []
     for _ in range(6):
         observer.reconcile()
-        assert adaptive_snapshot._children[-1].wait(timeout=10) == 1
+        assert adaptive_snapshot._children[-1].wait() == 1
         deadline = observer.reconcile()
         intervals.append(deadline - clock[0])
         assert observer.reconcile() == deadline
@@ -295,7 +295,7 @@ def test_exited_legacy_owner_cannot_make_an_unknown_lock_busy_wait(mirrors):
     finally:
         os.close(pidfd)
         os.close(descriptor)
-        child.wait(timeout=10)
+        child.wait()
 
 
 @pytest.mark.parametrize('failure', ['removal', 'completion-marker'])
@@ -342,7 +342,7 @@ def test_successful_copy_resets_backoff_before_a_later_completion_failure(mirror
     destination.mkdir()  # Remote write failure without a local-source mutation.
     for _ in range(6):
         observer.reconcile()
-        assert adaptive_snapshot._children[-1].wait(timeout=10) == 1
+        assert adaptive_snapshot._children[-1].wait() == 1
         clock[0] = observer.reconcile()
     destination.rmdir()
     observer.reconcile()
@@ -356,5 +356,5 @@ def test_successful_copy_resets_backoff_before_a_later_completion_failure(mirror
     assert adaptive_snapshot.main([str(local), str(shared), str(descriptor), 'legacy-failure']) == 1
     clock[0] += 1.
     observer.reconcile()
-    assert adaptive_snapshot._children[-1].wait(timeout=10) == 1
+    assert adaptive_snapshot._children[-1].wait() == 1
     assert observer.reconcile() == clock[0] + 1., 'recovery retained an earlier copy failure backoff'

@@ -2,11 +2,24 @@
   "schema": "prismabuild.pbtest_capabilities.v1",
   "capabilities": {
     "archival-replay": {
-      "tags": ["x86"],
+      "tags": [
+        "x86"
+      ],
       "dependencies": [
         {
           "path": "/home/rob/venvs/pb-cpu/bin/python3.14",
           "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        }
+      ]
+    },
+    "mergeq-gh-cli": {
+      "tags": [
+        "x86"
+      ],
+      "dependencies": [
+        {
+          "path": "/usr/bin/gh",
+          "sha256": "b6d8368292fabbbc739eb366f006edf1c2f06ba3919051743e8d610beab72ca6"
         }
       ]
     }
