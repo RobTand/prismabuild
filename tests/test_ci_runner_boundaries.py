@@ -170,3 +170,28 @@ def test_installer_is_separate_idempotent_and_uses_systemd_affinity(host, name, 
     assert not any('tl3-' in ' '.join(c) for c in commands)
     enabled = [c[-1] for c in commands if c[0] == 'systemctl' and 'enable' in c]
     assert enabled == [f'pb-ci-runner@{i}.service' for i in (1, 2, 1, 2)]
+
+
+def test_ssh_broker_accepts_only_pb_gate_registration(host):
+    import shlex
+    args = ['gh', 'api', '--method', 'POST',
+            'repos/RobTand/prismabuild/actions/runners/generate-jitconfig',
+            '-f', 'name=pb-sparklina-slot-1-12345678-1234-1234-1234-123456789abc',
+            '-F', 'runner_group_id=1', '-f', 'work_folder=_work',
+            *[a for label in ('self-hosted', 'linux', 'arm64', 'pb-fleet', 'pb-gate')
+              for a in ('-f', f'labels[]={label}')], '--jq', '.encoded_jit_config']
+    host[1]['SSH_ORIGINAL_COMMAND'] = shlex.join(args)
+    broker = RUNNERS / 'jit-broker.py'
+    result = subprocess.run([sys.executable, '-I', str(broker)], env=host[1],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == JIT + '\n'
+    assert calls(host) == [args]
+    (host[0] / 'calls.jsonl').unlink()
+    for command in ('sh', shlex.join(args).replace('prismabuild/', 'another-repo/'),
+                    shlex.join(args) + '; cat private-file'):
+        host[1]['SSH_ORIGINAL_COMMAND'] = command
+        result = subprocess.run([sys.executable, '-I', str(broker)], env=host[1],
+                                capture_output=True, text=True, timeout=30)
+        assert result.returncode != 0
+        assert not calls(host)
