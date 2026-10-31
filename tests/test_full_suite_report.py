@@ -69,23 +69,8 @@ def test_quarantine_file_and_node_markers_suppress_only_matching_tests():
     assert report.classify(now, {}, {'tests/a.py'})['new'] == ['tests/b.py::test_x']
 
 
-def test_previous_run_is_completed_older_main_run_and_never_current():
-    runs = [{'id': 7, 'run_number': 7, 'head_branch': 'main', 'status': 'completed'},
-            {'id': 6, 'run_number': 6, 'head_branch': 'feature', 'status': 'completed'},
-            {'id': 5, 'run_number': 5, 'head_branch': 'main', 'status': 'in_progress'},
-            {'id': 4, 'run_number': 4, 'head_branch': 'main', 'status': 'completed'}]
-    assert report.previous_run(runs, 7, 7)['id'] == 4
 
 
-def test_missing_shards_are_infrastructure_not_mass_recovery(tmp_path):
-    import json
-    (tmp_path / 'one').mkdir()
-    (tmp_path / 'one/result.json').write_text(json.dumps({
-        'shard': 0, 'verdict': True, 'tests': {'x': row('passed')}, 'wall_seconds': 2}))
-    result = report.collect_results(tmp_path, 2)
-    assert result['complete'] is False
-    assert result['missing_shards'] == [1]
-    assert result['tests']['x']['outcome'] == 'passed'
 
 
 class IssueStore:
@@ -147,16 +132,6 @@ def test_rerun_after_filing_before_upload_reuses_owner():
     assert len(api.comments[1]) == 1
 
 
-def test_prior_incomplete_run_falls_back_to_complete_history():
-    class History:
-        def pages(self, path, field):
-            if 'workflows/' in path:
-                return [{'id': n, 'run_number': n, 'head_branch': 'main', 'status': 'completed'}
-                        for n in (3, 2)]
-            return [{'id': int(path.split('/')[2]), 'name': 'full-suite-results', 'expired': False}]
-        def artifact(self, artifact_id):
-            return {'complete': artifact_id == 2, 'sha': f'sha{artifact_id}', 'tests': {}}
-    assert report.load_history(History(), 4, 4)['sha'] == 'sha2'
 
 
 def test_quarantine_reads_gate_records(tmp_path):
@@ -176,16 +151,6 @@ def test_summary_reuses_owners_but_still_files_unowned_failures():
     assert report.owners(api.issues)['x'] == 1
 
 
-def test_retry_result_replaces_unverdictable_partial_results(tmp_path):
-    import json
-    for attempt, verdict, outcome in ((1, False, 'passed'), (2, True, 'failed')):
-        directory = tmp_path / f'attempt-{attempt}'
-        directory.mkdir()
-        (directory / 'result.json').write_text(json.dumps({'shard': 0, 'verdict': verdict,
-            'tests': {'x': row(outcome)}, 'wall_seconds': 2}))
-    result = report.collect_results(tmp_path, 1)
-    assert result['complete'] is True
-    assert result['tests']['x']['outcome'] == 'failed'
 
 
 def test_last_passing_sha_survives_a_skipped_baseline():
@@ -194,48 +159,8 @@ def test_last_passing_sha_survives_a_skipped_baseline():
     assert 'last-good...bad' in plan[0]['body']
 
 
-def test_workflow_keeps_suite_off_gate_and_privileges_in_report():
-    import yaml
-    workflow = yaml.safe_load((ROOT / '.github/workflows/full-suite.yml').read_text())
-    triggers = workflow.get('on', workflow.get(True))
-    assert set(triggers) == {'push', 'schedule', 'workflow_dispatch'}
-    assert triggers['push'] == {'branches': ['main']}
-    assert triggers['schedule'] == [{'cron': '23 2 * * *'}]
-    assert workflow['concurrency'] == {'group': 'full-suite-main', 'cancel-in-progress': False}
-    for name in ('shards', 'retry'):
-        job = workflow['jobs'][name]
-        assert job['runs-on'] == ['self-hosted', 'pb-fleet', 'pb-suite']
-        assert job['strategy']['matrix']['shard'] == [0, 1, 2, 3]
-    report_job = workflow['jobs']['report']
-    assert report_job['runs-on'] == 'ubuntu-latest'
-    assert report_job['permissions']['issues'] == 'write'
-    assert report_job['if'] == 'always()'
-    assert set(report_job['needs']) >= {'shards', 'retry'}
-    assert 'issues' not in workflow['permissions']
 
 
-def test_artifact_redirect_drops_authorization_before_downloading(monkeypatch):
-    import io
-    import json
-    import urllib.error
-    import zipfile
-    archive = io.BytesIO()
-    with zipfile.ZipFile(archive, 'w') as zipped:
-        zipped.writestr('results.json', json.dumps({'complete': True, 'sha': 'old', 'tests': {}}))
-    downloads = []
-    class Opener:
-        def open(self, request, timeout):
-            assert request.get_header('Authorization') == 'Bearer unit-test-secret'
-            raise urllib.error.HTTPError(request.full_url, 302, 'redirect',
-                {'Location': 'https://artifact.example/signed'}, None)
-    def download(request, timeout):
-        downloads.append(request)
-        return io.BytesIO(archive.getvalue())
-    monkeypatch.setattr(report.urllib.request, 'build_opener', lambda *args: Opener())
-    monkeypatch.setattr(report.urllib.request, 'urlopen', download)
-    result = report.GitHub('RobTand/prismabuild', 'unit-test-secret').artifact(42)
-    assert result == {'complete': True, 'sha': 'old', 'tests': {}}
-    assert downloads == ['https://artifact.example/signed']
 
 
 def test_rest_payload_scrubs_runtime_token(monkeypatch):
@@ -252,20 +177,85 @@ def test_rest_payload_scrubs_runtime_token(monkeypatch):
     assert payloads == [{'body': 'failure contained [REDACTED]'}]
 
 
-def test_main_dry_run_cannot_hide_an_unreported_failure_in_next_baseline():
-    class History:
-        def pages(self, path, field):
-            if 'workflows/' in path:
-                return [{'id': n, 'run_number': n, 'head_branch': 'main', 'status': 'completed'}
-                        for n in (3, 2)]
-            return [{'id': int(path.split('/')[2]), 'name': 'full-suite-results', 'expired': False}]
-        def artifact(self, artifact_id):
-            return {'complete': True, 'dry_run': artifact_id == 3,
-                    'sha': f'sha{artifact_id}', 'tests': {}}
-    assert report.load_history(History(), 4, 4)['sha'] == 'sha2'
 
 
 def test_pull_request_cannot_own_a_test_failure():
     issue = {'number': 8, 'body': '<!-- full-suite: tests/a.py::test_x -->',
              'labels': [{'name': 'full-suite'}], 'pull_request': {'url': 'example'}}
     assert report.owners([issue]) == {}
+
+
+def test_plain_junit_uses_file_and_class_to_keep_reproducible_pytest_ids():
+    xml = '''<testsuites><testsuite tests="3" failures="1" skipped="1">
+      <testcase file="tests/test_a.py" classname="tests.test_a.TestA" name="test_x[a.b]" time="1.25">
+        <failure message="wrong">assert 1 == 2</failure>
+      </testcase><testcase file="tests/test_a.py" classname="tests.test_a" name="test_ok" time="0.5"/>
+      <testcase file="tests/test_a.py" classname="tests.test_a" name="test_skip"><skipped/></testcase>
+    </testsuite></testsuites>'''
+    rows = report.parse_junit(xml)
+    assert rows['tests/test_a.py::TestA::test_x[a.b]'] == {
+        'outcome': 'failed', 'duration': 1.25, 'failure': 'assert 1 == 2'}
+    assert rows['tests/test_a.py::test_ok']['outcome'] == 'passed'
+    assert rows['tests/test_a.py::test_skip']['outcome'] == 'skipped'
+
+
+def test_exact_nodeid_property_takes_precedence_over_lossy_junit_classname():
+    xml = '''<testsuite><testcase classname="ambiguous.class" name="test_x[a.b]" time="2">
+      <properties><property name="nodeid" value="tests/a.b.py::custom_class::test_x[a.b]"/></properties>
+      <error>setup failed</error></testcase></testsuite>'''
+    assert report.parse_junit(xml)['tests/a.b.py::custom_class::test_x[a.b]']['outcome'] == 'failed'
+
+
+def test_ambiguous_junit_missing_file_and_exact_id_refuses():
+    import pytest
+    with pytest.raises(ValueError, match='junit_family=legacy'):
+        report.parse_junit('<testsuite><testcase classname="a.C" name="test_x"/></testsuite>')
+
+
+def test_directory_collects_nested_junit_files_once_and_rejects_duplicate_nodes(tmp_path):
+    import pytest
+    (tmp_path / 'first').mkdir()
+    (tmp_path / 'second').mkdir()
+    xml = '<testsuite><testcase file="tests/a.py" classname="tests.a" name="test_x"/></testsuite>'
+    (tmp_path / 'first/junit.xml').write_text(xml)
+    result = report.read_results(tmp_path)
+    assert list(result) == ['tests/a.py::test_x']
+    (tmp_path / 'second/junit.xml').write_text(xml)
+    with pytest.raises(ValueError, match='multiple'):
+        report.read_results(tmp_path)
+
+
+def test_dry_run_baseline_is_refused_instead_of_hiding_unreported_failures():
+    import pytest
+    with pytest.raises(ValueError, match='reported'):
+        report.build_report({'x': row('failed')}, {'complete': True, 'dry_run': True, 'sha': 'old',
+            'tests': {'x': row('failed')}}, set(), [], 'new', [], 'run')
+
+
+def test_incomplete_input_does_not_file_or_claim_recovery():
+    result = report.build_report({'x': row('passed')},
+        {'complete': True, 'sha': 'old', 'tests': {'x': row('failed')}}, set(),
+        [{'number': 1, 'labels': [{'name': 'full-suite'}], 'body': '<!-- full-suite: x -->'}],
+        'new', [], 'run', complete=False)
+    assert result['complete'] is False
+    assert result['plans'] == []
+    assert result['classification']['recovered'] == []
+
+
+def test_cli_dry_run_needs_no_ci_environment_or_token(tmp_path, monkeypatch):
+    import json
+    inputs = tmp_path / 'junit'
+    inputs.mkdir()
+    (inputs / 'junit.xml').write_text('''<testsuite><testcase file="tests/a.py" classname="tests.a"
+        name="test_x"><failure>new failure</failure></testcase></testsuite>''')
+    previous = tmp_path / 'previous.json'
+    previous.write_text(json.dumps({'complete': True, 'sha': 'old', 'tests': {}}))
+    output = tmp_path / 'results.json'
+    for name in ('GITHUB_TOKEN', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_REPOSITORY'):
+        monkeypatch.delenv(name, raising=False)
+    assert report.main(['--input', str(inputs), '--previous', str(previous), '--output', str(output),
+        '--sha', 'new', '--run-url', 'https://circleci.example/run', '--dry-run']) == 1
+    result = json.loads(output.read_text())
+    assert result['classification']['new'] == ['tests/a.py::test_x']
+    assert result['filed'] == []
+    assert result['plans'][0]['title'] == '[P2] Full suite: tests/a.py::test_x fails on main'
