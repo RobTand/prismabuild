@@ -1097,6 +1097,56 @@ def test_movers_sharing_a_pool_at_their_fill_share_are_not_killed(
         assert outcome["progress_observation"]["pool_contention_exempt_s"] == 0.0
 
 
+def test_the_fill_share_case_requires_all_native_copy_gates_before_advancing(
+        tmp_path: Path, monkeypatch) -> None:
+    """Hold later launches until the first control waits or advances."""
+    import threading
+
+    controls = []
+    let_others_start = threading.Event()
+    first_tick = threading.Lock()
+    inspected = []
+    native_control = ControlledAction
+    native_barrier_wait = threading.Barrier.wait
+
+    class OrderedStarts(native_control):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.index = len(controls)
+            controls.append(self)
+
+        def launch(self, native, argv, **kwargs):
+            if self.index:
+                assert let_others_start.wait(60), "first control never waited or advanced"
+            return super().launch(native, argv, **kwargs)
+
+        def communicate(self, timeout):
+            with first_tick:
+                if not inspected:
+                    active = sum(control.ready.is_set()
+                                 and control.process.poll() is None
+                                 for control in controls)
+                    inspected.append(active)
+                    let_others_start.set()
+                    assert active == 3, (
+                        f"logical time advanced with only {active} native movers at copy gates")
+            return super().communicate(timeout)
+
+    def announce_barrier_wait(barrier, *args, **kwargs):
+        if controls and controls[0].ready.is_set():
+            let_others_start.set()
+        return native_barrier_wait(barrier, *args, **kwargs)
+
+    monkeypatch.setitem(globals(), "ControlledAction", OrderedStarts)
+    monkeypatch.setattr(threading.Barrier, "wait", announce_barrier_wait)
+    try:
+        test_movers_sharing_a_pool_at_their_fill_share_are_not_killed(
+            tmp_path, monkeypatch)
+        assert inspected == [3]
+    finally:
+        let_others_start.set()
+
+
 # ------------------------------------------------------ the reporter itself
 
 
