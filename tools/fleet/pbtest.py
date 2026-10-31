@@ -1651,8 +1651,8 @@ def main() -> int:
                          "(repeatable); duplicate and pbtest-owned keys are refused")
     ap.add_argument("--basetemp", default=None,
                     help="sealed scratch root for pytest's own temporary files "
-                         "(default: a private directory in the attempt checkout), "
-                         "(#1469), separate from --tmpdir: the worker derives "
+                         "(default: a private directory in the attempt checkout). "
+                         "An explicit root is separate from --tmpdir: the worker derives "
                          "<root>/<action-key>/<attempt>/pytest and hands that "
                          "to pytest --basetemp, never the sealed root itself "
                          "(pytest deletes its basetemp). Absolute roots may "

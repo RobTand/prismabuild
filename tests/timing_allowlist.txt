@@ -300,7 +300,6 @@ tests/test_pbstatus_deadline.py::blocked_queue_root.never sleep 1 #2035
 tests/test_pbstatus_deadline.py::test_an_abandoned_child_owns_no_inherited_descriptor sleep 1 #2035
 tests/test_pbstatus_nfs_readahead.py::test_blocked_helper_load_does_not_hold_the_census.blocked_load sleep 1 #2035
 tests/test_pbstatus_pool.py::live_pool wait 1 #2035
-tests/test_pbtest_attempt_temp_expiry.py::_background sleep 1 #2035
 tests/test_pbtest_bounds_resident_clients_1348.py::run_suite.Client.wait sleep 1 #2035
 tests/test_pbtest_identifies_its_checkout_once.py::_checkout run 1 #2035
 tests/test_pbtest_publishes_its_own_shards.py::test_a_checkout_that_moves_after_publication_fails_the_run_by_name.submit_action run 1 #2035

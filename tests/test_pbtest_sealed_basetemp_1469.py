@@ -220,14 +220,14 @@ def test_basetemp_identity_moves_with_the_sealed_root(
     assert program_for("/scratch-a") == program_for("/scratch-a")
 
 
-def test_tmpdir_option_gains_no_basetemp(tmp_path: Path, monkeypatch) -> None:
+def test_tmpdir_keeps_compiler_scratch_separate_from_default(tmp_path: Path, monkeypatch) -> None:
     """--tmpdir keeps its single meaning: the process TMPDIR, and no more."""
 
     worker_path = "/worker scratch/$(literal);[directory]"
     command = _dispatch(tmp_path, monkeypatch, ["--tmpdir", worker_path])
     program = command[command.index("-c") + 1]
     assert shard_environment(command)["TMPDIR"] == worker_path
-    # No sealed root: the attempt default derives under TMPDIR, and the
+    # No explicit root: the attempt default derives inside the checkout. The
     # sealed root's own refusal string stays out of the program.
     assert "_pb_run_and_clean_attempt_base" in program
     assert "pbtest: cannot use requested --basetemp:" not in program
