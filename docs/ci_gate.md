@@ -158,7 +158,9 @@ previously deferred customization controls also return to the gate. This is
 hosted-VM setup, not a change to the test owners or their attestation checks.
 The selection agent's admitted PB actions instead refused `/proc` mounting with
 exit 78. That worker environment difference does not exclude passing hosted
-tests. Earlier namespace qualification work remains recorded in #2447.
+tests. Run 41247912349 also passed five fresh 32-case repeats per architecture,
+including both complete compatibility files and all eight interpreter controls.
+Earlier namespace qualification work remains recorded in #2447.
 The three flaky bundle-cache cases under #2435 exhaust their file's collection,
 so the quarantine names that complete file.
 
@@ -300,3 +302,48 @@ the required inputs and verified CAS receipts.
 | `tests/test_withdraw_end_to_end.py` | fleet_broker | Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake. | #2442 | PrismaBuild lane with the recorded capability |
 | `tests/test_worker_disk_metadata_admission.py` | two CPU | Authoritative verify.py lane reserves two CPUs for controls that consume the assigned CPU pair. | verify.py | PrismaBuild integration two-CPU lane |
 | `tests/test_write_only_produced_output.py` | fleet_broker | Only 2 named controls are deferred; portable cases remain in the gate. Broker scope fixture cannot conclude cleanup on a hosted worker without the PB broker; scope and fixture qualification is tracked separately, not as a flake. | #2442 | PrismaBuild lane with the recorded capability |
+
+## Replay at the qualified population
+
+The retained REST capture covers the latest 150 merged PRs as of 2026-10-31
+19:28Z. Replaying it against the restored 1,245-file population selects p50
+206 and p90 1,040 files; 52 PRs select more than 300 files and 36 more than
+600. Twelve files lack inventory costs. Native cost estimates remain unknown
+for selections containing them. Explicit p90 imputation at 7.11 seconds per
+unknown file gives five-worker wall estimates of p50 181.990 seconds and p90
+722.875 seconds, excluding setup and pickup. The full population has
+3,832.80 known summed-median seconds; imputation gives 3,918.12 seconds and
+783.625 seconds at five workers. These are PB inventory scheduling estimates,
+not measurements of hosted CI wall time.
+
+For the 26 captured PRs touching pool.py, base/head AST diffs found 1–49 changed
+functions or methods per PR, p50 7 and p90 33, versus the original 714-file
+module selection. This measures the potential of a follow-up; function-level
+selection is not implemented. Source identities, per-PR counts, action keys
+and verified receipt digests are in `tools/ci/gate_evidence.json`.
+
+The path survey below counts occurrences and files. Categories overlap and
+include generated and temporary paths. They measure idiom prevalence, not
+selection accuracy.
+
+| Idiom | Occurrences | Files |
+| --- | ---: | ---: |
+| `SourceFileLoader` | 10 | 7 |
+| `glob` | 385 | 168 |
+| `interpolated_string` | 4440 | 855 |
+| `joinpath` | 26 | 13 |
+| `open` | 334 | 161 |
+| `os.path.abspath` | 5 | 4 |
+| `os.path.dirname` | 6 | 4 |
+| `os.path.join` | 9 | 5 |
+| `os.path.realpath` | 11 | 6 |
+| `path_constructor` | 3166 | 1097 |
+| `posixpath.join` | 1 | 1 |
+| `read_bytes` | 1940 | 474 |
+| `read_text` | 1754 | 604 |
+| `rglob` | 185 | 100 |
+| `run_path` | 106 | 48 |
+| `slash_join` | 20185 | 1307 |
+| `spec_from_file_location` | 132 | 123 |
+| `with_name` | 199 | 105 |
+| `with_suffix` | 49 | 33 |

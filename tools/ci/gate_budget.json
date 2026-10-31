@@ -25,15 +25,18 @@
       41244414908,
       41245236880,
       41245684824,
-      41246084806
+      41246084806,
+      41246932853,
+      41247411735,
+      41247912349
     ],
     "measurements": {
       "tests/test_a_stalled_mover_ends_no_progress.py::test_a_slow_copy_on_a_pool_over_its_caps_is_not_a_stall": {
-        "max_hosted_seconds": 32.419,
+        "max_hosted_seconds": 32.43,
         "seconds": 65,
-        "run": 41244414908,
+        "run": 41246932853,
         "artifact": "gate-result-1-a1-1",
-        "artifact_sha256": "20e42f0bc4dfaa3409c61fc764583ab9c23e6d86a7cca72fbd3fab76dfbf0bbd"
+        "artifact_sha256": "77a7126bc68eef009966466b4ffddafbf4ef4d97b6ac847299c6455167040be5"
       },
       "tests/test_a_terminal_receipt_retires_behind_a_covered_fold.py::test_a_batch_retirement_replaces_the_checkpoint_once": {
         "max_hosted_seconds": 48.721,
