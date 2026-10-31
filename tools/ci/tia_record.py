@@ -160,7 +160,7 @@ def pytest_fixture_setup(fixturedef, request):
     try:
         return (yield)
     finally:
-        _STATE.fixture_calls.remove(calls)
+        _STATE.fixture_calls.pop()
         fixturedef._pb_tia_calls = calls
 
 

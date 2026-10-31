@@ -21,9 +21,15 @@ def select(mapping: dict, diff: dict, *, file_hashes: dict, fast: list[str],
            changed_tests: list[str], population: list[str], static) -> dict:
     eligible = set(population)
     reasons: dict[str, set[str]] = {}
-    def pick(path, why):
+    nodes: dict[str, set[str]] = {}
+    whole = set()
+    def pick(path, why, node=None):
         if path in eligible:
             reasons.setdefault(path, set()).add(why)
+            if node is None:
+                whole.add(path)
+            else:
+                nodes.setdefault(path, set()).add(node)
     for path in fast:
         pick(path, 'fast tier')
     for path in changed_tests:
@@ -33,7 +39,7 @@ def select(mapping: dict, diff: dict, *, file_hashes: dict, fast: list[str],
     reverse: dict[str, set[str]] = {}
     for node, ids in mapping['tests'].items():
         for index in ids:
-            reverse.setdefault(functions[index], set()).add(node.split('::', 1)[0])
+            reverse.setdefault(functions[index], set()).add(node)
     fallbacks = {}
     for path, changes in sorted(diff['python'].items()):
         if path.startswith('tests/'):
@@ -49,7 +55,7 @@ def select(mapping: dict, diff: dict, *, file_hashes: dict, fast: list[str],
         for function, tests in reverse.items():
             if function.startswith(path + '::') and (changes['module_changed'] or function.split('::', 1)[1] in names):
                 for test in tests:
-                    pick(test, ('module change: ' + path) if changes['module_changed'] else 'function: ' + function)
+                    pick(test.split('::', 1)[0], ('module change: ' + path) if changes['module_changed'] else 'function: ' + function, test)
     for path in diff['non_python']:
         fallbacks[path] = 'non-Python path rule'
     # Infrastructure and configuration always retain the gate's whole-population triggers.
@@ -66,9 +72,12 @@ def select(mapping: dict, diff: dict, *, file_hashes: dict, fast: list[str],
         for function, tests in reverse.items():
             if function.startswith(path + '::'):
                 for test in tests:
-                    pick(test, f'{reason}: {path}; observed module')
+                    pick(test.split('::', 1)[0], f'{reason}: {path}; observed module')
     return {'schema': 'prismabuild.tia_plan.v1', 'map_commit': mapping['source_commit'],
-            'selected': [{'path': path, 'reasons': sorted(why)} for path, why in sorted(reasons.items())],
+            'selected': [{'path': path, 'reasons': sorted(why),
+                          'nodeids': None if path in whole else sorted(nodes[path])}
+                         for path, why in sorted(reasons.items())],
+            'targets': sorted(target for path in reasons for target in ([path] if path in whole else nodes[path])),
             'fallbacks': [{'path': path, 'reason': reason} for path, reason in sorted(fallbacks.items())]}
 
 
@@ -92,8 +101,9 @@ def plan(root: Path, gate_dir: Path, mapping: dict, diff: dict) -> dict:
     recorded = {node.split('::', 1)[0] for node in mapping['tests']}
     selected = {row['path']: row for row in result['selected']}
     for path in sorted(set(population) - recorded):
-        selected.setdefault(path, {'path': path, 'reasons': ['test file absent from map']})
+        selected.setdefault(path, {'path': path, 'reasons': ['test file absent from map'], 'nodeids': None})
     result['selected'] = [selected[path] for path in sorted(selected)]
+    result['targets'] = sorted(target for row in result['selected'] for target in ([row['path']] if row['nodeids'] is None else row['nodeids']))
     result.update(estimate=gate.estimate(sorted(selected), durations), population=full['population'],
                   deferred=full['deferred'], deselect=full['deselect'])
     return result

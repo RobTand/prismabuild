@@ -157,7 +157,9 @@ def campaign(root: Path, gate_dir: Path, mapping: dict, map_path: Path, output: 
         remap = {old: new for new, old in enumerate(ids)}
         tests = {}
         for node, values in mapping['tests'].items():
-            tests.setdefault(node.split('::', 1)[0] + '::recorded', set()).update(remap[i] for i in values if i in remap)
+            relevant = {remap[i] for i in values if i in remap}
+            key = node if relevant else node.split('::', 1)[0] + '::recorded'
+            tests.setdefault(key, set()).update(relevant)
         subset = dict(mapping, functions=[mapping['functions'][i] for i in ids],
                       tests={node: sorted(values) for node, values in tests.items()},
                       files={mutation['path']: mapping['files'][mutation['path']]})
@@ -165,7 +167,7 @@ def campaign(root: Path, gate_dir: Path, mapping: dict, map_path: Path, output: 
         rows.append({'cwd': str(root), 'argv': ['/home/rob/venvs/pb-cpu/bin/python',
                      'tools/ci/tia_evaluate.py', 'mutation', '--mutation', json.dumps(mutation),
                      '--gate-dir', str(gate_dir.relative_to(root))],
-                     'demand': {'cpu': 1, 'mem_gb': 4}, 'priority': -10, 'timeout_s': 900,
+                     'demand': {'cpu': 1, 'mem_gb': 4}, 'priority': -10, 'anywhere': True, 'timeout_s': 900,
                      'env': {'OMP_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1',
                              'PB_TIA_MAP': packed_map, 'PB_TIA_MUTATION': str(number)}})
     output.write_text(json.dumps(rows, sort_keys=True, indent=2) + '\n')
@@ -226,7 +228,7 @@ def run_mutation(root: Path, gate_dir: Path, mutation: dict) -> dict:
             # Avoid reading a same-size, same-second bytecode cache after mutating a comparison.
             for cache in (root / path).parent.glob('__pycache__/' + Path(path).stem + '.*.pyc'):
                 cache.unlink()
-            tia = pytest_run(root, tia_files, static['deselect'], directory, 'tia')
+            tia = pytest_run(root, selected['targets'], static['deselect'], directory, 'tia')
             full = pytest_run(root, static_files, static['deselect'], directory, 'static')
         finally:
             (root / path).write_bytes(original)
