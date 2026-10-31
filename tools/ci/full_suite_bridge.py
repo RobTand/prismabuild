@@ -18,7 +18,7 @@ import zipfile
 _spec = importlib.util.spec_from_file_location('full_suite_report', Path(__file__).with_name('full_suite_report.py'))
 report = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(report)
-JOB = 'full-suite-report-inputs'
+JOB = 'full-suite-report'
 MAX_DOWNLOAD = 64 * 1024 * 1024
 
 

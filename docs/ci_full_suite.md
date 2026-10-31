@@ -1,10 +1,16 @@
 # Full-suite failure reporting
 
-CircleCI owns PB's CI. The full suite will run after pushes to `main` and on a
-schedule, using CircleCI's timing-based test splitting and `store_test_results`.
-Mergify remains the merge queue. The CircleCI resource classes and config are
-pending the platform agent's example in #2428. This change installs no runners
-and contains no test-execution workflow.
+CircleCI owns PB's CI. The full suite will run nightly on `main`, using
+CircleCI's timing-based test splitting and `store_test_results`. The queue gate
+already runs the eligible population on each batch's integrated SHA. Mergify
+remains the merge queue. The gate agent owns `.circleci/config.yml`; the nightly
+workflow will be added on top of that config later. This change installs no
+runners and contains no test-execution workflow.
+
+The platform handoff in #2428 provides `robtand/fast-arm64` and
+`robtand/slow-x64`, each with four CPUs and 6 GiB. CircleCI's Free plan allows
+five concurrent self-hosted tasks shared with TL3. Nightly parallelism must fit
+that shared organization limit.
 
 ## Reporter input and decisions
 
@@ -55,6 +61,10 @@ Checked on 2026-10-31 without reading credentials or sending authorization:
   `items` array. PB's `/1/artifacts` and `/1/tests` also returned HTTP 200 with
   empty arrays. These empty responses establish anonymous endpoint access;
   they do not prove access to a nonempty PB test-results population.
+- Anonymous PB project lookup returned project
+  `e04d14ad-cf67-4217-874e-649538ee05ff` with slug `gh/RobTand/prismabuild`.
+  Its main pipeline list returned HTTP 200 with no pipelines. No populated PB
+  job exists in that response to prove real artifact or test metadata access.
 - Public pipeline metadata for NumPy pipeline
   `478b0bc5-0566-4b54-b134-f533c93db138` returned its project, `main` branch,
   and exact Git revision without a token.
@@ -83,7 +93,7 @@ need the latter too. Suite pruning remains tracked in #2328.
 
 ## Bridge contract for the later CircleCI config
 
-A final job named `full-suite-report-inputs` collects all CPU-suite JUnit files
+A final job named `full-suite-report` collects all CPU-suite JUnit files
 under `full-suite/junit/`. It stores those files as artifacts and writes
 `full-suite/run.json` as another artifact:
 
@@ -103,8 +113,10 @@ The final job must run after failures too and publish its terminal status.
 It supplies the expected artifact set explicitly so an incomplete download
 cannot masquerade as a full suite. No resource class is assumed here.
 
-The hosted `full-suite-report.yml` bridge reacts to CircleCI status or check
-completion. It checks the CircleCI project, job name, branch, and exact commit
+The nightly collector job posts `ci/circleci: full-suite-report` through
+CircleCI OAuth status reporting on the tested main commit. The hosted
+`full-suite-report.yml` bridge reacts to that status completion. It also accepts
+a matching check completion or a manual dispatch for diagnosis. It checks the CircleCI project, job name, branch, and exact commit
 before downloading only the declared XML files. It executes the trusted
 reporter from `main`, never code from a CircleCI artifact or event SHA.
 Its previous snapshot is the last complete, reported `full-suite-results`

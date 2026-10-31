@@ -217,6 +217,11 @@ def parse_junit(xml: str | bytes) -> dict[str, dict]:
                      if p.get('name') == 'nodeid'), None)
         if not node:
             filename = case.get('file')
+            collection_error = (not filename and not case.get('classname')
+                                and case.find('error') is not None)
+            if collection_error:
+                # Pytest collection errors identify the file in name alone.
+                filename = case.get('name')
             if not filename:
                 raise ValueError('JUnit needs an exact nodeid property or file attribute; '
                                  'use pytest -o junit_family=legacy')
@@ -232,7 +237,8 @@ def parse_junit(xml: str | bytes) -> dict[str, dict]:
             name = case.get('name')
             if not name:
                 raise ValueError('JUnit testcase needs a name')
-            node = '::'.join([str(path), *(classname.split('.') if classname else []), name])
+            node = str(path) if collection_error else '::'.join(
+                [str(path), *(classname.split('.') if classname else []), name])
         duration = float(case.get('time', '0'))
         if not math.isfinite(duration) or duration < 0:
             raise ValueError('JUnit duration must be finite and nonnegative')

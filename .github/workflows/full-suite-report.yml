@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       job_number:
-        description: CircleCI full-suite-report-inputs job number on main
+        description: CircleCI full-suite-report job number on main
         required: true
         type: string
       sha:
@@ -29,8 +29,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'status' && github.event.state != 'pending' &&
-       (github.event.context == 'CircleCI Pipeline' || github.event.context == 'ci/circleci: full-suite-report-inputs')) ||
-      (github.event_name == 'check_run' && github.event.check_run.name == 'full-suite-report-inputs')
+       (github.event.context == 'CircleCI Pipeline' || github.event.context == 'ci/circleci: full-suite-report')) ||
+      (github.event_name == 'check_run' && github.event.check_run.name == 'full-suite-report')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

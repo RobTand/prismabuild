@@ -11,7 +11,7 @@ spec.loader.exec_module(bridge)
 
 
 def test_status_target_accepts_only_the_same_circleci_project():
-    event = {'context': 'ci/circleci: full-suite-report-inputs', 'state': 'failure', 'sha': 'a' * 40,
+    event = {'context': 'ci/circleci: full-suite-report', 'state': 'failure', 'sha': 'a' * 40,
              'target_url': 'https://circleci.com/gh/RobTand/prismabuild/42'}
     assert bridge.event_target(event, 'RobTand/prismabuild') == ('job', 42, 'a' * 40)
     event['target_url'] = 'https://circleci.com/gh/other/repository/42'
@@ -24,7 +24,7 @@ def test_pipeline_target_and_checks_are_supported_without_polling():
     event = {'context': 'CircleCI Pipeline', 'state': 'success', 'sha': 'a' * 40,
              'target_url': 'https://app.circleci.com/pipelines/gh/RobTand/prismabuild/9'}
     assert bridge.event_target(event, 'RobTand/prismabuild') == ('pipeline', 9, 'a' * 40)
-    event = {'check_run': {'name': 'full-suite-report-inputs', 'status': 'completed',
+    event = {'check_run': {'name': 'full-suite-report', 'status': 'completed',
              'head_sha': 'b' * 40, 'details_url': 'https://circleci.com/gh/RobTand/prismabuild/10'}}
     assert bridge.event_target(event, 'RobTand/prismabuild') == ('job', 10, 'b' * 40)
 
