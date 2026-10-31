@@ -279,6 +279,61 @@ def test_adoption_alone_keeps_the_consumer_waiting_through_a_serial_read(
     _assert_never_refused(consumer, line, "adoption-alone")
 
 
+
+def test_serial_read_cannot_resume_a_poll_with_an_old_announcement(
+        tmp_path, monkeypatch, scaled):
+    """Pause a real poll between its announcement read and clock read."""
+
+    paused, resume, polled = (threading.Event() for _ in range(3))
+    native_consumer = _Consumer
+    native_advance = Clock.advance
+    reader_code = leg.reader_tier_age.__code__
+    beginning = [None]
+
+    class PausedConsumer(native_consumer):
+        def start(self):
+            super().start()
+            assert paused.wait(60), "background poll did not read its announcement"
+
+        def run(self):
+            def pause(frame, event, _argument):
+                if (not paused.is_set() and event == "line"
+                        and frame.f_code is reader_code
+                        and "announced" in frame.f_locals):
+                    paused.set()
+                    assert resume.wait(60), "logical clock never released the poll"
+                return pause
+
+            sys.settrace(pause)
+            try:
+                super().run()
+            finally:
+                sys.settrace(None)
+
+        def poll(self):
+            result = super().poll()
+            if threading.current_thread() is self:
+                polled.set()
+            return result
+
+    def advance(clock, seconds):
+        if beginning[0] is None:
+            beginning[0] = clock.now
+        value = native_advance(clock, seconds)
+        if paused.is_set() and value - beginning[0] >= BOUND_S + 1:
+            resume.set()
+            assert polled.wait(60), "resumed poll did not finish"
+        return value
+
+    monkeypatch.setattr(sys.modules[__name__], "_Consumer", PausedConsumer)
+    monkeypatch.setattr(Clock, "advance", advance)
+    try:
+        test_adoption_alone_keeps_the_consumer_waiting_through_a_serial_read(
+            tmp_path, monkeypatch, scaled)
+    finally:
+        resume.set()
+
+
 def test_parallel_reads_alone_keep_the_consumer_waiting(
         tmp_path, monkeypatch, scaled):
     """Fix 2 on its own: nothing is adopted, and the cold read is short."""
