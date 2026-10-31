@@ -1499,26 +1499,6 @@
       "reason": "Deferred-release fixture needs the broker-backed producer cleanup to conclude; a hosted worker has no PB broker.",
       "issue": 2442,
       "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
-    },
-    {
-      "target": "tests/test_record_compatibility.py",
-      "lane": "namespace_compatibility",
-      "reason": "Both hosted architectures refuse bubblewrap uid-map setup before the stable-path consumer enters or attests its source. Requires a qualified namespace environment, not flake quarantine.",
-      "issue": 2447,
-      "evidence": [
-        "https://github.com/RobTand/prismabuild/actions/runs/41242040262",
-        "https://github.com/RobTand/prismabuild/actions/runs/41242876374"
-      ]
-    },
-    {
-      "target": "tests/test_current_receipt_compat_composition.py",
-      "lane": "namespace_compatibility",
-      "reason": "Both hosted architectures refuse bubblewrap uid-map setup before the stable-path consumer enters or attests its source. Requires a qualified namespace environment, not flake quarantine.",
-      "issue": 2447,
-      "evidence": [
-        "https://github.com/RobTand/prismabuild/actions/runs/41242040262",
-        "https://github.com/RobTand/prismabuild/actions/runs/41242876374"
-      ]
     }
   ]
 }
