@@ -70,12 +70,12 @@ def test_map_reproducible_and_rejects_mixed_sources(tmp_path):
         mod.write_map([source, other], second)
 
 
-def selection(tmp_path, *, changed=('f',), module=False, hashes=None, mapped=True):
+def selection(tmp_path, *, changed=('f',), module=False, hashes=None, mapped=True, unattributed=()):
     mod = load('tia_select')
     path = 'src/a.py'
     mapping = {'schema': 'prismabuild.tia_map.v1', 'source_commit': 'a' * 40,
                'python': ['3.12.8'], 'files': {path: 'abc'},
-               'functions': [path + '::f'] if mapped else [],
+               'functions': [path + '::f'] if mapped else [], 'unattributed': list(unattributed),
                'tests': {'tests/test_a.py::test_f': [0]} if mapped else {}}
     diff = {'python': {path: {'changed': list(changed), 'added': [], 'deleted': [],
                             'module_changed': module}}, 'non_python': []}
@@ -114,7 +114,7 @@ def test_recorder_real_pytest_shared_fixture_and_child(tmp_path):
     root = tmp_path / 'repo'
     (root / 'src').mkdir(parents=True)
     (root / 'tests').mkdir()
-    (root / 'src/example.py').write_text('def fixture_work():\n return 4\ndef direct():\n return 7\ndef child():\n return 9\n')
+    (root / 'src/example.py').write_text('def import_work():\n return 11\nVALUE = import_work()\ndef fixture_work():\n return 4\ndef direct():\n return 7\ndef child():\n return 9\n')
     (root / 'tests/test_example.py').write_text('''import subprocess, sys
 import pytest
 from example import fixture_work, direct
@@ -143,6 +143,7 @@ def test_two(shared):
             tests.setdefault(node, set()).update(functions)
     assert tests['tests/test_example.py::test_one'] >= {'src/example.py::fixture_work', 'src/example.py::direct', 'src/example.py::child'}
     assert tests['tests/test_example.py::test_two'] >= {'src/example.py::fixture_work', 'src/example.py::direct'}
+    assert 'src/example.py::import_work' in {function for record in records for function in record.get('unattributed', [])}
     assert not any('<module>' in function for values in tests.values() for function in values)
 
 
@@ -188,3 +189,10 @@ def test_mutation_sample_preserves_bytes_and_function_identity(tmp_path):
     assert rows[0]['replacement'] == 'if not x == 3:\n        return 7'
     assert rows[0]['diff']['changed'] == ['choose']
     assert rows[0]['diff']['module_changed'] is False
+
+
+def test_import_time_function_calls_require_static_fallback(tmp_path):
+    result, calls = selection(tmp_path, unattributed=['src/a.py::f'])
+    assert calls == [['src/a.py']]
+    assert result['targets'] == ['tests/test_a.py', 'tests/test_fast.py', 'tests/test_new.py', 'tests/test_static.py']
+    assert any('outside test' in why for row in result['selected'] for why in row['reasons'])
