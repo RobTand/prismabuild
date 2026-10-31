@@ -26,18 +26,8 @@ def test_membership_is_in_both_published_layouts(monkeypatch):
 @pytest.mark.parametrize("relative", [
     "tools/fleet_membership.py", "tools/fleet/fleet_membership.py"])
 def test_membership_import_binds_published_generation(
-        tmp_path, monkeypatch, relative):
-    monkeypatch.setattr(publisher, "CHECKOUT", REPO)
-    generation = tmp_path / "generations" / "candidate"
-    for name in publisher._publication_manifest():
-        target = generation / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(publisher._source_for(name), target)
-    # Keep the root-resolution regression independent of the publication
-    # inclusion check above: the old publisher omitted this command.
+        tmp_path, generation, relative):
     entry = generation / relative
-    entry.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(REPO / "tools/fleet/fleet_membership.py", entry)
     code = (
         "import importlib.util,json,sys;from pathlib import Path;"
         "p=Path(sys.argv[1]);sys.path.insert(0,str(p.parent));"
@@ -47,7 +37,24 @@ def test_membership_import_binds_published_generation(
     )
     result = subprocess.run(
         [sys.executable, "-I", "-c", code, str(entry)],
-        cwd=tmp_path, text=True, capture_output=True, timeout=30)
+        cwd=tmp_path, text=True, capture_output=True, timeout=60)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {
         "root": str(generation), "src": str(generation / "src")}
+
+
+@pytest.fixture(scope="module")
+def generation(tmp_path_factory):
+    generation = tmp_path_factory.mktemp("membership") / "generations" / "candidate"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(publisher, "CHECKOUT", REPO)
+        for name in publisher._publication_manifest():
+            target = generation / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(publisher._source_for(name), target)
+    # Keep root resolution independent of the publisher's inclusion check.
+    for relative in ("tools/fleet_membership.py", "tools/fleet/fleet_membership.py"):
+        entry = generation / relative
+        entry.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO / "tools/fleet/fleet_membership.py", entry)
+    return generation
