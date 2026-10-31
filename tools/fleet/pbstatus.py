@@ -62,7 +62,7 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import census as fleet_census  # noqa: E402
 from prismabuild import (  # noqa: E402
-    _bounded_reader as _reader, core as pb, pool, slurm_lane as sl,
+    _bounded_reader as _reader, action_client, core as pb, pool, slurm_lane as sl,
 )
 from prismabuild import action_edges  # noqa: E402
 
@@ -683,7 +683,8 @@ def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, o
              + f" ({denial['age_s']:.0f}s ago)"
              for denial in j['admission_denials']),
          j.get('unstarted_releases'), j.get('placeable_hosts'),
-         j.get('reason')) for j in jobs))
+         '; '.join(filter(None, (j.get('reason'), action_client.superseded_note(j))))
+         or j.get('reason')) for j in jobs))
 
 
 # --------------------------------------------------------------------------
@@ -820,7 +821,8 @@ def job_lines(jobs: Sequence[Mapping[str, object]]) -> list[str]:
                 f"{name}={value}" for name, value in sorted(resources.items())
             )
         reasons = [
-            str(part) for part in (job.get("reason"), job.get("note")) if part
+            str(part) for part in (job.get("reason"), job.get("note"),
+                                   action_client.superseded_note(job)) if part
         ]
         rows.append((
             job.get("job_id"), job.get("state"), job.get("partition"),
@@ -891,6 +893,7 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
     for ending in endings:
         elapsed = ending.get("elapsed_s")
         reason = ending.get("unreadable")
+        history_note = action_client.superseded_note(ending)
         rows.append((
             str(ending.get("action_key"))[:12], ending.get("status"),
             ending.get("transport"), ending.get("host"),
@@ -914,7 +917,7 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
             # other column is inside a file nobody could read -- and otherwise
             # the cost of a preemption, which is the one ending whose cause is
             # another action rather than this one's own exit.
-            f"{reason}: {ending.get('path')}" if reason
+            "; ".join(filter(None, (f"{reason}: {ending.get('path')}" if reason
             else _superseded_note(ending)
             if ending.get("superseded_by") else
             f"preempted by {str(ending['preempted_by'])[:12]}"
@@ -922,7 +925,7 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
             # A profiled ending says where its blob is, so a human can open it
             # in speedscope without going back to the record.
             else pb.describe_profile(ending.get("profile"))
-            or ABSENT,
+            or ("" if history_note else ABSENT), history_note))),
         ))
     return render_table(headers, rows)
 
@@ -1415,7 +1418,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     pool_summary = None
     if transport == "pool":
         read = bounded("pool", lambda: fleet_census.action_rows(
-            args.queue_root, authoritative_holds=True).value,
+            args.queue_root, authoritative_holds=True,
+            superseded_reader=action_client.read_superseded_archive).value,
                        deadline=deadline, abandoned=abandoned)
         if read["status"] == "ok":
             result = read["value"]
@@ -1457,7 +1461,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     endings: list[dict] = []
     ending_note = None
-    read = bounded("endings", lambda: fleet_census.endings(args.queue_root, limit=args.recent),
+    read = bounded("endings", lambda: fleet_census.endings(
+        args.queue_root, limit=args.recent, superseded_reader=action_client.read_superseded_archive),
                    deadline=deadline, abandoned=abandoned)
     if read["status"] == "ok":
         endings = read["value"]

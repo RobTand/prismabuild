@@ -50,6 +50,11 @@ from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 from test_pool_action_timeout import _claimed  # noqa: E402
+from test_progress_keeps_a_working_action_alive import (  # noqa: E402
+    _claimed as _progress_claimed,
+    _running_until,
+    _virtual_execution,
+)
 
 #: A demand every box in these fixtures can fit, so placement never becomes
 #: the reason a ceiling is or is not reported.
@@ -114,23 +119,23 @@ def test_an_unbounded_worker_grants_what_was_asked(tmp_path):
 
 
 def test_the_outcome_records_what_governed_it(tmp_path):
-    # The receipt half.  The action sleeps 1.5 s and the ceiling is 0.3 s, so
-    # this is the #275 shape in miniature: killed by a limit the submitter did
-    # not choose and, until now, could not see afterwards either.
-    queue, item = _claimed(tmp_path, 10)
-    outcome = queue.execute(item, timeout_s=0.3, heartbeat_s=30,
-                            timeout_grace_s=0.2)
+    with _virtual_execution(tmp_path, _running_until(60), policy=None,
+                            ceiling=60, timeout_s=600, heartbeat_s=30) as child:
+        outcome = child.execute()
+        assert child.stopped_at == 60
     assert outcome["status"] == "timeout"
-    assert outcome["execution_timeout_s"] == 0.3
-    assert outcome["execution_timeout_requested_s"] == 10
-    assert outcome["execution_timeout_ceiling_s"] == 0.3
+    assert outcome["execution_timeout_s"] == 60
+    assert outcome["execution_timeout_requested_s"] == 600
+    assert outcome["execution_timeout_ceiling_s"] == 60
     assert outcome["execution_timeout_clamped"] is True
 
 
 def test_an_ending_that_is_not_a_timeout_still_says_what_governed(tmp_path):
     # A receipt should answer "what was the budget" whatever the ending, not
     # only when the budget is what ended it.
-    queue, item = _claimed(tmp_path, 60)
+    queue, item = _progress_claimed(
+        tmp_path, mode="silent", seconds=60, policy=None, timeout_s=60,
+        source='open("result", "w").write("ok")\n')
     outcome = queue.execute(item, timeout_s=60, heartbeat_s=30)
     assert outcome["status"] != "timeout"
     assert outcome["execution_timeout_s"] == 60

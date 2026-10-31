@@ -6,11 +6,11 @@ audit (WS-DA finding 6) named why: every 5 s cycle listed ``done/``,
 residency fragment, and read every movement receipt and every ``ready/`` and
 ``claimed/`` record, whether or not anything had changed.
 
-The queue here has the issue's shape -- 30,000 done records, 6,000 movement
-receipts and 400 residency namespaces -- plus live consumers with frozen
-plans, landed ranges and a copy in flight, built by the same code as
-``tools/fleet/bench_tier_cycle.py``.  A cycle after one in which nothing
-changed must:
+The queue retains terminal records, movement receipts and residency
+namespaces, plus live consumers with frozen plans, landed ranges and a copy
+in flight. The builder is shared with ``tools/fleet/bench_tier_cycle.py``;
+the ordinary suite uses a small shape instead of rebuilding the campaign
+forest per test. A cycle after one in which nothing changed must:
 
 * list none of the terminal directories (each candidate is looked up by
   key);
@@ -72,23 +72,8 @@ PHASES = {
 }
 
 
-def _shape() -> argparse.Namespace:
-    """The issue's widths; everything else is the live queue's (2026-09-23).
-
-    400 flat namespaces (370 empty, 30 with small fragments) beside four
-    large fragments and 1,957 produced-output directories: 240,705 fragment
-    entries in all, which is what a census parses.
-    """
-
-    return argparse.Namespace(
-        done=30000, failed=7142, withdrawn=1877, receipts=6000, passes=1324,
-        empty_dirs=370, small_dirs=30, big_fragments="90000,60000,50000,40000",
-        produced_fragment_dirs=1957, live_consumers=6, phases=3,
-        files_per_range=64, ready_noise=30, claimed_noise=28)
-
-
 def _small_shape() -> argparse.Namespace:
-    """The same parts at a handful each, for what is not about width."""
+    """All queue and residency cases at unit-test scale."""
 
     return argparse.Namespace(
         done=5, failed=2, withdrawn=2, receipts=10, passes=3,
@@ -107,7 +92,7 @@ class _Loop:
         self.stage = tmp_path / "stage"
         self.stage.mkdir()
         self.counts = bench.build_queue(self.queue, self.stage,
-                                        shape or _shape())
+                                        shape or _small_shape())
         self.receipts = tier_loop.ReceiptCache()
         self._directory_clock = time.time_ns()
 
@@ -187,12 +172,12 @@ def loop(tmp_path: Path) -> _Loop:
     root = _clock_root(tmp_path)
     try:
         built = _Loop(root)
-        assert built.counts[pool.record_store.DONE] == 30000
-        assert built.counts["receipts"] == 6000
+        assert built.counts[pool.record_store.DONE] == 5
+        assert built.counts["receipts"] == 10
         namespaces = [entry for entry in os.scandir(
             built.queue.records.residency_fragment_root()) if entry.is_dir()
             and len(entry.name) == 64]
-        assert len(namespaces) >= 400, len(namespaces)
+        assert len(namespaces) >= 6, len(namespaces)
         assert _filesystem_type(root) in LOCAL_CLOCK, (
             _filesystem_type(root))
         yield built
@@ -228,12 +213,12 @@ def test_a_steady_cycle_reads_only_what_changed(
     assert reads["records_listed"] == 0, reads
     assert reads["census_parses"] == 0, reads
     assert reads["census_listed"] == 0, reads
-    assert reads["records_kept"] > 0 and reads["census_kept"] >= 400, reads
+    assert reads["records_kept"] > 0 and reads["census_kept"] >= 6, reads
 
 
 def test_a_steady_cycle_does_not_list_ledger_directories(
         loop: _Loop, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The campaign-shaped census also reuses unchanged token names (#1027)."""
+    """The census also reuses unchanged token names (#1027)."""
 
     loop.cycle()
     loop.cycle()
@@ -259,8 +244,8 @@ def test_a_change_between_cycles_is_read_by_the_next(loop: _Loop) -> None:
     loop.record_move(mover, {"tier_id": bench.TIER, "unix": time.time(),
                              "complete": True})
     root = queue.records.residency_fragment_root()
-    namespace = sorted(entry.name for entry in os.scandir(root)
-                       if entry.is_dir() and len(entry.name) == 64)[0]
+    namespace = bench.bench_stage_adopt._key("empty0")
+    assert not any((root / namespace).iterdir())
     residency_map.write_fragment(root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": namespace,
@@ -286,8 +271,8 @@ def test_a_change_between_cycles_is_read_by_the_next(loop: _Loop) -> None:
 
 def _write_late_fragment(loop: _Loop, name: str) -> None:
     root = loop.queue.records.residency_fragment_root()
-    namespace = sorted(entry.name for entry in os.scandir(root)
-                       if entry.is_dir() and len(entry.name) == 64)[0]
+    namespace = bench.bench_stage_adopt._key("empty0")
+    assert not any((root / namespace).iterdir())
     residency_map.write_fragment(root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": namespace,
@@ -317,7 +302,7 @@ def test_what_the_loop_keeps_stays_what_is_on_disk(loop: _Loop) -> None:
     loop.cycle()
     loop.cycle()
     census = loop.receipts.census
-    assert len(census.fragments) >= 100, len(census.fragments)
+    assert len(census.fragments) >= 5, len(census.fragments)
     for key, (_version, document) in census.fragments.items():
         with open(key) as stream:
             fresh = residency_map.validate_fragment(json.load(stream))
@@ -339,14 +324,14 @@ def test_what_the_loop_keeps_stays_what_is_on_disk(loop: _Loop) -> None:
     kept = {path.name: (None, record)
             for path, record in store.receipt_records_at(receipts)}
     assert loop.receipts.records.parsed == parsed, "the retained receipt query reparsed"
-    assert len(kept) >= 6000, len(kept)
+    assert len(kept) >= 10, len(kept)
     for name, (_version, record) in kept.items():
         assert record == pool.record_store.read_document(receipts / name), name
 
 
 def test_an_unreadable_receipt_directory_is_skipped_and_named(
         tmp_path: Path, monkeypatch) -> None:
-    small = _Loop(tmp_path, _small_shape())
+    small = _Loop(tmp_path)
     prewarm = small.queue.root / pool.record_store.PREWARM
     prewarm.mkdir(parents=True, exist_ok=True)
     small.cycle()
