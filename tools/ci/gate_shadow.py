@@ -22,6 +22,8 @@ def audit(plan: dict, records: list[dict], junit_paths: list[Path]) -> dict:
         problems.append('a CI assignment has no test verdict')
     if any(record.get('population_version') != plan['population']['version'] for record in records):
         problems.append('CI results name a different population version')
+    if any(record.get(field) != plan.get(field) for record in records for field in ('base_sha', 'head_sha')):
+        problems.append('CI results name a different base or head')
     if len(junit_paths) != len(records):
         problems.append('each final CI assignment needs its JUnit file')
     failures, observed = set(), set()

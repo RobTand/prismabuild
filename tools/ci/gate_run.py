@@ -18,7 +18,7 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
              execute=subprocess.run, affinity=None) -> int:
     record = {'schema': 'prismabuild.gate_result.v1',
               'population_version': plan.get('population', {}).get('version'),
-              'mode': plan.get('mode'), 'files': [], 'verdict': None, 'pytest_exit_code': None}
+              'mode': plan.get('mode'), 'base_sha': plan.get('base_sha'), 'head_sha': plan.get('head_sha'), 'files': [], 'verdict': None, 'pytest_exit_code': None}
     try:
         eligible = {row['path'] for row in plan['selected']}
         files = sorted(eligible) if files is None else files
@@ -42,8 +42,8 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
                      if target.split('::', 1)[0] in files), *files]
         result = execute(command, cwd=root, env=environment, check=False)
         record['pytest_exit_code'] = result.returncode
-        if result.returncode < 0:
-            raise RuntimeError(f'pytest ended on signal {-result.returncode}, without a verdict')
+        if result.returncode not in {0, 1}:
+            raise RuntimeError(f'pytest exited {result.returncode}, without a complete test verdict')
         record['verdict'] = 'pass' if result.returncode == 0 else 'fail'
         code = 0 if record['verdict'] == 'pass' else 1
     except (OSError, ValueError, RuntimeError) as error:
