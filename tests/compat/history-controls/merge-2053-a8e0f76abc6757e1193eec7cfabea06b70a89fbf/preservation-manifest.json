@@ -1,0 +1,16 @@
+{
+  "credit": "Raw source-qualified preservation of the complete parent current pair; no new canonical capture or historical-generation credit.",
+  "files": {
+    "capture-rollout.json": {
+      "bytes": 1588,
+      "original_path": "tests/compat/capture-rollout.json",
+      "sha256": "8b728f4f20e12bde1fe597c6e86bf0fd5bed6beae89374be70a77aa071bc4b62"
+    },
+    "goldens-rollout.jsonl": {
+      "bytes": 19371,
+      "original_path": "tests/compat/goldens-rollout.jsonl",
+      "sha256": "f1d6ce6052c13d5487310f1614592a9e00936d3613f8ca3205f5d667342d8983"
+    }
+  },
+  "source_parent": "a8e0f76abc6757e1193eec7cfabea06b70a89fbf"
+}

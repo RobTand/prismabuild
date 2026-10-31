@@ -1,0 +1,16 @@
+{
+  "lane": "integrated",
+  "source_head": "85fa57bb7194afe9562193a7368d2e3a403a9293",
+  "committed_reports": [
+    {
+      "id": "integrated",
+      "client_exit": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/integration-85fa57bb/integrated.json",
+      "finished_at": "2026-10-27T02:29:05.281365+00:00",
+      "report_sha256": "4636d524441ede138719cf870f0e8b85818c9e7e173fdf7955d65c7a8d633159"
+    }
+  ],
+  "status": "reports_complete_pending_evidence_audit",
+  "started_at": "2026-10-27T02:17:12.561384+00:00",
+  "finished_at": "2026-10-27T02:29:05.309596+00:00"
+}

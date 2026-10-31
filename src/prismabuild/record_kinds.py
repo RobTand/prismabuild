@@ -418,7 +418,7 @@ KINDS = (
                "prismabuild.filesystem_floor:reap_operations", ("prismabuild.filesystem_floor:operation",), ("one", "two"),
                ("schema is diagnostic; expiration and process identity govern reaping",), negative_field="lease_until", stable_paths=True),
     RecordKind("floor-granted", None, "filesystem-floor/fs/<digest>/granted.json; no schema member", "additive",
-               "prismabuild.filesystem_floor:_granted", ("prismabuild.filesystem_floor:LedgerGate.granted",), ("one", "two"),
+               "prismabuild.filesystem_floor:_granted", ("prismabuild.filesystem_floor:LedgerGate.reserve",), ("one", "two"),
                ("absent file means zero granted bytes; negative or noninteger counters refuse",), negative_field="granted_bytes", stable_paths=True),
     RecordKind("broker-maintenance", "prismabuild.resource-maintenance.v1", "private broker maintenance.json and durable mirror", "additive",
                "resource_broker:Authority._maintenance_value",

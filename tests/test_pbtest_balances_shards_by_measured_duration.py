@@ -209,14 +209,9 @@ def test_the_summary_reports_predicted_against_actual(tmp_path, monkeypatch, cap
     for result in results:
         assert result["predicted_s"] > 0
         assert result["pytest_s"] is not None and result["pytest_s"] >= 0
-    # The split main() sealed is the longest-first packing, not the
-    # rotation: slow alone, mid beside fast.
-    buckets = [result["files"] for result in results]
-    assert buckets == [["tests/test_slow_file.py"],
-                        ["tests/test_mid_file.py", "tests/test_fast_file.py"]]
-    files = [name for bucket in buckets for name in bucket]
-    assert sorted(buckets, key=sorted) != sorted(
-        pbtest._round_robin(sorted(files), 2), key=sorted)
+    assert [result["predicted_s"] for result in results] == [60.0, 51.0]
+    assert all("tests/test_slow_file.py" in row["node_groups"] for row in results)
+    assert len({node for row in results for node in row["verdict"]["collected"]}) == 5
 
 
 def test_main_packs_shards_from_history_not_round_robin(tmp_path, monkeypatch):
@@ -250,12 +245,8 @@ def test_main_packs_shards_from_history_not_round_robin(tmp_path, monkeypatch):
         pbtest._round_robin(sorted(files), 2), key=sorted)
 
 
-def test_main_isolates_a_file_past_half_the_sealed_deadline(tmp_path, monkeypatch):
-    """The sealed ceiling reaches the packer through main().
-
-    A file predicted past half of ``--timeout-s`` shards alone: the
-    isolation is main()'s ceiling, not only shard()'s unit argument.
-    """
+def test_main_splits_a_file_above_target_with_a_sealed_deadline(tmp_path, monkeypatch):
+    """A file above target splits even when a shard deadline is sealed."""
 
     checkout = tmp_path / "project"
     (checkout / "tests").mkdir(parents=True)
@@ -272,9 +263,10 @@ def test_main_isolates_a_file_past_half_the_sealed_deadline(tmp_path, monkeypatc
                                "--history", str(prior)])
     assert code == 0
     buckets = [result["files"] for result in results]
-    assert buckets == [["tests/test_a.py"],
-                        ["tests/test_b.py", "tests/test_c.py",
-                         "tests/test_d.py"]]
+    assert buckets == [["tests/test_a.py", "tests/test_b.py", "tests/test_d.py"],
+                       ["tests/test_a.py", "tests/test_c.py"]]
+    assert sorted(row["node_groups"]["tests/test_a.py"]["index"]
+                  for row in results) == [0, 1]
 
 
 def test_bad_history_is_ignored_with_a_stated_reason(tmp_path):

@@ -239,6 +239,24 @@ def _select_terminal(queue, key, published, number, evidence_cap, *, successful=
     return record, generation, attempt_path
 
 
+def _select_ending(queue, key, published, number, evidence_cap, ending):
+    if ending is None or Path(ending[0]) != queue.records.attempt_path(
+            {"action_key": key, "published_unix": published}, number):
+        return _select_terminal(
+            queue, key, published, number, evidence_cap, successful=False)
+    try:
+        found = queue.archived_generation_summaries(
+            key, generation=published, max_bytes=evidence_cap)
+    except (OSError, pb.PrismaBuildError, _pool.PoolError, ValueError) as exc:
+        raise ActionResultError(f"archived ending refused: {exc}") from exc
+    if len(found) != 1 or found[0] != ending:
+        raise ActionResultError("the selected archived ending changed or is missing")
+    path, record = found[0]
+    if record["attempts"] != number:
+        raise ActionResultError("the selected archived ending names another attempt")
+    return record, published, path
+
+
 def _read_selected_attempt(queue, path, evidence_cap):
     raw = _read_bounded(
         path, where="pool attempt outcome", max_bytes=evidence_cap,
@@ -682,6 +700,8 @@ def read_verified_ending_result(
     max_evidence_bytes: int = 4 * 1024 * 1024,
     max_result_bytes: int = 64 * 1024 * 1024,
     max_observation_s: float = 4.0,
+    ending: tuple[Path, Mapping[str, object]] | None = None,
+    cas_root: str | Path | None = None,
 ) -> dict[str, object]:
     if (isinstance(max_observation_s, bool) or not isinstance(max_observation_s, (int, float))
             or not math.isfinite(max_observation_s) or max_observation_s < 0):
@@ -690,14 +710,15 @@ def read_verified_ending_result(
         return _read_streamed_ending_result(
             queue, action_key, published_unix=published_unix, attempt=attempt,
             max_log_bytes=max_log_bytes, max_evidence_bytes=max_evidence_bytes,
-            max_result_bytes=max_result_bytes, deadline=time.monotonic() + max_observation_s)
+            max_result_bytes=max_result_bytes, deadline=time.monotonic() + max_observation_s,
+            ending=ending, cas_root=cas_root)
     except _EndingVerificationIncomplete as exc:
         return unverified_ending_result(exc)
 
 
 def _read_streamed_ending_result(
     queue, action_key, *, published_unix, attempt, max_log_bytes,
-    max_evidence_bytes, max_result_bytes, deadline,
+    max_evidence_bytes, max_result_bytes, deadline, ending, cas_root,
 ):
     """Verify the selected ending's logs, including a failed worker (#1892).
 
@@ -714,8 +735,10 @@ def _read_streamed_ending_result(
     log_cap = _checked_nonnegative_int(max_log_bytes, "max_log_bytes")
     evidence_cap = _checked_positive_int(max_evidence_bytes, "max_evidence_bytes")
     result_cap = _checked_nonnegative_int(max_result_bytes, "max_result_bytes")
-    record, generation, path = _select_terminal(
-        queue, key, published, number, evidence_cap, successful=False)
+    record, generation, path = _select_ending(
+        queue, key, published, number, evidence_cap, ending)
+    archived = ending is not None and path == Path(ending[0]) and path == queue.records.attempt_path(
+        {"action_key": key, "published_unix": published}, number)
     selected = _read_selected_attempt(queue, path, evidence_cap)
     _bind_ending_attempt(queue, record, selected, key=key, number=number)
     expected = (_pool.record_store.DONE if record["status"] in {"executed", "cache_hit"}
@@ -727,7 +750,7 @@ def _read_streamed_ending_result(
         queue, record, selected, number, "stdout", log_cap, evidence_cap, deadline)
     stderr = None
     expanded = {**selected, "stdout": raw.decode("utf-8", errors="replace")}
-    if "stderr" in selected.get("logs", {}):
+    if archived or "stderr" in selected.get("logs", {}):
         stderr, stderr_raw, _ = _stream_ending_log(
             queue, record, selected, number, "stderr", log_cap, evidence_cap, deadline)
         expanded["stderr"] = stderr_raw.decode("utf-8", errors="replace")
@@ -739,17 +762,21 @@ def _read_streamed_ending_result(
             detail = adopted["detail"]
             detail[f"{stream}_bytes"] = descriptor["bytes"]
             detail[f"{stream}_truncated"] = True
-    for field in ("status", "finished_unix", "finished_host", "detail"):
+    # An archive's detail is the immutable source itself, without inline logs.
+    # A mutable terminal additionally binds its derived stream summary.
+    fields = ("status", "finished_unix", "finished_host") if archived else (
+        "status", "finished_unix", "finished_host", "detail")
+    for field in fields:
         if adopted[field] != record.get(field):
             raise ActionResultError(f"pool attempt {field} differs from the terminal")
     if len(announcements) > 1:
         raise ActionResultError("the selected attempt has ambiguous receipts")
     receipt_sha256 = None
     if announcements:
-        cas_root = record.get("cas_root")
-        if not isinstance(cas_root, str) or not cas_root:
-            raise ActionResultError("the terminal record names no CAS root")
-        cas = pb.PrismaBuildCAS(cas_root)
+        selected_cas_root = cas_root if archived else record.get("cas_root")
+        if not isinstance(selected_cas_root, (str, Path)) or not str(selected_cas_root):
+            raise ActionResultError("the selected ending names no CAS root")
+        cas = pb.PrismaBuildCAS(selected_cas_root)
         request = _decode_json(_read_bounded(
             cas.root / "requests" / key[:2] / f"{key}.json",
             where="PrismaBuild action request", max_bytes=evidence_cap,
@@ -769,8 +796,8 @@ def _read_streamed_ending_result(
             raise ActionResultError(f"execution receipt refused: {exc}") from exc
     elif record["status"] in {"executed", "cache_hit"}:
         raise ActionResultError("the successful attempt announced no execution receipt")
-    rechecked, new_generation, new_path = _select_terminal(
-        queue, key, published, number, evidence_cap, successful=False)
+    rechecked, new_generation, new_path = _select_ending(
+        queue, key, published, number, evidence_cap, ending)
     reselected = _read_selected_attempt(queue, new_path, evidence_cap)
     _bind_ending_attempt(queue, rechecked, reselected, key=key, number=number)
     if (rechecked != record or new_generation != generation or new_path != path

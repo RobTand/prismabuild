@@ -106,6 +106,8 @@ FLEET_SCRIPTS = (
     # The stage lives on dl380g10, which has no checkout, so a generation
     # without it leaves that command with no place to run.
     "stage_reclaim.py",
+    # Bounded read-only evidence collection used by stage_reclaim --report.
+    "stage_ownership.py",
     # ...and ram_promote.py, the ram tier's movement node (#640): it copies a
     # landed stage range into the tmpfs and files the fragment that carries
     # the epoch.  A generation without it leaves the ram window publishing
@@ -1109,7 +1111,7 @@ def _canary_driver_path() -> Path:
     return CHECKOUT / "tools" / "fleet" / "pbcanary.py"
 
 
-def _load_canary_driver():
+def _load_canary_module():
     """Import the driver; never duplicate its submit-and-verify logic.
 
     CONFIRMED crew-A entry shape (verified at #688 integration against
@@ -1151,7 +1153,29 @@ def _load_canary_driver():
             f"canary driver at {driver} has no run_canary(generation=...) "
             "entry: assumed crew-A shape drifted; refusing to invent a verdict"
         )
-    return entry
+    return module
+
+
+def _load_canary_driver():
+    return _load_canary_module().run_canary
+
+
+def _preflight_canary_placement(*, dry_run: bool):
+    previous = sys.dont_write_bytecode
+    try:
+        if dry_run:
+            sys.dont_write_bytecode = True
+        module = _load_canary_module()
+        check = getattr(module, "preflight_publication", None)
+        if not callable(check):
+            raise _CanaryPrecondition("canary driver has no preflight_publication(fleet_root=...)")
+        try:
+            check(fleet_root=MIRROR.parent)
+        except Exception as exc:
+            raise _CanaryPrecondition(f"canary placement preflight refused: {exc}") from exc
+    finally:
+        if dry_run:
+            sys.dont_write_bytecode = previous
 
 
 def _invoke_canary_driver(generation_name: str, *, publication_slot: bool = True) -> tuple[int, str]:
@@ -2634,6 +2658,13 @@ def _run_publication(args) -> int:
             f"canary requested but no driver at {_canary_driver_path()}: "
             "nothing was published and the live runtime still points where it did."
         )
+    if canary_enabled and not args.stage_only:
+        try:
+            _preflight_canary_placement(dry_run=args.dry_run)
+        except _CanaryPrecondition as exc:
+            raise SystemExit(
+                f"{exc}; nothing was published and the live runtime still points where it did."
+            ) from exc
     # The last refusals before anything is written: the gates read the
     # fleet's records, and an earlier refusal is cheaper to hear first.
     shape_gate = _shape_gate_record(args, commit=commit, dirty=dirty)

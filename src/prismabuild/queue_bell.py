@@ -11,7 +11,7 @@ import socket
 import time
 from urllib.parse import urlencode
 
-from .queue_bell_http import DeadlineResponseSocket
+from .queue_bell_http import DeadlineResponseSocket, RequestCancellation
 from .queue_bell_topics import OUTCOME_TOPICS, TOPICS, TopicFilters
 
 DEFAULT_PORT = 9470
@@ -68,8 +68,9 @@ def bell_host(queue_root: Path, *, mountinfo: Path = Path("/proc/self/mountinfo"
 
 class Client:
     def __init__(self, queue_root: Path, *, host: str | None = None,
-                 port: int = DEFAULT_PORT):
+                 port: int = DEFAULT_PORT, cancellation: RequestCancellation | None = None):
         self.queue_root, self.host, self.port = queue_root, host, port
+        self._cancellation = cancellation
 
     def _request(self, path: str, *, deadline: float) -> dict:
         connection = None
@@ -82,6 +83,8 @@ class Client:
             socket.inet_pton(family, host)
             connection = http.client.HTTPConnection(host, self.port)
             connection.sock = socket.socket(family, socket.SOCK_STREAM)
+            if self._cancellation is not None:
+                self._cancellation.attach(connection.sock)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("bell HTTP deadline exhausted")
@@ -110,6 +113,8 @@ class Client:
         except (OSError, http.client.HTTPException, ValueError, KeyError) as exc:
             raise Unavailable(str(exc)) from exc
         finally:
+            if self._cancellation is not None:
+                self._cancellation.detach()
             if connection is not None:
                 connection.close()
 

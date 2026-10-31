@@ -1,0 +1,464 @@
+{
+  "schema": "pri174.fleet_validation.v1",
+  "records": [
+    {
+      "report": "red.json",
+      "action_key": "219410691306831371591698677dccae592096a0990b74e5d48425ec21357dd1",
+      "summary": "1 failed in 0.33s",
+      "returncode": 1,
+      "host": "dl380g10",
+      "ending_path": "/mnt/shared/prismabuild-fleet/pb-queue/failed/219410691306831371591698677dccae592096a0990b74e5d48425ec21357dd1.json",
+      "cleanup_complete": true,
+      "logs": {
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/219410691306831371591698677dccae592096a0990b74e5d48425ec21357dd1/5d538af68ee2ac14760a474b04048677031d97d71c832f07751d90acb9f8326d/00000001.stderr.8cef7be4ca5fce98b86e32d33618b2fb20aa1b06ce2f693bdbb3a86933f8473f.log",
+          "sha256": "8cef7be4ca5fce98b86e32d33618b2fb20aa1b06ce2f693bdbb3a86933f8473f",
+          "bytes": 931
+        },
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/219410691306831371591698677dccae592096a0990b74e5d48425ec21357dd1/5d538af68ee2ac14760a474b04048677031d97d71c832f07751d90acb9f8326d/00000001.stdout.e7a0e3e9a3a39d93cfe2c7eaee21a9c39aa41fbd73724d9481df193ca45028aa.log",
+          "sha256": "e7a0e3e9a3a39d93cfe2c7eaee21a9c39aa41fbd73724d9481df193ca45028aa",
+          "bytes": 5039
+        }
+      },
+      "source_parent": "f3546783c361b27bba12312e08c778039af3bc99",
+      "source_snapshot": "63822f8ef46ed18b7d5a8ac2dd82373099fa5844",
+      "source_bundle_sha256": "6d21a7ff2248040d4c79a66a3f6f0b2950e3e2277f041d2027991cac53ba33c2",
+      "source_tree_matches_parent": {
+        "src": true,
+        "tests": false
+      },
+      "runtime_generation": "189c563202ae-1793002494-cb98cac97353",
+      "receipt": null
+    },
+    {
+      "report": "legacy-red.json",
+      "action_key": "b214641dc067fdc0589d83ffc0fb8c19da0e3a73d3d36eb74fdec5892fa10fe9",
+      "summary": "1 failed, 36 deselected in 0.52s",
+      "returncode": 1,
+      "host": "sparky",
+      "ending_path": "/mnt/shared/prismabuild-fleet/pb-queue/failed/b214641dc067fdc0589d83ffc0fb8c19da0e3a73d3d36eb74fdec5892fa10fe9.json",
+      "cleanup_complete": true,
+      "logs": {
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/b214641dc067fdc0589d83ffc0fb8c19da0e3a73d3d36eb74fdec5892fa10fe9/b219c3020d7b7fd473471c0595748b5a52178aee4ea0b0368ffd49c2b0dfb1b9/00000001.stderr.2542d44c71caa12d608aa650135e893c3cdb2e5f11b2e8ce920b23d7c5de2356.log",
+          "sha256": "2542d44c71caa12d608aa650135e893c3cdb2e5f11b2e8ce920b23d7c5de2356",
+          "bytes": 831
+        },
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/b214641dc067fdc0589d83ffc0fb8c19da0e3a73d3d36eb74fdec5892fa10fe9/b219c3020d7b7fd473471c0595748b5a52178aee4ea0b0368ffd49c2b0dfb1b9/00000001.stdout.23206e107d40a0203cf9114d363758591b9e6aa4ad4369e97c31f98b20458d3e.log",
+          "sha256": "23206e107d40a0203cf9114d363758591b9e6aa4ad4369e97c31f98b20458d3e",
+          "bytes": 12263
+        }
+      },
+      "source_parent": "3c05116a4a867f435118420206c700f6c97bea66",
+      "source_snapshot": "8622b78276a3236f44df47172fe4db3f64f8e7b3",
+      "source_bundle_sha256": "de96b3fbecee8a394c517cffbe3ac4e660b0206a8c758495c17e751a943cb2eb",
+      "source_tree_matches_parent": {
+        "src": true,
+        "tests": false
+      },
+      "runtime_generation": "189c563202ae-1793002494-cb98cac97353",
+      "receipt": null
+    },
+    {
+      "report": "green.json",
+      "action_key": "901c893480045d11c6578115e5722cc28d18ec4f170b29c04051737454c1a7ef",
+      "summary": "1 passed, 2 warnings in 0.45s",
+      "returncode": 0,
+      "host": "sparky",
+      "ending_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/901c893480045d11c6578115e5722cc28d18ec4f170b29c04051737454c1a7ef.json",
+      "cleanup_complete": true,
+      "logs": {
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/901c893480045d11c6578115e5722cc28d18ec4f170b29c04051737454c1a7ef/bbbd9ca92e2373ad2db3f14f0ebff1ad169c71e1901bbeec5d2d2cdf8acf938b/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        },
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/901c893480045d11c6578115e5722cc28d18ec4f170b29c04051737454c1a7ef/bbbd9ca92e2373ad2db3f14f0ebff1ad169c71e1901bbeec5d2d2cdf8acf938b/00000001.stdout.244242027868d2e2f903e3902d03c93220d4c84c484bbff276539d01194e986e.log",
+          "sha256": "244242027868d2e2f903e3902d03c93220d4c84c484bbff276539d01194e986e",
+          "bytes": 6173
+        }
+      },
+      "source_parent": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+      "source_snapshot": "4d60046840d5bf886bad6e4de4fd27ce1c932e93",
+      "source_bundle_sha256": "0fe2df769bb4622af5c88b9dfeda0aa7d9d3e619b1a220d78b44f5d6b4caf0ab",
+      "source_tree_matches_parent": {
+        "src": true,
+        "tests": true
+      },
+      "runtime_generation": "189c563202ae-1793002494-cb98cac97353",
+      "receipt": {
+        "claim_sha256": "fb5d755b0649ab42123fdc4973bbd35b1aa0a14908459a89f54bc8a23409181c",
+        "claim_path": "/mnt/shared/prismabuild-fleet/cas/local-results/v1/fb/fb5d755b0649ab42123fdc4973bbd35b1aa0a14908459a89f54bc8a23409181c.json",
+        "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/90/901c893480045d11c6578115e5722cc28d18ec4f170b29c04051737454c1a7ef.json",
+        "receipt_sha256": "764b5034ebd7f3a6121ebe5bc7a25589d03f57894f792cbe9dab62cce51a497e",
+        "payload": {
+          "sha256": "314269eeb050d86d4c69b504e0c4a4ffb3105a475ba54735e70e2908e7a635fe",
+          "bytes": 3213
+        },
+        "claim_and_payload_checks_passed": true,
+        "full_manifest_execution_receipt_verified": true
+      }
+    },
+    {
+      "report": "green.json",
+      "action_key": "e043c8250758662dbe55a29cef39726e81adf144fdfb0b7b3e9f525b8579a999",
+      "summary": "39 passed, 93 warnings in 2.46s",
+      "returncode": 0,
+      "host": "sparky",
+      "ending_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/e043c8250758662dbe55a29cef39726e81adf144fdfb0b7b3e9f525b8579a999.json",
+      "cleanup_complete": true,
+      "logs": {
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e043c8250758662dbe55a29cef39726e81adf144fdfb0b7b3e9f525b8579a999/dd613c7f921fffd145563553e7d00be9130d4a61a35ab7c2ab2d2aeb02cefe75/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        },
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e043c8250758662dbe55a29cef39726e81adf144fdfb0b7b3e9f525b8579a999/dd613c7f921fffd145563553e7d00be9130d4a61a35ab7c2ab2d2aeb02cefe75/00000001.stdout.e76c4ddc0a2a1bc6eb1225311c3bef0676002eec44d02e9bd1159166b3d9cb4e.log",
+          "sha256": "e76c4ddc0a2a1bc6eb1225311c3bef0676002eec44d02e9bd1159166b3d9cb4e",
+          "bytes": 27825
+        }
+      },
+      "source_parent": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+      "source_snapshot": "4d60046840d5bf886bad6e4de4fd27ce1c932e93",
+      "source_bundle_sha256": "0fe2df769bb4622af5c88b9dfeda0aa7d9d3e619b1a220d78b44f5d6b4caf0ab",
+      "source_tree_matches_parent": {
+        "src": true,
+        "tests": true
+      },
+      "runtime_generation": "189c563202ae-1793002494-cb98cac97353",
+      "receipt": {
+        "claim_sha256": "6945c3d6bb173a2358dac8ebf826a120c40a699aa4e740b924fb0056cd6a8b92",
+        "claim_path": "/mnt/shared/prismabuild-fleet/cas/local-results/v1/69/6945c3d6bb173a2358dac8ebf826a120c40a699aa4e740b924fb0056cd6a8b92.json",
+        "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/e0/e043c8250758662dbe55a29cef39726e81adf144fdfb0b7b3e9f525b8579a999.json",
+        "receipt_sha256": "1520ec9617295042270b34f5b3b28eb2ae5fb321570ec9033013252b493de7cd",
+        "payload": {
+          "sha256": "3a4a0b6d04cb6069aa57bc564b3695ecdd87367f01ff917e272bab9ef1c06b9d",
+          "bytes": 24864
+        },
+        "claim_and_payload_checks_passed": true,
+        "full_manifest_execution_receipt_verified": true
+      }
+    },
+    {
+      "report": "green.json",
+      "action_key": "84aa298575efd7422051fc98610c587f692e99b2a778510b68404cfdb00a1d66",
+      "summary": "29 passed, 52 warnings in 4.07s",
+      "returncode": 0,
+      "host": "sparky",
+      "ending_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/84aa298575efd7422051fc98610c587f692e99b2a778510b68404cfdb00a1d66.json",
+      "cleanup_complete": true,
+      "logs": {
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/84aa298575efd7422051fc98610c587f692e99b2a778510b68404cfdb00a1d66/b22d685a2dcef100a2d4e9443f2b64acf6265d5f2126a919a291f8bea99e1a86/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        },
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/84aa298575efd7422051fc98610c587f692e99b2a778510b68404cfdb00a1d66/b22d685a2dcef100a2d4e9443f2b64acf6265d5f2126a919a291f8bea99e1a86/00000001.stdout.15da1db75e30b6696fb7e87d22c16082b269a4e320c9bd307be8c90b17f1c8e1.log",
+          "sha256": "15da1db75e30b6696fb7e87d22c16082b269a4e320c9bd307be8c90b17f1c8e1",
+          "bytes": 21286
+        }
+      },
+      "source_parent": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+      "source_snapshot": "4d60046840d5bf886bad6e4de4fd27ce1c932e93",
+      "source_bundle_sha256": "0fe2df769bb4622af5c88b9dfeda0aa7d9d3e619b1a220d78b44f5d6b4caf0ab",
+      "source_tree_matches_parent": {
+        "src": true,
+        "tests": true
+      },
+      "runtime_generation": "189c563202ae-1793002494-cb98cac97353",
+      "receipt": {
+        "claim_sha256": "017ff326240feb24f0eae5704766287a50c3e774074bfc27bf7e4390a2a7fd43",
+        "claim_path": "/mnt/shared/prismabuild-fleet/cas/local-results/v1/01/017ff326240feb24f0eae5704766287a50c3e774074bfc27bf7e4390a2a7fd43.json",
+        "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/84/84aa298575efd7422051fc98610c587f692e99b2a778510b68404cfdb00a1d66.json",
+        "receipt_sha256": "37836cb73a58c3d3386a2adebedcd5b14453556803a734adb7c73ea371ff47af",
+        "payload": {
+          "sha256": "68da97227a0a04a5f307cd008f65922fe36281ff73f23bebd16f59d268b0d56c",
+          "bytes": 18325
+        },
+        "claim_and_payload_checks_passed": true,
+        "full_manifest_execution_receipt_verified": true
+      }
+    },
+    {
+      "report": "green.json",
+      "action_key": "51b9677871cf83ca63283aedb1f6a287bf9fdd6056f3e4eb0d8f2d6036271474",
+      "summary": "7 passed, 16 warnings in 1.87s",
+      "returncode": 0,
+      "host": "sparklina",
+      "ending_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/51b9677871cf83ca63283aedb1f6a287bf9fdd6056f3e4eb0d8f2d6036271474.json",
+      "cleanup_complete": true,
+      "logs": {
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/51b9677871cf83ca63283aedb1f6a287bf9fdd6056f3e4eb0d8f2d6036271474/a66ace00beb4f73891d37b63c8b73fc847a234290faad329e1d40d45b6c933c5/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        },
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/51b9677871cf83ca63283aedb1f6a287bf9fdd6056f3e4eb0d8f2d6036271474/a66ace00beb4f73891d37b63c8b73fc847a234290faad329e1d40d45b6c933c5/00000001.stdout.c845ba2704e9f06885aeee16340e91371047698455bb0cb7812ab0e83e4b5071.log",
+          "sha256": "c845ba2704e9f06885aeee16340e91371047698455bb0cb7812ab0e83e4b5071",
+          "bytes": 11243
+        }
+      },
+      "source_parent": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+      "source_snapshot": "4d60046840d5bf886bad6e4de4fd27ce1c932e93",
+      "source_bundle_sha256": "0fe2df769bb4622af5c88b9dfeda0aa7d9d3e619b1a220d78b44f5d6b4caf0ab",
+      "source_tree_matches_parent": {
+        "src": true,
+        "tests": true
+      },
+      "runtime_generation": "189c563202ae-1793002494-cb98cac97353",
+      "receipt": {
+        "claim_sha256": "d4ce2888ea79fc668d13f300bba19229a17f7e83ad41181c135aec537e2e502e",
+        "claim_path": "/mnt/shared/prismabuild-fleet/cas/local-results/v1/d4/d4ce2888ea79fc668d13f300bba19229a17f7e83ad41181c135aec537e2e502e.json",
+        "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/51/51b9677871cf83ca63283aedb1f6a287bf9fdd6056f3e4eb0d8f2d6036271474.json",
+        "receipt_sha256": "cd365fb9c944ae8343f98ce18065d9d51e9da12068a053fc7a0821a7344fe8cf",
+        "payload": {
+          "sha256": "0934c8ad0e78926e577a83d28e055df04686e7258d628b1376193c0bcd85103e",
+          "bytes": 8277
+        },
+        "claim_and_payload_checks_passed": true,
+        "full_manifest_execution_receipt_verified": true
+      }
+    },
+    {
+      "report": "green.json",
+      "action_key": "db20e2dbfb9a621b7fd1ed950ac705fbc0553f754ed2deb0057cdae8310567c6",
+      "summary": "23 passed, 94 warnings in 1.99s",
+      "returncode": 0,
+      "host": "sparklina",
+      "ending_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/db20e2dbfb9a621b7fd1ed950ac705fbc0553f754ed2deb0057cdae8310567c6.json",
+      "cleanup_complete": true,
+      "logs": {
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/db20e2dbfb9a621b7fd1ed950ac705fbc0553f754ed2deb0057cdae8310567c6/78c13543fb145699fd956ac3fbbaa981eefe3ef33e984e0e899fdf39f74a6a88/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        },
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/db20e2dbfb9a621b7fd1ed950ac705fbc0553f754ed2deb0057cdae8310567c6/78c13543fb145699fd956ac3fbbaa981eefe3ef33e984e0e899fdf39f74a6a88/00000001.stdout.11abb69c119b39c86a721ed779547c0a98c2612d0c9c2e322760bf547bee0301.log",
+          "sha256": "11abb69c119b39c86a721ed779547c0a98c2612d0c9c2e322760bf547bee0301",
+          "bytes": 18942
+        }
+      },
+      "source_parent": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+      "source_snapshot": "4d60046840d5bf886bad6e4de4fd27ce1c932e93",
+      "source_bundle_sha256": "0fe2df769bb4622af5c88b9dfeda0aa7d9d3e619b1a220d78b44f5d6b4caf0ab",
+      "source_tree_matches_parent": {
+        "src": true,
+        "tests": true
+      },
+      "runtime_generation": "189c563202ae-1793002494-cb98cac97353",
+      "receipt": {
+        "claim_sha256": "c4c5271af1bb903e80b855f45d0250c622363ab7ec6792143de2c4e85ef57605",
+        "claim_path": "/mnt/shared/prismabuild-fleet/cas/local-results/v1/c4/c4c5271af1bb903e80b855f45d0250c622363ab7ec6792143de2c4e85ef57605.json",
+        "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/db/db20e2dbfb9a621b7fd1ed950ac705fbc0553f754ed2deb0057cdae8310567c6.json",
+        "receipt_sha256": "f2896525c8131ebbfe0747a139b3466d0ff1eb4218ca8cb13cbd944913256995",
+        "payload": {
+          "sha256": "8775b15f278701aee820afafa7d073ec3050381e760d054cdad294d52de2eb77",
+          "bytes": 15975
+        },
+        "claim_and_payload_checks_passed": true,
+        "full_manifest_execution_receipt_verified": true
+      }
+    },
+    {
+      "report": "green.json",
+      "action_key": "45a029078bef561b6c6aa68a8fc4cb81d64649173439b91dd5b2d4712296ea0c",
+      "summary": "3 passed, 6 warnings in 0.49s",
+      "returncode": 0,
+      "host": "sparklina",
+      "ending_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/45a029078bef561b6c6aa68a8fc4cb81d64649173439b91dd5b2d4712296ea0c.json",
+      "cleanup_complete": true,
+      "logs": {
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/45a029078bef561b6c6aa68a8fc4cb81d64649173439b91dd5b2d4712296ea0c/884783ba3e6529fd6daafc8ad25a525c319a61fc878edc686b79f06516d33409/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        },
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/45a029078bef561b6c6aa68a8fc4cb81d64649173439b91dd5b2d4712296ea0c/884783ba3e6529fd6daafc8ad25a525c319a61fc878edc686b79f06516d33409/00000001.stdout.080310ef3af93e7c32bbb4ebbf4f202f7df7ae96a7ee710616887903f01887c8.log",
+          "sha256": "080310ef3af93e7c32bbb4ebbf4f202f7df7ae96a7ee710616887903f01887c8",
+          "bytes": 7981
+        }
+      },
+      "source_parent": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+      "source_snapshot": "4d60046840d5bf886bad6e4de4fd27ce1c932e93",
+      "source_bundle_sha256": "0fe2df769bb4622af5c88b9dfeda0aa7d9d3e619b1a220d78b44f5d6b4caf0ab",
+      "source_tree_matches_parent": {
+        "src": true,
+        "tests": true
+      },
+      "runtime_generation": "189c563202ae-1793002494-cb98cac97353",
+      "receipt": {
+        "claim_sha256": "166a5dc13fcfff50ec465788607aa1e86bce966eab8f7ab345eb6e020ff31328",
+        "claim_path": "/mnt/shared/prismabuild-fleet/cas/local-results/v1/16/166a5dc13fcfff50ec465788607aa1e86bce966eab8f7ab345eb6e020ff31328.json",
+        "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/45/45a029078bef561b6c6aa68a8fc4cb81d64649173439b91dd5b2d4712296ea0c.json",
+        "receipt_sha256": "623a24dae5ce1d63d5827699624a9360a126104d325f297c6c318c96f2ecb396",
+        "payload": {
+          "sha256": "40e4b2e02d685e82ff912733010d07e365a5654410ca426864027203198bed4f",
+          "bytes": 5015
+        },
+        "claim_and_payload_checks_passed": true,
+        "full_manifest_execution_receipt_verified": true
+      }
+    },
+    {
+      "report": "green.json",
+      "action_key": "b92bea6001ef757864565e69b83a7ef2c3acd32cb604358b339b21ff94c50d0f",
+      "summary": "4 passed, 24 warnings in 0.68s",
+      "returncode": 0,
+      "host": "sparklina",
+      "ending_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/b92bea6001ef757864565e69b83a7ef2c3acd32cb604358b339b21ff94c50d0f.json",
+      "cleanup_complete": true,
+      "logs": {
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/b92bea6001ef757864565e69b83a7ef2c3acd32cb604358b339b21ff94c50d0f/5139e1c3685e972cf7ab2ea0c45c264cb6932eeb5da269bfbfe21ae9fda73d05/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        },
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/b92bea6001ef757864565e69b83a7ef2c3acd32cb604358b339b21ff94c50d0f/5139e1c3685e972cf7ab2ea0c45c264cb6932eeb5da269bfbfe21ae9fda73d05/00000001.stdout.766d3c279f24dee3084e748bcf762c0f01a48d46a615756c57cf815f8ed79457.log",
+          "sha256": "766d3c279f24dee3084e748bcf762c0f01a48d46a615756c57cf815f8ed79457",
+          "bytes": 8279
+        }
+      },
+      "source_parent": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+      "source_snapshot": "4d60046840d5bf886bad6e4de4fd27ce1c932e93",
+      "source_bundle_sha256": "0fe2df769bb4622af5c88b9dfeda0aa7d9d3e619b1a220d78b44f5d6b4caf0ab",
+      "source_tree_matches_parent": {
+        "src": true,
+        "tests": true
+      },
+      "runtime_generation": "189c563202ae-1793002494-cb98cac97353",
+      "receipt": {
+        "claim_sha256": "f76a46bfa739e91147bbfa15aaa7a7d7edf9373a736e3d55a098c421db68ed5f",
+        "claim_path": "/mnt/shared/prismabuild-fleet/cas/local-results/v1/f7/f76a46bfa739e91147bbfa15aaa7a7d7edf9373a736e3d55a098c421db68ed5f.json",
+        "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/b9/b92bea6001ef757864565e69b83a7ef2c3acd32cb604358b339b21ff94c50d0f.json",
+        "receipt_sha256": "04e01a9459d403360a651e51ec721ae9211bf9eec4ba53ab69efec32c958f1dd",
+        "payload": {
+          "sha256": "cc4515c48a14a85d7f1c0767bd01096594da26e6266e834f880f0b05d71341ef",
+          "bytes": 5313
+        },
+        "claim_and_payload_checks_passed": true,
+        "full_manifest_execution_receipt_verified": true
+      }
+    },
+    {
+      "report": "green.json",
+      "action_key": "e574e27bf60fc9ce16e1be6ce21ff077de6d757972eec33ee7ba7a981aa08380",
+      "summary": "3 passed, 6 warnings in 0.52s",
+      "returncode": 0,
+      "host": "sparky",
+      "ending_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/e574e27bf60fc9ce16e1be6ce21ff077de6d757972eec33ee7ba7a981aa08380.json",
+      "cleanup_complete": true,
+      "logs": {
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e574e27bf60fc9ce16e1be6ce21ff077de6d757972eec33ee7ba7a981aa08380/8d63f1a0fc7ee7b44adddec55254e767062a0b16a3437e7fe9cb58480636d61e/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        },
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e574e27bf60fc9ce16e1be6ce21ff077de6d757972eec33ee7ba7a981aa08380/8d63f1a0fc7ee7b44adddec55254e767062a0b16a3437e7fe9cb58480636d61e/00000001.stdout.5d351a986aba7ec3789b71614166c4223f7916e9076f4183939bf2ae0e6f9e4b.log",
+          "sha256": "5d351a986aba7ec3789b71614166c4223f7916e9076f4183939bf2ae0e6f9e4b",
+          "bytes": 8004
+        }
+      },
+      "source_parent": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+      "source_snapshot": "4d60046840d5bf886bad6e4de4fd27ce1c932e93",
+      "source_bundle_sha256": "0fe2df769bb4622af5c88b9dfeda0aa7d9d3e619b1a220d78b44f5d6b4caf0ab",
+      "source_tree_matches_parent": {
+        "src": true,
+        "tests": true
+      },
+      "runtime_generation": "189c563202ae-1793002494-cb98cac97353",
+      "receipt": {
+        "claim_sha256": "5ff44ff00a9111f28ec62f86a62e55ee2755396a7bf24ab86018c1803ecd8d36",
+        "claim_path": "/mnt/shared/prismabuild-fleet/cas/local-results/v1/5f/5ff44ff00a9111f28ec62f86a62e55ee2755396a7bf24ab86018c1803ecd8d36.json",
+        "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/e5/e574e27bf60fc9ce16e1be6ce21ff077de6d757972eec33ee7ba7a981aa08380.json",
+        "receipt_sha256": "3ec6989226ec382742e4a702aa05f031897c39599e4a30e5beba393821d3af25",
+        "payload": {
+          "sha256": "97a8c8990db35c92e84f5bd409e9590c23e59453f63484bd0187d57fd549b8c8",
+          "bytes": 5044
+        },
+        "claim_and_payload_checks_passed": true,
+        "full_manifest_execution_receipt_verified": true
+      }
+    },
+    {
+      "report": "green.json",
+      "action_key": "03e5d708a369da0b6e205ba631507c251492e92a1c567ad0e35f39cbe91c9ad1",
+      "summary": "30 passed, 38 warnings in 6.66s",
+      "returncode": 0,
+      "host": "sparky",
+      "ending_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/03e5d708a369da0b6e205ba631507c251492e92a1c567ad0e35f39cbe91c9ad1.json",
+      "cleanup_complete": true,
+      "logs": {
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/03e5d708a369da0b6e205ba631507c251492e92a1c567ad0e35f39cbe91c9ad1/1f45d75fee239c423c07c93d265a4919cd6508bb4ce3a26a2523dd028ee0d30f/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "bytes": 43
+        },
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/03e5d708a369da0b6e205ba631507c251492e92a1c567ad0e35f39cbe91c9ad1/1f45d75fee239c423c07c93d265a4919cd6508bb4ce3a26a2523dd028ee0d30f/00000001.stdout.b605abcefcbadbe4058ca65edaccbe1241b29a189aa26633223ded2cf0a8914b.log",
+          "sha256": "b605abcefcbadbe4058ca65edaccbe1241b29a189aa26633223ded2cf0a8914b",
+          "bytes": 19654
+        }
+      },
+      "source_parent": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+      "source_snapshot": "4d60046840d5bf886bad6e4de4fd27ce1c932e93",
+      "source_bundle_sha256": "0fe2df769bb4622af5c88b9dfeda0aa7d9d3e619b1a220d78b44f5d6b4caf0ab",
+      "source_tree_matches_parent": {
+        "src": true,
+        "tests": true
+      },
+      "runtime_generation": "189c563202ae-1793002494-cb98cac97353",
+      "receipt": {
+        "claim_sha256": "609bf2e040e46794196dcef95ad59cc86fd065540dffaf8f8bffdcf9b311ba27",
+        "claim_path": "/mnt/shared/prismabuild-fleet/cas/local-results/v1/60/609bf2e040e46794196dcef95ad59cc86fd065540dffaf8f8bffdcf9b311ba27.json",
+        "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/03/03e5d708a369da0b6e205ba631507c251492e92a1c567ad0e35f39cbe91c9ad1.json",
+        "receipt_sha256": "3c66695ebd359a483661815f91807373c333691ffaca7a774432bb89002f2dcb",
+        "payload": {
+          "sha256": "f7a546657dfc3c00ba3d53aad8bed94b96fc9af85b2ac17fc960dbe5ef7325f4",
+          "bytes": 16693
+        },
+        "claim_and_payload_checks_passed": true,
+        "full_manifest_execution_receipt_verified": true
+      }
+    },
+    {
+      "report": "scratch-mutant.json",
+      "action_key": "c8df751f9e059af4464a1b7fb46c5eacf1a07be7eacdc5fed7f776aadc0690eb",
+      "summary": "2 failed, 37 deselected in 0.38s",
+      "returncode": 1,
+      "host": "sparky",
+      "ending_path": "/mnt/shared/prismabuild-fleet/pb-queue/failed/c8df751f9e059af4464a1b7fb46c5eacf1a07be7eacdc5fed7f776aadc0690eb.json",
+      "cleanup_complete": true,
+      "logs": {
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/c8df751f9e059af4464a1b7fb46c5eacf1a07be7eacdc5fed7f776aadc0690eb/617393f8501f2c795d0390b8cd5a6fed2201be8a1d9c388128a420816e050f7f/00000001.stderr.2542d44c71caa12d608aa650135e893c3cdb2e5f11b2e8ce920b23d7c5de2356.log",
+          "sha256": "2542d44c71caa12d608aa650135e893c3cdb2e5f11b2e8ce920b23d7c5de2356",
+          "bytes": 831
+        },
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/c8df751f9e059af4464a1b7fb46c5eacf1a07be7eacdc5fed7f776aadc0690eb/617393f8501f2c795d0390b8cd5a6fed2201be8a1d9c388128a420816e050f7f/00000001.stdout.c8b0dfd782742eb8e0f34ea9e6acee935885c0e6633ef2f692fc405ca5f9c336.log",
+          "sha256": "c8b0dfd782742eb8e0f34ea9e6acee935885c0e6633ef2f692fc405ca5f9c336",
+          "bytes": 10700
+        }
+      },
+      "source_parent": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+      "source_snapshot": "95e1553b7877cd4a590a9ca831b411742071362b",
+      "source_bundle_sha256": "aa321a9e9092d2a335e264b56b9ab585a3b0553d575dc0a50f6fa7fe56413acc",
+      "source_tree_matches_parent": {
+        "src": false,
+        "tests": true
+      },
+      "runtime_generation": "189c563202ae-1793002494-cb98cac97353",
+      "receipt": null
+    }
+  ]
+}

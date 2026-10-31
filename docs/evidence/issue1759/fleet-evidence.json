@@ -1,0 +1,1503 @@
+[
+  {
+    "action_key": "6ba5d38de9ea9cf855bf2430e9a3dbe869b04bd3267ff2e3fc0da7ca3abd969e",
+    "state": "failed",
+    "outcome": {
+      "status": "failed",
+      "claimed_host": "dl380g10",
+      "finished_host": "dl380g10",
+      "attempts": 1,
+      "returncode": 1,
+      "action_returncode": 1,
+      "resource_scope_cleanup": {
+        "checked_unix": 1793024541.823405,
+        "complete": true,
+        "export": {
+          "empty": true,
+          "ok": true,
+          "released": true,
+          "retired": false,
+          "scope_id": "prismabuild-job4303e092cd46b78342a99eaa0fa89c94.slice",
+          "settled": true,
+          "stop_reason": "failed",
+          "stopped": true,
+          "stopped_unix": 1793024541.7673304,
+          "tickets_pending": false
+        },
+        "nonce": "3f803d41bdcd46419955a7788b1dcc24",
+        "released": {
+          "ok": true,
+          "scope_id": "prismabuild-job4303e092cd46b78342a99eaa0fa89c94.slice",
+          "stop_reason": "failed",
+          "stopped_unix": 1793024541.7673304
+        },
+        "telemetry": {
+          "action_key": "6ba5d38de9ea9cf855bf2430e9a3dbe869b04bd3267ff2e3fc0da7ca3abd969e",
+          "complete": true,
+          "cpu_seconds": 5.351817,
+          "cpu_system_seconds": 0.515849,
+          "cpu_user_seconds": 4.835967,
+          "errors": [],
+          "gpu_memory_max_bytes": 4294967296,
+          "host": "dl380g10",
+          "memory_current_bytes": 692224,
+          "memory_max_bytes": 4294967296,
+          "memory_peak_bytes": 144621568,
+          "nonce": "3f803d41bdcd46419955a7788b1dcc24",
+          "oom_kill": 0,
+          "oom_local": 0,
+          "process_io": {
+            "live": {},
+            "members": [
+              2262019,
+              2263036,
+              2263041,
+              2263043
+            ],
+            "processes_live": 0,
+            "processes_observed": 4,
+            "processes_unreadable": 0,
+            "rchar": 79047139,
+            "read_bytes": 4650496,
+            "retired": {
+              "rchar": 79047139,
+              "read_bytes": 4650496,
+              "syscr": 4515,
+              "syscw": 320,
+              "wchar": 8892568,
+              "write_bytes": 8785494
+            },
+            "source": "proc_io",
+            "syscr": 4515,
+            "syscw": 320,
+            "wchar": 8892568,
+            "write_bytes": 8785494
+          },
+          "sampled_unix": 1793024541.770699,
+          "scope_unit": "prismabuild-job4303e092cd46b78342a99eaa0fa89c94.slice",
+          "shape_key": "7fff74a12ddb963535f500b268aae84750a56cef120899d215721ebd44b5b3ad",
+          "termination_reason": "failed",
+          "wall_seconds": 6.570982176999678
+        }
+      }
+    },
+    "log": {
+      "stream": "stdout",
+      "attempt": 1,
+      "before_withdrawal": false,
+      "recorded_bytes": 9532,
+      "recorded_sha256": "43688406b37e3be64e884bcba39453e6fb6a5d452459498d76efeb0f9765a379",
+      "bytes_match": true,
+      "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/6ba5d38de9ea9cf855bf2430e9a3dbe869b04bd3267ff2e3fc0da7ca3abd969e/5a337494113e35428d5d2fef426a2351e7a37e0c51ffca0b911291b410734270/00000001.stdout.43688406b37e3be64e884bcba39453e6fb6a5d452459498d76efeb0f9765a379.log",
+      "present": true,
+      "total_bytes": 9532,
+      "bytes_read": 9532,
+      "truncated_head": false,
+      "lines": [
+        "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"ba526ba20a2c584ac4868b3401b99d18adfba631b06e5500272104ed19d5bfee\"}",
+        "...F",
+        "pbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\"],\"teardown_finished\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\"],\"run_nonce\":\"ba526ba20a2c584ac4868b3401b99d18adfba631b06e5500272104ed19d5bfee\"}",
+        "                                                                     [100%]",
+        "pbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\"],\"deselected\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_above_the_tier_takes_nothing\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_control_an_undeclared_waiter_of_the_same_size_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_live_declared_prefix_is_not_counted_as_evictable\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_pressure_census_receives_the_declared_keys\"],\"collect_seen\":[],\"reports\":[[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"call\",\"failed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_prelaunch_waiter_frees_orphans_1594.py\":1.677},\"first_tightened_test_budget_remaining_s\":299.3098220440006,\"file_selection\":{\"files\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"ba526ba20a2c584ac4868b3401b99d18adfba631b06e5500272104ed19d5bfee\"}",
+        "",
+        "=================================== FAILURES ===================================",
+        "_____ test_funded_queued_demand_is_not_new_money_for_the_relief[streaming] _____",
+        "",
+        "tmp_path = PosixPath('/tmp/pb-klf2vt7t/pytest/test_funded_queued_demand_is_n0')",
+        "declared = False",
+        "",
+        "    @pytest.mark.parametrize(\"declared\", [True, False], ids=[\"declared\", \"streaming\"])",
+        "    def test_funded_queued_demand_is_not_new_money_for_the_relief(tmp_path, declared) -> None:",
+        "        \"\"\"P1 (review of f3a2e3c): a row its funding covers commits nothing new.",
+        "    ",
+        "        Tier 20: three orphans (6), a landed prefix of a live reader (2) and its",
+        "        funded next row (4, held as its fence): 12 held.  The waiter's peak is 11.",
+        "        The gate adds the queued row's NEW money, which is zero, and needs 3 back.",
+        "        A probe that adds the funded row's full 4 asks for 7 against 6 reclaimable",
+        "        and concludes the relief is futile.",
+        "        \"\"\"",
+        "        queue = _queue(tmp_path, stage_gib=CAPACITY)",
+        "        stage = tmp_path / \"stage\"",
+        "        stage.mkdir()",
+        "        staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)",
+        "        movers = _orphans(queue, stage, 3)",
+        "        _funded_next(queue, stage)",
+        "        waiter = _hexkey(\"waiter-beside-funded-row\")",
+        "        plan = _declared_plan(queue, waiter, [(\"w0\", 10, declared, 1), (\"w1\", 1, False, 1)],",
+        "                              tag=\"fw\")",
+        "        _live(queue, plan, waiter)                           # peak 11",
+        ">       assert tier_cycle.window_pressure(",
+        "            queue, tiers={TIER: _tier_record(stage, gib=CAPACITY)}) == {TIER: 11}",
+        "E       AssertionError: assert {'prismabuild...dl380g10': 10} == {'prismabuild...dl380g10': 11}",
+        "E         ",
+        "E         Differing items:",
+        "E         {'prismabuild-stage:dl380g10': 10} != {'prismabuild-stage:dl380g10': 11}",
+        "E         Use -v to get more diff",
+        "",
+        "tests/test_prelaunch_waiter_frees_orphans_1594.py:210: AssertionError",
+        "----------------------------- Captured stdout call -----------------------------",
+        "{\"unix\": 1793024540.3844733, \"event\": \"manifest-row-promotion-summary\", \"replayed\": 0, \"stands_down\": 1, \"examined\": 0}",
+        "{\"unix\": 1793024540.4183547, \"event\": \"mover-published\", \"consumer\": \"66756e6465642d72656164657266756e6465642d72656164657266756e646564\", \"phase\": \"s0\", \"chunk_index\": null, \"action_key\": \"66722d33363336333733352d73302d6d66722d33363336333733352d73302d6d\", \"stage_gib\": 2}",
+        "{\"unix\": 1793024540.4185188, \"event\": \"mover-published\", \"consumer\": \"66756e6465642d72656164657266756e6465642d72656164657266756e646564\", \"phase\": \"s1\", \"chunk_index\": null, \"action_key\": \"66722d33363336333733352d73312d6d66722d33363336333733352d73312d6d\", \"stage_gib\": 4}",
+        "{\"unix\": 1793024540.4186387, \"event\": \"advance-handed-off\", \"consumer\": \"66756e6465642d72656164657266756e6465642d72656164657266756e646564\", \"tier_id\": \"prismabuild-stage:dl380g10\", \"leg\": \"mover_row\", \"mover\": \"66722d33363336333733352d73312d6d66722d33363336333733352d73312d6d\", \"moved_gib\": 4}",
+        "{\"unix\": 1793024540.4188921, \"event\": \"commitment-census\", \"calls\": 3, \"elapsed_s\": 0.0079, \"max_s\": 0.0027}",
+        "{\"unix\": 1793024540.4285378, \"event\": \"manifest-row-promotion\", \"action_key\": \"66722d33363336333733352d73312d6d66722d33363336333733352d73312d6d\", \"fresh\": true, \"outcome\": \"unreadable\"}",
+        "{\"unix\": 1793024540.4286907, \"event\": \"manifest-row-promotion-summary\", \"replayed\": 0, \"stands_down\": 0, \"examined\": 1}",
+        "{\"unix\": 1793024540.453486, \"event\": \"commitment-census\", \"calls\": 1, \"elapsed_s\": 0.0041, \"max_s\": 0.0041}",
+        "{\"unix\": 1793024540.4616168, \"event\": \"manifest-row-promotion\", \"action_key\": \"66722d33363336333733352d73312d6d66722d33363336333733352d73312d6d\", \"fresh\": true, \"outcome\": \"unreadable\"}",
+        "{\"unix\": 1793024540.4857764, \"event\": \"commitment-census\", \"calls\": 1, \"elapsed_s\": 0.0039, \"max_s\": 0.0039}",
+        "{\"unix\": 1793024540.492647, \"event\": \"manifest-row-promotion\", \"action_key\": \"66722d33363336333733352d73312d6d66722d33363336333733352d73312d6d\", \"fresh\": true, \"outcome\": \"unreadable\"}",
+        "{\"unix\": 1793024540.519783, \"event\": \"commitment-census\", \"calls\": 1, \"elapsed_s\": 0.0039, \"max_s\": 0.0039}",
+        "prismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_prelaunch_waiter_frees_orphans_1594.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [40], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_prelaunch_waiter_frees_orphans_1594.py\"], \"selected_source_sha256\": {\"tests/test_prelaunch_waiter_frees_orphans_1594.py\": \"2696e2306f86575dbb0b383db42a22e6721f847c465ad02e4b9f855d2edff809\"}, \"exitstatus\": 1}",
+        "=========================== short test summary info ============================",
+        "FAILED tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]",
+        "1 failed, 3 passed, 5 deselected in 2.42s"
+      ],
+      "lines_returned": 58
+    },
+    "summary": "1 failed, 3 passed, 5 deselected in 2.42s",
+    "receipt": {
+      "present": false,
+      "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/6b/6ba5d38de9ea9cf855bf2430e9a3dbe869b04bd3267ff2e3fc0da7ca3abd969e.json"
+    },
+    "pytest_output": "pbrun: queued 6ba5d38de9ea9cf855bf2430e9a3dbe869b04bd3267ff2e3fc0da7ca3abd969e tags=['x86'] demand={'mem_gb': 4, 'cpu': 1}  [no GPU: CUDA_VISIBLE_DEVICES=''] published_unix=1793024382.1821942\npbrun: attempt 1/1 failed (failed)\npbrun: log capture executable=/usr/bin/gnutee\nTraceback (most recent call last):\n  File \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", line 72, in <module>\n    raise SystemExit(main(worker_launcher_identity=_WORKER_LAUNCHER_IDENTITY))\n                     ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", line 7051, in main\n    result = run_local_action(\n        action,\n    ...<4 lines>...\n        worker_launcher_identity=worker_launcher_identity,\n    )\n  File \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", line 6323, in run_local_action\n    raise LocalActionError(\n    ...<14 lines>...\n    )\nprismabuild.core.LocalActionError: action argv exited with status 1\npbrun: failed on dl380g10 in 6s; rss=137.9M io w=8.4M r=4.4M\npbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"ba526ba20a2c584ac4868b3401b99d18adfba631b06e5500272104ed19d5bfee\"}\n...F\npbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\"],\"teardown_finished\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\"],\"run_nonce\":\"ba526ba20a2c584ac4868b3401b99d18adfba631b06e5500272104ed19d5bfee\"}\n                                                                     [100%]\npbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\"],\"deselected\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_above_the_tier_takes_nothing\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_control_an_undeclared_waiter_of_the_same_size_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_live_declared_prefix_is_not_counted_as_evictable\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_pressure_census_receives_the_declared_keys\"],\"collect_seen\":[],\"reports\":[[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"call\",\"failed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_prelaunch_waiter_frees_orphans_1594.py\":1.677},\"first_tightened_test_budget_remaining_s\":299.3098220440006,\"file_selection\":{\"files\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"ba526ba20a2c584ac4868b3401b99d18adfba631b06e5500272104ed19d5bfee\"}\n\n=================================== FAILURES ===================================\n_____ test_funded_queued_demand_is_not_new_money_for_the_relief[streaming] _____\n\ntmp_path = PosixPath('/tmp/pb-klf2vt7t/pytest/test_funded_queued_demand_is_n0')\ndeclared = False\n\n    @pytest.mark.parametrize(\"declared\", [True, False], ids=[\"declared\", \"streaming\"])\n    def test_funded_queued_demand_is_not_new_money_for_the_relief(tmp_path, declared) -> None:\n        \"\"\"P1 (review of f3a2e3c): a row its funding covers commits nothing new.\n    \n        Tier 20: three orphans (6), a landed prefix of a live reader (2) and its\n        funded next row (4, held as its fence): 12 held.  The waiter's peak is 11.\n        The gate adds the queued row's NEW money, which is zero, and needs 3 back.\n        A probe that adds the funded row's full 4 asks for 7 against 6 reclaimable\n        and concludes the relief is futile.\n        \"\"\"\n        queue = _queue(tmp_path, stage_gib=CAPACITY)\n        stage = tmp_path / \"stage\"\n        stage.mkdir()\n        staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)\n        movers = _orphans(queue, stage, 3)\n        _funded_next(queue, stage)\n        waiter = _hexkey(\"waiter-beside-funded-row\")\n        plan = _declared_plan(queue, waiter, [(\"w0\", 10, declared, 1), (\"w1\", 1, False, 1)],\n                              tag=\"fw\")\n        _live(queue, plan, waiter)                           # peak 11\n>       assert tier_cycle.window_pressure(\n            queue, tiers={TIER: _tier_record(stage, gib=CAPACITY)}) == {TIER: 11}\nE       AssertionError: assert {'prismabuild...dl380g10': 10} == {'prismabuild...dl380g10': 11}\nE         \nE         Differing items:\nE         {'prismabuild-stage:dl380g10': 10} != {'prismabuild-stage:dl380g10': 11}\nE         Use -v to get more diff\n\ntests/test_prelaunch_waiter_frees_orphans_1594.py:210: AssertionError\n----------------------------- Captured stdout call -----------------------------\n{\"unix\": 1793024540.3844733, \"event\": \"manifest-row-promotion-summary\", \"replayed\": 0, \"stands_down\": 1, \"examined\": 0}\n{\"unix\": 1793024540.4183547, \"event\": \"mover-published\", \"consumer\": \"66756e6465642d72656164657266756e6465642d72656164657266756e646564\", \"phase\": \"s0\", \"chunk_index\": null, \"action_key\": \"66722d33363336333733352d73302d6d66722d33363336333733352d73302d6d\", \"stage_gib\": 2}\n{\"unix\": 1793024540.4185188, \"event\": \"mover-published\", \"consumer\": \"66756e6465642d72656164657266756e6465642d72656164657266756e646564\", \"phase\": \"s1\", \"chunk_index\": null, \"action_key\": \"66722d33363336333733352d73312d6d66722d33363336333733352d73312d6d\", \"stage_gib\": 4}\n{\"unix\": 1793024540.4186387, \"event\": \"advance-handed-off\", \"consumer\": \"66756e6465642d72656164657266756e6465642d72656164657266756e646564\", \"tier_id\": \"prismabuild-stage:dl380g10\", \"leg\": \"mover_row\", \"mover\": \"66722d33363336333733352d73312d6d66722d33363336333733352d73312d6d\", \"moved_gib\": 4}\n{\"unix\": 1793024540.4188921, \"event\": \"commitment-census\", \"calls\": 3, \"elapsed_s\": 0.0079, \"max_s\": 0.0027}\n{\"unix\": 1793024540.4285378, \"event\": \"manifest-row-promotion\", \"action_key\": \"66722d33363336333733352d73312d6d66722d33363336333733352d73312d6d\", \"fresh\": true, \"outcome\": \"unreadable\"}\n{\"unix\": 1793024540.4286907, \"event\": \"manifest-row-promotion-summary\", \"replayed\": 0, \"stands_down\": 0, \"examined\": 1}\n{\"unix\": 1793024540.453486, \"event\": \"commitment-census\", \"calls\": 1, \"elapsed_s\": 0.0041, \"max_s\": 0.0041}\n{\"unix\": 1793024540.4616168, \"event\": \"manifest-row-promotion\", \"action_key\": \"66722d33363336333733352d73312d6d66722d33363336333733352d73312d6d\", \"fresh\": true, \"outcome\": \"unreadable\"}\n{\"unix\": 1793024540.4857764, \"event\": \"commitment-census\", \"calls\": 1, \"elapsed_s\": 0.0039, \"max_s\": 0.0039}\n{\"unix\": 1793024540.492647, \"event\": \"manifest-row-promotion\", \"action_key\": \"66722d33363336333733352d73312d6d66722d33363336333733352d73312d6d\", \"fresh\": true, \"outcome\": \"unreadable\"}\n{\"unix\": 1793024540.519783, \"event\": \"commitment-census\", \"calls\": 1, \"elapsed_s\": 0.0039, \"max_s\": 0.0039}\nprismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_prelaunch_waiter_frees_orphans_1594.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [40], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_prelaunch_waiter_frees_orphans_1594.py\"], \"selected_source_sha256\": {\"tests/test_prelaunch_waiter_frees_orphans_1594.py\": \"2696e2306f86575dbb0b383db42a22e6721f847c465ad02e4b9f855d2edff809\"}, \"exitstatus\": 1}\n=========================== short test summary info ============================\nFAILED tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\n1 failed, 3 passed, 5 deselected in 2.42s\n"
+  },
+  {
+    "action_key": "2eedb35d3ab3cea1e95ef7e9a316eeaaa2397d012da03e9dd06abc01c60e6da8",
+    "state": "done",
+    "outcome": {
+      "status": "executed",
+      "claimed_host": "dl380g10",
+      "finished_host": "dl380g10",
+      "attempts": 1,
+      "returncode": 0,
+      "action_returncode": null,
+      "resource_scope_cleanup": {
+        "checked_unix": 1793025540.9392586,
+        "complete": true,
+        "export": {
+          "empty": true,
+          "ok": true,
+          "released": true,
+          "retired": false,
+          "scope_id": "prismabuild-jobc37db913d94d18978b5417013379644f.slice",
+          "settled": true,
+          "stop_reason": "executed",
+          "stopped": true,
+          "stopped_unix": 1793025540.8937492,
+          "tickets_pending": false
+        },
+        "nonce": "9fa297dd429b4649b973c28917576c3f",
+        "released": {
+          "ok": true,
+          "scope_id": "prismabuild-jobc37db913d94d18978b5417013379644f.slice",
+          "stop_reason": "executed",
+          "stopped_unix": 1793025540.8937492
+        },
+        "telemetry": {
+          "action_key": "2eedb35d3ab3cea1e95ef7e9a316eeaaa2397d012da03e9dd06abc01c60e6da8",
+          "complete": true,
+          "cpu_seconds": 6.201726,
+          "cpu_system_seconds": 0.724514,
+          "cpu_user_seconds": 5.477212,
+          "errors": [],
+          "gpu_memory_max_bytes": 4294967296,
+          "host": "dl380g10",
+          "memory_current_bytes": 606208,
+          "memory_max_bytes": 4294967296,
+          "memory_peak_bytes": 190717952,
+          "nonce": "9fa297dd429b4649b973c28917576c3f",
+          "oom_kill": 0,
+          "oom_local": 0,
+          "process_io": {
+            "live": {},
+            "members": [
+              3033949,
+              3034172,
+              3034175,
+              3034176
+            ],
+            "processes_live": 0,
+            "processes_observed": 4,
+            "processes_unreadable": 0,
+            "rchar": 97091178,
+            "read_bytes": 1589760,
+            "retired": {
+              "rchar": 97091178,
+              "read_bytes": 1589760,
+              "syscr": 16192,
+              "syscw": 1420,
+              "wchar": 9440386,
+              "write_bytes": 8785370
+            },
+            "source": "proc_io",
+            "syscr": 16192,
+            "syscw": 1420,
+            "wchar": 9440386,
+            "write_bytes": 8785370
+          },
+          "sampled_unix": 1793025540.8964403,
+          "scope_unit": "prismabuild-jobc37db913d94d18978b5417013379644f.slice",
+          "shape_key": "a447ca1f436b4c6f610da80a0426e5b4b8a70bbe29b8ef011aaaf9af07712dee",
+          "termination_reason": "executed",
+          "wall_seconds": 7.223496819002321
+        }
+      }
+    },
+    "log": {
+      "stream": "stdout",
+      "attempt": 1,
+      "before_withdrawal": false,
+      "recorded_bytes": 10540,
+      "recorded_sha256": "74dc34a8b6230c2a1bb3b975d8e10d80259773d91e6c9ce269c515c41214c416",
+      "bytes_match": true,
+      "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2eedb35d3ab3cea1e95ef7e9a316eeaaa2397d012da03e9dd06abc01c60e6da8/c6a5320cab7b386afe026ecb647f4b9498d6bf62a102ebb2056171e8d547cac7/00000001.stdout.74dc34a8b6230c2a1bb3b975d8e10d80259773d91e6c9ce269c515c41214c416.log",
+      "present": true,
+      "total_bytes": 10540,
+      "bytes_read": 10540,
+      "truncated_head": false,
+      "lines": [
+        "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"e88350a17c98f5ed25984efb002230afc49b6f628d55e4e0de8e65d8c57678be\"}",
+        ".........",
+        "pbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_above_the_tier_takes_nothing\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_control_an_undeclared_waiter_of_the_same_size_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_live_declared_prefix_is_not_counted_as_evictable\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_pressure_census_receives_the_declared_keys\"],\"teardown_finished\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_above_the_tier_takes_nothing\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_live_declared_prefix_is_not_counted_as_evictable\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_control_an_undeclared_waiter_of_the_same_size_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_pressure_census_receives_the_declared_keys\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_above_the_tier_takes_nothing\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_live_declared_prefix_is_not_counted_as_evictable\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_control_an_undeclared_waiter_of_the_same_size_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_pressure_census_receives_the_declared_keys\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\"],\"run_nonce\":\"e88350a17c98f5ed25984efb002230afc49b6f628d55e4e0de8e65d8c57678be\"}",
+        "                                                                [100%]",
+        "pbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_above_the_tier_takes_nothing\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_control_an_undeclared_waiter_of_the_same_size_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_live_declared_prefix_is_not_counted_as_evictable\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_pressure_census_receives_the_declared_keys\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_above_the_tier_takes_nothing\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_control_an_undeclared_waiter_of_the_same_size_gets_room_from_orphans\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_live_declared_prefix_is_not_counted_as_evictable\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_pressure_census_receives_the_declared_keys\",\"call\",\"passed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_prelaunch_waiter_frees_orphans_1594.py\":2.719},\"first_tightened_test_budget_remaining_s\":299.40713650099497,\"file_selection\":{\"files\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"e88350a17c98f5ed25984efb002230afc49b6f628d55e4e0de8e65d8c57678be\"}",
+        "",
+        "prismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_prelaunch_waiter_frees_orphans_1594.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [0], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_prelaunch_waiter_frees_orphans_1594.py\"], \"selected_source_sha256\": {\"tests/test_prelaunch_waiter_frees_orphans_1594.py\": \"2696e2306f86575dbb0b383db42a22e6721f847c465ad02e4b9f855d2edff809\"}, \"exitstatus\": 0}",
+        "9 passed in 3.34s",
+        "{\"local_result_claim_sha256\": \"9381984620e023f86cd51a1b1ca1c252eb7ee53824313a82685b0ea5432bf043\", \"payload_path\": \"/mnt/shared/prismabuild-fleet/cas/blobs/1a/1aa1d5f874101e0262404c1e9aff2b12d46402d4c24c531a800205ac4dfb514e\", \"reaped_staging_files\": 0, \"receipt\": {\"action_key\": \"2eedb35d3ab3cea1e95ef7e9a316eeaaa2397d012da03e9dd06abc01c60e6da8\", \"action_manifest_sha256\": \"5352d1912df1217e835d8d44f9cc6e6b87b255215072c78300ce81bcacb2b601\", \"producer\": {\"action_key\": \"2eedb35d3ab3cea1e95ef7e9a316eeaaa2397d012da03e9dd06abc01c60e6da8\", \"attestation_sha256\": \"bc548b9f37f834317f45e3a4f264d41ce88df7aaf65f2e54919d649b20fd0e85\", \"evidence\": {\"accelerators\": [], \"hostname\": \"dl380g10\", \"libc\": \"glibc-2.43\", \"machine\": \"x86_64\", \"slurm\": null, \"source\": \"local\", \"system\": \"linux\"}, \"executable\": {\"bytes\": 1540520, \"path\": \"/bin/bash\", \"resolved_path\": \"/usr/bin/bash\", \"sha256\": \"3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd\"}, \"host_class\": null, \"inputs\": [{\"bytes\": 46210522, \"id\": \"pbrun.checkout-snapshot\", \"sha256\": \"b42928c19b3aac720379c6d4737e921d2962eff2887919e35f17cfe90d79501c\"}], \"platform_key\": \"linux-x86_64\", \"runtime\": {\"core\": {\"bytes\": 305687, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", \"sha256\": \"d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461\"}, \"digest_primitives\": {\"bytes\": 5078, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py\", \"sha256\": \"25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf\"}, \"launch_kind\": \"script\", \"launcher\": {\"bytes\": 2285, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", \"sha256\": \"9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418\"}, \"runtime_sha256\": \"6223fa6761bd60b0e4f6c8bf544ae003ad9e6a6b7242a29180a2c8f5a2beac94\", \"schema\": \"prismaquant.prismabuild.worker_runtime.v1\"}, \"schema\": \"prismaquant.prismabuild.worker_attestation.v2\", \"toolchain\": {\"declared\": {}, \"verified\": {}}, \"worker_id\": \"dl380g10\"}, \"receipt_sha256\": \"ae0af507388191019a91afa0585ddccbd7ddcd859ddf6eed837e54661094a3bf\", \"result\": {\"bytes\": 7663, \"sha256\": \"1aa1d5f874101e0262404c1e9aff2b12d46402d4c24c531a800205ac4dfb514e\"}, \"schema\": \"prismaquant.prismabuild.cas_receipt.v3\"}, \"recovered_declared_result\": false, \"status\": \"published\"}"
+      ],
+      "lines_returned": 9
+    },
+    "summary": "9 passed in 3.34s",
+    "receipt": {
+      "present": true,
+      "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/2e/2eedb35d3ab3cea1e95ef7e9a316eeaaa2397d012da03e9dd06abc01c60e6da8.json",
+      "action_manifest_sha256": "5352d1912df1217e835d8d44f9cc6e6b87b255215072c78300ce81bcacb2b601",
+      "receipt_sha256": "ae0af507388191019a91afa0585ddccbd7ddcd859ddf6eed837e54661094a3bf",
+      "result": {
+        "sha256": "1aa1d5f874101e0262404c1e9aff2b12d46402d4c24c531a800205ac4dfb514e",
+        "bytes": 7663
+      }
+    },
+    "pytest_output": "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"e88350a17c98f5ed25984efb002230afc49b6f628d55e4e0de8e65d8c57678be\"}\n.........\npbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_above_the_tier_takes_nothing\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_control_an_undeclared_waiter_of_the_same_size_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_live_declared_prefix_is_not_counted_as_evictable\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_pressure_census_receives_the_declared_keys\"],\"teardown_finished\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_above_the_tier_takes_nothing\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_live_declared_prefix_is_not_counted_as_evictable\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_control_an_undeclared_waiter_of_the_same_size_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_pressure_census_receives_the_declared_keys\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_above_the_tier_takes_nothing\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_live_declared_prefix_is_not_counted_as_evictable\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_control_an_undeclared_waiter_of_the_same_size_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_pressure_census_receives_the_declared_keys\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\"],\"run_nonce\":\"e88350a17c98f5ed25984efb002230afc49b6f628d55e4e0de8e65d8c57678be\"}\n                                                                [100%]\npbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_above_the_tier_takes_nothing\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_control_an_undeclared_waiter_of_the_same_size_gets_room_from_orphans\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_live_declared_prefix_is_not_counted_as_evictable\",\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_pressure_census_receives_the_declared_keys\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_declared_waiter_above_the_tier_takes_nothing\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_control_an_undeclared_waiter_of_the_same_size_gets_room_from_orphans\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[declared]\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_relief_counts_queued_demand_the_gate_counts[streaming]\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[declared]\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_funded_queued_demand_is_not_new_money_for_the_relief[streaming]\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_a_live_declared_prefix_is_not_counted_as_evictable\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_waiter_frees_orphans_1594.py::test_the_pressure_census_receives_the_declared_keys\",\"call\",\"passed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_prelaunch_waiter_frees_orphans_1594.py\":2.719},\"first_tightened_test_budget_remaining_s\":299.40713650099497,\"file_selection\":{\"files\":[\"tests/test_prelaunch_waiter_frees_orphans_1594.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"e88350a17c98f5ed25984efb002230afc49b6f628d55e4e0de8e65d8c57678be\"}\n\nprismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_prelaunch_waiter_frees_orphans_1594.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [0], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_prelaunch_waiter_frees_orphans_1594.py\"], \"selected_source_sha256\": {\"tests/test_prelaunch_waiter_frees_orphans_1594.py\": \"2696e2306f86575dbb0b383db42a22e6721f847c465ad02e4b9f855d2edff809\"}, \"exitstatus\": 0}\n9 passed in 3.34s\n",
+    "cas_receipt": {
+      "schema": "prismaquant.prismabuild.cas_receipt.v3",
+      "action_key": "2eedb35d3ab3cea1e95ef7e9a316eeaaa2397d012da03e9dd06abc01c60e6da8",
+      "action_manifest_sha256": "5352d1912df1217e835d8d44f9cc6e6b87b255215072c78300ce81bcacb2b601",
+      "result": {
+        "sha256": "1aa1d5f874101e0262404c1e9aff2b12d46402d4c24c531a800205ac4dfb514e",
+        "bytes": 7663
+      },
+      "producer": {
+        "schema": "prismaquant.prismabuild.worker_attestation.v2",
+        "action_key": "2eedb35d3ab3cea1e95ef7e9a316eeaaa2397d012da03e9dd06abc01c60e6da8",
+        "worker_id": "dl380g10",
+        "platform_key": "linux-x86_64",
+        "host_class": null,
+        "evidence": {
+          "source": "local",
+          "hostname": "dl380g10",
+          "system": "linux",
+          "machine": "x86_64",
+          "libc": "glibc-2.43",
+          "accelerators": [],
+          "slurm": null
+        },
+        "runtime": {
+          "schema": "prismaquant.prismabuild.worker_runtime.v1",
+          "launch_kind": "script",
+          "core": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py",
+            "sha256": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+            "bytes": 305687
+          },
+          "launcher": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py",
+            "sha256": "9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418",
+            "bytes": 2285
+          },
+          "digest_primitives": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py",
+            "sha256": "25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf",
+            "bytes": 5078
+          },
+          "runtime_sha256": "6223fa6761bd60b0e4f6c8bf544ae003ad9e6a6b7242a29180a2c8f5a2beac94"
+        },
+        "executable": {
+          "path": "/bin/bash",
+          "resolved_path": "/usr/bin/bash",
+          "sha256": "3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd",
+          "bytes": 1540520
+        },
+        "toolchain": {
+          "declared": {},
+          "verified": {}
+        },
+        "inputs": [
+          {
+            "id": "pbrun.checkout-snapshot",
+            "sha256": "b42928c19b3aac720379c6d4737e921d2962eff2887919e35f17cfe90d79501c",
+            "bytes": 46210522
+          }
+        ],
+        "attestation_sha256": "bc548b9f37f834317f45e3a4f264d41ce88df7aaf65f2e54919d649b20fd0e85"
+      },
+      "receipt_sha256": "ae0af507388191019a91afa0585ddccbd7ddcd859ddf6eed837e54661094a3bf"
+    },
+    "checks": {
+      "full_manifest_cas_lookup": true,
+      "local_claim_and_payload_sha256": true
+    }
+  },
+  {
+    "action_key": "43807ca111e4d5ee80a8f8e669b3f5878d0add82d4bce1e9494e2447475b3713",
+    "state": "done",
+    "outcome": {
+      "status": "executed",
+      "claimed_host": "dl380g10",
+      "finished_host": "dl380g10",
+      "attempts": 1,
+      "returncode": 0,
+      "action_returncode": null,
+      "resource_scope_cleanup": {
+        "checked_unix": 1793025538.0112383,
+        "complete": true,
+        "export": {
+          "empty": true,
+          "ok": true,
+          "released": true,
+          "retired": false,
+          "scope_id": "prismabuild-jobb8521d1c2e3ab65c6c57a5728baaad28.slice",
+          "settled": true,
+          "stop_reason": "executed",
+          "stopped": true,
+          "stopped_unix": 1793025537.9684808,
+          "tickets_pending": false
+        },
+        "nonce": "8e6e6bb6816544a1a6e97ca265273da2",
+        "released": {
+          "ok": true,
+          "scope_id": "prismabuild-jobb8521d1c2e3ab65c6c57a5728baaad28.slice",
+          "stop_reason": "executed",
+          "stopped_unix": 1793025537.9684808
+        },
+        "telemetry": {
+          "action_key": "43807ca111e4d5ee80a8f8e669b3f5878d0add82d4bce1e9494e2447475b3713",
+          "complete": true,
+          "cpu_seconds": 3.416928,
+          "cpu_system_seconds": 0.313176,
+          "cpu_user_seconds": 3.103751,
+          "errors": [],
+          "gpu_memory_max_bytes": 4294967296,
+          "host": "dl380g10",
+          "memory_current_bytes": 675840,
+          "memory_max_bytes": 4294967296,
+          "memory_peak_bytes": 173899776,
+          "nonce": "8e6e6bb6816544a1a6e97ca265273da2",
+          "oom_kill": 0,
+          "oom_local": 0,
+          "process_io": {
+            "live": {},
+            "members": [
+              3033934,
+              3034105,
+              3034110,
+              3034111
+            ],
+            "processes_live": 0,
+            "processes_observed": 4,
+            "processes_unreadable": 0,
+            "rchar": 82623580,
+            "read_bytes": 66560,
+            "retired": {
+              "rchar": 82623580,
+              "read_bytes": 66560,
+              "syscr": 3905,
+              "syscw": 49,
+              "wchar": 2939091,
+              "write_bytes": 2918328
+            },
+            "source": "proc_io",
+            "syscr": 3905,
+            "syscw": 49,
+            "wchar": 2939091,
+            "write_bytes": 2918328
+          },
+          "sampled_unix": 1793025537.9703953,
+          "scope_unit": "prismabuild-jobb8521d1c2e3ab65c6c57a5728baaad28.slice",
+          "shape_key": "a0d7ca6f95abeeae643dcc1cf9cf99e81f83e514ea76a2698e1783a1d7ddb7a2",
+          "termination_reason": "executed",
+          "wall_seconds": 4.423243586003082
+        }
+      }
+    },
+    "log": {
+      "stream": "stdout",
+      "attempt": 1,
+      "before_withdrawal": false,
+      "recorded_bytes": 7279,
+      "recorded_sha256": "91a991276fea2c1d50122927407066ccce11ddf7a604c9414d4b38aa7bd4d10b",
+      "bytes_match": true,
+      "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/43807ca111e4d5ee80a8f8e669b3f5878d0add82d4bce1e9494e2447475b3713/e337a5c5a2d2d4575b5ae10728b7a2c72e95ab6626d3f7d6e20ea76a5c3fcfd2/00000001.stdout.91a991276fea2c1d50122927407066ccce11ddf7a604c9414d4b38aa7bd4d10b.log",
+      "present": true,
+      "total_bytes": 7279,
+      "bytes_read": 7279,
+      "truncated_head": false,
+      "lines": [
+        "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"2f416c8e42558e4809431db87199362d60c2f770a2e04d4fc90c52eeb2bc8a80\"}",
+        "....",
+        "pbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_ready_claim_short_on_tier_tokens_evicts_oldest_orphans_just_enough\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[9]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[11]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_withdrawn_ready_claim_asks_for_nothing\"],\"teardown_finished\":[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[11]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[9]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_ready_claim_short_on_tier_tokens_evicts_oldest_orphans_just_enough\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_withdrawn_ready_claim_asks_for_nothing\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[11]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[9]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_ready_claim_short_on_tier_tokens_evicts_oldest_orphans_just_enough\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_withdrawn_ready_claim_asks_for_nothing\"],\"run_nonce\":\"2f416c8e42558e4809431db87199362d60c2f770a2e04d4fc90c52eeb2bc8a80\"}",
+        "                                                                     [100%]",
+        "pbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_ready_claim_short_on_tier_tokens_evicts_oldest_orphans_just_enough\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[9]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[11]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_withdrawn_ready_claim_asks_for_nothing\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_ready_claim_short_on_tier_tokens_evicts_oldest_orphans_just_enough\",\"call\",\"passed\",null,null],[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[9]\",\"call\",\"passed\",null,null],[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[11]\",\"call\",\"passed\",null,null],[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_withdrawn_ready_claim_asks_for_nothing\",\"call\",\"passed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_a_ready_claim_is_tier_pressure.py\":0.168},\"first_tightened_test_budget_remaining_s\":299.6522777229984,\"file_selection\":{\"files\":[\"tests/test_a_ready_claim_is_tier_pressure.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"2f416c8e42558e4809431db87199362d60c2f770a2e04d4fc90c52eeb2bc8a80\"}",
+        "",
+        "prismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_a_ready_claim_is_tier_pressure.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [1], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_a_ready_claim_is_tier_pressure.py\"], \"selected_source_sha256\": {\"tests/test_a_ready_claim_is_tier_pressure.py\": \"9553db121c5ff5cc8d85ac039657cfb701bd9f9b9c4f0e0f4431ccad5eb9698d\"}, \"exitstatus\": 0}",
+        "4 passed in 0.55s",
+        "{\"local_result_claim_sha256\": \"11cf43f17a16856383987abfa2a5263d52f66af1d50670e3f8ba04dc62788dfd\", \"payload_path\": \"/mnt/shared/prismabuild-fleet/cas/blobs/8e/8e794569c514675644c3f3a1093f964c1021609f089644b29b027e52aef707be\", \"reaped_staging_files\": 0, \"receipt\": {\"action_key\": \"43807ca111e4d5ee80a8f8e669b3f5878d0add82d4bce1e9494e2447475b3713\", \"action_manifest_sha256\": \"3c351f545f695c36e3a0a51e94ce77414e095bfd78ab527b90482905d0889574\", \"producer\": {\"action_key\": \"43807ca111e4d5ee80a8f8e669b3f5878d0add82d4bce1e9494e2447475b3713\", \"attestation_sha256\": \"5926a6c82be5825d877dfc794279c3d40b33295b9ad6166e6ddc0a03f4a42dc2\", \"evidence\": {\"accelerators\": [], \"hostname\": \"dl380g10\", \"libc\": \"glibc-2.43\", \"machine\": \"x86_64\", \"slurm\": null, \"source\": \"local\", \"system\": \"linux\"}, \"executable\": {\"bytes\": 1540520, \"path\": \"/bin/bash\", \"resolved_path\": \"/usr/bin/bash\", \"sha256\": \"3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd\"}, \"host_class\": null, \"inputs\": [{\"bytes\": 46210522, \"id\": \"pbrun.checkout-snapshot\", \"sha256\": \"b42928c19b3aac720379c6d4737e921d2962eff2887919e35f17cfe90d79501c\"}], \"platform_key\": \"linux-x86_64\", \"runtime\": {\"core\": {\"bytes\": 305687, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", \"sha256\": \"d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461\"}, \"digest_primitives\": {\"bytes\": 5078, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py\", \"sha256\": \"25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf\"}, \"launch_kind\": \"script\", \"launcher\": {\"bytes\": 2285, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", \"sha256\": \"9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418\"}, \"runtime_sha256\": \"6223fa6761bd60b0e4f6c8bf544ae003ad9e6a6b7242a29180a2c8f5a2beac94\", \"schema\": \"prismaquant.prismabuild.worker_runtime.v1\"}, \"schema\": \"prismaquant.prismabuild.worker_attestation.v2\", \"toolchain\": {\"declared\": {}, \"verified\": {}}, \"worker_id\": \"dl380g10\"}, \"receipt_sha256\": \"4ca1b7a7fdf64bd02e8d184df6d53749f9138c234cb07e0a6463b26b0f70f763\", \"result\": {\"bytes\": 4402, \"sha256\": \"8e794569c514675644c3f3a1093f964c1021609f089644b29b027e52aef707be\"}, \"schema\": \"prismaquant.prismabuild.cas_receipt.v3\"}, \"recovered_declared_result\": false, \"status\": \"published\"}"
+      ],
+      "lines_returned": 9
+    },
+    "summary": "4 passed in 0.55s",
+    "receipt": {
+      "present": true,
+      "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/43/43807ca111e4d5ee80a8f8e669b3f5878d0add82d4bce1e9494e2447475b3713.json",
+      "action_manifest_sha256": "3c351f545f695c36e3a0a51e94ce77414e095bfd78ab527b90482905d0889574",
+      "receipt_sha256": "4ca1b7a7fdf64bd02e8d184df6d53749f9138c234cb07e0a6463b26b0f70f763",
+      "result": {
+        "sha256": "8e794569c514675644c3f3a1093f964c1021609f089644b29b027e52aef707be",
+        "bytes": 4402
+      }
+    },
+    "pytest_output": "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"2f416c8e42558e4809431db87199362d60c2f770a2e04d4fc90c52eeb2bc8a80\"}\n....\npbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_ready_claim_short_on_tier_tokens_evicts_oldest_orphans_just_enough\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[9]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[11]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_withdrawn_ready_claim_asks_for_nothing\"],\"teardown_finished\":[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[11]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[9]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_ready_claim_short_on_tier_tokens_evicts_oldest_orphans_just_enough\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_withdrawn_ready_claim_asks_for_nothing\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[11]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[9]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_ready_claim_short_on_tier_tokens_evicts_oldest_orphans_just_enough\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_withdrawn_ready_claim_asks_for_nothing\"],\"run_nonce\":\"2f416c8e42558e4809431db87199362d60c2f770a2e04d4fc90c52eeb2bc8a80\"}\n                                                                     [100%]\npbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_ready_claim_short_on_tier_tokens_evicts_oldest_orphans_just_enough\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[9]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[11]\",\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_withdrawn_ready_claim_asks_for_nothing\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_ready_claim_short_on_tier_tokens_evicts_oldest_orphans_just_enough\",\"call\",\"passed\",null,null],[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[9]\",\"call\",\"passed\",null,null],[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_claim_no_eviction_can_seat_asks_for_nothing[11]\",\"call\",\"passed\",null,null],[\"tests/test_a_ready_claim_is_tier_pressure.py::test_a_withdrawn_ready_claim_asks_for_nothing\",\"call\",\"passed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_a_ready_claim_is_tier_pressure.py\":0.168},\"first_tightened_test_budget_remaining_s\":299.6522777229984,\"file_selection\":{\"files\":[\"tests/test_a_ready_claim_is_tier_pressure.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"2f416c8e42558e4809431db87199362d60c2f770a2e04d4fc90c52eeb2bc8a80\"}\n\nprismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_a_ready_claim_is_tier_pressure.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [1], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_a_ready_claim_is_tier_pressure.py\"], \"selected_source_sha256\": {\"tests/test_a_ready_claim_is_tier_pressure.py\": \"9553db121c5ff5cc8d85ac039657cfb701bd9f9b9c4f0e0f4431ccad5eb9698d\"}, \"exitstatus\": 0}\n4 passed in 0.55s\n",
+    "cas_receipt": {
+      "schema": "prismaquant.prismabuild.cas_receipt.v3",
+      "action_key": "43807ca111e4d5ee80a8f8e669b3f5878d0add82d4bce1e9494e2447475b3713",
+      "action_manifest_sha256": "3c351f545f695c36e3a0a51e94ce77414e095bfd78ab527b90482905d0889574",
+      "result": {
+        "sha256": "8e794569c514675644c3f3a1093f964c1021609f089644b29b027e52aef707be",
+        "bytes": 4402
+      },
+      "producer": {
+        "schema": "prismaquant.prismabuild.worker_attestation.v2",
+        "action_key": "43807ca111e4d5ee80a8f8e669b3f5878d0add82d4bce1e9494e2447475b3713",
+        "worker_id": "dl380g10",
+        "platform_key": "linux-x86_64",
+        "host_class": null,
+        "evidence": {
+          "source": "local",
+          "hostname": "dl380g10",
+          "system": "linux",
+          "machine": "x86_64",
+          "libc": "glibc-2.43",
+          "accelerators": [],
+          "slurm": null
+        },
+        "runtime": {
+          "schema": "prismaquant.prismabuild.worker_runtime.v1",
+          "launch_kind": "script",
+          "core": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py",
+            "sha256": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+            "bytes": 305687
+          },
+          "launcher": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py",
+            "sha256": "9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418",
+            "bytes": 2285
+          },
+          "digest_primitives": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py",
+            "sha256": "25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf",
+            "bytes": 5078
+          },
+          "runtime_sha256": "6223fa6761bd60b0e4f6c8bf544ae003ad9e6a6b7242a29180a2c8f5a2beac94"
+        },
+        "executable": {
+          "path": "/bin/bash",
+          "resolved_path": "/usr/bin/bash",
+          "sha256": "3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd",
+          "bytes": 1540520
+        },
+        "toolchain": {
+          "declared": {},
+          "verified": {}
+        },
+        "inputs": [
+          {
+            "id": "pbrun.checkout-snapshot",
+            "sha256": "b42928c19b3aac720379c6d4737e921d2962eff2887919e35f17cfe90d79501c",
+            "bytes": 46210522
+          }
+        ],
+        "attestation_sha256": "5926a6c82be5825d877dfc794279c3d40b33295b9ad6166e6ddc0a03f4a42dc2"
+      },
+      "receipt_sha256": "4ca1b7a7fdf64bd02e8d184df6d53749f9138c234cb07e0a6463b26b0f70f763"
+    },
+    "checks": {
+      "full_manifest_cas_lookup": true,
+      "local_claim_and_payload_sha256": true
+    }
+  },
+  {
+    "action_key": "9af77f2ce05897db9c567957c0032dee97a8d79eb833e27d8eefe2451026c099",
+    "state": "done",
+    "outcome": {
+      "status": "executed",
+      "claimed_host": "dl380g10",
+      "finished_host": "dl380g10",
+      "attempts": 1,
+      "returncode": 0,
+      "action_returncode": null,
+      "resource_scope_cleanup": {
+        "checked_unix": 1793025538.8622322,
+        "complete": true,
+        "export": {
+          "empty": true,
+          "ok": true,
+          "released": true,
+          "retired": false,
+          "scope_id": "prismabuild-jobf9a0d308875f13ad4fa3854cd8f2d69d.slice",
+          "settled": true,
+          "stop_reason": "executed",
+          "stopped": true,
+          "stopped_unix": 1793025538.8163831,
+          "tickets_pending": false
+        },
+        "nonce": "06233f30091f4f5a85234e632d5ef678",
+        "released": {
+          "ok": true,
+          "scope_id": "prismabuild-jobf9a0d308875f13ad4fa3854cd8f2d69d.slice",
+          "stop_reason": "executed",
+          "stopped_unix": 1793025538.8163831
+        },
+        "telemetry": {
+          "action_key": "9af77f2ce05897db9c567957c0032dee97a8d79eb833e27d8eefe2451026c099",
+          "complete": true,
+          "cpu_seconds": 4.043346,
+          "cpu_system_seconds": 0.410832,
+          "cpu_user_seconds": 3.632514,
+          "errors": [],
+          "gpu_memory_max_bytes": 4294967296,
+          "host": "dl380g10",
+          "memory_current_bytes": 786432,
+          "memory_max_bytes": 4294967296,
+          "memory_peak_bytes": 190480384,
+          "nonce": "06233f30091f4f5a85234e632d5ef678",
+          "oom_kill": 0,
+          "oom_local": 0,
+          "process_io": {
+            "live": {},
+            "members": [
+              3033967,
+              3034225,
+              3034227,
+              3034228
+            ],
+            "processes_live": 0,
+            "processes_observed": 4,
+            "processes_unreadable": 0,
+            "rchar": 105795454,
+            "read_bytes": 1046016,
+            "retired": {
+              "rchar": 105795454,
+              "read_bytes": 1046016,
+              "syscr": 4934,
+              "syscw": 266,
+              "wchar": 8724769,
+              "write_bytes": 8594295
+            },
+            "source": "proc_io",
+            "syscr": 4934,
+            "syscw": 266,
+            "wchar": 8724769,
+            "write_bytes": 8594295
+          },
+          "sampled_unix": 1793025538.8185089,
+          "scope_unit": "prismabuild-jobf9a0d308875f13ad4fa3854cd8f2d69d.slice",
+          "shape_key": "dcb1c4f54cc86b5b19852ac35ada34186fe2554b0530564f0d874da42b00515b",
+          "termination_reason": "executed",
+          "wall_seconds": 5.00842654700682
+        }
+      }
+    },
+    "log": {
+      "stream": "stdout",
+      "attempt": 1,
+      "before_withdrawal": false,
+      "recorded_bytes": 10171,
+      "recorded_sha256": "c40f7ac67380e9ae9cae2524fe3a009e76db62c4c27bce61033e0c83a7e604d9",
+      "bytes_match": true,
+      "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/9af77f2ce05897db9c567957c0032dee97a8d79eb833e27d8eefe2451026c099/fb8ef60b92a776487a948f8b6aa8f7dc77a1e34593ff2ecd85b26f389dbcca4f/00000001.stdout.c40f7ac67380e9ae9cae2524fe3a009e76db62c4c27bce61033e0c83a7e604d9.log",
+      "present": true,
+      "total_bytes": 10171,
+      "bytes_read": 10171,
+      "truncated_head": false,
+      "lines": [
+        "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"729d73a71049af1f9d901b8f5a3549aa067a3cfad07a4f32a09a69c105c46f87\"}",
+        "...........",
+        "pbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_prelaunch_tier_gate_1594.py::test_fresh_declared_newcomers_admit_one_then_stall\",\"tests/test_prelaunch_tier_gate_1594.py::test_second_declared_newcomer_waits_on_commitment\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_peak_past_capacity_refuses_for_good\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_newcomer_waits_then_proceeds\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_queue_gates_like_a_direct_call\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_holder_is_no_newcomer\",\"tests/test_prelaunch_tier_gate_1594.py::test_claim_order_pass_spares_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_horizon_pass_keeps_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_complete_census_releases_an_orphan_holder\",\"tests/test_prelaunch_tier_gate_1594.py::test_incomplete_census_withholds_the_release\",\"tests/test_prelaunch_tier_gate_1594.py::test_live_holders_survive_the_dangling_pass\"],\"teardown_finished\":[\"tests/test_prelaunch_tier_gate_1594.py::test_claim_order_pass_spares_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_complete_census_releases_an_orphan_holder\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_holder_is_no_newcomer\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_peak_past_capacity_refuses_for_good\",\"tests/test_prelaunch_tier_gate_1594.py::test_fresh_declared_newcomers_admit_one_then_stall\",\"tests/test_prelaunch_tier_gate_1594.py::test_horizon_pass_keeps_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_incomplete_census_withholds_the_release\",\"tests/test_prelaunch_tier_gate_1594.py::test_live_holders_survive_the_dangling_pass\",\"tests/test_prelaunch_tier_gate_1594.py::test_second_declared_newcomer_waits_on_commitment\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_newcomer_waits_then_proceeds\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_queue_gates_like_a_direct_call\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_prelaunch_tier_gate_1594.py::test_claim_order_pass_spares_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_complete_census_releases_an_orphan_holder\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_holder_is_no_newcomer\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_peak_past_capacity_refuses_for_good\",\"tests/test_prelaunch_tier_gate_1594.py::test_fresh_declared_newcomers_admit_one_then_stall\",\"tests/test_prelaunch_tier_gate_1594.py::test_horizon_pass_keeps_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_incomplete_census_withholds_the_release\",\"tests/test_prelaunch_tier_gate_1594.py::test_live_holders_survive_the_dangling_pass\",\"tests/test_prelaunch_tier_gate_1594.py::test_second_declared_newcomer_waits_on_commitment\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_newcomer_waits_then_proceeds\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_queue_gates_like_a_direct_call\"],\"run_nonce\":\"729d73a71049af1f9d901b8f5a3549aa067a3cfad07a4f32a09a69c105c46f87\"}",
+        "                                                              [100%]",
+        "pbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_prelaunch_tier_gate_1594.py::test_fresh_declared_newcomers_admit_one_then_stall\",\"tests/test_prelaunch_tier_gate_1594.py::test_second_declared_newcomer_waits_on_commitment\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_peak_past_capacity_refuses_for_good\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_newcomer_waits_then_proceeds\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_queue_gates_like_a_direct_call\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_holder_is_no_newcomer\",\"tests/test_prelaunch_tier_gate_1594.py::test_claim_order_pass_spares_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_horizon_pass_keeps_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_complete_census_releases_an_orphan_holder\",\"tests/test_prelaunch_tier_gate_1594.py::test_incomplete_census_withholds_the_release\",\"tests/test_prelaunch_tier_gate_1594.py::test_live_holders_survive_the_dangling_pass\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/test_prelaunch_tier_gate_1594.py::test_fresh_declared_newcomers_admit_one_then_stall\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_second_declared_newcomer_waits_on_commitment\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_declared_peak_past_capacity_refuses_for_good\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_newcomer_waits_then_proceeds\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_queue_gates_like_a_direct_call\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_declared_holder_is_no_newcomer\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_claim_order_pass_spares_a_declared_prefix\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_horizon_pass_keeps_a_declared_prefix\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_complete_census_releases_an_orphan_holder\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_incomplete_census_withholds_the_release\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_live_holders_survive_the_dangling_pass\",\"call\",\"passed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_prelaunch_tier_gate_1594.py\":0.438},\"first_tightened_test_budget_remaining_s\":299.4825029140047,\"file_selection\":{\"files\":[\"tests/test_prelaunch_tier_gate_1594.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"729d73a71049af1f9d901b8f5a3549aa067a3cfad07a4f32a09a69c105c46f87\"}",
+        "",
+        "prismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_prelaunch_tier_gate_1594.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [2], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_prelaunch_tier_gate_1594.py\"], \"selected_source_sha256\": {\"tests/test_prelaunch_tier_gate_1594.py\": \"fe22b9895f10bc01306511d1eba2ad831cf29ea45ab53a25ab5e4c55de3253ac\"}, \"exitstatus\": 0}",
+        "11 passed in 0.99s",
+        "{\"local_result_claim_sha256\": \"baed4f3c2ad756a7517decf3e012061f8c94f44ffe32e0b9d37dff3147b328f7\", \"payload_path\": \"/mnt/shared/prismabuild-fleet/cas/blobs/20/2032cb3688eaddb78f7b61e0980a08da512022295e29fe1570fcab988546eab0\", \"reaped_staging_files\": 0, \"receipt\": {\"action_key\": \"9af77f2ce05897db9c567957c0032dee97a8d79eb833e27d8eefe2451026c099\", \"action_manifest_sha256\": \"98e5e9b8b023bd370d47e94e141ac5cbd5cd7b8f6b7a8c70e74e00525d7ea26e\", \"producer\": {\"action_key\": \"9af77f2ce05897db9c567957c0032dee97a8d79eb833e27d8eefe2451026c099\", \"attestation_sha256\": \"080b4a9dfdd56f05c025b01de8a4da791b4c05b3718503b17127c2d20df49748\", \"evidence\": {\"accelerators\": [], \"hostname\": \"dl380g10\", \"libc\": \"glibc-2.43\", \"machine\": \"x86_64\", \"slurm\": null, \"source\": \"local\", \"system\": \"linux\"}, \"executable\": {\"bytes\": 1540520, \"path\": \"/bin/bash\", \"resolved_path\": \"/usr/bin/bash\", \"sha256\": \"3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd\"}, \"host_class\": null, \"inputs\": [{\"bytes\": 46210522, \"id\": \"pbrun.checkout-snapshot\", \"sha256\": \"b42928c19b3aac720379c6d4737e921d2962eff2887919e35f17cfe90d79501c\"}], \"platform_key\": \"linux-x86_64\", \"runtime\": {\"core\": {\"bytes\": 305687, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", \"sha256\": \"d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461\"}, \"digest_primitives\": {\"bytes\": 5078, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py\", \"sha256\": \"25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf\"}, \"launch_kind\": \"script\", \"launcher\": {\"bytes\": 2285, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", \"sha256\": \"9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418\"}, \"runtime_sha256\": \"6223fa6761bd60b0e4f6c8bf544ae003ad9e6a6b7242a29180a2c8f5a2beac94\", \"schema\": \"prismaquant.prismabuild.worker_runtime.v1\"}, \"schema\": \"prismaquant.prismabuild.worker_attestation.v2\", \"toolchain\": {\"declared\": {}, \"verified\": {}}, \"worker_id\": \"dl380g10\"}, \"receipt_sha256\": \"343c95c3423ccac8899a857a71a9c475df83f440d52198f3b408c3512c54a0eb\", \"result\": {\"bytes\": 7294, \"sha256\": \"2032cb3688eaddb78f7b61e0980a08da512022295e29fe1570fcab988546eab0\"}, \"schema\": \"prismaquant.prismabuild.cas_receipt.v3\"}, \"recovered_declared_result\": false, \"status\": \"published\"}"
+      ],
+      "lines_returned": 9
+    },
+    "summary": "11 passed in 0.99s",
+    "receipt": {
+      "present": true,
+      "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/9a/9af77f2ce05897db9c567957c0032dee97a8d79eb833e27d8eefe2451026c099.json",
+      "action_manifest_sha256": "98e5e9b8b023bd370d47e94e141ac5cbd5cd7b8f6b7a8c70e74e00525d7ea26e",
+      "receipt_sha256": "343c95c3423ccac8899a857a71a9c475df83f440d52198f3b408c3512c54a0eb",
+      "result": {
+        "sha256": "2032cb3688eaddb78f7b61e0980a08da512022295e29fe1570fcab988546eab0",
+        "bytes": 7294
+      }
+    },
+    "pytest_output": "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"729d73a71049af1f9d901b8f5a3549aa067a3cfad07a4f32a09a69c105c46f87\"}\n...........\npbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_prelaunch_tier_gate_1594.py::test_fresh_declared_newcomers_admit_one_then_stall\",\"tests/test_prelaunch_tier_gate_1594.py::test_second_declared_newcomer_waits_on_commitment\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_peak_past_capacity_refuses_for_good\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_newcomer_waits_then_proceeds\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_queue_gates_like_a_direct_call\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_holder_is_no_newcomer\",\"tests/test_prelaunch_tier_gate_1594.py::test_claim_order_pass_spares_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_horizon_pass_keeps_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_complete_census_releases_an_orphan_holder\",\"tests/test_prelaunch_tier_gate_1594.py::test_incomplete_census_withholds_the_release\",\"tests/test_prelaunch_tier_gate_1594.py::test_live_holders_survive_the_dangling_pass\"],\"teardown_finished\":[\"tests/test_prelaunch_tier_gate_1594.py::test_claim_order_pass_spares_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_complete_census_releases_an_orphan_holder\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_holder_is_no_newcomer\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_peak_past_capacity_refuses_for_good\",\"tests/test_prelaunch_tier_gate_1594.py::test_fresh_declared_newcomers_admit_one_then_stall\",\"tests/test_prelaunch_tier_gate_1594.py::test_horizon_pass_keeps_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_incomplete_census_withholds_the_release\",\"tests/test_prelaunch_tier_gate_1594.py::test_live_holders_survive_the_dangling_pass\",\"tests/test_prelaunch_tier_gate_1594.py::test_second_declared_newcomer_waits_on_commitment\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_newcomer_waits_then_proceeds\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_queue_gates_like_a_direct_call\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_prelaunch_tier_gate_1594.py::test_claim_order_pass_spares_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_complete_census_releases_an_orphan_holder\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_holder_is_no_newcomer\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_peak_past_capacity_refuses_for_good\",\"tests/test_prelaunch_tier_gate_1594.py::test_fresh_declared_newcomers_admit_one_then_stall\",\"tests/test_prelaunch_tier_gate_1594.py::test_horizon_pass_keeps_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_incomplete_census_withholds_the_release\",\"tests/test_prelaunch_tier_gate_1594.py::test_live_holders_survive_the_dangling_pass\",\"tests/test_prelaunch_tier_gate_1594.py::test_second_declared_newcomer_waits_on_commitment\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_newcomer_waits_then_proceeds\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_queue_gates_like_a_direct_call\"],\"run_nonce\":\"729d73a71049af1f9d901b8f5a3549aa067a3cfad07a4f32a09a69c105c46f87\"}\n                                                              [100%]\npbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_prelaunch_tier_gate_1594.py::test_fresh_declared_newcomers_admit_one_then_stall\",\"tests/test_prelaunch_tier_gate_1594.py::test_second_declared_newcomer_waits_on_commitment\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_peak_past_capacity_refuses_for_good\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_newcomer_waits_then_proceeds\",\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_queue_gates_like_a_direct_call\",\"tests/test_prelaunch_tier_gate_1594.py::test_declared_holder_is_no_newcomer\",\"tests/test_prelaunch_tier_gate_1594.py::test_claim_order_pass_spares_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_horizon_pass_keeps_a_declared_prefix\",\"tests/test_prelaunch_tier_gate_1594.py::test_complete_census_releases_an_orphan_holder\",\"tests/test_prelaunch_tier_gate_1594.py::test_incomplete_census_withholds_the_release\",\"tests/test_prelaunch_tier_gate_1594.py::test_live_holders_survive_the_dangling_pass\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/test_prelaunch_tier_gate_1594.py::test_fresh_declared_newcomers_admit_one_then_stall\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_second_declared_newcomer_waits_on_commitment\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_declared_peak_past_capacity_refuses_for_good\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_newcomer_waits_then_proceeds\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_undeclared_queue_gates_like_a_direct_call\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_declared_holder_is_no_newcomer\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_claim_order_pass_spares_a_declared_prefix\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_horizon_pass_keeps_a_declared_prefix\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_complete_census_releases_an_orphan_holder\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_incomplete_census_withholds_the_release\",\"call\",\"passed\",null,null],[\"tests/test_prelaunch_tier_gate_1594.py::test_live_holders_survive_the_dangling_pass\",\"call\",\"passed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_prelaunch_tier_gate_1594.py\":0.438},\"first_tightened_test_budget_remaining_s\":299.4825029140047,\"file_selection\":{\"files\":[\"tests/test_prelaunch_tier_gate_1594.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"729d73a71049af1f9d901b8f5a3549aa067a3cfad07a4f32a09a69c105c46f87\"}\n\nprismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_prelaunch_tier_gate_1594.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [2], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_prelaunch_tier_gate_1594.py\"], \"selected_source_sha256\": {\"tests/test_prelaunch_tier_gate_1594.py\": \"fe22b9895f10bc01306511d1eba2ad831cf29ea45ab53a25ab5e4c55de3253ac\"}, \"exitstatus\": 0}\n11 passed in 0.99s\n",
+    "cas_receipt": {
+      "schema": "prismaquant.prismabuild.cas_receipt.v3",
+      "action_key": "9af77f2ce05897db9c567957c0032dee97a8d79eb833e27d8eefe2451026c099",
+      "action_manifest_sha256": "98e5e9b8b023bd370d47e94e141ac5cbd5cd7b8f6b7a8c70e74e00525d7ea26e",
+      "result": {
+        "sha256": "2032cb3688eaddb78f7b61e0980a08da512022295e29fe1570fcab988546eab0",
+        "bytes": 7294
+      },
+      "producer": {
+        "schema": "prismaquant.prismabuild.worker_attestation.v2",
+        "action_key": "9af77f2ce05897db9c567957c0032dee97a8d79eb833e27d8eefe2451026c099",
+        "worker_id": "dl380g10",
+        "platform_key": "linux-x86_64",
+        "host_class": null,
+        "evidence": {
+          "source": "local",
+          "hostname": "dl380g10",
+          "system": "linux",
+          "machine": "x86_64",
+          "libc": "glibc-2.43",
+          "accelerators": [],
+          "slurm": null
+        },
+        "runtime": {
+          "schema": "prismaquant.prismabuild.worker_runtime.v1",
+          "launch_kind": "script",
+          "core": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py",
+            "sha256": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+            "bytes": 305687
+          },
+          "launcher": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py",
+            "sha256": "9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418",
+            "bytes": 2285
+          },
+          "digest_primitives": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py",
+            "sha256": "25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf",
+            "bytes": 5078
+          },
+          "runtime_sha256": "6223fa6761bd60b0e4f6c8bf544ae003ad9e6a6b7242a29180a2c8f5a2beac94"
+        },
+        "executable": {
+          "path": "/bin/bash",
+          "resolved_path": "/usr/bin/bash",
+          "sha256": "3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd",
+          "bytes": 1540520
+        },
+        "toolchain": {
+          "declared": {},
+          "verified": {}
+        },
+        "inputs": [
+          {
+            "id": "pbrun.checkout-snapshot",
+            "sha256": "b42928c19b3aac720379c6d4737e921d2962eff2887919e35f17cfe90d79501c",
+            "bytes": 46210522
+          }
+        ],
+        "attestation_sha256": "080b4a9dfdd56f05c025b01de8a4da791b4c05b3718503b17127c2d20df49748"
+      },
+      "receipt_sha256": "343c95c3423ccac8899a857a71a9c475df83f440d52198f3b408c3512c54a0eb"
+    },
+    "checks": {
+      "full_manifest_cas_lookup": true,
+      "local_claim_and_payload_sha256": true
+    }
+  },
+  {
+    "action_key": "531edbad112bba7f9badd935e20a10a13dd852a5bf0c0ad94f9554e50bec320d",
+    "state": "done",
+    "outcome": {
+      "status": "executed",
+      "claimed_host": "dl380g10",
+      "finished_host": "dl380g10",
+      "attempts": 1,
+      "returncode": 0,
+      "action_returncode": null,
+      "resource_scope_cleanup": {
+        "checked_unix": 1793025541.7850275,
+        "complete": true,
+        "export": {
+          "empty": true,
+          "ok": true,
+          "released": true,
+          "retired": false,
+          "scope_id": "prismabuild-jobca12d52e19430be766975988c1c062c5.slice",
+          "settled": true,
+          "stop_reason": "executed",
+          "stopped": true,
+          "stopped_unix": 1793025541.7449794,
+          "tickets_pending": false
+        },
+        "nonce": "f8fba251c0304bc3a114b7aee0aee76c",
+        "released": {
+          "ok": true,
+          "scope_id": "prismabuild-jobca12d52e19430be766975988c1c062c5.slice",
+          "stop_reason": "executed",
+          "stopped_unix": 1793025541.7449794
+        },
+        "telemetry": {
+          "action_key": "531edbad112bba7f9badd935e20a10a13dd852a5bf0c0ad94f9554e50bec320d",
+          "complete": true,
+          "cpu_seconds": 4.4679,
+          "cpu_system_seconds": 0.519616,
+          "cpu_user_seconds": 3.948284,
+          "errors": [],
+          "gpu_memory_max_bytes": 4294967296,
+          "host": "dl380g10",
+          "memory_current_bytes": 655360,
+          "memory_max_bytes": 4294967296,
+          "memory_peak_bytes": 191025152,
+          "nonce": "f8fba251c0304bc3a114b7aee0aee76c",
+          "oom_kill": 0,
+          "oom_local": 0,
+          "process_io": {
+            "live": {},
+            "members": [
+              3034222,
+              3034327,
+              3035115,
+              3035117,
+              3035118
+            ],
+            "processes_live": 0,
+            "processes_observed": 5,
+            "processes_unreadable": 0,
+            "rchar": 107079453,
+            "read_bytes": 274104320,
+            "retired": {
+              "rchar": 107079453,
+              "read_bytes": 274104320,
+              "syscr": 7330,
+              "syscw": 817,
+              "wchar": 9689093,
+              "write_bytes": 9152858
+            },
+            "source": "proc_io",
+            "syscr": 7330,
+            "syscw": 817,
+            "wchar": 9689093,
+            "write_bytes": 9152858
+          },
+          "sampled_unix": 1793025541.7470486,
+          "scope_unit": "prismabuild-jobca12d52e19430be766975988c1c062c5.slice",
+          "shape_key": "19cc360df75b3ffc3542a8fa34fb7ce24c4ad55358041629c55228558bb2db75",
+          "termination_reason": "executed",
+          "wall_seconds": 6.871357714000624
+        }
+      }
+    },
+    "log": {
+      "stream": "stdout",
+      "attempt": 1,
+      "before_withdrawal": false,
+      "recorded_bytes": 12683,
+      "recorded_sha256": "41faf5c46ac001b1df8698f82f824dca058c51b3ac7fc3015ec239f3f6f86b27",
+      "bytes_match": true,
+      "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/531edbad112bba7f9badd935e20a10a13dd852a5bf0c0ad94f9554e50bec320d/6113c2d4975965000e7906c00be36ee7a2eeae1716deaaa707b0fecd10d04267/00000001.stdout.41faf5c46ac001b1df8698f82f824dca058c51b3ac7fc3015ec239f3f6f86b27.log",
+      "present": true,
+      "total_bytes": 12683,
+      "bytes_read": 12683,
+      "truncated_head": false,
+      "lines": [
+        "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"391eb80d4eb2e4033cfa0c7e7cdfd99bfd7ac679c19200320cc824ba0fda0d0f\"}",
+        ".............",
+        "pbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_above_the_tier_says_the_gate_refused_it\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_shortfall_beyond_everything_evictable_says_so\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_the_commitment_refuses_says_which_decision\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_commitment_that_could_not_be_read_keeps_its_error\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_with_no_evictable_bytes_says_how_the_tier_is_held\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_feasible_waiter_is_not_a_skip\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_asking_why_does_not_change_the_pressure\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_the_cycle_reports_a_skipped_waiter_once_per_change\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_that_stops_and_returns_is_reported_again\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_tier_with_no_waiter_reports_nothing\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_claims_with_different_reasons_each_name_their_consumer\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_verdicts_for_one_tier_are_each_reported_once\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_changed_reason_is_reported_and_an_unchanged_one_is_not\"],\"teardown_finished\":[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_changed_reason_is_reported_and_an_unchanged_one_is_not\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_commitment_that_could_not_be_read_keeps_its_error\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_feasible_waiter_is_not_a_skip\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_shortfall_beyond_everything_evictable_says_so\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_tier_with_no_waiter_reports_nothing\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_above_the_tier_says_the_gate_refused_it\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_that_stops_and_returns_is_reported_again\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_the_commitment_refuses_says_which_decision\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_with_no_evictable_bytes_says_how_the_tier_is_held\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_asking_why_does_not_change_the_pressure\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_the_cycle_reports_a_skipped_waiter_once_per_change\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_claims_with_different_reasons_each_name_their_consumer\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_verdicts_for_one_tier_are_each_reported_once\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_changed_reason_is_reported_and_an_unchanged_one_is_not\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_commitment_that_could_not_be_read_keeps_its_error\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_feasible_waiter_is_not_a_skip\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_shortfall_beyond_everything_evictable_says_so\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_tier_with_no_waiter_reports_nothing\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_above_the_tier_says_the_gate_refused_it\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_that_stops_and_returns_is_reported_again\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_the_commitment_refuses_says_which_decision\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_with_no_evictable_bytes_says_how_the_tier_is_held\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_asking_why_does_not_change_the_pressure\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_the_cycle_reports_a_skipped_waiter_once_per_change\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_claims_with_different_reasons_each_name_their_consumer\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_verdicts_for_one_tier_are_each_reported_once\"],\"run_nonce\":\"391eb80d4eb2e4033cfa0c7e7cdfd99bfd7ac679c19200320cc824ba0fda0d0f\"}",
+        "                                                            [100%]",
+        "pbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_above_the_tier_says_the_gate_refused_it\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_shortfall_beyond_everything_evictable_says_so\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_the_commitment_refuses_says_which_decision\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_commitment_that_could_not_be_read_keeps_its_error\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_with_no_evictable_bytes_says_how_the_tier_is_held\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_feasible_waiter_is_not_a_skip\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_asking_why_does_not_change_the_pressure\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_the_cycle_reports_a_skipped_waiter_once_per_change\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_that_stops_and_returns_is_reported_again\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_tier_with_no_waiter_reports_nothing\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_claims_with_different_reasons_each_name_their_consumer\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_verdicts_for_one_tier_are_each_reported_once\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_changed_reason_is_reported_and_an_unchanged_one_is_not\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_above_the_tier_says_the_gate_refused_it\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_shortfall_beyond_everything_evictable_says_so\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_the_commitment_refuses_says_which_decision\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_commitment_that_could_not_be_read_keeps_its_error\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_with_no_evictable_bytes_says_how_the_tier_is_held\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_feasible_waiter_is_not_a_skip\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_asking_why_does_not_change_the_pressure\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_the_cycle_reports_a_skipped_waiter_once_per_change\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_that_stops_and_returns_is_reported_again\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_tier_with_no_waiter_reports_nothing\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_claims_with_different_reasons_each_name_their_consumer\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_verdicts_for_one_tier_are_each_reported_once\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_changed_reason_is_reported_and_an_unchanged_one_is_not\",\"call\",\"passed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_a_waiter_with_no_pressure_says_why_1627.py\":0.872},\"first_tightened_test_budget_remaining_s\":299.32407983399753,\"file_selection\":{\"files\":[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"391eb80d4eb2e4033cfa0c7e7cdfd99bfd7ac679c19200320cc824ba0fda0d0f\"}",
+        "",
+        "prismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_a_waiter_with_no_pressure_says_why_1627.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [3], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_a_waiter_with_no_pressure_says_why_1627.py\"], \"selected_source_sha256\": {\"tests/test_a_waiter_with_no_pressure_says_why_1627.py\": \"694904d967bda02680a5a8d10def54a1022f9c9b97cf6b8932f859d8e86168a9\"}, \"exitstatus\": 0}",
+        "13 passed in 1.58s",
+        "{\"local_result_claim_sha256\": \"caeb58eb3473f0b206959d5632437f848ddf06fdbde9684682d178a19c55a1b6\", \"payload_path\": \"/mnt/shared/prismabuild-fleet/cas/blobs/3b/3b2729b4a1bddde4ceb6cfc02d45a27cb7aadc46a9ffe90ffcc34e6220b1bc92\", \"reaped_staging_files\": 0, \"receipt\": {\"action_key\": \"531edbad112bba7f9badd935e20a10a13dd852a5bf0c0ad94f9554e50bec320d\", \"action_manifest_sha256\": \"c2ced7a1766c9bc6dbaefb6ff1bae2f9e5db1e90b4e892d004f19a74843d594a\", \"producer\": {\"action_key\": \"531edbad112bba7f9badd935e20a10a13dd852a5bf0c0ad94f9554e50bec320d\", \"attestation_sha256\": \"042b0cf3cfc07bf4a109fb230f20934ae13dbd5eaff22241b6b797bd22491577\", \"evidence\": {\"accelerators\": [], \"hostname\": \"dl380g10\", \"libc\": \"glibc-2.43\", \"machine\": \"x86_64\", \"slurm\": null, \"source\": \"local\", \"system\": \"linux\"}, \"executable\": {\"bytes\": 1540520, \"path\": \"/bin/bash\", \"resolved_path\": \"/usr/bin/bash\", \"sha256\": \"3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd\"}, \"host_class\": null, \"inputs\": [{\"bytes\": 46210522, \"id\": \"pbrun.checkout-snapshot\", \"sha256\": \"b42928c19b3aac720379c6d4737e921d2962eff2887919e35f17cfe90d79501c\"}], \"platform_key\": \"linux-x86_64\", \"runtime\": {\"core\": {\"bytes\": 305687, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", \"sha256\": \"d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461\"}, \"digest_primitives\": {\"bytes\": 5078, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py\", \"sha256\": \"25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf\"}, \"launch_kind\": \"script\", \"launcher\": {\"bytes\": 2285, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", \"sha256\": \"9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418\"}, \"runtime_sha256\": \"6223fa6761bd60b0e4f6c8bf544ae003ad9e6a6b7242a29180a2c8f5a2beac94\", \"schema\": \"prismaquant.prismabuild.worker_runtime.v1\"}, \"schema\": \"prismaquant.prismabuild.worker_attestation.v2\", \"toolchain\": {\"declared\": {}, \"verified\": {}}, \"worker_id\": \"dl380g10\"}, \"receipt_sha256\": \"c09627deb6012327ef65077053c0d5bee233bf3d68e595f2d4f477be3ae28253\", \"result\": {\"bytes\": 9806, \"sha256\": \"3b2729b4a1bddde4ceb6cfc02d45a27cb7aadc46a9ffe90ffcc34e6220b1bc92\"}, \"schema\": \"prismaquant.prismabuild.cas_receipt.v3\"}, \"recovered_declared_result\": false, \"status\": \"published\"}"
+      ],
+      "lines_returned": 9
+    },
+    "summary": "13 passed in 1.58s",
+    "receipt": {
+      "present": true,
+      "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/53/531edbad112bba7f9badd935e20a10a13dd852a5bf0c0ad94f9554e50bec320d.json",
+      "action_manifest_sha256": "c2ced7a1766c9bc6dbaefb6ff1bae2f9e5db1e90b4e892d004f19a74843d594a",
+      "receipt_sha256": "c09627deb6012327ef65077053c0d5bee233bf3d68e595f2d4f477be3ae28253",
+      "result": {
+        "sha256": "3b2729b4a1bddde4ceb6cfc02d45a27cb7aadc46a9ffe90ffcc34e6220b1bc92",
+        "bytes": 9806
+      }
+    },
+    "pytest_output": "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"391eb80d4eb2e4033cfa0c7e7cdfd99bfd7ac679c19200320cc824ba0fda0d0f\"}\n.............\npbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_above_the_tier_says_the_gate_refused_it\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_shortfall_beyond_everything_evictable_says_so\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_the_commitment_refuses_says_which_decision\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_commitment_that_could_not_be_read_keeps_its_error\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_with_no_evictable_bytes_says_how_the_tier_is_held\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_feasible_waiter_is_not_a_skip\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_asking_why_does_not_change_the_pressure\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_the_cycle_reports_a_skipped_waiter_once_per_change\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_that_stops_and_returns_is_reported_again\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_tier_with_no_waiter_reports_nothing\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_claims_with_different_reasons_each_name_their_consumer\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_verdicts_for_one_tier_are_each_reported_once\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_changed_reason_is_reported_and_an_unchanged_one_is_not\"],\"teardown_finished\":[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_changed_reason_is_reported_and_an_unchanged_one_is_not\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_commitment_that_could_not_be_read_keeps_its_error\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_feasible_waiter_is_not_a_skip\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_shortfall_beyond_everything_evictable_says_so\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_tier_with_no_waiter_reports_nothing\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_above_the_tier_says_the_gate_refused_it\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_that_stops_and_returns_is_reported_again\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_the_commitment_refuses_says_which_decision\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_with_no_evictable_bytes_says_how_the_tier_is_held\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_asking_why_does_not_change_the_pressure\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_the_cycle_reports_a_skipped_waiter_once_per_change\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_claims_with_different_reasons_each_name_their_consumer\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_verdicts_for_one_tier_are_each_reported_once\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_changed_reason_is_reported_and_an_unchanged_one_is_not\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_commitment_that_could_not_be_read_keeps_its_error\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_feasible_waiter_is_not_a_skip\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_shortfall_beyond_everything_evictable_says_so\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_tier_with_no_waiter_reports_nothing\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_above_the_tier_says_the_gate_refused_it\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_that_stops_and_returns_is_reported_again\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_the_commitment_refuses_says_which_decision\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_with_no_evictable_bytes_says_how_the_tier_is_held\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_asking_why_does_not_change_the_pressure\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_the_cycle_reports_a_skipped_waiter_once_per_change\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_claims_with_different_reasons_each_name_their_consumer\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_verdicts_for_one_tier_are_each_reported_once\"],\"run_nonce\":\"391eb80d4eb2e4033cfa0c7e7cdfd99bfd7ac679c19200320cc824ba0fda0d0f\"}\n                                                            [100%]\npbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_above_the_tier_says_the_gate_refused_it\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_shortfall_beyond_everything_evictable_says_so\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_the_commitment_refuses_says_which_decision\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_commitment_that_could_not_be_read_keeps_its_error\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_with_no_evictable_bytes_says_how_the_tier_is_held\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_feasible_waiter_is_not_a_skip\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_asking_why_does_not_change_the_pressure\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_the_cycle_reports_a_skipped_waiter_once_per_change\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_that_stops_and_returns_is_reported_again\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_tier_with_no_waiter_reports_nothing\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_claims_with_different_reasons_each_name_their_consumer\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_verdicts_for_one_tier_are_each_reported_once\",\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_changed_reason_is_reported_and_an_unchanged_one_is_not\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_above_the_tier_says_the_gate_refused_it\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_shortfall_beyond_everything_evictable_says_so\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_the_commitment_refuses_says_which_decision\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_commitment_that_could_not_be_read_keeps_its_error\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_with_no_evictable_bytes_says_how_the_tier_is_held\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_feasible_waiter_is_not_a_skip\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_asking_why_does_not_change_the_pressure\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_the_cycle_reports_a_skipped_waiter_once_per_change\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_waiter_that_stops_and_returns_is_reported_again\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_tier_with_no_waiter_reports_nothing\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_claims_with_different_reasons_each_name_their_consumer\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_two_verdicts_for_one_tier_are_each_reported_once\",\"call\",\"passed\",null,null],[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py::test_a_changed_reason_is_reported_and_an_unchanged_one_is_not\",\"call\",\"passed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_a_waiter_with_no_pressure_says_why_1627.py\":0.872},\"first_tightened_test_budget_remaining_s\":299.32407983399753,\"file_selection\":{\"files\":[\"tests/test_a_waiter_with_no_pressure_says_why_1627.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"391eb80d4eb2e4033cfa0c7e7cdfd99bfd7ac679c19200320cc824ba0fda0d0f\"}\n\nprismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_a_waiter_with_no_pressure_says_why_1627.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [3], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_a_waiter_with_no_pressure_says_why_1627.py\"], \"selected_source_sha256\": {\"tests/test_a_waiter_with_no_pressure_says_why_1627.py\": \"694904d967bda02680a5a8d10def54a1022f9c9b97cf6b8932f859d8e86168a9\"}, \"exitstatus\": 0}\n13 passed in 1.58s\n",
+    "cas_receipt": {
+      "schema": "prismaquant.prismabuild.cas_receipt.v3",
+      "action_key": "531edbad112bba7f9badd935e20a10a13dd852a5bf0c0ad94f9554e50bec320d",
+      "action_manifest_sha256": "c2ced7a1766c9bc6dbaefb6ff1bae2f9e5db1e90b4e892d004f19a74843d594a",
+      "result": {
+        "sha256": "3b2729b4a1bddde4ceb6cfc02d45a27cb7aadc46a9ffe90ffcc34e6220b1bc92",
+        "bytes": 9806
+      },
+      "producer": {
+        "schema": "prismaquant.prismabuild.worker_attestation.v2",
+        "action_key": "531edbad112bba7f9badd935e20a10a13dd852a5bf0c0ad94f9554e50bec320d",
+        "worker_id": "dl380g10",
+        "platform_key": "linux-x86_64",
+        "host_class": null,
+        "evidence": {
+          "source": "local",
+          "hostname": "dl380g10",
+          "system": "linux",
+          "machine": "x86_64",
+          "libc": "glibc-2.43",
+          "accelerators": [],
+          "slurm": null
+        },
+        "runtime": {
+          "schema": "prismaquant.prismabuild.worker_runtime.v1",
+          "launch_kind": "script",
+          "core": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py",
+            "sha256": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+            "bytes": 305687
+          },
+          "launcher": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py",
+            "sha256": "9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418",
+            "bytes": 2285
+          },
+          "digest_primitives": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py",
+            "sha256": "25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf",
+            "bytes": 5078
+          },
+          "runtime_sha256": "6223fa6761bd60b0e4f6c8bf544ae003ad9e6a6b7242a29180a2c8f5a2beac94"
+        },
+        "executable": {
+          "path": "/bin/bash",
+          "resolved_path": "/usr/bin/bash",
+          "sha256": "3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd",
+          "bytes": 1540520
+        },
+        "toolchain": {
+          "declared": {},
+          "verified": {}
+        },
+        "inputs": [
+          {
+            "id": "pbrun.checkout-snapshot",
+            "sha256": "b42928c19b3aac720379c6d4737e921d2962eff2887919e35f17cfe90d79501c",
+            "bytes": 46210522
+          }
+        ],
+        "attestation_sha256": "042b0cf3cfc07bf4a109fb230f20934ae13dbd5eaff22241b6b797bd22491577"
+      },
+      "receipt_sha256": "c09627deb6012327ef65077053c0d5bee233bf3d68e595f2d4f477be3ae28253"
+    },
+    "checks": {
+      "full_manifest_cas_lookup": true,
+      "local_claim_and_payload_sha256": true
+    }
+  },
+  {
+    "action_key": "f98af0d12aa404c7070189607a2c787b502972e7cbf74b3a437081dbb3c4211c",
+    "state": "done",
+    "outcome": {
+      "status": "executed",
+      "claimed_host": "dl380g10",
+      "finished_host": "dl380g10",
+      "attempts": 1,
+      "returncode": 0,
+      "action_returncode": null,
+      "resource_scope_cleanup": {
+        "checked_unix": 1793025542.1473744,
+        "complete": true,
+        "export": {
+          "empty": true,
+          "ok": true,
+          "released": true,
+          "retired": false,
+          "scope_id": "prismabuild-jobbe02c015f85a852f28d88d9c12d743f4.slice",
+          "settled": true,
+          "stop_reason": "executed",
+          "stopped": true,
+          "stopped_unix": 1793025542.1031597,
+          "tickets_pending": false
+        },
+        "nonce": "83b7bd2fd92b4ad9a7a2b812ab32d7a5",
+        "released": {
+          "ok": true,
+          "scope_id": "prismabuild-jobbe02c015f85a852f28d88d9c12d743f4.slice",
+          "stop_reason": "executed",
+          "stopped_unix": 1793025542.1031597
+        },
+        "telemetry": {
+          "action_key": "f98af0d12aa404c7070189607a2c787b502972e7cbf74b3a437081dbb3c4211c",
+          "complete": true,
+          "cpu_seconds": 4.0846,
+          "cpu_system_seconds": 0.461728,
+          "cpu_user_seconds": 3.622872,
+          "errors": [],
+          "gpu_memory_max_bytes": 4294967296,
+          "host": "dl380g10",
+          "memory_current_bytes": 737280,
+          "memory_max_bytes": 4294967296,
+          "memory_peak_bytes": 151506944,
+          "nonce": "83b7bd2fd92b4ad9a7a2b812ab32d7a5",
+          "oom_kill": 0,
+          "oom_local": 0,
+          "process_io": {
+            "live": {},
+            "members": [
+              3035053,
+              3035255,
+              3035257,
+              3035258
+            ],
+            "processes_live": 0,
+            "processes_observed": 4,
+            "processes_unreadable": 0,
+            "rchar": 111420855,
+            "read_bytes": 1118208,
+            "retired": {
+              "rchar": 111420855,
+              "read_bytes": 1118208,
+              "syscr": 6078,
+              "syscw": 489,
+              "wchar": 9272029,
+              "write_bytes": 7997834
+            },
+            "source": "proc_io",
+            "syscr": 6078,
+            "syscw": 489,
+            "wchar": 9272029,
+            "write_bytes": 7997834
+          },
+          "sampled_unix": 1793025542.1050162,
+          "scope_unit": "prismabuild-jobbe02c015f85a852f28d88d9c12d743f4.slice",
+          "shape_key": "ea1bd0ec426fd30027fb49ff79dc083c4933d03b89f17ac6abfd9ea2ad48f896",
+          "termination_reason": "executed",
+          "wall_seconds": 4.924982430995442
+        }
+      }
+    },
+    "log": {
+      "stream": "stdout",
+      "attempt": 1,
+      "before_withdrawal": false,
+      "recorded_bytes": 11461,
+      "recorded_sha256": "078a48f31e9b17ca50dfaff51e75a4c376f02a62b41aad9021474b464aef9754",
+      "bytes_match": true,
+      "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/f98af0d12aa404c7070189607a2c787b502972e7cbf74b3a437081dbb3c4211c/708a8cc39e22255efbccc7a27e708394ec949572b80e7d3555f9321e18438dc2/00000001.stdout.078a48f31e9b17ca50dfaff51e75a4c376f02a62b41aad9021474b464aef9754.log",
+      "present": true,
+      "total_bytes": 11461,
+      "bytes_read": 11461,
+      "truncated_head": false,
+      "lines": [
+        "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"642008a7a4d59f24b9406a04be177b21c4e8b6d7645e08354282f08803d78f42\"}",
+        "................",
+        "pbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_tier_funding.py::test_grant_and_transaction_prefixes\",\"tests/test_tier_funding.py::test_funding_state_machine_and_cas\",\"tests/test_tier_funding.py::test_funded_cover_exact_binding\",\"tests/test_tier_funding.py::test_reserve_transfer_claim_finish_no_double_hold\",\"tests/test_tier_funding.py::test_denied_claim_preserves_entitlement_for_retry\",\"tests/test_tier_funding.py::test_physical_tokens_never_count_as_credit\",\"tests/test_tier_funding.py::test_malformed_funding_is_inert_and_retained_until_absent\",\"tests/test_tier_funding.py::test_consumed_funding_refences_after_finish\",\"tests/test_tier_funding.py::test_funding_writers_serialize_on_mover_lock\",\"tests/test_tier_funding.py::test_consumed_physical_bytes_are_not_credit\",\"tests/test_tier_funding.py::test_claim_record_write_failure_unwinds_exact\",\"tests/test_tier_funding.py::test_lease_write_failure_returns_remainder_keeps_fence\",\"tests/test_tier_funding.py::test_mark_failure_unwinds_without_execution\",\"tests/test_tier_funding.py::test_consumed_never_covers_even_when_fully_held\",\"tests/test_tier_funding.py::test_real_copy_lifecycle_stays_charged_until_egress\",\"tests/test_tier_funding.py::test_funding_write_enforces_binding_and_table\"],\"teardown_finished\":[\"tests/test_tier_funding.py::test_claim_record_write_failure_unwinds_exact\",\"tests/test_tier_funding.py::test_consumed_funding_refences_after_finish\",\"tests/test_tier_funding.py::test_consumed_never_covers_even_when_fully_held\",\"tests/test_tier_funding.py::test_consumed_physical_bytes_are_not_credit\",\"tests/test_tier_funding.py::test_denied_claim_preserves_entitlement_for_retry\",\"tests/test_tier_funding.py::test_funded_cover_exact_binding\",\"tests/test_tier_funding.py::test_funding_state_machine_and_cas\",\"tests/test_tier_funding.py::test_funding_write_enforces_binding_and_table\",\"tests/test_tier_funding.py::test_funding_writers_serialize_on_mover_lock\",\"tests/test_tier_funding.py::test_grant_and_transaction_prefixes\",\"tests/test_tier_funding.py::test_lease_write_failure_returns_remainder_keeps_fence\",\"tests/test_tier_funding.py::test_malformed_funding_is_inert_and_retained_until_absent\",\"tests/test_tier_funding.py::test_mark_failure_unwinds_without_execution\",\"tests/test_tier_funding.py::test_physical_tokens_never_count_as_credit\",\"tests/test_tier_funding.py::test_real_copy_lifecycle_stays_charged_until_egress\",\"tests/test_tier_funding.py::test_reserve_transfer_claim_finish_no_double_hold\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_tier_funding.py::test_claim_record_write_failure_unwinds_exact\",\"tests/test_tier_funding.py::test_consumed_funding_refences_after_finish\",\"tests/test_tier_funding.py::test_consumed_never_covers_even_when_fully_held\",\"tests/test_tier_funding.py::test_consumed_physical_bytes_are_not_credit\",\"tests/test_tier_funding.py::test_denied_claim_preserves_entitlement_for_retry\",\"tests/test_tier_funding.py::test_funded_cover_exact_binding\",\"tests/test_tier_funding.py::test_funding_state_machine_and_cas\",\"tests/test_tier_funding.py::test_funding_write_enforces_binding_and_table\",\"tests/test_tier_funding.py::test_funding_writers_serialize_on_mover_lock\",\"tests/test_tier_funding.py::test_grant_and_transaction_prefixes\",\"tests/test_tier_funding.py::test_lease_write_failure_returns_remainder_keeps_fence\",\"tests/test_tier_funding.py::test_malformed_funding_is_inert_and_retained_until_absent\",\"tests/test_tier_funding.py::test_mark_failure_unwinds_without_execution\",\"tests/test_tier_funding.py::test_physical_tokens_never_count_as_credit\",\"tests/test_tier_funding.py::test_real_copy_lifecycle_stays_charged_until_egress\",\"tests/test_tier_funding.py::test_reserve_transfer_claim_finish_no_double_hold\"],\"run_nonce\":\"642008a7a4d59f24b9406a04be177b21c4e8b6d7645e08354282f08803d78f42\"}",
+        "                                                         [100%]",
+        "pbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_tier_funding.py::test_grant_and_transaction_prefixes\",\"tests/test_tier_funding.py::test_funding_state_machine_and_cas\",\"tests/test_tier_funding.py::test_funded_cover_exact_binding\",\"tests/test_tier_funding.py::test_reserve_transfer_claim_finish_no_double_hold\",\"tests/test_tier_funding.py::test_denied_claim_preserves_entitlement_for_retry\",\"tests/test_tier_funding.py::test_physical_tokens_never_count_as_credit\",\"tests/test_tier_funding.py::test_malformed_funding_is_inert_and_retained_until_absent\",\"tests/test_tier_funding.py::test_consumed_funding_refences_after_finish\",\"tests/test_tier_funding.py::test_funding_writers_serialize_on_mover_lock\",\"tests/test_tier_funding.py::test_consumed_physical_bytes_are_not_credit\",\"tests/test_tier_funding.py::test_claim_record_write_failure_unwinds_exact\",\"tests/test_tier_funding.py::test_lease_write_failure_returns_remainder_keeps_fence\",\"tests/test_tier_funding.py::test_mark_failure_unwinds_without_execution\",\"tests/test_tier_funding.py::test_consumed_never_covers_even_when_fully_held\",\"tests/test_tier_funding.py::test_real_copy_lifecycle_stays_charged_until_egress\",\"tests/test_tier_funding.py::test_funding_write_enforces_binding_and_table\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/test_tier_funding.py::test_grant_and_transaction_prefixes\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_funding_state_machine_and_cas\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_funded_cover_exact_binding\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_reserve_transfer_claim_finish_no_double_hold\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_denied_claim_preserves_entitlement_for_retry\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_physical_tokens_never_count_as_credit\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_malformed_funding_is_inert_and_retained_until_absent\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_consumed_funding_refences_after_finish\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_funding_writers_serialize_on_mover_lock\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_consumed_physical_bytes_are_not_credit\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_claim_record_write_failure_unwinds_exact\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_lease_write_failure_returns_remainder_keeps_fence\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_mark_failure_unwinds_without_execution\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_consumed_never_covers_even_when_fully_held\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_real_copy_lifecycle_stays_charged_until_egress\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_funding_write_enforces_binding_and_table\",\"call\",\"passed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_tier_funding.py\":1.312},\"first_tightened_test_budget_remaining_s\":299.7564024309977,\"file_selection\":{\"files\":[\"tests/test_tier_funding.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"642008a7a4d59f24b9406a04be177b21c4e8b6d7645e08354282f08803d78f42\"}",
+        "",
+        "prismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_tier_funding.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [4], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_tier_funding.py\"], \"selected_source_sha256\": {\"tests/test_tier_funding.py\": \"af70d944c1ded5f9cf55acabce12176c1c0cdd7187614eb97ae05ea41725d99e\"}, \"exitstatus\": 0}",
+        "16 passed in 1.67s",
+        "{\"local_result_claim_sha256\": \"cd1dc82e08ca51a03790bbe3f255f028949918183705cf9a65b4f7a8e03c06df\", \"payload_path\": \"/mnt/shared/prismabuild-fleet/cas/blobs/60/604290cd8b982857afaafe3c48dc66533fb9617ceb75bb3e922de17539807bf1\", \"reaped_staging_files\": 0, \"receipt\": {\"action_key\": \"f98af0d12aa404c7070189607a2c787b502972e7cbf74b3a437081dbb3c4211c\", \"action_manifest_sha256\": \"20a92661e479095bdef32ae696ebb44590aabc87908a4d85af616c1b91544a68\", \"producer\": {\"action_key\": \"f98af0d12aa404c7070189607a2c787b502972e7cbf74b3a437081dbb3c4211c\", \"attestation_sha256\": \"e582e9d7aa6fa7d26affabec4d598599d240d50b5e47a9a35df3c8f588f5112d\", \"evidence\": {\"accelerators\": [], \"hostname\": \"dl380g10\", \"libc\": \"glibc-2.43\", \"machine\": \"x86_64\", \"slurm\": null, \"source\": \"local\", \"system\": \"linux\"}, \"executable\": {\"bytes\": 1540520, \"path\": \"/bin/bash\", \"resolved_path\": \"/usr/bin/bash\", \"sha256\": \"3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd\"}, \"host_class\": null, \"inputs\": [{\"bytes\": 46210522, \"id\": \"pbrun.checkout-snapshot\", \"sha256\": \"b42928c19b3aac720379c6d4737e921d2962eff2887919e35f17cfe90d79501c\"}], \"platform_key\": \"linux-x86_64\", \"runtime\": {\"core\": {\"bytes\": 305687, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", \"sha256\": \"d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461\"}, \"digest_primitives\": {\"bytes\": 5078, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py\", \"sha256\": \"25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf\"}, \"launch_kind\": \"script\", \"launcher\": {\"bytes\": 2285, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", \"sha256\": \"9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418\"}, \"runtime_sha256\": \"6223fa6761bd60b0e4f6c8bf544ae003ad9e6a6b7242a29180a2c8f5a2beac94\", \"schema\": \"prismaquant.prismabuild.worker_runtime.v1\"}, \"schema\": \"prismaquant.prismabuild.worker_attestation.v2\", \"toolchain\": {\"declared\": {}, \"verified\": {}}, \"worker_id\": \"dl380g10\"}, \"receipt_sha256\": \"079e5a99933c3934dbaa12be5da567d65e7236faa6350a9615a5be369d864c5e\", \"result\": {\"bytes\": 8584, \"sha256\": \"604290cd8b982857afaafe3c48dc66533fb9617ceb75bb3e922de17539807bf1\"}, \"schema\": \"prismaquant.prismabuild.cas_receipt.v3\"}, \"recovered_declared_result\": false, \"status\": \"published\"}"
+      ],
+      "lines_returned": 9
+    },
+    "summary": "16 passed in 1.67s",
+    "receipt": {
+      "present": true,
+      "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/f9/f98af0d12aa404c7070189607a2c787b502972e7cbf74b3a437081dbb3c4211c.json",
+      "action_manifest_sha256": "20a92661e479095bdef32ae696ebb44590aabc87908a4d85af616c1b91544a68",
+      "receipt_sha256": "079e5a99933c3934dbaa12be5da567d65e7236faa6350a9615a5be369d864c5e",
+      "result": {
+        "sha256": "604290cd8b982857afaafe3c48dc66533fb9617ceb75bb3e922de17539807bf1",
+        "bytes": 8584
+      }
+    },
+    "pytest_output": "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"642008a7a4d59f24b9406a04be177b21c4e8b6d7645e08354282f08803d78f42\"}\n................\npbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_tier_funding.py::test_grant_and_transaction_prefixes\",\"tests/test_tier_funding.py::test_funding_state_machine_and_cas\",\"tests/test_tier_funding.py::test_funded_cover_exact_binding\",\"tests/test_tier_funding.py::test_reserve_transfer_claim_finish_no_double_hold\",\"tests/test_tier_funding.py::test_denied_claim_preserves_entitlement_for_retry\",\"tests/test_tier_funding.py::test_physical_tokens_never_count_as_credit\",\"tests/test_tier_funding.py::test_malformed_funding_is_inert_and_retained_until_absent\",\"tests/test_tier_funding.py::test_consumed_funding_refences_after_finish\",\"tests/test_tier_funding.py::test_funding_writers_serialize_on_mover_lock\",\"tests/test_tier_funding.py::test_consumed_physical_bytes_are_not_credit\",\"tests/test_tier_funding.py::test_claim_record_write_failure_unwinds_exact\",\"tests/test_tier_funding.py::test_lease_write_failure_returns_remainder_keeps_fence\",\"tests/test_tier_funding.py::test_mark_failure_unwinds_without_execution\",\"tests/test_tier_funding.py::test_consumed_never_covers_even_when_fully_held\",\"tests/test_tier_funding.py::test_real_copy_lifecycle_stays_charged_until_egress\",\"tests/test_tier_funding.py::test_funding_write_enforces_binding_and_table\"],\"teardown_finished\":[\"tests/test_tier_funding.py::test_claim_record_write_failure_unwinds_exact\",\"tests/test_tier_funding.py::test_consumed_funding_refences_after_finish\",\"tests/test_tier_funding.py::test_consumed_never_covers_even_when_fully_held\",\"tests/test_tier_funding.py::test_consumed_physical_bytes_are_not_credit\",\"tests/test_tier_funding.py::test_denied_claim_preserves_entitlement_for_retry\",\"tests/test_tier_funding.py::test_funded_cover_exact_binding\",\"tests/test_tier_funding.py::test_funding_state_machine_and_cas\",\"tests/test_tier_funding.py::test_funding_write_enforces_binding_and_table\",\"tests/test_tier_funding.py::test_funding_writers_serialize_on_mover_lock\",\"tests/test_tier_funding.py::test_grant_and_transaction_prefixes\",\"tests/test_tier_funding.py::test_lease_write_failure_returns_remainder_keeps_fence\",\"tests/test_tier_funding.py::test_malformed_funding_is_inert_and_retained_until_absent\",\"tests/test_tier_funding.py::test_mark_failure_unwinds_without_execution\",\"tests/test_tier_funding.py::test_physical_tokens_never_count_as_credit\",\"tests/test_tier_funding.py::test_real_copy_lifecycle_stays_charged_until_egress\",\"tests/test_tier_funding.py::test_reserve_transfer_claim_finish_no_double_hold\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_tier_funding.py::test_claim_record_write_failure_unwinds_exact\",\"tests/test_tier_funding.py::test_consumed_funding_refences_after_finish\",\"tests/test_tier_funding.py::test_consumed_never_covers_even_when_fully_held\",\"tests/test_tier_funding.py::test_consumed_physical_bytes_are_not_credit\",\"tests/test_tier_funding.py::test_denied_claim_preserves_entitlement_for_retry\",\"tests/test_tier_funding.py::test_funded_cover_exact_binding\",\"tests/test_tier_funding.py::test_funding_state_machine_and_cas\",\"tests/test_tier_funding.py::test_funding_write_enforces_binding_and_table\",\"tests/test_tier_funding.py::test_funding_writers_serialize_on_mover_lock\",\"tests/test_tier_funding.py::test_grant_and_transaction_prefixes\",\"tests/test_tier_funding.py::test_lease_write_failure_returns_remainder_keeps_fence\",\"tests/test_tier_funding.py::test_malformed_funding_is_inert_and_retained_until_absent\",\"tests/test_tier_funding.py::test_mark_failure_unwinds_without_execution\",\"tests/test_tier_funding.py::test_physical_tokens_never_count_as_credit\",\"tests/test_tier_funding.py::test_real_copy_lifecycle_stays_charged_until_egress\",\"tests/test_tier_funding.py::test_reserve_transfer_claim_finish_no_double_hold\"],\"run_nonce\":\"642008a7a4d59f24b9406a04be177b21c4e8b6d7645e08354282f08803d78f42\"}\n                                                         [100%]\npbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_tier_funding.py::test_grant_and_transaction_prefixes\",\"tests/test_tier_funding.py::test_funding_state_machine_and_cas\",\"tests/test_tier_funding.py::test_funded_cover_exact_binding\",\"tests/test_tier_funding.py::test_reserve_transfer_claim_finish_no_double_hold\",\"tests/test_tier_funding.py::test_denied_claim_preserves_entitlement_for_retry\",\"tests/test_tier_funding.py::test_physical_tokens_never_count_as_credit\",\"tests/test_tier_funding.py::test_malformed_funding_is_inert_and_retained_until_absent\",\"tests/test_tier_funding.py::test_consumed_funding_refences_after_finish\",\"tests/test_tier_funding.py::test_funding_writers_serialize_on_mover_lock\",\"tests/test_tier_funding.py::test_consumed_physical_bytes_are_not_credit\",\"tests/test_tier_funding.py::test_claim_record_write_failure_unwinds_exact\",\"tests/test_tier_funding.py::test_lease_write_failure_returns_remainder_keeps_fence\",\"tests/test_tier_funding.py::test_mark_failure_unwinds_without_execution\",\"tests/test_tier_funding.py::test_consumed_never_covers_even_when_fully_held\",\"tests/test_tier_funding.py::test_real_copy_lifecycle_stays_charged_until_egress\",\"tests/test_tier_funding.py::test_funding_write_enforces_binding_and_table\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/test_tier_funding.py::test_grant_and_transaction_prefixes\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_funding_state_machine_and_cas\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_funded_cover_exact_binding\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_reserve_transfer_claim_finish_no_double_hold\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_denied_claim_preserves_entitlement_for_retry\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_physical_tokens_never_count_as_credit\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_malformed_funding_is_inert_and_retained_until_absent\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_consumed_funding_refences_after_finish\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_funding_writers_serialize_on_mover_lock\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_consumed_physical_bytes_are_not_credit\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_claim_record_write_failure_unwinds_exact\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_lease_write_failure_returns_remainder_keeps_fence\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_mark_failure_unwinds_without_execution\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_consumed_never_covers_even_when_fully_held\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_real_copy_lifecycle_stays_charged_until_egress\",\"call\",\"passed\",null,null],[\"tests/test_tier_funding.py::test_funding_write_enforces_binding_and_table\",\"call\",\"passed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_tier_funding.py\":1.312},\"first_tightened_test_budget_remaining_s\":299.7564024309977,\"file_selection\":{\"files\":[\"tests/test_tier_funding.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"642008a7a4d59f24b9406a04be177b21c4e8b6d7645e08354282f08803d78f42\"}\n\nprismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_tier_funding.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [4], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_tier_funding.py\"], \"selected_source_sha256\": {\"tests/test_tier_funding.py\": \"af70d944c1ded5f9cf55acabce12176c1c0cdd7187614eb97ae05ea41725d99e\"}, \"exitstatus\": 0}\n16 passed in 1.67s\n",
+    "cas_receipt": {
+      "schema": "prismaquant.prismabuild.cas_receipt.v3",
+      "action_key": "f98af0d12aa404c7070189607a2c787b502972e7cbf74b3a437081dbb3c4211c",
+      "action_manifest_sha256": "20a92661e479095bdef32ae696ebb44590aabc87908a4d85af616c1b91544a68",
+      "result": {
+        "sha256": "604290cd8b982857afaafe3c48dc66533fb9617ceb75bb3e922de17539807bf1",
+        "bytes": 8584
+      },
+      "producer": {
+        "schema": "prismaquant.prismabuild.worker_attestation.v2",
+        "action_key": "f98af0d12aa404c7070189607a2c787b502972e7cbf74b3a437081dbb3c4211c",
+        "worker_id": "dl380g10",
+        "platform_key": "linux-x86_64",
+        "host_class": null,
+        "evidence": {
+          "source": "local",
+          "hostname": "dl380g10",
+          "system": "linux",
+          "machine": "x86_64",
+          "libc": "glibc-2.43",
+          "accelerators": [],
+          "slurm": null
+        },
+        "runtime": {
+          "schema": "prismaquant.prismabuild.worker_runtime.v1",
+          "launch_kind": "script",
+          "core": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py",
+            "sha256": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+            "bytes": 305687
+          },
+          "launcher": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py",
+            "sha256": "9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418",
+            "bytes": 2285
+          },
+          "digest_primitives": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py",
+            "sha256": "25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf",
+            "bytes": 5078
+          },
+          "runtime_sha256": "6223fa6761bd60b0e4f6c8bf544ae003ad9e6a6b7242a29180a2c8f5a2beac94"
+        },
+        "executable": {
+          "path": "/bin/bash",
+          "resolved_path": "/usr/bin/bash",
+          "sha256": "3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd",
+          "bytes": 1540520
+        },
+        "toolchain": {
+          "declared": {},
+          "verified": {}
+        },
+        "inputs": [
+          {
+            "id": "pbrun.checkout-snapshot",
+            "sha256": "b42928c19b3aac720379c6d4737e921d2962eff2887919e35f17cfe90d79501c",
+            "bytes": 46210522
+          }
+        ],
+        "attestation_sha256": "e582e9d7aa6fa7d26affabec4d598599d240d50b5e47a9a35df3c8f588f5112d"
+      },
+      "receipt_sha256": "079e5a99933c3934dbaa12be5da567d65e7236faa6350a9615a5be369d864c5e"
+    },
+    "checks": {
+      "full_manifest_cas_lookup": true,
+      "local_claim_and_payload_sha256": true
+    }
+  },
+  {
+    "action_key": "4bc17055678e26026d5a25598b4d3afa70a6e8279ddd898afa9ed2284c3fb86b",
+    "state": "done",
+    "outcome": {
+      "status": "executed",
+      "claimed_host": "dl380g10",
+      "finished_host": "dl380g10",
+      "attempts": 1,
+      "returncode": 0,
+      "action_returncode": null,
+      "resource_scope_cleanup": {
+        "checked_unix": 1793025541.2421708,
+        "complete": true,
+        "export": {
+          "empty": true,
+          "ok": true,
+          "released": true,
+          "retired": false,
+          "scope_id": "prismabuild-jobe4fe25c794bda80854487d509ce115a0.slice",
+          "settled": true,
+          "stop_reason": "executed",
+          "stopped": true,
+          "stopped_unix": 1793025541.1986341,
+          "tickets_pending": false
+        },
+        "nonce": "e3c8f9d70f3745babdfd9ae64d9428e7",
+        "released": {
+          "ok": true,
+          "scope_id": "prismabuild-jobe4fe25c794bda80854487d509ce115a0.slice",
+          "stop_reason": "executed",
+          "stopped_unix": 1793025541.1986341
+        },
+        "telemetry": {
+          "action_key": "4bc17055678e26026d5a25598b4d3afa70a6e8279ddd898afa9ed2284c3fb86b",
+          "complete": true,
+          "cpu_seconds": 3.53472,
+          "cpu_system_seconds": 0.326974,
+          "cpu_user_seconds": 3.207746,
+          "errors": [],
+          "gpu_memory_max_bytes": 4294967296,
+          "host": "dl380g10",
+          "memory_current_bytes": 593920,
+          "memory_max_bytes": 4294967296,
+          "memory_peak_bytes": 190849024,
+          "nonce": "e3c8f9d70f3745babdfd9ae64d9428e7",
+          "oom_kill": 0,
+          "oom_local": 0,
+          "process_io": {
+            "live": {},
+            "members": [
+              3035000,
+              3035202,
+              3035204,
+              3035205
+            ],
+            "processes_live": 0,
+            "processes_observed": 4,
+            "processes_unreadable": 0,
+            "rchar": 85381376,
+            "read_bytes": 58368,
+            "retired": {
+              "rchar": 85381376,
+              "read_bytes": 58368,
+              "syscr": 4218,
+              "syscw": 59,
+              "wchar": 3302697,
+              "write_bytes": 3281912
+            },
+            "source": "proc_io",
+            "syscr": 4218,
+            "syscw": 59,
+            "wchar": 3302697,
+            "write_bytes": 3281912
+          },
+          "sampled_unix": 1793025541.2008412,
+          "scope_unit": "prismabuild-jobe4fe25c794bda80854487d509ce115a0.slice",
+          "shape_key": "fd6833ba7dd4f0ea3f15b57d12b25294a08e00b8bc58dc76306ae5a7c923929a",
+          "termination_reason": "executed",
+          "wall_seconds": 4.503561756006093
+        }
+      }
+    },
+    "log": {
+      "stream": "stdout",
+      "attempt": 1,
+      "before_withdrawal": false,
+      "recorded_bytes": 6314,
+      "recorded_sha256": "3030de25701084f6b5f82a55dec6bcca64155c8b846c89c686d5663af892bc0d",
+      "bytes_match": true,
+      "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/4bc17055678e26026d5a25598b4d3afa70a6e8279ddd898afa9ed2284c3fb86b/0cfb7ea647433b78e627ded606de8de5f989a54c660523867354c48f834c2b11/00000001.stdout.3030de25701084f6b5f82a55dec6bcca64155c8b846c89c686d5663af892bc0d.log",
+      "present": true,
+      "total_bytes": 6314,
+      "bytes_read": 6314,
+      "truncated_head": false,
+      "lines": [
+        "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"aba323c69a54c5fe4ca2f1b0489029072e6d911b0c4b579ba62832cd41bc192b\"}",
+        "..",
+        "pbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_probe_asks_for_the_obligation_it_gates_on\",\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_sweep_reaches_the_asked_room\"],\"teardown_finished\":[\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_probe_asks_for_the_obligation_it_gates_on\",\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_sweep_reaches_the_asked_room\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_probe_asks_for_the_obligation_it_gates_on\",\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_sweep_reaches_the_asked_room\"],\"run_nonce\":\"aba323c69a54c5fe4ca2f1b0489029072e6d911b0c4b579ba62832cd41bc192b\"}",
+        "                                                                       [100%]",
+        "pbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_probe_asks_for_the_obligation_it_gates_on\",\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_sweep_reaches_the_asked_room\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_probe_asks_for_the_obligation_it_gates_on\",\"call\",\"passed\",null,null],[\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_sweep_reaches_the_asked_room\",\"call\",\"passed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_streaming_probe_counts_declared_obligations_1627.py\":0.214},\"first_tightened_test_budget_remaining_s\":299.51368075900245,\"file_selection\":{\"files\":[\"tests/test_streaming_probe_counts_declared_obligations_1627.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"aba323c69a54c5fe4ca2f1b0489029072e6d911b0c4b579ba62832cd41bc192b\"}",
+        "",
+        "prismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_streaming_probe_counts_declared_obligations_1627.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [5], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_streaming_probe_counts_declared_obligations_1627.py\"], \"selected_source_sha256\": {\"tests/test_streaming_probe_counts_declared_obligations_1627.py\": \"0bbc61f3fbd7a29fb7711a9c190c113e9f13415673b1276e1bb5b5c2b734026a\"}, \"exitstatus\": 0}",
+        "2 passed in 0.72s",
+        "{\"local_result_claim_sha256\": \"fa50578d496900c2543763c0ee6c091465a800c0f1a1b63c7803f2835597ab05\", \"payload_path\": \"/mnt/shared/prismabuild-fleet/cas/blobs/66/66cf5bc0fc9f769e12584d3d34f85f22248bbf713791879c1756dabf52916ce5\", \"reaped_staging_files\": 0, \"receipt\": {\"action_key\": \"4bc17055678e26026d5a25598b4d3afa70a6e8279ddd898afa9ed2284c3fb86b\", \"action_manifest_sha256\": \"152400f52bde902c8df16e2453f5049cfafb0fd1317dfcb7cb1b1516a55a980a\", \"producer\": {\"action_key\": \"4bc17055678e26026d5a25598b4d3afa70a6e8279ddd898afa9ed2284c3fb86b\", \"attestation_sha256\": \"c1a92313e91f81883c4e42d365922e03795564c8b67a346fb699ecfdcef41cc6\", \"evidence\": {\"accelerators\": [], \"hostname\": \"dl380g10\", \"libc\": \"glibc-2.43\", \"machine\": \"x86_64\", \"slurm\": null, \"source\": \"local\", \"system\": \"linux\"}, \"executable\": {\"bytes\": 1540520, \"path\": \"/bin/bash\", \"resolved_path\": \"/usr/bin/bash\", \"sha256\": \"3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd\"}, \"host_class\": null, \"inputs\": [{\"bytes\": 46210522, \"id\": \"pbrun.checkout-snapshot\", \"sha256\": \"b42928c19b3aac720379c6d4737e921d2962eff2887919e35f17cfe90d79501c\"}], \"platform_key\": \"linux-x86_64\", \"runtime\": {\"core\": {\"bytes\": 305687, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", \"sha256\": \"d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461\"}, \"digest_primitives\": {\"bytes\": 5078, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py\", \"sha256\": \"25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf\"}, \"launch_kind\": \"script\", \"launcher\": {\"bytes\": 2285, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", \"sha256\": \"9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418\"}, \"runtime_sha256\": \"6223fa6761bd60b0e4f6c8bf544ae003ad9e6a6b7242a29180a2c8f5a2beac94\", \"schema\": \"prismaquant.prismabuild.worker_runtime.v1\"}, \"schema\": \"prismaquant.prismabuild.worker_attestation.v2\", \"toolchain\": {\"declared\": {}, \"verified\": {}}, \"worker_id\": \"dl380g10\"}, \"receipt_sha256\": \"113b5dd5084a93f010cff726cc99c6aeb6394c876bb7b9e6a2c9d45f169ebb48\", \"result\": {\"bytes\": 3437, \"sha256\": \"66cf5bc0fc9f769e12584d3d34f85f22248bbf713791879c1756dabf52916ce5\"}, \"schema\": \"prismaquant.prismabuild.cas_receipt.v3\"}, \"recovered_declared_result\": false, \"status\": \"published\"}"
+      ],
+      "lines_returned": 9
+    },
+    "summary": "2 passed in 0.72s",
+    "receipt": {
+      "present": true,
+      "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/4b/4bc17055678e26026d5a25598b4d3afa70a6e8279ddd898afa9ed2284c3fb86b.json",
+      "action_manifest_sha256": "152400f52bde902c8df16e2453f5049cfafb0fd1317dfcb7cb1b1516a55a980a",
+      "receipt_sha256": "113b5dd5084a93f010cff726cc99c6aeb6394c876bb7b9e6a2c9d45f169ebb48",
+      "result": {
+        "sha256": "66cf5bc0fc9f769e12584d3d34f85f22248bbf713791879c1756dabf52916ce5",
+        "bytes": 3437
+      }
+    },
+    "pytest_output": "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"aba323c69a54c5fe4ca2f1b0489029072e6d911b0c4b579ba62832cd41bc192b\"}\n..\npbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_probe_asks_for_the_obligation_it_gates_on\",\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_sweep_reaches_the_asked_room\"],\"teardown_finished\":[\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_probe_asks_for_the_obligation_it_gates_on\",\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_sweep_reaches_the_asked_room\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_probe_asks_for_the_obligation_it_gates_on\",\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_sweep_reaches_the_asked_room\"],\"run_nonce\":\"aba323c69a54c5fe4ca2f1b0489029072e6d911b0c4b579ba62832cd41bc192b\"}\n                                                                       [100%]\npbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_probe_asks_for_the_obligation_it_gates_on\",\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_sweep_reaches_the_asked_room\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_probe_asks_for_the_obligation_it_gates_on\",\"call\",\"passed\",null,null],[\"tests/test_streaming_probe_counts_declared_obligations_1627.py::test_the_sweep_reaches_the_asked_room\",\"call\",\"passed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_streaming_probe_counts_declared_obligations_1627.py\":0.214},\"first_tightened_test_budget_remaining_s\":299.51368075900245,\"file_selection\":{\"files\":[\"tests/test_streaming_probe_counts_declared_obligations_1627.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"aba323c69a54c5fe4ca2f1b0489029072e6d911b0c4b579ba62832cd41bc192b\"}\n\nprismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_streaming_probe_counts_declared_obligations_1627.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [5], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_streaming_probe_counts_declared_obligations_1627.py\"], \"selected_source_sha256\": {\"tests/test_streaming_probe_counts_declared_obligations_1627.py\": \"0bbc61f3fbd7a29fb7711a9c190c113e9f13415673b1276e1bb5b5c2b734026a\"}, \"exitstatus\": 0}\n2 passed in 0.72s\n",
+    "cas_receipt": {
+      "schema": "prismaquant.prismabuild.cas_receipt.v3",
+      "action_key": "4bc17055678e26026d5a25598b4d3afa70a6e8279ddd898afa9ed2284c3fb86b",
+      "action_manifest_sha256": "152400f52bde902c8df16e2453f5049cfafb0fd1317dfcb7cb1b1516a55a980a",
+      "result": {
+        "sha256": "66cf5bc0fc9f769e12584d3d34f85f22248bbf713791879c1756dabf52916ce5",
+        "bytes": 3437
+      },
+      "producer": {
+        "schema": "prismaquant.prismabuild.worker_attestation.v2",
+        "action_key": "4bc17055678e26026d5a25598b4d3afa70a6e8279ddd898afa9ed2284c3fb86b",
+        "worker_id": "dl380g10",
+        "platform_key": "linux-x86_64",
+        "host_class": null,
+        "evidence": {
+          "source": "local",
+          "hostname": "dl380g10",
+          "system": "linux",
+          "machine": "x86_64",
+          "libc": "glibc-2.43",
+          "accelerators": [],
+          "slurm": null
+        },
+        "runtime": {
+          "schema": "prismaquant.prismabuild.worker_runtime.v1",
+          "launch_kind": "script",
+          "core": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py",
+            "sha256": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+            "bytes": 305687
+          },
+          "launcher": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py",
+            "sha256": "9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418",
+            "bytes": 2285
+          },
+          "digest_primitives": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py",
+            "sha256": "25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf",
+            "bytes": 5078
+          },
+          "runtime_sha256": "6223fa6761bd60b0e4f6c8bf544ae003ad9e6a6b7242a29180a2c8f5a2beac94"
+        },
+        "executable": {
+          "path": "/bin/bash",
+          "resolved_path": "/usr/bin/bash",
+          "sha256": "3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd",
+          "bytes": 1540520
+        },
+        "toolchain": {
+          "declared": {},
+          "verified": {}
+        },
+        "inputs": [
+          {
+            "id": "pbrun.checkout-snapshot",
+            "sha256": "b42928c19b3aac720379c6d4737e921d2962eff2887919e35f17cfe90d79501c",
+            "bytes": 46210522
+          }
+        ],
+        "attestation_sha256": "c1a92313e91f81883c4e42d365922e03795564c8b67a346fb699ecfdcef41cc6"
+      },
+      "receipt_sha256": "113b5dd5084a93f010cff726cc99c6aeb6394c876bb7b9e6a2c9d45f169ebb48"
+    },
+    "checks": {
+      "full_manifest_cas_lookup": true,
+      "local_claim_and_payload_sha256": true
+    }
+  },
+  {
+    "action_key": "6c5c3d12dad4b416638ac2a4519e2c60327e2563883ff48c5b6eaf1d1962e3ea",
+    "state": "done",
+    "outcome": {
+      "status": "executed",
+      "claimed_host": "dl380g10",
+      "finished_host": "dl380g10",
+      "attempts": 1,
+      "returncode": 0,
+      "action_returncode": null,
+      "resource_scope_cleanup": {
+        "checked_unix": 1793025541.2622833,
+        "complete": true,
+        "export": {
+          "empty": true,
+          "ok": true,
+          "released": true,
+          "retired": false,
+          "scope_id": "prismabuild-jobcb77c8f0465879376061c952c405f2bf.slice",
+          "settled": true,
+          "stop_reason": "executed",
+          "stopped": true,
+          "stopped_unix": 1793025541.219133,
+          "tickets_pending": false
+        },
+        "nonce": "d54fba710107474fa5107545b6cff2bc",
+        "released": {
+          "ok": true,
+          "scope_id": "prismabuild-jobcb77c8f0465879376061c952c405f2bf.slice",
+          "stop_reason": "executed",
+          "stopped_unix": 1793025541.219133
+        },
+        "telemetry": {
+          "action_key": "6c5c3d12dad4b416638ac2a4519e2c60327e2563883ff48c5b6eaf1d1962e3ea",
+          "complete": true,
+          "cpu_seconds": 3.299271,
+          "cpu_system_seconds": 0.304209,
+          "cpu_user_seconds": 2.995062,
+          "errors": [],
+          "gpu_memory_max_bytes": 4294967296,
+          "host": "dl380g10",
+          "memory_current_bytes": 401408,
+          "memory_max_bytes": 4294967296,
+          "memory_peak_bytes": 200790016,
+          "nonce": "d54fba710107474fa5107545b6cff2bc",
+          "oom_kill": 0,
+          "oom_local": 0,
+          "process_io": {
+            "live": {},
+            "members": [
+              3035022,
+              3035276,
+              3035278,
+              3035279
+            ],
+            "processes_live": 0,
+            "processes_observed": 4,
+            "processes_unreadable": 0,
+            "rchar": 85592521,
+            "read_bytes": 33792,
+            "retired": {
+              "rchar": 85592521,
+              "read_bytes": 33792,
+              "syscr": 4231,
+              "syscw": 64,
+              "wchar": 3508227,
+              "write_bytes": 3487477
+            },
+            "source": "proc_io",
+            "syscr": 4231,
+            "syscw": 64,
+            "wchar": 3508227,
+            "write_bytes": 3487477
+          },
+          "sampled_unix": 1793025541.2210438,
+          "scope_unit": "prismabuild-jobcb77c8f0465879376061c952c405f2bf.slice",
+          "shape_key": "cd3dbda883e9c54f1d79b440589e12c363429797afba6dd0494bef88159301ac",
+          "termination_reason": "executed",
+          "wall_seconds": 4.268712185999902
+        }
+      }
+    },
+    "log": {
+      "stream": "stdout",
+      "attempt": 1,
+      "before_withdrawal": false,
+      "recorded_bytes": 8841,
+      "recorded_sha256": "cbb1028631e974f5203751194cacd9ec8661bd95bdd970c044b10363a985fe9f",
+      "bytes_match": true,
+      "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/6c5c3d12dad4b416638ac2a4519e2c60327e2563883ff48c5b6eaf1d1962e3ea/00049d5e77afe48579675c407e25b115da5368908847cafea8b6d7705781408a/00000001.stdout.cbb1028631e974f5203751194cacd9ec8661bd95bdd970c044b10363a985fe9f.log",
+      "present": true,
+      "total_bytes": 8841,
+      "bytes_read": 8841,
+      "truncated_head": false,
+      "lines": [
+        "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"1b7f90308df348009ff53f3411820157b22ff00c5f8e6dc81c0a5c7e94cfdb05\"}",
+        "........",
+        "pbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[window]\",\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[output]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[window]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[output]\",\"tests/test_funding_ownership.py::test_release_keeps_unknown_for_dead_input_retry\",\"tests/test_funding_ownership.py::test_pass_facts_never_infer_permission_from_absence\",\"tests/test_funding_ownership.py::test_funding_construction_is_lazy_and_binding_is_immutable\",\"tests/test_funding_ownership.py::test_the_owned_zero_credit_branch_does_not_acquire\"],\"teardown_finished\":[\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[output]\",\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[window]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[output]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[window]\",\"tests/test_funding_ownership.py::test_funding_construction_is_lazy_and_binding_is_immutable\",\"tests/test_funding_ownership.py::test_pass_facts_never_infer_permission_from_absence\",\"tests/test_funding_ownership.py::test_release_keeps_unknown_for_dead_input_retry\",\"tests/test_funding_ownership.py::test_the_owned_zero_credit_branch_does_not_acquire\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[output]\",\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[window]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[output]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[window]\",\"tests/test_funding_ownership.py::test_funding_construction_is_lazy_and_binding_is_immutable\",\"tests/test_funding_ownership.py::test_pass_facts_never_infer_permission_from_absence\",\"tests/test_funding_ownership.py::test_release_keeps_unknown_for_dead_input_retry\",\"tests/test_funding_ownership.py::test_the_owned_zero_credit_branch_does_not_acquire\"],\"run_nonce\":\"1b7f90308df348009ff53f3411820157b22ff00c5f8e6dc81c0a5c7e94cfdb05\"}",
+        "                                                                 [100%]",
+        "pbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[window]\",\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[output]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[window]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[output]\",\"tests/test_funding_ownership.py::test_release_keeps_unknown_for_dead_input_retry\",\"tests/test_funding_ownership.py::test_pass_facts_never_infer_permission_from_absence\",\"tests/test_funding_ownership.py::test_funding_construction_is_lazy_and_binding_is_immutable\",\"tests/test_funding_ownership.py::test_the_owned_zero_credit_branch_does_not_acquire\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[window]\",\"call\",\"passed\",null,null],[\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[output]\",\"call\",\"passed\",null,null],[\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[window]\",\"call\",\"passed\",null,null],[\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[output]\",\"call\",\"passed\",null,null],[\"tests/test_funding_ownership.py::test_release_keeps_unknown_for_dead_input_retry\",\"call\",\"passed\",null,null],[\"tests/test_funding_ownership.py::test_pass_facts_never_infer_permission_from_absence\",\"call\",\"passed\",null,null],[\"tests/test_funding_ownership.py::test_funding_construction_is_lazy_and_binding_is_immutable\",\"call\",\"passed\",null,null],[\"tests/test_funding_ownership.py::test_the_owned_zero_credit_branch_does_not_acquire\",\"call\",\"passed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_funding_ownership.py\":0.375},\"first_tightened_test_budget_remaining_s\":299.9125982109981,\"file_selection\":{\"files\":[\"tests/test_funding_ownership.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"1b7f90308df348009ff53f3411820157b22ff00c5f8e6dc81c0a5c7e94cfdb05\"}",
+        "",
+        "prismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_funding_ownership.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [6], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_funding_ownership.py\"], \"selected_source_sha256\": {\"tests/test_funding_ownership.py\": \"6abb11d7658df03372bf6de55a7bdbb749fef6498257fd21963a94872be91d21\"}, \"exitstatus\": 0}",
+        "8 passed in 0.53s",
+        "{\"local_result_claim_sha256\": \"1c9f7d567401bf05fe34d7329dcd2c867ecc2ed500060c1180fea2fdefd0ef0d\", \"payload_path\": \"/mnt/shared/prismabuild-fleet/cas/blobs/9b/9bed125b91892d19d6779f756b24145cf36473cf15b5ecd9eb48c8f247364c57\", \"reaped_staging_files\": 0, \"receipt\": {\"action_key\": \"6c5c3d12dad4b416638ac2a4519e2c60327e2563883ff48c5b6eaf1d1962e3ea\", \"action_manifest_sha256\": \"bd01481368a1ac83d76139f853bf932ddf1beaf9087760626eb2056cf003bb3c\", \"producer\": {\"action_key\": \"6c5c3d12dad4b416638ac2a4519e2c60327e2563883ff48c5b6eaf1d1962e3ea\", \"attestation_sha256\": \"78926ebd680fd674e0f34066203c9319a7174e83409af4034e6553ea53b992af\", \"evidence\": {\"accelerators\": [], \"hostname\": \"dl380g10\", \"libc\": \"glibc-2.43\", \"machine\": \"x86_64\", \"slurm\": null, \"source\": \"local\", \"system\": \"linux\"}, \"executable\": {\"bytes\": 1540520, \"path\": \"/bin/bash\", \"resolved_path\": \"/usr/bin/bash\", \"sha256\": \"3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd\"}, \"host_class\": null, \"inputs\": [{\"bytes\": 46210522, \"id\": \"pbrun.checkout-snapshot\", \"sha256\": \"b42928c19b3aac720379c6d4737e921d2962eff2887919e35f17cfe90d79501c\"}], \"platform_key\": \"linux-x86_64\", \"runtime\": {\"core\": {\"bytes\": 305687, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py\", \"sha256\": \"d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461\"}, \"digest_primitives\": {\"bytes\": 5078, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py\", \"sha256\": \"25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf\"}, \"launch_kind\": \"script\", \"launcher\": {\"bytes\": 2285, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py\", \"sha256\": \"9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418\"}, \"runtime_sha256\": \"6223fa6761bd60b0e4f6c8bf544ae003ad9e6a6b7242a29180a2c8f5a2beac94\", \"schema\": \"prismaquant.prismabuild.worker_runtime.v1\"}, \"schema\": \"prismaquant.prismabuild.worker_attestation.v2\", \"toolchain\": {\"declared\": {}, \"verified\": {}}, \"worker_id\": \"dl380g10\"}, \"receipt_sha256\": \"64a3853efa3dfe6f82184edf852f813c3c2e3e1f80a888571b5ba6b7e4453c89\", \"result\": {\"bytes\": 5964, \"sha256\": \"9bed125b91892d19d6779f756b24145cf36473cf15b5ecd9eb48c8f247364c57\"}, \"schema\": \"prismaquant.prismabuild.cas_receipt.v3\"}, \"recovered_declared_result\": false, \"status\": \"published\"}"
+      ],
+      "lines_returned": 9
+    },
+    "summary": "8 passed in 0.53s",
+    "receipt": {
+      "present": true,
+      "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/6c/6c5c3d12dad4b416638ac2a4519e2c60327e2563883ff48c5b6eaf1d1962e3ea.json",
+      "action_manifest_sha256": "bd01481368a1ac83d76139f853bf932ddf1beaf9087760626eb2056cf003bb3c",
+      "receipt_sha256": "64a3853efa3dfe6f82184edf852f813c3c2e3e1f80a888571b5ba6b7e4453c89",
+      "result": {
+        "sha256": "9bed125b91892d19d6779f756b24145cf36473cf15b5ecd9eb48c8f247364c57",
+        "bytes": 5964
+      }
+    },
+    "pytest_output": "pbtest-preflight: {\"schema\":\"prismabuild.pbtest_preflight.v1\",\"status\":\"accepted\",\"exit_code\":0,\"runtime_refusal\":null,\"run_nonce\":\"1b7f90308df348009ff53f3411820157b22ff00c5f8e6dc81c0a5c7e94cfdb05\"}\n........\npbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[window]\",\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[output]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[window]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[output]\",\"tests/test_funding_ownership.py::test_release_keeps_unknown_for_dead_input_retry\",\"tests/test_funding_ownership.py::test_pass_facts_never_infer_permission_from_absence\",\"tests/test_funding_ownership.py::test_funding_construction_is_lazy_and_binding_is_immutable\",\"tests/test_funding_ownership.py::test_the_owned_zero_credit_branch_does_not_acquire\"],\"teardown_finished\":[\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[output]\",\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[window]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[output]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[window]\",\"tests/test_funding_ownership.py::test_funding_construction_is_lazy_and_binding_is_immutable\",\"tests/test_funding_ownership.py::test_pass_facts_never_infer_permission_from_absence\",\"tests/test_funding_ownership.py::test_release_keeps_unknown_for_dead_input_retry\",\"tests/test_funding_ownership.py::test_the_owned_zero_credit_branch_does_not_acquire\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[output]\",\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[window]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[output]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[window]\",\"tests/test_funding_ownership.py::test_funding_construction_is_lazy_and_binding_is_immutable\",\"tests/test_funding_ownership.py::test_pass_facts_never_infer_permission_from_absence\",\"tests/test_funding_ownership.py::test_release_keeps_unknown_for_dead_input_retry\",\"tests/test_funding_ownership.py::test_the_owned_zero_credit_branch_does_not_acquire\"],\"run_nonce\":\"1b7f90308df348009ff53f3411820157b22ff00c5f8e6dc81c0a5c7e94cfdb05\"}\n                                                                 [100%]\npbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[window]\",\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[output]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[window]\",\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[output]\",\"tests/test_funding_ownership.py::test_release_keeps_unknown_for_dead_input_retry\",\"tests/test_funding_ownership.py::test_pass_facts_never_infer_permission_from_absence\",\"tests/test_funding_ownership.py::test_funding_construction_is_lazy_and_binding_is_immutable\",\"tests/test_funding_ownership.py::test_the_owned_zero_credit_branch_does_not_acquire\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[window]\",\"call\",\"passed\",null,null],[\"tests/test_funding_ownership.py::test_both_bindings_share_the_same_durable_state_table[output]\",\"call\",\"passed\",null,null],[\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[window]\",\"call\",\"passed\",null,null],[\"tests/test_funding_ownership.py::test_cover_keeps_absence_separate_from_unknown[output]\",\"call\",\"passed\",null,null],[\"tests/test_funding_ownership.py::test_release_keeps_unknown_for_dead_input_retry\",\"call\",\"passed\",null,null],[\"tests/test_funding_ownership.py::test_pass_facts_never_infer_permission_from_absence\",\"call\",\"passed\",null,null],[\"tests/test_funding_ownership.py::test_funding_construction_is_lazy_and_binding_is_immutable\",\"call\",\"passed\",null,null],[\"tests/test_funding_ownership.py::test_the_owned_zero_credit_branch_does_not_acquire\",\"call\",\"passed\",null,null]],\"bound_failures\":[],\"uncounted\":[],\"file_durations\":{\"tests/test_funding_ownership.py\":0.375},\"first_tightened_test_budget_remaining_s\":299.9125982109981,\"file_selection\":{\"files\":[\"tests/test_funding_ownership.py\"],\"ignored\":[]},\"file_selection_error\":null,\"run_nonce\":\"1b7f90308df348009ff53f3411820157b22ff00c5f8e6dc81c0a5c7e94cfdb05\"}\n\nprismabuild-test-runtime: {\"complete\": true, \"version\": [3, 14, 4], \"description\": \"3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]\", \"files\": [\"tests/test_funding_ownership.py\"], \"executable\": {\"path\": \"/home/rob/venvs/pb-cpu/bin/python\", \"resolved_path\": \"/usr/bin/python3.14\", \"bytes\": 7477160, \"sha256\": \"52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41\"}, \"executable_path_matches_running\": true, \"affinity\": [6], \"native_threads\": {\"OMP_NUM_THREADS\": \"1\", \"MKL_NUM_THREADS\": \"1\", \"OPENBLAS_NUM_THREADS\": \"1\"}, \"conftest_sha256\": \"b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504\", \"kernel\": {\"system\": \"Linux\", \"node\": \"dl380g10\", \"release\": \"7.0.0-38-generic\", \"version\": \"#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026\", \"machine\": \"x86_64\", \"processor\": \"\"}, \"selected_files\": [\"tests/test_funding_ownership.py\"], \"selected_source_sha256\": {\"tests/test_funding_ownership.py\": \"6abb11d7658df03372bf6de55a7bdbb749fef6498257fd21963a94872be91d21\"}, \"exitstatus\": 0}\n8 passed in 0.53s\n",
+    "cas_receipt": {
+      "schema": "prismaquant.prismabuild.cas_receipt.v3",
+      "action_key": "6c5c3d12dad4b416638ac2a4519e2c60327e2563883ff48c5b6eaf1d1962e3ea",
+      "action_manifest_sha256": "bd01481368a1ac83d76139f853bf932ddf1beaf9087760626eb2056cf003bb3c",
+      "result": {
+        "sha256": "9bed125b91892d19d6779f756b24145cf36473cf15b5ecd9eb48c8f247364c57",
+        "bytes": 5964
+      },
+      "producer": {
+        "schema": "prismaquant.prismabuild.worker_attestation.v2",
+        "action_key": "6c5c3d12dad4b416638ac2a4519e2c60327e2563883ff48c5b6eaf1d1962e3ea",
+        "worker_id": "dl380g10",
+        "platform_key": "linux-x86_64",
+        "host_class": null,
+        "evidence": {
+          "source": "local",
+          "hostname": "dl380g10",
+          "system": "linux",
+          "machine": "x86_64",
+          "libc": "glibc-2.43",
+          "accelerators": [],
+          "slurm": null
+        },
+        "runtime": {
+          "schema": "prismaquant.prismabuild.worker_runtime.v1",
+          "launch_kind": "script",
+          "core": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/core.py",
+            "sha256": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+            "bytes": 305687
+          },
+          "launcher": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/tools/prismabuild_worker.py",
+            "sha256": "9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418",
+            "bytes": 2285
+          },
+          "digest_primitives": {
+            "path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py",
+            "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/189c563202ae-1793002494-cb98cac97353/src/prismabuild/digest_primitives.py",
+            "sha256": "25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf",
+            "bytes": 5078
+          },
+          "runtime_sha256": "6223fa6761bd60b0e4f6c8bf544ae003ad9e6a6b7242a29180a2c8f5a2beac94"
+        },
+        "executable": {
+          "path": "/bin/bash",
+          "resolved_path": "/usr/bin/bash",
+          "sha256": "3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd",
+          "bytes": 1540520
+        },
+        "toolchain": {
+          "declared": {},
+          "verified": {}
+        },
+        "inputs": [
+          {
+            "id": "pbrun.checkout-snapshot",
+            "sha256": "b42928c19b3aac720379c6d4737e921d2962eff2887919e35f17cfe90d79501c",
+            "bytes": 46210522
+          }
+        ],
+        "attestation_sha256": "78926ebd680fd674e0f34066203c9319a7174e83409af4034e6553ea53b992af"
+      },
+      "receipt_sha256": "64a3853efa3dfe6f82184edf852f813c3c2e3e1f80a888571b5ba6b7e4453c89"
+    },
+    "checks": {
+      "full_manifest_cas_lookup": true,
+      "local_claim_and_payload_sha256": true
+    }
+  }
+]
