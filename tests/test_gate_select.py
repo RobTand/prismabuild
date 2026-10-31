@@ -56,12 +56,13 @@ def selected(result):
 def test_fast_plus_direct_importers_without_transitive_fanout(tmp_path):
     result = plan(tree(tmp_path), ['src/prismabuild/pool.py'])
     assert selected(result) == {'tests/test_fast.py', 'tests/test_direct.py',
-                                'tests/test_nested.py', 'tests/test_pair.py'}
+                                'tests/test_nested.py'}
     reasons = {row['path']: row['reasons'] for row in result['selected']}
     assert 'fast tier' in reasons['tests/test_fast.py']
     assert any('src/prismabuild/pool.py' in reason for reason in reasons['tests/test_direct.py'])
     deferred = {row['path']: row for row in result['deferred']}
-    assert deferred['tests/test_gpu.py']['issue']
+    assert deferred['tests/test_gpu.py']['lane'] == 'gpu'
+    assert deferred['tests/test_pair.py']['lane'] == 'two_cpu'
     assert 'gpu' in deferred['tests/test_gpu.py']['reason'].lower()
     assert 'root' in deferred['tests/test_root.py']['reason'].lower()
     assert result['estimate']['wall_seconds'] is None
@@ -80,12 +81,13 @@ def test_changed_tests_and_non_python_path_references(tmp_path):
 
 
 @pytest.mark.parametrize('changed', ['conftest.py', 'tests/conftest.py', 'pyproject.toml',
-                                    'tests/support.py', 'tools/verify.py',
-                                    'tools/ci/gate_select.py', '.github/workflows/gate.yml',
-                                    'tests/test_gate_select.py', 'docs/ci_gate.md'])
+                                    'tools/verify.py', 'tests/proof_execution.json',
+                                    'tests/receipt_execution.json',
+                                    'tools/ci/gate_select.py',
+                                    'tests/test_gate_select.py'])
 def test_shared_configuration_and_helpers_select_whole_population(tmp_path, changed):
     result = plan(tree(tmp_path), [changed])
-    assert len(result['selected']) == result['population']['size'] == 10
+    assert len(result['selected']) == result['population']['size'] == 9
 
 
 def test_quarantine_and_cost_exclusions_are_owned_and_node_ids_stay_precise(tmp_path):
@@ -94,23 +96,23 @@ def test_quarantine_and_cost_exclusions_are_owned_and_node_ids_stay_precise(tmp_
         durations={'source': 'fixture', 'files': {'tests/test_fast.py': 3, 'tests/test_direct.py': 7,
             'tests/test_nested.py': 2, 'tests/test_pair.py': 4}},
         quarantine={'entries': [
-            {'target': 'tests/test_direct.py::test_bad[param]', 'reason': 'observed flake', 'issue': 2428},
-            {'target': 'tests/test_nested.py', 'reason': 'broken at baseline', 'issue': 2428}],
-            'cost_exclusions': [{'target': 'tests/test_pair.py', 'reason': 'measured cost', 'issue': 2428}]})
+            {'target': 'tests/test_direct.py::test_bad[param]', 'reason': 'observed flake', 'issue': 9001},
+            {'target': 'tests/test_nested.py', 'reason': 'broken at baseline', 'issue': 9001}],
+            'cost_exclusions': [{'target': 'tests/test_pair.py', 'reason': 'measured cost', 'issue': 9001}]})
     assert selected(result) == {'tests/test_fast.py', 'tests/test_direct.py'}
     assert result['deselect'] == ['tests/test_direct.py::test_bad[param]']
     assert result['estimate']['wall_seconds'] == 7
     assert result['estimate']['serial_seconds'] == 10
     assert result['population']['version']
     assert {(row['path'], row['issue']) for row in result['deferred']} >= {
-        ('tests/test_nested.py', 2428), ('tests/test_pair.py', 2428),
-        ('tests/test_direct.py::test_bad[param]', 2428)}
+        ('tests/test_nested.py', 9001), ('tests/test_pair.py', 9001),
+        ('tests/test_direct.py::test_bad[param]', 9001)}
 
 
 def test_invalid_or_unowned_exclusion_refuses_instead_of_hiding_coverage(tmp_path):
     root = tree(tmp_path)
     for entry in ({'target': 'tests/test_direct.py', 'reason': 'broken'},
-                  {'target': '../test_escape.py', 'reason': 'broken', 'issue': 2428}):
+                  {'target': '../test_escape.py', 'reason': 'broken', 'issue': 9001}):
         with pytest.raises(ValueError):
             select.create_plan(root, [], durations={'files': {}},
                                quarantine={'entries': [entry], 'cost_exclusions': []})
@@ -161,8 +163,52 @@ def test_root_relative_asset_joins_are_direct_evidence(tmp_path):
     assert 'tests/test_asset_join.py' in selected(plan(root, ['deploy/pool.json']))
 
 
-def test_test_module_imported_as_a_helper_changes_whole_population(tmp_path):
+def test_imported_test_fixture_selects_its_importers_without_global_fanout(tmp_path):
     root = tree(tmp_path)
     (root / 'tests/test_fixture_consumer.py').write_text('from test_indirect import fixture_builder\n')
-    result = plan(root, ['tests/test_indirect.py'])
-    assert len(result['selected']) == result['population']['size'] == 11
+    assert selected(plan(root, ['tests/test_indirect.py'])) == {
+        'tests/test_fast.py', 'tests/test_indirect.py', 'tests/test_fixture_consumer.py'}
+
+
+def test_helper_closure_handles_cycles_relative_imports_and_literal_assets(tmp_path):
+    root = tree(tmp_path)
+    files = {
+        'tests/support.py': "from .helpers import bridge\nasset = 'deploy/helper.json'\n",
+        'tests/helpers/bridge.py': 'from .. import support\n',
+        'tests/test_consumer.py': 'from tests.helpers import bridge\n',
+        'tests/test_loader.py': "p = 'tests/support.py'\n",
+    }
+    for name, source in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    expected = {'tests/test_fast.py', 'tests/test_consumer.py', 'tests/test_loader.py'}
+    assert selected(plan(root, ['tests/support.py'])) == expected
+    assert selected(plan(root, ['deploy/helper.json'])) == expected
+
+
+def test_deleted_helper_still_selects_its_importers(tmp_path):
+    root = tree(tmp_path)
+    (root / 'tests/test_consumer.py').write_text('from removed_helper import fixture\n')
+    assert selected(plan(root, ['tests/removed_helper.py'])) == {
+        'tests/test_fast.py', 'tests/test_consumer.py'}
+
+
+def test_unused_helpers_and_gate_documentation_do_not_expand_selection(tmp_path):
+    root = tree(tmp_path)
+    assert selected(plan(root, ['tests/support.py', 'docs/ci_gate.md'])) == {'tests/test_fast.py'}
+
+
+def test_full_queue_plan_retains_population_and_records_shadow_selection(tmp_path):
+    root = tree(tmp_path)
+    result = plan(root, ['src/prismabuild/pool.py'], mode='full')
+    assert len(result['selected']) == result['population']['size'] == 9
+    assert {row['path'] for row in result['shadow_selected']} == {
+        'tests/test_fast.py', 'tests/test_direct.py', 'tests/test_nested.py'}
+    assert result['mode'] == 'full'
+
+
+def test_readiness_tracker_is_not_a_quarantine_owner(tmp_path):
+    with pytest.raises(ValueError, match='owner'):
+        select.create_plan(tree(tmp_path), [], durations={'files': {}},
+            quarantine={'entries': [{'target': 'tests/test_direct.py', 'reason': 'broken', 'issue': 2428}]})
