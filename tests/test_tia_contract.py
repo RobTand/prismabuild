@@ -264,3 +264,22 @@ def test_child_reuses_parent_source_catalog(tmp_path, monkeypatch):
         assert recorder.files == {'src/example.py': 'known-parent-hash'}
     finally:
         recorder.close()
+
+
+def test_source_readers_and_their_consumers_keep_static_coverage():
+    mod = load_tia_module('tia_select')
+    mapping = {'source_commit': 'a' * 40, 'files': {'src/a.py': 'abc'},
+               'functions': ['src/a.py::f'], 'unattributed': [],
+               'tests': {'tests/test_direct.py::test_f': [0], 'tests/test_reader.py::test_ast': [],
+                         'tests/test_consumer.py::test_value': [], 'tests/test_other.py::test_unused': []}}
+    def static(paths):
+        return {'selected': [
+            {'path': 'tests/test_reader.py', 'reasons': ['literal path reference: src/a.py']},
+            {'path': 'tests/test_consumer.py', 'reasons': ['helper dependency: tests/test_reader.py']},
+            {'path': 'tests/test_other.py', 'reasons': ['direct import: src/a.py']}]}
+    result = mod.select(mapping, {'python': {'src/a.py': {'changed': ['f'], 'added': [], 'deleted': [],
+                        'module_changed': False}}, 'non_python': []}, file_hashes={'src/a.py': 'abc'},
+                        fast=[], changed_tests=[], population=['tests/test_direct.py', 'tests/test_reader.py',
+                        'tests/test_consumer.py', 'tests/test_other.py'], static=static)
+    assert result['targets'] == ['tests/test_consumer.py', 'tests/test_direct.py::test_f', 'tests/test_reader.py']
+    assert any('source reader' in reason for row in result['selected'] for reason in row['reasons'])
