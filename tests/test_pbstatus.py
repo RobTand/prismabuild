@@ -627,7 +627,8 @@ def test_json_is_one_object_with_the_three_lists(fleet, capsys):
                             "endings", "scheduler", "complete",
                             "timed_out_sections", "unavailable_sections",
                             "abandoned_children", "host_storage", "rollout",
-                                "canary"}
+                            "canary", "queue_space"}
+    assert payload["queue_space"]["state"] in {"ok", "warning", "critical", "unknown"}
     assert payload["host_storage"]["check"] == "nfs_readahead"
     # Whatever this box is, the reading did not make the census incomplete.
     assert payload["host_storage"]["state"] in {

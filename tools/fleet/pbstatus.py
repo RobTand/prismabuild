@@ -61,6 +61,7 @@ import upgrade_client  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import census as fleet_census  # noqa: E402
+from prismabuild.filesystem_capacity import queue_space_diagnostic  # noqa: E402
 from prismabuild import (  # noqa: E402
     _bounded_reader as _reader, core as pb, pool, slurm_lane as sl,
 )
@@ -1523,6 +1524,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if host_storage["warning"] or host_storage["state"] == "unreadable":
         print(host_storage["note"], file=sys.stderr)
 
+    space_read = bounded("queue-space", lambda: queue_space_diagnostic(args.queue_root),
+                         deadline=deadline, abandoned=abandoned, cap_s=HOST_STORAGE_BUDGET_S)
+    queue_space = (space_read["value"] if space_read["status"] == "ok" else
+                   {"state": "unknown", "available_bytes": None, "available_inodes": None,
+                    "note": f"queue space unavailable: {space_read['status']}"})
+    if queue_space["state"] in ("warning", "critical", "unknown"):
+        print(queue_space["note"], file=sys.stderr)
+
     rollout = None
     read = bounded("rollout", lambda: upgrade_client.read_rollout_summary(args.repo_link),
                    deadline=deadline, abandoned=abandoned)
@@ -1578,6 +1587,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             # and a wrapper acting on it would then act on a host setting that
             # gates nothing.  It never changes ``complete`` or the exit status.
             "host_storage": host_storage,
+            "queue_space": queue_space,
             "pool": pool_summary,
             "nodes": nodes,
             "jobs": jobs,
