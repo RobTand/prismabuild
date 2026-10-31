@@ -212,13 +212,14 @@ def campaign(root: Path, gate_dir: Path, mapping: dict, map_path: Path, output: 
                       files={mutation['path']: mapping['files'][mutation['path']]},
                       unattributed=[name for name in mapping['unattributed'] if name.startswith(mutation['path'] + '::')])
         packed_map = base64.b64encode(gzip.compress(json.dumps(subset).encode(), mtime=0)).decode()
-        rows.append({'cwd': str(root), 'argv': ['/home/rob/venvs/pb-cpu/bin/python',
+        rows.append({'cwd': os.environ.get('PB_TIA_SUBMISSION_CHECKOUT', str(root)), 'argv': ['/home/rob/venvs/pb-cpu/bin/python',
                      'tools/ci/tia_evaluate.py', 'mutation', '--mutation', json.dumps(mutation),
                      '--gate-dir', str(gate_dir.relative_to(root))],
                      'demand': {'cpu': 1, 'mem_gb': 4}, 'priority': -10, 'anywhere': True, 'timeout_s': 900,
                      'env': {'OMP_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1',
                              'PB_TIA_MAP': packed_map, 'PB_TIA_MUTATION': str(number)}})
     output.write_text(sorted_json(rows) + '\n')
+    print('tia-campaign: ' + base64.b64encode(output.read_bytes()).decode(), flush=True)
     print(json.dumps({'mutations': len(rows), 'src': sum(m['path'].startswith('src/') for m in chosen),
                       'fleet': sum(m['path'].startswith('tools/') for m in chosen)}))
 
