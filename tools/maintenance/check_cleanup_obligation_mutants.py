@@ -7,6 +7,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from prismabuild.pytest_temp import pytest_basetemp
+
 MUTANTS = {
     'no-debt': 'test_refusal_records_debt_and_holds_capacity_until_verified',
     'missing-evidence': 'test_refusal_records_debt_and_holds_capacity_until_verified',
@@ -29,10 +32,11 @@ def check_cleanup_mutants():
     root = Path(__file__).resolve().parents[2]
     destination = Path(tempfile.mkdtemp(prefix='cleanup-mutants-2270-'))
     for mutant, node in MUTANTS.items():
-        result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '--tb=short',
-            'tests/test_cleanup_obligation_2270.py::' + node], cwd=root,
-            env={**os.environ, 'PB2270_MUTANT': mutant},
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        with pytest_basetemp() as base:
+            result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '--tb=short', f'--basetemp={base}',
+                'tests/test_cleanup_obligation_2270.py::' + node], cwd=root,
+                env={**os.environ, 'PB2270_MUTANT': mutant},
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         (destination / (mutant + '.log')).write_text(result.stdout)
         expected = ('restored broker could not conclude' if mutant == 'reject-withdrawal'
                     else 'restored broker did not conclude' if mutant in ('reject-successor', 'chronological-successor')
