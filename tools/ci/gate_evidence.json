@@ -1313,8 +1313,132 @@
       "tests_passed": 77
     },
     "x86_confirmation": {
-      "reason": "Architecture confirmation requested after x86 admission resumed at 19:36:39 UTC; prior outage is resolved",
-      "state": "submitted"
+      "reason": "Architecture confirmation requested after x86 admission resumed at 19:36:39 UTC",
+      "results": [
+        {
+          "action_key": "f16375b18abf644b311ef9bfa96cefc6447f3554c2a68361c5b655c00df1604a",
+          "cas_receipt": {
+            "sha256": "a9961a7867ee5f2302ee06827b8ffc73f4d7023490bd2fab3723e8069ff54ddb",
+            "verified": true
+          },
+          "completion": "complete",
+          "exit_code": 0,
+          "failing_nodes": [],
+          "files": [
+            "tests/test_gate_select.py"
+          ],
+          "green": true,
+          "report": "x86",
+          "skipped": [],
+          "summary": "43 passed in 64.89s (0:01:04)"
+        },
+        {
+          "action_key": "f44de2e718667aedaa86f67e1a0237ca9ecd30cf6de5d76dafcf9eeff54e33a0",
+          "cas_receipt": {
+            "sha256": "3d18cede38fe2b541b4f5dc8ae9c47a782ca95ffa8a8b5947c08a2ae85996470",
+            "verified": true
+          },
+          "completion": "complete",
+          "exit_code": 0,
+          "failing_nodes": [],
+          "files": [
+            "tests/test_gate_circleci.py"
+          ],
+          "green": true,
+          "report": "x86",
+          "skipped": [],
+          "summary": "8 passed in 1.21s"
+        },
+        {
+          "action_key": "85b009817138b25741cadb373942a01480d9eeea8f52a17d2a113b78569a9c5f",
+          "cas_receipt": {
+            "sha256": "c005caf4cd56ced6dee668c8950ac2ed37848df61b564dd9a6ed4279b77c336b",
+            "verified": true
+          },
+          "completion": "complete",
+          "exit_code": 0,
+          "failing_nodes": [],
+          "files": [
+            "tests/test_gate_replay.py"
+          ],
+          "green": true,
+          "report": "x86",
+          "skipped": [],
+          "summary": "3 passed in 1.14s"
+        },
+        {
+          "action_key": "07aca79cef8c80b91309749a5ebeec9e1001efca122607db1371161c2e3e1448",
+          "cas_receipt": {
+            "sha256": "041a1b78cdecdd68014af3745048e90eb118415849673b9e7abac1f9a7047a87",
+            "verified": true
+          },
+          "completion": "complete",
+          "exit_code": 0,
+          "failing_nodes": [],
+          "files": [
+            "tests/test_gate_run.py"
+          ],
+          "green": true,
+          "report": "x86",
+          "skipped": [],
+          "summary": "11 passed in 2.05s"
+        },
+        {
+          "action_key": "1f5ef0147e8246aaffc0b90ed121ac91d1137d05383a240fcc6dbda740634b99",
+          "cas_receipt": {
+            "sha256": "03ebb853f00ba4231b27c7c92a0edd4646b5b40aaf9701be6d9c1f9a20e43a2c",
+            "verified": true
+          },
+          "completion": "complete",
+          "exit_code": 0,
+          "failing_nodes": [],
+          "files": [
+            "tests/test_gate_partition.py"
+          ],
+          "green": true,
+          "report": "x86",
+          "skipped": [],
+          "summary": "1 passed in 1.07s"
+        },
+        {
+          "action_key": "8743f7345caac587acb9899c215bb6e16ba09ae6e4227cc2a4fec8042ddcb010",
+          "cas_receipt": {
+            "sha256": "62937caebe77bac4cc6930605de7cef75e6d6389fcb33a61216b19427a19aa28",
+            "verified": true
+          },
+          "completion": "complete",
+          "exit_code": 0,
+          "failing_nodes": [],
+          "files": [
+            "tests/test_gate_shadow.py"
+          ],
+          "green": true,
+          "report": "x86",
+          "skipped": [],
+          "summary": "5 passed in 1.09s"
+        },
+        {
+          "action_key": "ff1c4d894dbc216687288416628062d6f8c4e374a3f2d254df5d7ecd31755d85",
+          "cas_receipt": {
+            "sha256": "45f3a7b46c2b7ef5675100ed60c3c04b857a6e984efd345b0f703444ad915747",
+            "verified": true
+          },
+          "completion": "complete",
+          "exit_code": 0,
+          "failing_nodes": [],
+          "files": [
+            "tests/test_agent_compute_routing_policy.py"
+          ],
+          "green": true,
+          "report": "x86",
+          "skipped": [],
+          "summary": "6 passed in 1.03s"
+        }
+      ],
+      "state": "passed",
+      "tag": "x86",
+      "terminal_records_complete": true,
+      "tests_passed": 77
     }
   },
   "schema": "prismabuild.gate_implementation_evidence.v2",

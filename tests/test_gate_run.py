@@ -106,3 +106,19 @@ def test_newline_assignment_preserves_a_path_containing_spaces(tmp_path):
         '--result', str(tmp_path / 'result.json'), '--junitxml', str(tmp_path / 'junit.xml')])
     assert result == 0
     assert json.loads((tmp_path / 'result.json').read_text())['files'] == [filename]
+
+
+def test_ci_python_loader_environment_does_not_leak_into_proof_capture(tmp_path, monkeypatch):
+    monkeypatch.setenv('LD_LIBRARY_PATH', '/hosted/python/lib')
+    monkeypatch.setenv('LD_PRELOAD', '/hosted/injected.so')
+    monkeypatch.setenv('GATE_KEEP', 'retained')
+    observed = []
+    def execute(command, **kwargs):
+        observed.append(kwargs['env'])
+        return SimpleNamespace(returncode=0)
+    code = runner.run_plan({'selected': [{'path': 'tests/test_one.py'}], 'deselect': []},
+        root=tmp_path, output=tmp_path / 'output', junit=tmp_path / 'junit.xml',
+        execute=execute, affinity={1})
+    assert code == 0
+    assert 'LD_LIBRARY_PATH' not in observed[0] and 'LD_PRELOAD' not in observed[0]
+    assert observed[0]['GATE_KEEP'] == 'retained'

@@ -286,3 +286,28 @@ def test_computed_descendant_of_a_directory_with_unresolved_base(tmp_path):
         'def fixture(name):\n    return (FIXTURES / name).read_bytes()\n')
     assert 'tests/test_bound.py' in selected(plan(root, ['tests/fixtures/images/captured.txt']))
     assert 'tests/test_bound.py' not in selected(plan(root, ['tests/fixtures/other/captured.txt']))
+
+
+def test_owned_environment_lane_preserves_portable_tests_in_the_same_file(tmp_path):
+    root = tree(tmp_path)
+    quarantine = {'entries': [], 'cost_exclusions': [], 'environment_lanes': [
+        {'target': 'tests/test_direct.py::test_needs_broker', 'lane': 'fleet_broker',
+         'issue': 2500, 'reason': 'Requires a real PB broker to complete its scope'},
+        {'target': 'tests/test_tool.py', 'lane': 'fleet_runtime',
+         'issue': 2501, 'reason': 'Requires the published fleet runtime'}]}
+    result = select.create_plan(root, ['src/prismabuild/pool.py', 'tools/fleet/pbrun.py'],
+        durations={'files': {}}, quarantine=quarantine)
+    assert 'tests/test_direct.py' in selected(result)
+    assert 'tests/test_tool.py' not in selected(result)
+    assert result['deselect'] == ['tests/test_direct.py::test_needs_broker']
+    deferred = {row['path']: row for row in result['deferred']}
+    assert deferred['tests/test_direct.py::test_needs_broker']['lane'] == 'fleet_broker'
+    assert deferred['tests/test_tool.py']['issue'] == 2501
+
+
+@pytest.mark.parametrize('owner,lane', [(2428, 'fleet_broker'), (None, 'fleet_broker'), (2500, '')])
+def test_environment_lanes_require_a_real_owner_and_capability(tmp_path, owner, lane):
+    with pytest.raises(ValueError):
+        select.create_plan(tree(tmp_path), [], durations={'files': {}}, quarantine={
+            'environment_lanes': [{'target': 'tests/test_direct.py', 'lane': lane,
+                                   'issue': owner, 'reason': 'Requires the broker'}]})
