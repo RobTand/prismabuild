@@ -338,7 +338,7 @@ def overhead(root: Path, gate_dir: Path) -> dict:
         for repeat in range(5):
             for recorded in (False, True):
                 output = Path(temporary) / f'{repeat}-{int(recorded)}'
-                env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(root / 'tools/ci'), str(root / 'src'), str(root)]),
+                env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(Path(__file__).resolve().parent), str(root / 'src'), str(root)]),
                            PYTEST_ADDOPTS='', PYTEST_PLUGINS='')
                 for key in list(env):
                     if key.startswith('PB_TIA_'):
