@@ -57,3 +57,38 @@ def test_junit_retains_exact_parameterized_nodeid_and_failure(tmp_path):
 ])
 def test_retry_only_without_test_verdict(code, rows, expected):
     assert shard.has_verdict(code, rows) is expected
+
+
+def test_real_pytest_plugin_preserves_parameter_id_under_xdist(tmp_path):
+    import os
+    import subprocess
+    import sys
+    (tmp_path / 'test_example.py').write_text('''import pytest
+@pytest.mark.parametrize('value', ['a.b', 'c::d'])
+def test_value(value):
+    assert value == 'a.b'
+''')
+    xml = tmp_path / 'junit.xml'
+    env = dict(os.environ, PYTHONPATH=str(ROOT / 'tools/ci'), PYTEST_DISABLE_PLUGIN_AUTOLOAD='1')
+    done = subprocess.run([sys.executable, '-m', 'pytest', '-p', 'xdist.plugin', '-p',
+        'full_suite_shard', '-n', '2', '--junitxml', str(xml), str(tmp_path / 'test_example.py')],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 1, done.stdout + done.stderr
+    rows = shard.read_junit(xml)
+    assert set(rows) == {'test_example.py::test_value[a.b]', 'test_example.py::test_value[c::d]'}
+    assert rows['test_example.py::test_value[a.b]']['outcome'] == 'passed'
+    assert rows['test_example.py::test_value[c::d]']['outcome'] == 'failed'
+
+
+def test_infrastructure_retry_does_not_rerun_a_failed_test(tmp_path, monkeypatch):
+    import json
+    previous = tmp_path / 'previous'
+    previous.mkdir()
+    (previous / 'result.json').write_text(json.dumps({'shard': 1, 'verdict': True,
+        'tests': {'x': {'outcome': 'failed'}}}))
+    def unexpected(*args, **kwargs):
+        raise AssertionError('pytest ran again after a test verdict')
+    monkeypatch.setattr(shard.subprocess, 'run', unexpected)
+    assert shard.main(['--shard', '1', '--previous', str(previous),
+                       '--output', str(tmp_path / 'output')]) == 0
+    assert not (tmp_path / 'output').exists()

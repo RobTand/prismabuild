@@ -86,3 +86,91 @@ def test_missing_shards_are_infrastructure_not_mass_recovery(tmp_path):
     assert result['complete'] is False
     assert result['missing_shards'] == [1]
     assert result['tests']['x']['outcome'] == 'passed'
+
+
+class IssueStore:
+    """An in-memory REST resource with persistent issues and comments."""
+    def __init__(self):
+        self.issues = []
+        self.comments = {}
+        self.labels = [{'name': 'P2'}]
+
+    def pages(self, path, field=None):
+        if path == 'labels':
+            return self.labels
+        if path.startswith('issues?'):
+            return self.issues
+        if path.endswith('/comments'):
+            return self.comments.get(int(path.split('/')[1]), [])
+        raise AssertionError(path)
+
+    def request(self, path, data):
+        if path == 'labels':
+            self.labels.append(data)
+            return data
+        if path == 'issues':
+            number = len(self.issues) + 1
+            issue = dict(data, number=number, html_url=f'https://example/issues/{number}')
+            issue['labels'] = [{'name': name} for name in data['labels']]
+            self.issues.append(issue)
+            return issue
+        if path.endswith('/comments'):
+            number = int(path.split('/')[1])
+            comment = dict(data, html_url=f'https://example/issues/{number}#comment')
+            self.comments.setdefault(number, []).append(comment)
+            return comment
+        raise AssertionError(path)
+
+
+def test_rest_path_files_one_owner_and_comments_on_recovery_idempotently():
+    api = IssueStore()
+    now = {'tests/a.py::test_x': row('failed')}
+    report.apply_plan(api, report.issue_plan(now, {}, set(), {}, 'old', 'bad', [], 'run/1'))
+    assert len(api.issues) == 1
+    assert [l['name'] for l in api.issues[0]['labels']] == ['full-suite', 'P2']
+    fixed = {'tests/a.py::test_x': row('passed')}
+    plan = report.issue_plan(fixed, now, set(), report.owners(api.issues), 'bad', 'fixed', [], 'run/2')
+    report.apply_plan(api, plan)
+    report.apply_plan(api, plan)
+    assert len(api.comments[1]) == 1
+    assert 'passed at fixed' in api.comments[1][0]['body']
+    assert len(api.issues) == 1
+
+
+def test_rerun_after_filing_before_upload_reuses_owner():
+    api = IssueStore()
+    plan = report.issue_plan({'x': row('failed')}, {}, set(), {}, 'old', 'bad', [], 'run/1')
+    report.apply_plan(api, plan)
+    report.apply_plan(api, plan)
+    report.apply_plan(api, plan)
+    assert len(api.issues) == 1
+    assert len(api.comments[1]) == 1
+
+
+def test_prior_incomplete_run_falls_back_to_complete_history():
+    class History:
+        def pages(self, path, field):
+            if 'workflows/' in path:
+                return [{'id': n, 'run_number': n, 'head_branch': 'main', 'status': 'completed'}
+                        for n in (3, 2)]
+            return [{'id': int(path.split('/')[2]), 'name': 'full-suite-results', 'expired': False}]
+        def artifact(self, artifact_id):
+            return {'complete': artifact_id == 2, 'sha': f'sha{artifact_id}', 'tests': {}}
+    assert report.load_history(History(), 4, 4)['sha'] == 'sha2'
+
+
+def test_quarantine_reads_gate_records(tmp_path):
+    import json
+    path = tmp_path / 'quarantine.json'
+    path.write_text(json.dumps({'tests': [{'nodeid': 'tests/a.py::test_x', 'issue': 123}]}))
+    assert report.quarantine_entries(path) == {'tests/a.py::test_x'}
+
+
+def test_summary_reuses_owners_but_still_files_unowned_failures():
+    api = IssueStore()
+    report.apply_plan(api, report.issue_plan({'x': row('failed')}, {}, set(), {}, 'a', 'b', [], 'run/0'))
+    now = {**{'x': row('failed')}, **{f'new{n}': row('failed') for n in range(21)}}
+    report.apply_plan(api, report.issue_plan(now, {}, set(), {}, 'a', 'b', [], 'run/1'))
+    assert len(api.issues) == 2
+    assert report.owners(api.issues)['new20'] == 2
+    assert report.owners(api.issues)['x'] == 1
