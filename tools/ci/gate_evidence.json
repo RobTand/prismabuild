@@ -1,0 +1,269 @@
+{
+  "schema": "prismabuild.gate_implementation_evidence.v1",
+  "recorded_at": "2026-10-31T18:27:51.430782+00:00",
+  "tested_commit": "32ea92f268cc2347fbd70df53669b1043eb12db0",
+  "test_command": {
+    "client": "published pbtest.py",
+    "priority": -10,
+    "workers_per_shard": 2,
+    "threads_per_shard": 1,
+    "memory_gib_per_shard": 4,
+    "timeout_seconds": 1800
+  },
+  "tests": [
+    {
+      "report": "red",
+      "files": [
+        "tests/test_gate_select.py"
+      ],
+      "action_key": "57292e6c17a4e9f2d6dda2ddcffc07d900bdd1b9cd327826d86b5e36dc9b1a1e",
+      "green": false,
+      "exit_code": 1,
+      "summary": "14 failed in 0.43s",
+      "skipped": [],
+      "completion": "complete",
+      "cas_verified": false,
+      "receipt_sha256": null,
+      "terminal_status": "failed",
+      "terminal_verified": true
+    },
+    {
+      "report": "red",
+      "files": [
+        "tests/test_gate_run.py"
+      ],
+      "action_key": "d829383422c6c2a893f613bb7da841014cd9196e2d257ed44557d0ac07007126",
+      "green": false,
+      "exit_code": 1,
+      "summary": "9 failed in 0.24s",
+      "skipped": [],
+      "completion": "complete",
+      "cas_verified": false,
+      "receipt_sha256": null,
+      "terminal_status": "failed",
+      "terminal_verified": true
+    },
+    {
+      "report": "red-workflow",
+      "files": [
+        "tests/test_gate_workflow.py"
+      ],
+      "action_key": "012a68f8122650ec0bbd99f14efa1e8d51fcc45f1e3b79838a208fb1c510e003",
+      "green": false,
+      "exit_code": 1,
+      "summary": "3 failed in 0.40s",
+      "skipped": [],
+      "completion": "complete",
+      "cas_verified": false,
+      "receipt_sha256": null,
+      "terminal_status": "failed",
+      "terminal_verified": true
+    },
+    {
+      "report": "red-workflow",
+      "files": [
+        "tests/test_gate_replay.py"
+      ],
+      "action_key": "6232bed6076b8ce6ab848337a56cb81a9326d5855593c311ed322d8c080ca081",
+      "green": false,
+      "exit_code": 1,
+      "summary": "1 failed in 0.11s",
+      "skipped": [],
+      "completion": "complete",
+      "cas_verified": false,
+      "receipt_sha256": null,
+      "terminal_status": "failed",
+      "terminal_verified": true
+    },
+    {
+      "report": "red-path",
+      "files": [
+        "tests/test_gate_select.py"
+      ],
+      "action_key": "ff711d5a45c5b61e51132a231b8168188e8487c758b0b3f209553dec8d33ebd8",
+      "green": false,
+      "exit_code": 1,
+      "summary": "1 failed, 15 passed in 0.15s",
+      "skipped": [],
+      "completion": "complete",
+      "cas_verified": false,
+      "receipt_sha256": null,
+      "terminal_status": "failed",
+      "terminal_verified": true
+    },
+    {
+      "report": "red-trigger",
+      "files": [
+        "tests/test_gate_select.py"
+      ],
+      "action_key": "8f791c5c7d965e8347c2de059dc0febb87cfb7d3bc31997c1d2a6e15b2e7f61b",
+      "green": false,
+      "exit_code": 1,
+      "summary": "3 failed, 16 passed in 0.19s",
+      "skipped": [],
+      "completion": "complete",
+      "cas_verified": false,
+      "receipt_sha256": null,
+      "terminal_status": "failed",
+      "terminal_verified": true
+    },
+    {
+      "report": "ready",
+      "files": [
+        "tests/test_gate_select.py"
+      ],
+      "action_key": "b468374efa9a22f96fb41495b974575df1e30f3d057d63612d79fa1a2fc47684",
+      "green": true,
+      "exit_code": 0,
+      "summary": "19 passed in 0.38s",
+      "skipped": [],
+      "completion": "complete",
+      "cas_verified": true,
+      "receipt_sha256": "138b83abfd7328d8c1fcd64a31d78373a383d96873249aaf97dc47cb3c55fa44",
+      "terminal_status": "executed",
+      "terminal_verified": true
+    },
+    {
+      "report": "ready",
+      "files": [
+        "tests/test_gate_run.py"
+      ],
+      "action_key": "a685008cd3000c6e1ea2eddf5a04853893cdae58ad88576cff8730602d34136b",
+      "green": true,
+      "exit_code": 0,
+      "summary": "9 passed in 0.32s",
+      "skipped": [],
+      "completion": "complete",
+      "cas_verified": true,
+      "receipt_sha256": "b746e61cd8c9c2a7af4555a3ad8e4a6a8aaa48387b6dcfe7f75426e1a0dd10dc",
+      "terminal_status": "executed",
+      "terminal_verified": true
+    },
+    {
+      "report": "ready",
+      "files": [
+        "tests/test_gate_workflow.py"
+      ],
+      "action_key": "a7043396e4fecd46f2fb4db6340e25eba3ef3b1c7cff965d0c30f1a13e6f342b",
+      "green": true,
+      "exit_code": 0,
+      "summary": "3 passed in 0.33s",
+      "skipped": [],
+      "completion": "complete",
+      "cas_verified": true,
+      "receipt_sha256": "bdc7c1098058838a1c638929eb12e4fc35b03faa1d84987d1efdf527a6727e1d",
+      "terminal_status": "executed",
+      "terminal_verified": true
+    },
+    {
+      "report": "ready",
+      "files": [
+        "tests/test_gate_replay.py"
+      ],
+      "action_key": "e52745001c5043bc3f27771e8af7bfac25c6094adda09014b951ac24973d2cd0",
+      "green": true,
+      "exit_code": 0,
+      "summary": "1 passed in 1.10s",
+      "skipped": [],
+      "completion": "complete",
+      "cas_verified": true,
+      "receipt_sha256": "3c96df668817017107bbe4360574dbbb86b7368232321a052284673f9ec56bf5",
+      "terminal_status": "executed",
+      "terminal_verified": true
+    },
+    {
+      "report": "ready",
+      "files": [
+        "tests/test_test_tiers.py"
+      ],
+      "action_key": "17dbd766c5e8309974bfeefa6643d2551e599ae0ac547984c132d4890aac27ae",
+      "green": true,
+      "exit_code": 0,
+      "summary": "25 passed in 1.14s",
+      "skipped": [],
+      "completion": "complete",
+      "cas_verified": true,
+      "receipt_sha256": "6a14eaba811ab692243acb68ae7256676a4205bc368b548b59c952902820f7c5",
+      "terminal_status": "executed",
+      "terminal_verified": true
+    },
+    {
+      "report": "ready",
+      "files": [
+        "tests/test_regression_test_gate.py"
+      ],
+      "action_key": "213d0aa2dcfed64993117b839d82374620d1278b2645e627c164f60521baf9a9",
+      "green": true,
+      "exit_code": 0,
+      "summary": "49 passed in 1.89s",
+      "skipped": [],
+      "completion": "complete",
+      "cas_verified": true,
+      "receipt_sha256": "66d7c8776bd05045af9c2a43c7bd52668de60c4c0d10bc11cb10700a4e867c8a",
+      "terminal_status": "executed",
+      "terminal_verified": true
+    }
+  ],
+  "green_tests": 106,
+  "green_skips": 0,
+  "red_receipts": "Failed actions have verified terminal failures and no success CAS receipt, as expected.",
+  "replay": {
+    "method": "latest merged PR files against current population, nearest-rank percentiles, five-worker file-level longest-first packing, excluding pickup and setup",
+    "schema": "prismabuild.gate_replay.v1",
+    "source": {
+      "boundary_pages": 2,
+      "captured_at": "2026-10-31T18:11:38.969379+00:00",
+      "repository": "RobTand/prismabuild",
+      "source": "GitHub REST pulls and pull files"
+    },
+    "action_key": "28f5fa31f1e06c78638407371c568bc49957a3232a65c30a9808ccf0c1f0ce55",
+    "receipt_sha256": "5181dd38deeecad364e85381ed47ebc8e89dd8da5e56382c6862dc967b32c221",
+    "cas_verified": true,
+    "terminal_verified": true,
+    "exit_code": 0,
+    "placement_tags": [],
+    "history_sha256": "3f1f4310d496a96212f2ddf5dbc01e7043e366f30a713aa9a03d2b30d9032b32",
+    "population": {
+      "size": 1248,
+      "version": "4b1dbc0762bd26ba43ed922c9537cb73fb51538041b7444ece9713882f0f9fd9",
+      "full_population_wall_seconds": null
+    },
+    "summary": {
+      "prs": 150,
+      "selected_files": {
+        "p50": 1248,
+        "p90": 1248
+      },
+      "wall_seconds": {
+        "p50": null,
+        "p90": null
+      }
+    },
+    "unknown_cost_prs": 150,
+    "whole_population_prs": 81,
+    "large_modules": {
+      "src/prismabuild/core.py": {
+        "selected_files": 277,
+        "wall_seconds": null
+      },
+      "src/prismabuild/pool.py": {
+        "selected_files": 714,
+        "wall_seconds": null
+      }
+    }
+  },
+  "quarantine": {
+    "entries": 50,
+    "whole_files": 37,
+    "node_prefixes": 13,
+    "owners": {
+      "2428": 23,
+      "1997": 27
+    }
+  },
+  "pending": [
+    "Completed three-repeat inventory at 22e9d752: per-file durations, test-case counts, flakes and broken tests.",
+    "Budget policy after measured costs; test-wall and full-population time are unknown.",
+    "Lead authorization for a live pb-gate canary; no CI-container qualification or draft-to-verdict p90 yet."
+  ]
+}
