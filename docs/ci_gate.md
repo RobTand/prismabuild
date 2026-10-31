@@ -4,14 +4,21 @@ Ordinary PRs run `pr-gate` on GitHub-hosted `ubuntu-latest`, selecting tests by
 evidence. Mergify batch drafts run the full eligible population when the head
 branch starts `mergify/merge-queue/`, the PR author is login `mergify[bot]` with
 id 37929162, and the head repository is this repository. A same-repository PR
-with the `gate-canary` label also runs the full gate. No CI job uses the fleet.
+with the `gate-canary` label also runs the full gate, without duplicating the
+single-job PR selection run. No CI job uses the fleet.
 Mergify requires `pr-gate` to queue and the final job `gate` to merge.
 
 The full plan records a shadow selection while coverage stays full. The initial
 matrix has ten shards, alternating `ubuntu-latest` and `ubuntu-24.04-arm`.
+Workflow reruns swap the architectures by shard index, so qualification exercises
+each file on both architectures.
 Each shard uses four pytest-xdist workers within inherited CPU affinity.
 Actions are pinned by commit SHA. Setup uses Python 3.14 and pip caching with
-pytest 9.1.1, pytest-xdist 3.8.0 and PyYAML 6.0.3. Native threads are bounded to
+pytest 9.1.1, pytest-xdist 3.8.0, PyYAML 6.0.3 and setuptools 80.9.0.
+Hosted setup installs bubblewrap and creates the real local scratch directory
+declared in the fleet roster. It exports that directory as TMPDIR. Proof capture
+runs without setup-python's ambient LD_* loader overrides; the interpreter must
+also pass its version check without those overrides. Native threads are bounded to
 one and each test has the repository's 60-second bound. Permissions are read
 only; checkout credentials are not persisted and no secrets are configured.
 
@@ -88,7 +95,22 @@ The gate excludes root, GPU and dedicated two-CPU lanes declared by
 `tools/verify.py` and the proof/receipt manifests. It excludes whole files in
 `gate_quarantine.json` and deselects its node-prefix entries. Every quarantine
 entry needs an open owning issue, a specific reason and evidence. Readiness
-tracker #2428 is not an owner. Historical entries remain provisional under
+tracker #2428 is not an owner.
+
+`environment_lanes` records capability requirements separately from quarantine.
+It supports complete files and precise node prefixes, retaining portable tests
+in mixed files. The hosted trial identified published-runtime dependencies
+under #1182 and broker/worker fixture requirements under #2442. These controls
+stay in their capability lane; they are not classified as flaky. A three-file
+PrismaBuild comparison passed all 109 tests with verified CAS receipts, while
+the hosted trial failed representative cleanup/scratch controls. The gate does
+not install a fleet supervisor or broker, fabricate a shared runtime, or relax
+production containment to make those controls pass.
+
+The first hosted arm64 trial found no bubblewrap executable for
+`test_record_compatibility.py` and `test_current_receipt_compat_composition.py`.
+Qualification after installing bubblewrap must establish their behavior on both
+hosted architectures before either admission or a separate environment lane. Historical entries remain provisional under
 #2434; archival replay stays with #1997. Filesystem-floor skip/pass variation
 is not called flaky.
 
