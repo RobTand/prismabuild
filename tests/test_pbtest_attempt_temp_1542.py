@@ -257,3 +257,13 @@ def test_real_shard_binds_socket_and_cleans_its_base_temp(tmp_path, workers, sho
     path = Path(json.loads((checkout / "socket-path.json").read_text()))
     base = path.parent.parent.parent if workers > 1 else path.parent.parent
     assert not base.parent.exists(), str(base.parent)
+
+
+def test_default_failed_attempt_is_removed_2449(tmp_path):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    checkout = _checkout(tmp_path, "assert False, 'expected fixture failure'")
+    result = _run(checkout, scratch)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "1 failed" in result.stdout
+    assert list(scratch.iterdir()) == [], "failed default attempt retained pytest scratch"
