@@ -137,3 +137,30 @@ def test_ci_python_loader_environment_does_not_leak_into_proof_capture(tmp_path,
     assert code == 0
     assert 'LD_LIBRARY_PATH' not in observed[0] and 'LD_PRELOAD' not in observed[0]
     assert observed[0]['GATE_KEEP'] == 'retained'
+
+
+@pytest.mark.parametrize('code', [0, 2, 3, -9])
+@pytest.mark.parametrize('outcome', ['failure', 'error'])
+def test_recorded_junit_failure_is_final_despite_pytest_exit(tmp_path, code, outcome):
+    def execute(command, **kwargs):
+        (tmp_path / 'junit.xml').write_text(
+            '<testsuites><testcase file="tests/test_one.py" classname="tests.test_one" '
+            f'name="test_one"><{outcome}>recorded defect</{outcome}></testcase></testsuites>')
+        return SimpleNamespace(returncode=code)
+    result = runner.run_plan({'selected': [{'path': 'tests/test_one.py'}], 'deselect': []},
+        root=tmp_path, output=tmp_path / 'output', junit=tmp_path / 'junit.xml',
+        execute=execute, affinity={1})
+    record = json.loads((tmp_path / 'output').read_text())
+    assert (result, record['verdict']) == (1, 'fail')
+
+
+@pytest.mark.parametrize('code', [2, 3])
+def test_infrastructure_exit_with_only_passing_junit_can_retry(tmp_path, code):
+    def execute(command, **kwargs):
+        fixture_junit(tmp_path)
+        return SimpleNamespace(returncode=code)
+    result = runner.run_plan({'selected': [{'path': 'tests/test_one.py'}], 'deselect': []},
+        root=tmp_path, output=tmp_path / 'output', junit=tmp_path / 'junit.xml',
+        execute=execute, affinity={1})
+    assert result == 75
+    assert json.loads((tmp_path / 'output').read_text())['verdict'] is None
