@@ -42,7 +42,8 @@ def extract(reports: list[Path], output: Path):
                             path = Path(scratch) / f'{len(paths)}.json'
                             path.write_text(json.dumps(record))
                             paths.append(path)
-        result = write_map(paths, output, unmapped=json.loads(os.environ.get('PB_TIA_UNMAPPED', '{}')))
+        result = write_map(paths, output, unmapped=json.loads(os.environ.get('PB_TIA_UNMAPPED', '{}')),
+                           duration_updates=json.loads(os.environ.get('PB_TIA_EXTRA_DURATIONS', '{}')))
     print(json.dumps({'tests': len(result['tests']), 'functions': len(result['functions']),
                       'bytes': output.stat().st_size, 'source_commit': result['source_commit']}))
 
@@ -65,7 +66,8 @@ def extract_cas(inputs: list[dict], output: Path):
                         paths.append(path)
             if not found:
                 raise ValueError(f"missing recorder output: {entry['action_key']}")
-        result = write_map(paths, output, unmapped=json.loads(os.environ.get('PB_TIA_UNMAPPED', '{}')))
+        result = write_map(paths, output, unmapped=json.loads(os.environ.get('PB_TIA_UNMAPPED', '{}')),
+                           duration_updates=json.loads(os.environ.get('PB_TIA_EXTRA_DURATIONS', '{}')))
     print('tia-map: ' + base64.b64encode(output.read_bytes()).decode(), flush=True)
     print(json.dumps({'tests': len(result['tests']), 'functions': len(result['functions']),
                       'bytes': output.stat().st_size, 'source_commit': result['source_commit']}), flush=True)
@@ -74,9 +76,20 @@ def extract_cas(inputs: list[dict], output: Path):
 def replay(root: Path, gate_dir: Path, mapping: dict, history: dict) -> dict:
     gate_replay = load(gate_dir / 'gate_replay.py', 'tia_gate_replay')
     # Reuse its population, static rule, estimates and nearest-rank statistics.
-    static = gate_replay.replay(root, history)
+    excluded = set(mapping.get('unmapped', {}))
+    context = prepare(root, gate_dir, exclude=excluded, duration_updates=mapping.get('duration_updates'))
+    # The existing replay has no input-injection arguments. Adapt its reads for this call,
+    # preserving its selector, estimates, replay loop and percentile calculation unchanged.
+    original_index = gate_replay.select.dependency_index
+    original_json = gate_replay.select.read_json
+    gate_replay.select.dependency_index = lambda directory: {name: value for name, value in original_index(directory).items() if name not in excluded}
+    gate_replay.select.read_json = lambda path: context['durations'] if path.name == 'gate_durations.json' else original_json(path)
+    try:
+        static = gate_replay.replay(root, history)
+    finally:
+        gate_replay.select.dependency_index = original_index
+        gate_replay.select.read_json = original_json
     rows = []
-    context = prepare(root, gate_dir)
     for pull in history['pulls']:
         merge = pull['merge_commit_sha']
         parent = subprocess.check_output(['git', 'rev-parse', merge + '^'], cwd=root, text=True).strip()
@@ -86,7 +99,7 @@ def replay(root: Path, gate_dir: Path, mapping: dict, history: dict) -> dict:
                      'wall_seconds': selected['estimate']['wall_seconds'],
                      'serial_seconds': selected['estimate']['serial_seconds'],
                      'fallbacks': selected['fallbacks']})
-    return {'schema': 'prismabuild.tia_replay.v1', 'static': static,
+    return {'schema': 'prismabuild.tia_replay.v1', 'static': static, 'evaluation_excluded': mapping.get('unmapped', {}),
             'tia': {'summary': gate_replay.summarize(rows), 'pulls': rows},
             'method': 'same current population and gate estimates; AST diffs of merge parent to merge; '
                       'historical source hashes must match the current map, otherwise static fallback'}
@@ -157,7 +170,7 @@ def mutations(root: Path, mapping: dict):
 
 def campaign(root: Path, gate_dir: Path, mapping: dict, map_path: Path, output: Path, count: int):
     gate = load(gate_dir / 'gate_select.py', 'tia_campaign_gate')
-    durations = gate.read_json(gate_dir / 'gate_durations.json')
+    durations = prepare(root, gate_dir, duration_updates=mapping.get('duration_updates'))['durations']
     quarantine = gate.read_json(gate_dir / 'gate_quarantine.json')
     index = gate.dependency_index(root)
     graph = gate.helper_importers(index, [])
@@ -230,7 +243,7 @@ def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Pat
             skips += case.find('skipped') is not None
     return {'returncode': run.returncode, 'complete': run.returncode in (0, 1, 2) and xml.exists(),
             'failures': sorted(failures), 'errors': sorted(errors), 'tests': tests, 'skipped': skips,
-            'files': len(files), 'elapsed_s': time.monotonic() - start,
+            'files': len({target.split('::', 1)[0] for target in files}), 'targets': len(files), 'elapsed_s': time.monotonic() - start,
             'tail': (run.stdout + run.stderr)[-4000:] if run.returncode else ''}
 
 

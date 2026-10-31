@@ -10,7 +10,7 @@ from pathlib import Path
 SCHEMA = 'prismabuild.tia_map.v1'
 
 
-def write_map(records: list[Path], destination: Path, *, unmapped: dict | None = None) -> dict:
+def write_map(records: list[Path], destination: Path, *, unmapped: dict | None = None, duration_updates: dict | None = None) -> dict:
     if not records:
         raise ValueError('no recorder output')
     tests: dict[str, set[str]] = {}
@@ -33,7 +33,7 @@ def write_map(records: list[Path], destination: Path, *, unmapped: dict | None =
     functions = sorted({function for values in tests.values() for function in values})
     ids = {name: index for index, name in enumerate(functions)}
     result = {'schema': SCHEMA, 'source_commit': commits.pop(), 'python': sorted(versions),
-              'unmapped': dict(sorted((unmapped or {}).items())), 'files': dict(sorted(hashes.items())), 'functions': functions, 'unattributed': sorted(unattributed),
+              'unmapped': dict(sorted((unmapped or {}).items())), 'duration_updates': dict(sorted((duration_updates or {}).items())), 'files': dict(sorted(hashes.items())), 'functions': functions, 'unattributed': sorted(unattributed),
               'tests': {node: sorted(ids[name] for name in values) for node, values in sorted(tests.items())}}
     encoded = (json.dumps(result, sort_keys=True, separators=(',', ':')) + '\n').encode()
     destination.parent.mkdir(parents=True, exist_ok=True)

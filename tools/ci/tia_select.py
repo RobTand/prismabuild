@@ -94,11 +94,14 @@ def select(mapping: dict, diff: dict, *, file_hashes: dict, fast: list[str],
             'fallbacks': [{'path': path, 'reason': reason} for path, reason in sorted(fallbacks.items())]}
 
 
-def prepare(root: Path, gate_dir: Path) -> dict:
+def prepare(root: Path, gate_dir: Path, *, exclude: set[str] | None = None, duration_updates: dict | None = None) -> dict:
     gate = load(gate_dir / 'gate_select.py', 'tia_gate_select')
     durations = gate.read_json(gate_dir / 'gate_durations.json')
+    fills = {name: value for name, value in (duration_updates or {}).items() if name not in durations['files']}
+    durations = dict(durations, files={**durations['files'], **fills},
+                     source={**durations.get('source', {}), 'tia_map_missing_duration_fills': sorted(fills)})
     quarantine = gate.read_json(gate_dir / 'gate_quarantine.json')
-    index = gate.dependency_index(root)
+    index = {name: value for name, value in gate.dependency_index(root).items() if name not in (exclude or set())}
     graph = gate.helper_importers(index, [])
     def static(paths, mode='selection'):
         return gate.create_plan(root, paths, durations=durations, quarantine=quarantine,
@@ -110,7 +113,7 @@ def prepare(root: Path, gate_dir: Path) -> dict:
 
 
 def plan(root: Path, gate_dir: Path, mapping: dict, diff: dict, *, context: dict | None = None) -> dict:
-    prepared = prepare(root, gate_dir) if context is None else context
+    prepared = prepare(root, gate_dir, duration_updates=mapping.get('duration_updates')) if context is None else context
     static, full = prepared['static'], prepared['full']
     population, fast = prepared['population'], prepared['fast']
     durations, gate = prepared['durations'], prepared['gate']
