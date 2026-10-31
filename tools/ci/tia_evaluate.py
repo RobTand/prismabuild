@@ -23,7 +23,7 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from tia_select import load_tia_module, plan, prepare_selection
-from tia_map import read_impact_map, write_map
+from tia_map import read_impact_map, write_impact_map
 from tia_diff import analyze_changes, compare_functions, raw_sha256, source
 
 try:
@@ -47,7 +47,7 @@ def extract(reports: list[Path], output: Path):
                             path = Path(scratch) / f'{len(paths)}.json'
                             path.write_text(json.dumps(record))
                             paths.append(path)
-        result = write_map(paths, output, unmapped=json.loads(os.environ.get('PB_TIA_UNMAPPED', '{}')),
+        result = write_impact_map(paths, output, unmapped=json.loads(os.environ.get('PB_TIA_UNMAPPED', '{}')),
                            duration_updates=json.loads(os.environ.get('PB_TIA_EXTRA_DURATIONS', '{}')))
     print(json.dumps({'tests': len(result['tests']), 'functions': len(result['functions']),
                       'bytes': output.stat().st_size, 'source_commit': result['source_commit']}))
@@ -71,7 +71,7 @@ def extract_cas(inputs: list[dict], output: Path):
                         paths.append(path)
             if not found:
                 raise ValueError(f"missing recorder output: {entry['action_key']}")
-        result = write_map(paths, output, unmapped=json.loads(os.environ.get('PB_TIA_UNMAPPED', '{}')),
+        result = write_impact_map(paths, output, unmapped=json.loads(os.environ.get('PB_TIA_UNMAPPED', '{}')),
                            duration_updates=json.loads(os.environ.get('PB_TIA_EXTRA_DURATIONS', '{}')))
     print('tia-map: ' + base64.b64encode(output.read_bytes()).decode(), flush=True)
     print(json.dumps({'tests': len(result['tests']), 'functions': len(result['functions']),

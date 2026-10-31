@@ -15,7 +15,7 @@ except ImportError:
     from tia_bytes import raw_sha256, compact_ascii_json_bytes, sorted_json
 
 
-def write_map(records: list[Path], destination: Path, *, unmapped: dict | None = None, duration_updates: dict | None = None) -> dict:
+def write_impact_map(records: list[Path], destination: Path, *, unmapped: dict | None = None, duration_updates: dict | None = None) -> dict:
     if not records:
         raise ValueError('no recorder output')
     tests: dict[str, set[str]] = {}
@@ -64,7 +64,7 @@ def main():
     parser.add_argument('--unmapped', type=Path, help='JSON test-file reasons and execution evidence')
     args = parser.parse_args()
     paths = [record for path in args.records for record in (sorted(path.glob('*.json')) if path.is_dir() else [path])]
-    result = write_map(paths, args.output, unmapped=json.loads(args.unmapped.read_text()) if args.unmapped else None)
+    result = write_impact_map(paths, args.output, unmapped=json.loads(args.unmapped.read_text()) if args.unmapped else None)
     print(sorted_json({'functions': len(result['functions']), 'tests': len(result['tests']),
                       'bytes': args.output.stat().st_size, 'source_commit': result['source_commit']}))
 

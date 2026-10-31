@@ -58,8 +58,8 @@ def test_map_reproducible_and_rejects_mixed_sources(tmp_path):
     source = tmp_path / 'record.json'
     source.write_text(json.dumps(record))
     first, second = tmp_path / 'one.gz', tmp_path / 'two.gz'
-    mod.write_map([source], first)
-    mod.write_map([source], second)
+    mod.write_impact_map([source], first)
+    mod.write_impact_map([source], second)
     assert first.read_bytes() == second.read_bytes()
     result = json.loads(gzip.decompress(first.read_bytes()))
     assert result['functions'] == ['src/a.py::f']
@@ -68,7 +68,7 @@ def test_map_reproducible_and_rejects_mixed_sources(tmp_path):
     other = tmp_path / 'other.json'
     other.write_text(json.dumps(record))
     with pytest.raises(ValueError, match='source'):
-        mod.write_map([source, other], second)
+        mod.write_impact_map([source, other], second)
 
 
 def selection(tmp_path, *, changed=('f',), module=False, hashes=None, mapped=True, unattributed=()):

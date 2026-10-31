@@ -146,8 +146,7 @@ def pytest_tia_record_configure(config):
     name = config.pluginmanager.get_name(sys.modules[__name__])
     config.invocation_params = replace(config.invocation_params, args=('-p', name, *config.invocation_params.args))
     plugins = os.environ.get('PYTEST_PLUGINS', '').split(',')
-    plugins = [entry for entry in plugins if entry not in {'tia_record', 'tools.ci.tia_record',
-                                                          'tia_population', 'tools.ci.tia_population', ''}]
+    plugins = [entry for entry in plugins if entry and entry.rsplit('.', 1)[-1] not in {'tia_record', 'tia_population'}]
     if plugins:
         os.environ['PYTEST_PLUGINS'] = ','.join(plugins)
     else:
