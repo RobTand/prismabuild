@@ -33,7 +33,7 @@ class Verdict:
 _JS_SPACE = r'[\t\n\v\f\r    -     　﻿]'
 
 
-def issue_numbers(body: str | None, repository: str) -> tuple[int, ...]:
+def referenced_issues(body: str | None, repository: str) -> tuple[int, ...]:
     pattern = re.compile(
         r'\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|references?)' + _JS_SPACE + '+'
         r'(?:https://github\.com/' + re.escape(repository) + r'/issues/|'
@@ -52,7 +52,7 @@ def branch_exempt(pull: dict) -> bool:
 
 def ordinary_decision(pull: dict, repository: str, issues: dict, sidebar=()) -> Verdict:
     """Pure policy decision over PR metadata and already-fetched issue data."""
-    numbers = issue_numbers(pull.get('body'), repository)
+    numbers = referenced_issues(pull.get('body'), repository)
     exempt = branch_exempt(pull)
     branch = _BRANCH.fullmatch(pull['head']['ref'])
     for number in numbers:
@@ -131,7 +131,7 @@ def _check_ordinary(pull, repository, fetch_issue, fetch_sidebar):
     exempt = branch_exempt(pull)
     branch = _BRANCH.fullmatch(pull['head']['ref'])
     issues = {}
-    for number in issue_numbers(pull.get('body'), repository):
+    for number in referenced_issues(pull.get('body'), repository):
         if not exempt and (not branch or number != int(branch[1])):
             continue
         issues[number] = fetch_issue(number)
@@ -144,7 +144,7 @@ def _check_ordinary(pull, repository, fetch_issue, fetch_sidebar):
     return verdict
 
 
-def check_pull_request(pull, repository, fetch_issue, fetch_pull, fetch_sidebar) -> Verdict:
+def issue_link_verdict(pull, repository, fetch_issue, fetch_pull, fetch_sidebar) -> Verdict:
     if not authenticated_batch(pull, repository):
         return _check_ordinary(pull, repository, fetch_issue, fetch_sidebar)
     try:
@@ -212,7 +212,7 @@ def main() -> int:
     try:
         event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
         github = GitHub(os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_TOKEN'])
-        verdict = check_pull_request(event['pull_request'], github.repository,
+        verdict = issue_link_verdict(event['pull_request'], github.repository,
                                      github.issue, github.pull, github.sidebar)
     except (OSError, ValueError, KeyError, TypeError):
         print('Issue-link API or event data unavailable; rerun the check.')
