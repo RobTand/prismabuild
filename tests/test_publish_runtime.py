@@ -36,7 +36,7 @@ def _checkout(path: Path, generation: str) -> Path:
     # about skipping pass --no-canary.
     driver = path / "tools" / "fleet" / "pbcanary.py"
     driver.parent.mkdir(parents=True, exist_ok=True)
-    driver.write_text("def run_canary(*, generation):\n    return 0\n")
+    driver.write_text("def preflight_publication(*, fleet_root):\n    pass\ndef run_canary(*, generation):\n    return 0\n")
     return path
 
 
@@ -633,7 +633,7 @@ def _write_canary_driver(checkout: Path, body: str) -> None:
 
     driver_dir = checkout / "tools" / "fleet"
     driver_dir.mkdir(parents=True, exist_ok=True)
-    (driver_dir / "pbcanary.py").write_text(body)
+    (driver_dir / "pbcanary.py").write_text("def preflight_publication(*, fleet_root):\n    pass\n" + body)
 
 
 def _run_publish(tmp_path: Path, monkeypatch, checkout: Path, extra: list[str],

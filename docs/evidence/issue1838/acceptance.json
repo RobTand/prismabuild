@@ -1,0 +1,95 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "f3546783c361b27bba12312e08c778039af3bc99",
+  "ledger_commit": "f3546783c361b27bba12312e08c778039af3bc99",
+  "scope": [
+    "SM-01",
+    "ID-02",
+    "INV-01",
+    "ACC-04"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1838",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1838",
+    "validated_source": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+    "validated_repairs": [
+      {
+        "id": "SM-01",
+        "actions": [
+          "901c893480045d11c6578115e5722cc28d18ec4f170b29c04051737454c1a7ef",
+          "e043c8250758662dbe55a29cef39726e81adf144fdfb0b7b3e9f525b8579a999",
+          "84aa298575efd7422051fc98610c587f692e99b2a778510b68404cfdb00a1d66",
+          "51b9677871cf83ca63283aedb1f6a287bf9fdd6056f3e4eb0d8f2d6036271474",
+          "db20e2dbfb9a621b7fd1ed950ac705fbc0553f754ed2deb0057cdae8310567c6",
+          "45a029078bef561b6c6aa68a8fc4cb81d64649173439b91dd5b2d4712296ea0c",
+          "b92bea6001ef757864565e69b83a7ef2c3acd32cb604358b339b21ff94c50d0f",
+          "e574e27bf60fc9ce16e1be6ce21ff077de6d757972eec33ee7ba7a981aa08380",
+          "03e5d708a369da0b6e205ba631507c251492e92a1c567ad0e35f39cbe91c9ad1"
+        ],
+        "outcome": "139 tests passed across nine pbtest xdist shards; full-manifest execution receipts and payload hashes verified"
+      },
+      {
+        "id": "ID-02",
+        "actions": [
+          "901c893480045d11c6578115e5722cc28d18ec4f170b29c04051737454c1a7ef",
+          "e043c8250758662dbe55a29cef39726e81adf144fdfb0b7b3e9f525b8579a999",
+          "84aa298575efd7422051fc98610c587f692e99b2a778510b68404cfdb00a1d66",
+          "51b9677871cf83ca63283aedb1f6a287bf9fdd6056f3e4eb0d8f2d6036271474",
+          "db20e2dbfb9a621b7fd1ed950ac705fbc0553f754ed2deb0057cdae8310567c6",
+          "45a029078bef561b6c6aa68a8fc4cb81d64649173439b91dd5b2d4712296ea0c",
+          "b92bea6001ef757864565e69b83a7ef2c3acd32cb604358b339b21ff94c50d0f",
+          "e574e27bf60fc9ce16e1be6ce21ff077de6d757972eec33ee7ba7a981aa08380",
+          "03e5d708a369da0b6e205ba631507c251492e92a1c567ad0e35f39cbe91c9ad1"
+        ],
+        "outcome": "139 tests passed across nine pbtest xdist shards; full-manifest execution receipts and payload hashes verified"
+      },
+      {
+        "id": "INV-01",
+        "actions": [
+          "901c893480045d11c6578115e5722cc28d18ec4f170b29c04051737454c1a7ef",
+          "e043c8250758662dbe55a29cef39726e81adf144fdfb0b7b3e9f525b8579a999",
+          "84aa298575efd7422051fc98610c587f692e99b2a778510b68404cfdb00a1d66",
+          "51b9677871cf83ca63283aedb1f6a287bf9fdd6056f3e4eb0d8f2d6036271474",
+          "db20e2dbfb9a621b7fd1ed950ac705fbc0553f754ed2deb0057cdae8310567c6",
+          "45a029078bef561b6c6aa68a8fc4cb81d64649173439b91dd5b2d4712296ea0c",
+          "b92bea6001ef757864565e69b83a7ef2c3acd32cb604358b339b21ff94c50d0f",
+          "e574e27bf60fc9ce16e1be6ce21ff077de6d757972eec33ee7ba7a981aa08380",
+          "03e5d708a369da0b6e205ba631507c251492e92a1c567ad0e35f39cbe91c9ad1"
+        ],
+        "outcome": "139 tests passed across nine pbtest xdist shards; full-manifest execution receipts and payload hashes verified"
+      },
+      {
+        "id": "ACC-04",
+        "actions": [
+          "901c893480045d11c6578115e5722cc28d18ec4f170b29c04051737454c1a7ef",
+          "e043c8250758662dbe55a29cef39726e81adf144fdfb0b7b3e9f525b8579a999",
+          "84aa298575efd7422051fc98610c587f692e99b2a778510b68404cfdb00a1d66",
+          "51b9677871cf83ca63283aedb1f6a287bf9fdd6056f3e4eb0d8f2d6036271474",
+          "db20e2dbfb9a621b7fd1ed950ac705fbc0553f754ed2deb0057cdae8310567c6",
+          "45a029078bef561b6c6aa68a8fc4cb81d64649173439b91dd5b2d4712296ea0c",
+          "b92bea6001ef757864565e69b83a7ef2c3acd32cb604358b339b21ff94c50d0f",
+          "e574e27bf60fc9ce16e1be6ce21ff077de6d757972eec33ee7ba7a981aa08380",
+          "03e5d708a369da0b6e205ba631507c251492e92a1c567ad0e35f39cbe91c9ad1"
+        ],
+        "outcome": "139 tests passed across nine pbtest xdist shards; full-manifest execution receipts and payload hashes verified"
+      }
+    ],
+    "remaining_gaps": [
+      "No live host reboot or historical-action reconciliation performed.",
+      "Registered scratch remains a separate cleanup responsibility.",
+      "No staged-read, campaign or whole-requirement completion claim."
+    ],
+    "note": "Scope/component acceptance prepared for reviewer merge decision, not approval or deployment. Evidence file records canonical endings, immutable logs, source snapshots, CAS claims and receipts. Historical failed controls have no success receipt. Final evidence/ledger-only commit changes no tested source or tests."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}

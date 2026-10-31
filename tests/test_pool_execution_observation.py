@@ -1,6 +1,7 @@
 """A heartbeat and observed output answer different liveness questions."""
 from prismabuild import census as fleet_census
 import json
+import os
 import time
 import uuid
 
@@ -83,9 +84,14 @@ def test_execution_ticks_report_output_without_inventing_quiet_progress(
 
 
 def test_exited_launcher_does_not_report_its_pipe_holding_descendant_as_alive(tmp_path, monkeypatch):
+    release = tmp_path / 'release'
+    os.mkfifo(release)
+    child_code = ('import os, select; '
+                  f'gate = os.open({str(release)!r}, os.O_RDONLY | os.O_NONBLOCK); '
+                  'select.select([gate], [], [], 60); os.close(gate)')
     script = tmp_path / 'worker.py'
     script.write_text('import subprocess, sys\n'
-                      'subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.4)"])\n')
+                      f'subprocess.Popen([sys.executable, "-c", {child_code!r}])\n')
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / 'queue'), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
@@ -94,13 +100,30 @@ def test_exited_launcher_does_not_report_its_pipe_holding_descendant_as_alive(tm
     item = queue.claim()
     ticks = []
     original = queue.write_lease
+    released = False
 
     def record(*args, **kwargs):
         original(*args, **kwargs)
         ticks.append(json.loads(queue.records.lease_path(key).read_text()))
 
+    original_observe = pool._observe_execution
+
+    def observe(process, previous=None, **kwargs):
+        nonlocal released
+        launcher_exited = process.poll() is not None
+        observation = original_observe(process, previous, **kwargs)
+        if not released and launcher_exited:
+            gate.write(b'1')
+            released = True
+        return observation
+
+    monkeypatch.setattr(pool, '_observe_execution', observe)
     monkeypatch.setattr(queue, 'write_lease', record)
-    result = queue.execute(item, heartbeat_s=0.05)
+    with os.fdopen(os.open(release, os.O_RDWR | os.O_NONBLOCK), 'r+b', buffering=0) as gate:
+        try:
+            result = queue.execute(item, heartbeat_s=0.05, timeout_s=60)
+        finally:
+            gate.write(b'1')
     assert result['status'] == 'executed'
     assert any(tick['execution_observation']['launcher_alive'] is False for tick in ticks)
     assert queue.records.item_path(pool.record_store.CLAIMED, key).exists()

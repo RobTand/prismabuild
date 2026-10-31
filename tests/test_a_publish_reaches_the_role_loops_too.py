@@ -32,9 +32,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import subprocess
 import sys
-from types import SimpleNamespace
 
 import pytest
 
@@ -42,9 +40,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import supervise  # noqa: E402
+from supervisor_fakes import HOST, candidates, signals, write_process  # noqa: E402, F401
 from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
-HOST = "dl380g10"
 #: Far outside any pid this box could hand out, so a mistake cannot land on a
 #: real process even if a patch were to slip.
 STALE_ROLE = 1000000021
@@ -79,65 +77,6 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         HOST: {"loops": 1, "args": ["--class", "x86"],
                "roles": {"tiers": ["--source-pool", "storage_pool"]}}}}))
     return mirror, store, proc
-
-
-def _process(proc: Path, pid: int, argv: list[str], *,
-             mark: str | None = HOST, children: list[int] | None = None) -> int:
-    """Write the ``/proc`` bytes one candidate process would have."""
-
-    directory = proc / str(pid)
-    directory.mkdir()
-    (directory / "cmdline").write_bytes(
-        b"".join(part.encode() + b"\0" for part in argv))
-    entries = ["HOME=/home/rob", "PATH=/usr/bin:/bin"]
-    if mark is not None:
-        entries.append(f"{supervise.OWNERSHIP_ENV}={mark}")
-    (directory / "environ").write_bytes(
-        b"".join(entry.encode() + b"\0" for entry in entries))
-    (directory / "stat").write_text(f"{pid} (python) S 1 {pid} {pid}\n")
-    task = directory / "task" / str(pid)
-    task.mkdir(parents=True)
-    (task / "children").write_text(
-        " ".join(str(child) for child in (children or [])))
-    return pid
-
-
-@pytest.fixture()
-def candidates(monkeypatch: pytest.MonkeyPatch):
-    """Stand in for ``pgrep``, per script name, the way the real one answers."""
-
-    offered: dict[str, list[int]] = {}
-
-    def fake_run(argv, *_args, **_kwargs):
-        assert argv[0] == "pgrep", argv
-        return subprocess.CompletedProcess(
-            argv, 0, "\n".join(str(pid) for pid in offered.get(argv[-1], [])), "")
-
-    monkeypatch.setattr(supervise.subprocess, "run", fake_run)
-    return offered
-
-
-@pytest.fixture()
-def signals(monkeypatch: pytest.MonkeyPatch):
-    """Every signal the supervisor would have sent, sent to nothing.
-
-    ``_is_idle`` is faked the way the rest of the supervisor suite fakes it:
-    it reads ``/proc/<pid>/task/*/children`` at the real ``/proc``, which a
-    fake tree cannot answer.  What these tests are for is which pids reach
-    that question, not what it answers -- ``busy`` is how a test says the
-    answer is "no" for one of them.
-    """
-
-    box = SimpleNamespace(sent=[], busy=set())
-    monkeypatch.setattr(supervise.os, "kill",
-                        lambda pid, sig: box.sent.append((pid, int(sig))))
-    monkeypatch.setattr(supervise, "_is_idle",
-                        lambda pid, *_a: pid not in box.busy)
-    # An empty holder set rather than ``None``: ``None`` means "the queue
-    # could not be read", which licenses no signal at all and would hide the
-    # defect behind a refusal that is right for another reason.
-    monkeypatch.setattr(supervise, "_claim_holders", lambda: frozenset())
-    return box
 
 
 # -- the loop that moves itself ---------------------------------------------
@@ -209,7 +148,7 @@ def test_a_stale_role_loop_is_cycled_so_ensure_roles_respawns_it(
     """
 
     _mirror, store, proc = fleet
-    role = _process(proc, STALE_ROLE, [
+    role = write_process(proc, STALE_ROLE, [
         "/usr/bin/python3", str(store / "gen-old" / "tools" / "tier_loop.py"),
         "--source-pool", "storage_pool"])
     candidates["tier_loop.py"] = [role]
@@ -242,7 +181,7 @@ def test_a_role_already_on_the_published_generation_is_left_running(
     """A role is a singleton: cycling a live one costs a storage cycle for nothing."""
 
     mirror, _store, proc = fleet
-    role = _process(proc, LIVE_ROLE, [
+    role = write_process(proc, LIVE_ROLE, [
         "/usr/bin/python3", str(mirror / "repo" / "tools" / "tier_loop.py"),
         "--source-pool", "storage_pool"])
     candidates["tier_loop.py"] = [role]
@@ -261,7 +200,7 @@ def test_a_stale_role_holding_a_child_is_left_for_the_next_cycle(
     """
 
     _mirror, store, proc = fleet
-    role = _process(proc, BUSY_ROLE, [
+    role = write_process(proc, BUSY_ROLE, [
         "/usr/bin/python3", str(store / "gen-old" / "tools" / "tier_loop.py")],
         children=[BUSY_ROLE + 1])
     candidates["tier_loop.py"] = [role]
@@ -277,10 +216,10 @@ def test_the_worker_loops_are_still_cycled_beside_the_roles(
     """Regression: the role sweep is added to the worker sweep, not in place of it."""
 
     _mirror, store, proc = fleet
-    worker = _process(proc, WORKER, [
+    worker = write_process(proc, WORKER, [
         "/usr/bin/python3", str(store / "gen-old" / "tools" / "worker_loop.py"),
         "--class", "x86"])
-    role = _process(proc, STALE_ROLE, [
+    role = write_process(proc, STALE_ROLE, [
         "/usr/bin/python3", str(store / "gen-old" / "tools" / "tier_loop.py")])
     candidates["worker_loop.py"] = [worker]
     candidates["tier_loop.py"] = [role]
@@ -295,7 +234,7 @@ def test_a_role_script_outside_this_fleet_is_never_signalled(
     """A basename is not ownership, and that rule does not weaken for a role."""
 
     _mirror, _store, proc = fleet
-    candidates["tier_loop.py"] = [_process(proc, STALE_ROLE, [
+    candidates["tier_loop.py"] = [write_process(proc, STALE_ROLE, [
         "/usr/bin/python3", "/another-project/tier_loop.py"])]
 
     assert supervise.cycle_stale("gen-live") == []

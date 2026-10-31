@@ -119,13 +119,10 @@ def test_leg2_build_shape_pinned(monkeypatch):
     assert spec["demand"]["gpu"] == 1
     assert spec["wait_s"] == 600
     assert spec["container_image"] == PINNED
-    assert "--gpus" in spec["argv"][-1] and PINNED in spec["argv"][-1]
-    # The entrypoint is cleared exactly as the production container wrapper
-    # does: the campaign image family's own entrypoint runs vLLM platform
-    # inference and refuses to pass a command through when it stands (found
-    # live 2026-09-19 wiring the release; the wrapper is
-    # tools/tessera_campaign_container.py).
-    assert '--entrypoint ""' in spec["argv"][-1]
+    assert spec["argv"] == [
+        "/usr/bin/python3", "-I", "tools/fleet/pbcanary_legs/leg2.py", "--image", PINNED,
+        "--device", "cuda", "--checks-path", ".d38/leg2-checks.json",
+    ]
     assert spec["expected"]["artifact_prefix"].startswith(f"IMAGE {PINNED}\n")
 
 

@@ -22,17 +22,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import adaptive_cpu
 
 
-def _try_hold(path: str, queue) -> None:
+def _try_hold(path: str, queue, release) -> None:
     descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             queue.put(("busy", os.fstat(descriptor).st_ino))
-            time.sleep(5)
-            return
-        queue.put(("held", os.fstat(descriptor).st_ino))
-        time.sleep(5)
+        else:
+            queue.put(("held", os.fstat(descriptor).st_ino))
+        if not release.wait(60):
+            raise RuntimeError("the parent did not release the openers")
     finally:
         os.close(descriptor)
 
@@ -141,21 +141,25 @@ def test_concurrent_openers_share_one_lock_inode(tmp_path, monkeypatch):
     directory, digest = adaptive_cpu.box_state(base)
     context = mp.get_context("spawn")
     queue = context.Queue()
-    first = context.Process(target=_try_hold, args=(str(directory / (digest + ".lock")), queue))
-    second = context.Process(target=_try_hold, args=(str(directory / (digest + ".lock")), queue))
+    release = context.Event()
+    first = context.Process(target=_try_hold, args=(str(directory / (digest + ".lock")), queue, release))
+    second = context.Process(target=_try_hold, args=(str(directory / (digest + ".lock")), queue, release))
     first.start()
     second.start()
     try:
-        first.join(timeout=30)
-        second.join(timeout=30)
-        outcomes = sorted(queue.get(timeout=30) for _ in range(2))
+        outcomes = sorted(queue.get(timeout=60) for _ in range(2))
         assert [outcome for outcome, _inode in outcomes] == ["busy", "held"]
         assert outcomes[0][1] == outcomes[1][1]
     finally:
+        release.set()
         for child in (first, second):
+            child.join(timeout=60)
             if child.is_alive():
                 child.terminate()
-                child.join(timeout=10)
+                child.join(timeout=60)
+        queue.close()
+        queue.join_thread()
+    assert first.exitcode == second.exitcode == 0
 
 
 def _hold_until_released(path, ready, release):

@@ -1,0 +1,135 @@
+{
+  "source_head": "abfb073bf1923ef6c05f5f450d75acb65306e011",
+  "plan_sha256": "24a6313c5e516d0c80ebd5c14b63707e0d10645076a7dc28cb72f240a841e9de",
+  "committed_rows": 14,
+  "state": "finished",
+  "rows": [
+    {
+      "id": "corrected-checkpoint",
+      "returncode": 0,
+      "retained_report": true,
+      "audit_returncode": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/supplemental/corrected.json",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/corrected-checkpoint-audit.json",
+      "completed_at": "2026-10-27T00:15:02.237869+00:00"
+    },
+    {
+      "id": "x86_64-qlease",
+      "returncode": 0,
+      "retained_report": true,
+      "audit_returncode": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v3/x86_64-qlease.json",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/x86_64-qlease-audit.json",
+      "completed_at": "2026-10-27T00:15:04.733547+00:00"
+    },
+    {
+      "id": "x86_64-1",
+      "returncode": 0,
+      "retained_report": false,
+      "audit_returncode": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/x86_64-1.json",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/x86_64-1-audit.json",
+      "completed_at": "2026-10-27T00:16:00.923044+00:00"
+    },
+    {
+      "id": "x86_64-2",
+      "returncode": 0,
+      "retained_report": false,
+      "audit_returncode": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/x86_64-2.json",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/x86_64-2-audit.json",
+      "completed_at": "2026-10-27T00:16:50.284951+00:00"
+    },
+    {
+      "id": "x86_64-3",
+      "returncode": 0,
+      "retained_report": false,
+      "audit_returncode": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/x86_64-3.json",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/x86_64-3-audit.json",
+      "completed_at": "2026-10-27T00:17:56.152789+00:00"
+    },
+    {
+      "id": "x86_64-4",
+      "returncode": 0,
+      "retained_report": false,
+      "audit_returncode": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/x86_64-4.json",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/x86_64-4-audit.json",
+      "completed_at": "2026-10-27T00:18:51.339820+00:00"
+    },
+    {
+      "id": "x86_64-5",
+      "returncode": 0,
+      "retained_report": false,
+      "audit_returncode": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/x86_64-5.json",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/x86_64-5-audit.json",
+      "completed_at": "2026-10-27T00:19:59.789467+00:00"
+    },
+    {
+      "id": "x86_64-integration",
+      "returncode": 0,
+      "retained_report": false,
+      "audit_returncode": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/x86_64-integration.json",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/x86_64-integration-audit.json",
+      "completed_at": "2026-10-27T00:38:00.505126+00:00"
+    },
+    {
+      "id": "aarch64-1",
+      "returncode": 0,
+      "retained_report": false,
+      "audit_returncode": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/aarch64-1.json",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/aarch64-1-audit.json",
+      "completed_at": "2026-10-27T00:38:47.171382+00:00"
+    },
+    {
+      "id": "aarch64-2",
+      "returncode": 0,
+      "retained_report": false,
+      "audit_returncode": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/aarch64-2.json",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/aarch64-2-audit.json",
+      "completed_at": "2026-10-27T00:39:24.057986+00:00"
+    },
+    {
+      "id": "aarch64-3",
+      "returncode": 0,
+      "retained_report": false,
+      "audit_returncode": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/aarch64-3.json",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/aarch64-3-audit.json",
+      "completed_at": "2026-10-27T00:40:11.136490+00:00"
+    },
+    {
+      "id": "aarch64-4",
+      "returncode": 0,
+      "retained_report": false,
+      "audit_returncode": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/aarch64-4.json",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/aarch64-4-audit.json",
+      "completed_at": "2026-10-27T00:40:41.366727+00:00"
+    },
+    {
+      "id": "aarch64-5",
+      "returncode": 0,
+      "retained_report": false,
+      "audit_returncode": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/aarch64-5.json",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/aarch64-5-audit.json",
+      "completed_at": "2026-10-27T00:41:26.347405+00:00"
+    },
+    {
+      "id": "aarch64-integration",
+      "returncode": 0,
+      "retained_report": false,
+      "audit_returncode": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/aarch64-integration.json",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/qualification-v4/aarch64-integration-audit.json",
+      "completed_at": "2026-10-27T00:42:27.414997+00:00"
+    }
+  ],
+  "active_row": null
+}

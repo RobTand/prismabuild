@@ -109,7 +109,7 @@ def _fixture(tmp_path: Path, *, ram_capacity_gib: int,
     queue.tier(RAM_TIER).mint({'ram_gib': ram_capacity_gib})
     # A RAM fill's host half lands in the storage host's ledger (#1258).
     mint_storage_host_ledger(queue)
-    queue.tier(STAGE_TIER).mint({'stage_gib': 64})
+    queue.tier(STAGE_TIER).mint({'stage_gib': sum(PHASE_GIB)})
     start = 0
     for ordinal in range(landed):
         stage_lead = _hexkey(f"mover{ordinal}")
@@ -160,7 +160,7 @@ def test_runahead_is_bounded_by_the_consumers_accepted_progress(
     satisfied for both; the bound is the thing declining the third.
     """
 
-    queue = _fixture(tmp_path, ram_capacity_gib=64, landed=2)
+    queue = _fixture(tmp_path, ram_capacity_gib=sum(PHASE_GIB), landed=2)
 
     events = tier_loop.ram_residency_window(queue, tiers=_tiers(tmp_path))
 

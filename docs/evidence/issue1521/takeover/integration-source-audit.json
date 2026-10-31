@@ -1,0 +1,20 @@
+{
+  "head": "85fa57bb7194afe9562193a7368d2e3a403a9293",
+  "parents": [
+    "affe5b27eedd8e2ac55e9b07e52ad7b64e0e1db8",
+    "a7b0b8def49fa992e7676304753eced414b29b78"
+  ],
+  "preserved_remote": "a7b0b8def49fa992e7676304753eced414b29b78",
+  "repair": "affe5b27eedd8e2ac55e9b07e52ad7b64e0e1db8",
+  "changed_paths_from_remote": [
+    "docs/design.md",
+    "src/prismabuild/_gang.py",
+    "src/prismabuild/core.py",
+    "src/prismabuild/numeric_fields.py",
+    "src/prismabuild/residency_plan.py",
+    "tests/test_core_numbers_1521.py"
+  ],
+  "core_sha256": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+  "checks_passed": true,
+  "limits": "Static ancestry and exact source readback only; integrated behavioral proof is separate."
+}

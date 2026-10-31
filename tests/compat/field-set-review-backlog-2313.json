@@ -1,0 +1,45 @@
+[
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/backlog_census/fetch_open_issues.py",
+      "owner": "<module>",
+      "unresolved": "'\\nnumber title body state createdAt updatedAt closedAt url\\nrepository { nameWithOwner }\\nlabels(first:100) { nodes { name } pageInfo { hasNextPage endCursor } }\\nparent { number repository { nameWithOwner } }\\n'",
+      "binding": "ISSUE_FIELDS"
+    },
+    "count": 1,
+    "reason": "Retain the complete GraphQL ISSUE_FIELDS string as a symbolic observation. This newly added collector binding predates this repair and is not a closed JSON field policy."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/test_runtime_inventory.py",
+      "owner": "observe_inventory_process",
+      "unresolved": "Path(f\"/proc/{pid}/stat\").read_text().rpartition(\")\")[2].split()",
+      "binding": "fields"
+    },
+    "count": 1,
+    "reason": "Retain the existing symbolic proc stat token binding. Its source blob is unchanged; the original full metadata omitted this observation. This regeneration records it without interpreting process tokens as JSON fields."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/test_runtime_inventory.py",
+      "owner": "reconcile_attempt",
+      "unresolved": "{shard['action_key'] for shard in progress.get('shards', []) if shard.get('action_key')}",
+      "binding": "keys"
+    },
+    "count": 1,
+    "reason": "Retain the existing symbolic action-key comprehension used to recover controller attempts. Its source blob is unchanged; this complete regeneration records the omitted observation without narrowing its expression."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/backlog_census/hindsight.py",
+      "owner": "collect",
+      "unresolved": "{key for key in index if not key.startswith('_')}"
+    },
+    "count": 1,
+    "reason": "Retain the symbolic candidate-key set comparison that excludes index metadata. The comparison already existed in the original census implementation and remains unchanged by digest ownership repair."
+  }
+]

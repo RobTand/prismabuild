@@ -1,0 +1,20 @@
+{
+  "run": "qual-x86-2",
+  "source_head": "6cef1e12efbb2610c8186fd2ab304bcfc1f55726",
+  "population": {
+    "collected": 158,
+    "passed": 158,
+    "failed": 0,
+    "skipped": 0
+  },
+  "snapshots": [
+    {
+      "commit": "709b471dd4c0fdb7d341052ee6f65ad74cd90778",
+      "bundle_sha256": "c9b20b708b38b492f6435aece7e9d34f5bf4f4788e0e3abc0e9f2cf63d4ccef1",
+      "source_tools_tests_equal": true
+    }
+  ],
+  "architecture": "x86",
+  "reports_and_resources_match": true,
+  "unique_population_sha256": "9ff122f1f15aaa0d75e7d321f95958f80f9b130f068f483c1e9d118f45712927"
+}
