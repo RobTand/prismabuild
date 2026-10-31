@@ -36,7 +36,8 @@ when no history artifact exists.
 
 The report uses GitHub REST with the workflow's `GITHUB_TOKEN`. It reads the
 previous completed `main` run's `full-suite-results` artifact. If that run is
-incomplete or its artifact expired, it looks back for a complete baseline.
+incomplete, was a dry run, or its artifact expired, it looks back for a complete
+baseline that performed reporting.
 Without a retained baseline, observed failures count as new.
 
 A newly failing test gets one `[P2] Full suite: … fails on main` issue, labelled

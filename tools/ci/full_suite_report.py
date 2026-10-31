@@ -46,7 +46,7 @@ def classify(now: dict, before: dict, quarantine: set[str]) -> dict[str, list[st
 def owners(issues: list[dict]) -> dict[str, int]:
     result = {}
     for issue in sorted(issues, key=lambda issue: issue['number']):
-        if LABEL in [label['name'] for label in issue.get('labels', [])]:
+        if not issue.get('pull_request') and LABEL in [label['name'] for label in issue.get('labels', [])]:
             for node in MARKER.findall(issue.get('body') or ''):
                 result.setdefault(html.unescape(node), issue['number'])
     return result
@@ -195,7 +195,7 @@ def load_history(api: GitHub, run_id: int, run_number: int) -> dict:
         match = next((a for a in artifacts if a['name'] == ARTIFACT and not a['expired']), None)
         if match:
             history = api.artifact(match['id'])
-            if history['complete']:
+            if history['complete'] and not history.get('dry_run', False):
                 return history
         runs = [r for r in runs if r['id'] != run['id']]
     return {'tests': {}, 'sha': None, 'complete': False}
