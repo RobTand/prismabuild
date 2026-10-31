@@ -467,3 +467,28 @@ def test_nonadaptive_sealed_request_read_failure_reports_bounded_recovery(
     monkeypatch.setattr(pool, "_sealed_action_request", request_read)
     admitted = queue.claim_or_observe(capacity={"cpu": 1, "mem_gb": 1})
     assert admitted.value is not None and admitted.value["action_key"] == key
+
+
+def test_cpu_load_preference_reports_both_consulted_sample_expiries(
+        tmp_path, monkeypatch, clocks):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    tiers = {"preferred": [0, 1, 2, 3], "fallback": []}
+    capacity = {"cpu": 4, "mem_gb": 4}
+    local = pool.socket.gethostname()
+    for host, load, stamp in ((local, 4.0, 999.0), ("peer", 0.0, 998.0)):
+        queue.ledger(host).configure_cpu_tiers(tiers)
+        queue.ledger(host).ensure_capacity(capacity)
+        queue.announce(host=host, tags=[], has_gpu=False, capacity=capacity,
+                       cpu_tiers=tiers, observed_capacity=capacity,
+                       observed_detail={"observed_unix": stamp, "load1": load})
+    monkeypatch.setattr(runtime_publication, "live_authority", lambda: False)
+    row = {"action_key": "a" * 64, "published_unix": 1000.0,
+           "tags": [], "needs_gpu": False, "resources": {"cpu": 1, "mem_gb": 1}}
+    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+                            monotonic_clock=lambda: clocks["monotonic"]) as collected:
+        scan = queue._start_claim_scan(ready=[row])
+        assert queue._defer_for_cpu_load(row, row["resources"], placement=scan.placement) is not None
+    deadlines = collected.observation().blocked_on.deadlines
+    assert claim_wait.RetryDeadline("peer_observation_freshness:" + local, 44.0) in deadlines
+    assert claim_wait.RetryDeadline("peer_observation_freshness:peer", 43.0) in deadlines
+    assert claim_wait.RetryDeadline("cpu_load_preference", 60.0) in deadlines
