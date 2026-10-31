@@ -93,8 +93,10 @@ bytes and SHA-256
 The merged immutable helper also retains the exact pin recorded above.
 No capture bytes need regeneration or adoption. Fresh reproduction action
 `e6ddb020e6f5bfdbfd430b844c8b1e32a1e24e47286c611f4512e8dd8c89d925`
-is submitted against source head
-`e789ae5c33fe72e3191b22f8df1303a717848427`; it carries no result credit until
-its terminal, logs and CAS receipt verify.
+ran against source head `e789ae5c33fe72e3191b22f8df1303a717848427` and
+exited 2. All six writer cases stopped at `bwrap: Can't mount proc on
+/newroot/proc: Operation not permitted`, before reaching their production
+entry points. The failed terminal and bound logs verify; no CAS receipt was
+published. Fresh reproduction remains blocked on that namespace prerequisite.
 Source review and tests grant no live retention, unlink, runtime publication,
 rollout, or service-install authority. Issues #2023 and #2025 remain open.
