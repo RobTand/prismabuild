@@ -60,7 +60,7 @@ def _names(events) -> list[str]:
 
 
 def _committed_then_withdrawn(tmp_path):
-    queue = _queue(tmp_path, stage_gib=300)
+    queue = _queue(tmp_path, stage_gib=4)
     tiers = {TIER: _stage(queue, TIER)}
     consumer = _hexkey("band-source")
     plan = _declared_plan(queue, consumer, SPECS, tag="band")
@@ -107,7 +107,7 @@ def test_a_committed_group_whose_tokens_left_without_a_release_begins_again(
     (the first three here; the last chunk keeps its one token), so the census
     reads short while the receipt still says committed.
     """
-    queue = _queue(tmp_path, stage_gib=300)
+    queue = _queue(tmp_path, stage_gib=4)
     tiers = {TIER: _stage(queue, TIER)}
     consumer = _hexkey("band-source")
     plan = _declared_plan(queue, consumer, SPECS, tag="band")

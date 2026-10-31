@@ -5,8 +5,9 @@ import json
 import os
 import signal
 import socket
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager, suppress
+from contextvars import ContextVar
 from types import SimpleNamespace
 
 import pytest
@@ -310,25 +311,52 @@ def test_stalled_optional_source_read_is_bounded_and_restart_owned(
             assert "unavailable" not in census
             return census
 
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+    class SourceDeadline(reader.Deadline):
+        def remaining(self):
+            return self.timeout_s
+
+    in_source = ContextVar("in_source", default=False)
+    real_spawn = reservation._SourceGenerationReader._spawn_owned
+    real_select = reader.select.select
+
+    def controlled_source(self, *args, **kwargs):
+        token = in_source.set(True)
+        try:
+            return real_spawn(self, *args, **kwargs)
+        finally:
+            in_source.reset(token)
+
+    def controlled_select(ready, write, error, timeout):
+        if not in_source.get():
+            return real_select(ready, write, error)
+        readable, writable, errors = real_select([*ready, expiry_read], write, error)
+        replies = [descriptor for descriptor in ready if descriptor in readable]
+        if replies:
+            return replies, writable, errors
+        os.read(expiry_read, 1)
+        return [], [], []
+
+    with ExitStack() as handles, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        expiry_read, expiry_write = os.pipe()
+        handles.callback(os.close, expiry_read)
+        handles.callback(os.close, expiry_write)
+        monkeypatch.setattr(reader, "Deadline", SourceDeadline)
+        monkeypatch.setattr(reader, "select", SimpleNamespace(select=controlled_select))
+        monkeypatch.setattr(reservation._SourceGenerationReader, "_spawn_owned", controlled_source)
         server.bind(str(endpoint))
         server.listen(1)
-        server.settimeout(10)
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(acquire)
             connection, _ = server.accept()
-            connection.settimeout(10)
             caller = int(connection.recv(64).strip())
             ownership = None
             try:
-                try:
-                    current = future.result(timeout=5)
-                except TimeoutError:
-                    pytest.fail("optional shared-source I/O retained host admission H")
                 assert caller != os.getpid(), "shared source reads must run in an owned child"
+                os.write(expiry_write, b"E")
+                current = future.result()
                 assert current["elections"][key] == chosen
                 assert reservation.blocking_selection(current, item, host=ledger.base.name, funded_by=None) == chosen
-                assert executor.submit(_take_host_gate, ledger).result(timeout=5)
+                assert executor.submit(_take_host_gate, ledger).result()
                 with queue.action_transition_lock(key, blocking=False) as acquired:
                     assert acquired, "the unresolved source child must not inherit M"
                 # A distinct owner stays fenced across restarts without taking
@@ -359,4 +387,4 @@ def test_stalled_optional_source_read_is_bounded_and_restart_owned(
                         os.waitpid(caller, 0)
                 # Releases the original inline implementation on a regression,
                 # before the executor joins, rather than leaving a stuck test.
-                future.result(timeout=10)
+                future.result()

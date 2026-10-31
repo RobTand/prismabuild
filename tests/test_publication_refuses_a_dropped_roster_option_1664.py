@@ -76,7 +76,7 @@ def _checkout(path: Path, roster: dict) -> Path:
     fleet = path / "tools" / "fleet"
     fleet.mkdir(parents=True, exist_ok=True)
     (fleet / "pbcanary.py").write_text(
-        "def run_canary(*, generation):\n    return 0\n")
+        "def preflight_publication(*, fleet_root):\n    pass\ndef run_canary(*, generation):\n    return 0\n")
     (fleet / "fleet_boxes.json").write_text(json.dumps(roster, sort_keys=True))
     return path
 

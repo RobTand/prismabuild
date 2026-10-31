@@ -1,0 +1,1141 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "94724101633fc4f125464c29aab003427c059b27",
+  "scope": [
+    "SC-02",
+    "SM-02",
+    "INV-01",
+    "INV-07",
+    "DUR-01"
+  ],
+  "requirement_scope": [
+    {
+      "id": "SC-02",
+      "target": "Keep movement and reservation authority in the existing PB owners.",
+      "implemented": "filesystem_floor, ResourceLedger.floor_snapshot, TierLedger and existing movement/prewarm callers share the same guard; no second ledger or dispatcher. Used-leaf checks, owner incarnation and explicit tmpfs reuse the existing identity boundary. The existing shared stage/RAM copier checks its owner-keyed temporary before initial and retry opens.",
+      "validated": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending.",
+      "deployed": "Not published or activated by this task.",
+      "whole_requirement_axes_unchanged": {
+        "implementation": "yes",
+        "validation": "unknown",
+        "deployment": "unknown",
+        "workload_proof": "unknown"
+      }
+    },
+    {
+      "id": "SM-02",
+      "target": "Preserve lifecycle authority; infer no physical deletion from token return or copy completion.",
+      "implemented": "Existing release and transfer owners remain authoritative; this floor adds conservative whole-reservation accounting and no materialization credit. A floor refusal before acquiring the temporary handle preserves retained bytes. Cleanup after write acquisition keeps its existing owner.",
+      "validated": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending.",
+      "deployed": "Not published or activated by this task.",
+      "whole_requirement_axes_unchanged": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "no"
+      }
+    },
+    {
+      "id": "INV-01",
+      "target": "Count all outstanding whole reservations across owners before new admission.",
+      "implemented": "spool_gb, stage_gib, local_gib and filesystem_gib are charged together; unknown mapping/population/bounds HOLD; grant counters persist before token mutation. Actual regular-file descriptors preserve mounted-leaf identity. Local machine, boot and namespace are checked before refresh. Explicit tmpfs retains full expiring coverage and growth bounds. Retained owner-keyed temporary leaves receive their own used-filesystem verdict before each initial or retry truncation.",
+      "validated": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending.",
+      "deployed": "Not published or activated by this task.",
+      "whole_requirement_axes_unchanged": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "no"
+      }
+    },
+    {
+      "id": "INV-07",
+      "target": "Keep ownership and charge coherent across private acquisition, transfer, and competing refreshes.",
+      "implemented": "Strict owner snapshots count private, committed, transferred and orphan holdings; refresh identities fence stale publication; materialization gives zero credit. Denied retained partials publish neither success movement receipts nor residency fragments. Positive controls publish exact bytes and preserve foreign-owned partials.",
+      "validated": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending.",
+      "deployed": "Not published or activated by this task.",
+      "whole_requirement_axes_unchanged": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "no"
+      }
+    },
+    {
+      "id": "DUR-01",
+      "target": "State the persistence assumption separately from process-visible publication.",
+      "implemented": "Counter writes fsync the file and parent before token admission; write failure refuses admission. No power-loss durability claim. The contract records storage_pool/shared sync=disabled; that storage policy was not reobserved or changed in this run.",
+      "validated": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending.",
+      "deployed": "Not published or activated by this task.",
+      "whole_requirement_axes_unchanged": {
+        "implementation": "no",
+        "validation": "partial",
+        "deployment": "no",
+        "workload_proof": "unknown"
+      }
+    }
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1483",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1483",
+    "source": "94724101633fc4f125464c29aab003427c059b27",
+    "validated_repairs": [
+      {
+        "id": "SC-02",
+        "actions": [
+          "48ef53841bacdfad34718d0cf24b6087474da8e9af7a801ef6947b700b580c16",
+          "908ca2213557d58ca7fbc76e37f329e63356b21004b51fae25f03e941037dac3",
+          "b2e0195c443af61107f57b3acd0f8728456931b0e7432610b807646a8d5682dc",
+          "c28b9a248b22cdbaf292b341a751af447401ae6e7f984e2686dc919fdcc7b0a4"
+        ],
+        "outcome": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending.",
+        "test_targets": [
+          "tests/test_stage_partial_floor_1483.py",
+          "tests/test_used_filesystem_callers_2049.py"
+        ]
+      },
+      {
+        "id": "SM-02",
+        "actions": [
+          "7ae49a880c8f9801912a37ebf5930266b6ee9332a57069a8e9890af07cf99078",
+          "b2e0195c443af61107f57b3acd0f8728456931b0e7432610b807646a8d5682dc",
+          "c28b9a248b22cdbaf292b341a751af447401ae6e7f984e2686dc919fdcc7b0a4"
+        ],
+        "outcome": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending.",
+        "test_targets": [
+          "tests/test_stage_partial_floor_1483.py",
+          "tests/test_a_promotion_handoff_defers_the_source_retirement.py"
+        ]
+      },
+      {
+        "id": "INV-01",
+        "actions": [
+          "36f3a537b9064adf77819e744e31577c21226464e9f4c62adb355619e342952a",
+          "403ca6e738d67cc49606d787c59370a5c842d75a3e224ac3634e666c649f7f39",
+          "61ec9b3d19ff371f9b9883c07a91c3ddfbc082037e4c4210b61437fd5e9b122a",
+          "9beb1c2c5b2fd971313e154397506d34a74fb52cba647b62c23fa631a0d2136e",
+          "b2e0195c443af61107f57b3acd0f8728456931b0e7432610b807646a8d5682dc",
+          "c28b9a248b22cdbaf292b341a751af447401ae6e7f984e2686dc919fdcc7b0a4"
+        ],
+        "outcome": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending.",
+        "test_targets": [
+          "tests/test_stage_partial_floor_1483.py",
+          "tests/test_filesystem_floor_accounting_1483.py",
+          "tests/test_filesystem_floor_identity_1483.py"
+        ]
+      },
+      {
+        "id": "INV-07",
+        "actions": [
+          "30cbcddb5aede81268d241873b36792c15c60a47dc563876c8686be1f3b9435a",
+          "36f3a537b9064adf77819e744e31577c21226464e9f4c62adb355619e342952a",
+          "403ca6e738d67cc49606d787c59370a5c842d75a3e224ac3634e666c649f7f39",
+          "acd0f76f6e1e6dc2ca0fde9d83ac59ebafba50407a7d2533e78d6bb9871c3579",
+          "b2e0195c443af61107f57b3acd0f8728456931b0e7432610b807646a8d5682dc",
+          "c28b9a248b22cdbaf292b341a751af447401ae6e7f984e2686dc919fdcc7b0a4"
+        ],
+        "outcome": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending.",
+        "test_targets": [
+          "tests/test_stage_partial_floor_1483.py",
+          "tests/test_floor_ledger_snapshot.py",
+          "tests/test_filesystem_floor_accounting_1483.py"
+        ]
+      },
+      {
+        "id": "DUR-01",
+        "actions": [
+          "36f3a537b9064adf77819e744e31577c21226464e9f4c62adb355619e342952a",
+          "403ca6e738d67cc49606d787c59370a5c842d75a3e224ac3634e666c649f7f39"
+        ],
+        "outcome": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending.",
+        "test_targets": [
+          "tests/test_filesystem_floor_accounting_1483.py"
+        ]
+      }
+    ],
+    "remaining_gaps": [
+      "Independent Code Reviewer 01 and Code Reviewer 02 exact-head approvals remain pending. Chief of Staff interaction cf946e86-bf03-4773-89ba-8583174b53db designated stage 2. After both approvals, queue the exact head on PRI-128 under merge-via-batch-20261026; no direct merge.",
+      "Full #1483 operational acceptance stays open pending activation qualification. Code Reviewer 02 must accept the bounded #2050 source/evidence handoff, causal credit, aliasing, aggregation, transfer and partial failure.",
+      "Activation requires authenticated fleet mappings, actual destinations/offers, closed populations, complete bounds and obsolete-writer fencing under accepted #2045. No fleet coverage values are supplied.",
+      "Rob retains authority for the dl380g10 NFS export mapping and the live native diagnostic. Those actions remain stopped.",
+      "No whole staged-read requirement, deployment or campaign completion is claimed."
+    ],
+    "note": "Source merge evidence only. Enforcement remains off by default. Whole-requirement ledger axes are unchanged. This record supplies no deployment, activation, maintenance, parking or live-diagnostic authority. Counter fsync proves process-visible publication only. The contract records storage_pool/shared sync=disabled; no storage policy was reobserved or changed.",
+    "base": "bd73d5c8c0f032649c2400ae1b7401e9c613497d",
+    "qualified_source": "94724101633fc4f125464c29aab003427c059b27",
+    "independent_review_status": "pending; Code Reviewer 01 first and independent Code Reviewer 02 second; author cannot approve",
+    "historical_changes_requested_rounds": 3,
+    "source_continuity": {
+      "retained_partial_rebase": {
+        "qualified_source": "e5c9047fa87108e7723729a8005a7aa3c4c0663b",
+        "rebased_source": "94724101633fc4f125464c29aab003427c059b27",
+        "base": "bd73d5c8c0f032649c2400ae1b7401e9c613497d",
+        "changed_paths": [
+          "docs/design.md",
+          "docs/evidence/1917-fleet-verification-2026-10-25.json",
+          "docs/evidence/1917-lifecycle-followup-2026-10-25.json",
+          "docs/evidence/1917-merge-acceptance-2026-10-25.json",
+          "docs/evidence/1917-tests-followup-2026-10-25.json",
+          "docs/measurements/1917-current-fleet-2026-10-25.md",
+          "tests/test_mount_latency.py",
+          "tools/fleet/mount_latency.py",
+          "tools/maintenance/nfs_probe_lifecycle.py"
+        ],
+        "task_paths_equal": {
+          "docs/design.md": false,
+          "docs/evidence/issue1483_source_acceptance_2026-10-26.json": true,
+          "docs/evidence/issue1483_verify_2026-10-26.py": true,
+          "docs/filesystem_floor.md": true,
+          "docs/operating_prismabuild.md": true,
+          "docs/staged_read_requirements_2026-09-20.json": true,
+          "src/prismabuild/filesystem_floor.py": true,
+          "src/prismabuild/local_resident.py": true,
+          "src/prismabuild/pool.py": true,
+          "src/prismabuild/prewarm_loop.py": true,
+          "src/prismabuild/ram_promote.py": true,
+          "src/prismabuild/stage_move.py": true,
+          "src/prismabuild/tier_holdings.py": true,
+          "tests/filesystem_floor_fixture.py": true,
+          "tests/test_filesystem_floor_1483.py": true,
+          "tests/test_filesystem_floor_accounting_1483.py": true,
+          "tests/test_filesystem_floor_identity_1483.py": true,
+          "tests/test_floor_ledger_snapshot.py": true,
+          "tests/test_stage_partial_floor_1483.py": true,
+          "tests/test_supervisor_declares_the_spool_budget.py": true,
+          "tests/test_used_filesystem_callers_2049.py": true,
+          "tools/fleet/supervise.py": true
+        },
+        "src_floor_equal": true
+      },
+      "head_after_evidence": "Only this acceptance record, the five scoped ledger entries and the artifact verifier change after qualified source. Publication and review heads are checked separately."
+    }
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "qualification": {
+    "schema": "pri36.source_qualification.v1",
+    "head": "94724101633fc4f125464c29aab003427c059b27",
+    "state": "verified",
+    "rows": [
+      {
+        "name": "partial-x86-1",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/partial-x86-1-e5c9047f.json",
+        "head": "e5c9047fa87108e7723729a8005a7aa3c4c0663b",
+        "state": "verified",
+        "source_bundles": [
+          "16aa1ef83d74d831fe6e44e7a035b57067472e81d2cfe0404ca15d98c3a3f300"
+        ],
+        "counts": {
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 0
+        },
+        "actions": [
+          "073269732a75a88c0bf2c38f0750fcaa86ea782b143cf53a9ca4f42b8fdde185"
+        ],
+        "xdist": false
+      },
+      {
+        "name": "partial-x86-2",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/partial-x86-2-e5c9047f.json",
+        "head": "e5c9047fa87108e7723729a8005a7aa3c4c0663b",
+        "state": "verified",
+        "source_bundles": [
+          "5d2db6d1ce7eb8535c722b2a3530a44f8956561476395889f07966b6a2c599b6"
+        ],
+        "counts": {
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 0
+        },
+        "actions": [
+          "ca930d3f3be64bf8b3bbaa55099ecd05f409972948f361cd1a85d3b002f8cd73"
+        ],
+        "xdist": false
+      },
+      {
+        "name": "partial-x86-3",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/partial-x86-3-e5c9047f.json",
+        "head": "e5c9047fa87108e7723729a8005a7aa3c4c0663b",
+        "state": "verified",
+        "source_bundles": [
+          "c1352c2a97c0fad5ab54f6c0871b266e73d1b8396562d6d7e10b232a439f0e66"
+        ],
+        "counts": {
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 0
+        },
+        "actions": [
+          "21a1e6155c74e1639d2e06c3615e195867bf8085465f63de4c0f07dcbf026b4a"
+        ],
+        "xdist": false
+      },
+      {
+        "name": "partial-x86-4",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/partial-x86-4-e5c9047f.json",
+        "head": "e5c9047fa87108e7723729a8005a7aa3c4c0663b",
+        "state": "verified",
+        "source_bundles": [
+          "78bb9214c7392e938e9862947c8d5642b8535c59e0f0968f44f14c0c6b5ce26c"
+        ],
+        "counts": {
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 0
+        },
+        "actions": [
+          "6f7d0a2915618f593b9a9ba50e65cbb989f8c8e1f9e55de6e581eb0f690935c4"
+        ],
+        "xdist": true
+      },
+      {
+        "name": "partial-x86-5",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/partial-x86-5-e5c9047f.json",
+        "head": "e5c9047fa87108e7723729a8005a7aa3c4c0663b",
+        "state": "verified",
+        "source_bundles": [
+          "a79e2432c681f5cba4339ce2271e1206873d30d7c7de5d847883099a869fc48e"
+        ],
+        "counts": {
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 0
+        },
+        "actions": [
+          "459c4e4eb93ab07b5c6a17dd565678c2041953a4560eec2419503c0924871e24"
+        ],
+        "xdist": true
+      },
+      {
+        "name": "partial-gb10-1",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/partial-gb10-1-e5c9047f.json",
+        "head": "e5c9047fa87108e7723729a8005a7aa3c4c0663b",
+        "state": "verified",
+        "source_bundles": [
+          "5874291f6c96b524cb76aae15f6de43d4d80a0405d539fddc35ee2324de9acdf"
+        ],
+        "counts": {
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 0
+        },
+        "actions": [
+          "4085e2238ff7c2ef2f51fc4aecb8b3310e6c28e6a6b73007580fbb679943bcd0"
+        ],
+        "xdist": false
+      },
+      {
+        "name": "partial-gb10-2",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/partial-gb10-2-e5c9047f.json",
+        "head": "e5c9047fa87108e7723729a8005a7aa3c4c0663b",
+        "state": "verified",
+        "source_bundles": [
+          "5a5999ed2237b69ef98e647c70f9b6871699c1312e21177d74bf67c866a179ce"
+        ],
+        "counts": {
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 0
+        },
+        "actions": [
+          "da424c04d4fd0b70939bd69976b292d67de07fa952df8f0ae9bb99c5536b6974"
+        ],
+        "xdist": false
+      },
+      {
+        "name": "partial-gb10-3",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/partial-gb10-3-e5c9047f.json",
+        "head": "e5c9047fa87108e7723729a8005a7aa3c4c0663b",
+        "state": "verified",
+        "source_bundles": [
+          "38836a8fc1a22bda04aad3a6ed3a2dda2d40c380e8bd56d73c964c62e111fbc4"
+        ],
+        "counts": {
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 0
+        },
+        "actions": [
+          "7bce8ea42e0f2cc0665d0b038bad6eaf6311338277dcfc2d6cebde3cea32dba5"
+        ],
+        "xdist": false
+      },
+      {
+        "name": "partial-gb10-4",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/partial-gb10-4-e5c9047f.json",
+        "head": "e5c9047fa87108e7723729a8005a7aa3c4c0663b",
+        "state": "verified",
+        "source_bundles": [
+          "b4fb91e2d3d65888726f95a93d0baafb6347e53d9d331d11272251c3e44f1624"
+        ],
+        "counts": {
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 0
+        },
+        "actions": [
+          "92b57a6a02f5650156c64904f1953a76567d2460f33f64f0cac19aac39382dcb"
+        ],
+        "xdist": true
+      },
+      {
+        "name": "partial-gb10-5",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/partial-gb10-5-e5c9047f.json",
+        "head": "e5c9047fa87108e7723729a8005a7aa3c4c0663b",
+        "state": "verified",
+        "source_bundles": [
+          "255b8da54fe388e3a1743448494d1900fd32613db87c8fd370eac687b4a8977c"
+        ],
+        "counts": {
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 0
+        },
+        "actions": [
+          "f97f2e30e0f0f58be23b1dc82891730debc85fe73ca25199b4c3fe78f180755e"
+        ],
+        "xdist": true
+      },
+      {
+        "name": "partial-integrated",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/partial-integrated-e5c9047f.json",
+        "head": "e5c9047fa87108e7723729a8005a7aa3c4c0663b",
+        "state": "verified",
+        "source_bundles": [
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738",
+          "b6c987976efbc95edf6e45f187424674edabe0d21f693368d701a387e138e738"
+        ],
+        "counts": {
+          "passed": 1425,
+          "failed": 0,
+          "skipped": 2,
+          "deselected": 1
+        },
+        "actions": [
+          "a10224d18dea2f4debd8d2d9e53e0e8fc5843daf78d8408839bb20bad604f886",
+          "52a74775fe2733b43405825746f762e8c751b2b3f88ad62ef00c3d003e283e4d",
+          "e776a784617b0ffa09ae56db9fb4839fa94421d01f2fe849fa72892edf8e64fc",
+          "217cc089304aae0c720f4ee1fb14d1938784196f464cc990e10ea45d08b3eb2c",
+          "5141b71c9e3407c28772f83d0fa7f50dd25cb1205897a8fcea79cbe5301f8c59",
+          "7ae49a880c8f9801912a37ebf5930266b6ee9332a57069a8e9890af07cf99078",
+          "e015cc5401813f522863cdb835804be63d5a64adf1f9ba139fb9b4bc3a0a3dc5",
+          "f72216ea92469ce1faec96467a7b6f037bfa042a38368c204f739449d5f3dae5",
+          "88e810d23403cc10f2e541abbb00712c480f1552f02fa91dd8e50beb2f6d1822",
+          "d740ad9a2b024ea2b3be64e9b52c7f7aa6fa2eb62d505f709597e00f050e6acd",
+          "58f6eac836134301a42abae616d80463e75d8a575770ecbd1bf671949874103e",
+          "65c7827dc1798a3918735703c79a8036d90768999218833aa08ea0fa159e6442",
+          "48ef53841bacdfad34718d0cf24b6087474da8e9af7a801ef6947b700b580c16",
+          "432d5e649e6a34f694e82caaf834e303eee88f5ff06a0c610ee94a128dd3bfff",
+          "c28b9a248b22cdbaf292b341a751af447401ae6e7f984e2686dc919fdcc7b0a4",
+          "403ca6e738d67cc49606d787c59370a5c842d75a3e224ac3634e666c649f7f39",
+          "9beb1c2c5b2fd971313e154397506d34a74fb52cba647b62c23fa631a0d2136e",
+          "aec7e91abed7247d4e776501dbd3d5b543176b82919a1f6282f7224d25ce1afa",
+          "acd0f76f6e1e6dc2ca0fde9d83ac59ebafba50407a7d2533e78d6bb9871c3579",
+          "9dc18b2afe9d93728ab0968fdb728b27a9f54062354a9bb753f5d69642bb5310"
+        ],
+        "xdist": false
+      },
+      {
+        "name": "partial-rebase",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/partial-rebase-94724101.json",
+        "head": "94724101633fc4f125464c29aab003427c059b27",
+        "state": "verified",
+        "source_bundles": [
+          "127e1f651dca1dd15427d4e98071b5e47f3ea7523063755522723262a3906ab1",
+          "127e1f651dca1dd15427d4e98071b5e47f3ea7523063755522723262a3906ab1",
+          "127e1f651dca1dd15427d4e98071b5e47f3ea7523063755522723262a3906ab1",
+          "127e1f651dca1dd15427d4e98071b5e47f3ea7523063755522723262a3906ab1",
+          "127e1f651dca1dd15427d4e98071b5e47f3ea7523063755522723262a3906ab1",
+          "127e1f651dca1dd15427d4e98071b5e47f3ea7523063755522723262a3906ab1",
+          "127e1f651dca1dd15427d4e98071b5e47f3ea7523063755522723262a3906ab1",
+          "127e1f651dca1dd15427d4e98071b5e47f3ea7523063755522723262a3906ab1",
+          "127e1f651dca1dd15427d4e98071b5e47f3ea7523063755522723262a3906ab1",
+          "127e1f651dca1dd15427d4e98071b5e47f3ea7523063755522723262a3906ab1",
+          "127e1f651dca1dd15427d4e98071b5e47f3ea7523063755522723262a3906ab1"
+        ],
+        "counts": {
+          "passed": 196,
+          "failed": 0,
+          "skipped": 2,
+          "deselected": 1
+        },
+        "actions": [
+          "13c79a7375f9a5c483eff0a105b9e5c91f64ef20573cafce33c2d5ae9fb8edb3",
+          "36f3a537b9064adf77819e744e31577c21226464e9f4c62adb355619e342952a",
+          "61ec9b3d19ff371f9b9883c07a91c3ddfbc082037e4c4210b61437fd5e9b122a",
+          "30cbcddb5aede81268d241873b36792c15c60a47dc563876c8686be1f3b9435a",
+          "908ca2213557d58ca7fbc76e37f329e63356b21004b51fae25f03e941037dac3",
+          "b2e0195c443af61107f57b3acd0f8728456931b0e7432610b807646a8d5682dc",
+          "32b1fa6ce9534af5f4500262987de1c5bd28092cca12c15fb7999d87512bd5b1",
+          "b443b6b809618baa03ff355e0f6967f98fdf0960226115d69eb8c244df7b3947",
+          "471bef0337319c4dc5f5006dce1d21d8aaf5d0fa335f73b3cfe9df0f0d881dfc",
+          "d9f4beedcf3e22b2796294232bf847467439eca18d6aba20c3105cbc54d439d4",
+          "26ab5bd091882ba2ad28473b61234ae2c02becaa26d89eaefb36405c84b21ac0"
+        ],
+        "xdist": false
+      }
+    ],
+    "successful_actions": 41,
+    "source_bundles": 12
+  },
+  "rebase_delta": {
+    "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/partial-rebase-94724101.json",
+    "shards": 11,
+    "counts": {
+      "passed": 196,
+      "failed": 0,
+      "skipped": 2,
+      "deselected": 1
+    },
+    "failures": [],
+    "actions": [
+      {
+        "action_key": "13c79a7375f9a5c483eff0a105b9e5c91f64ef20573cafce33c2d5ae9fb8edb3",
+        "files": [
+          "tests/test_filesystem_floor_1483.py"
+        ],
+        "summary": "36 passed, 2 skipped, 1 deselected in 13.55s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "b805ff012551f614269e841018b868fa6d7ea2b12ac017aaa6cce5d43e9fad31",
+        "result_sha256": "ec94a01c818600925a82b21e24756221e654aa0e4cbc01bc053eabeb5b64405e",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "36f3a537b9064adf77819e744e31577c21226464e9f4c62adb355619e342952a",
+        "files": [
+          "tests/test_filesystem_floor_accounting_1483.py"
+        ],
+        "summary": "28 passed in 1.02s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "42080e8f1cc549a233fc4c310c9d45ab504dde20a145e5b24c5e15358521de6e",
+        "result_sha256": "0a2f1816c968868e8a5496994df1e89d2bd08855feb93b4bca676d0ed955e24a",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "61ec9b3d19ff371f9b9883c07a91c3ddfbc082037e4c4210b61437fd5e9b122a",
+        "files": [
+          "tests/test_filesystem_floor_identity_1483.py"
+        ],
+        "summary": "16 passed in 1.08s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "3d6df8e1dbb583707c9c7acf6bbaa5fb775d9f87db0cde699e212d373b763dc3",
+        "result_sha256": "fde009e4987c5caf53f607e169d7055c7de9accfb981e32b86520228618154cd",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "30cbcddb5aede81268d241873b36792c15c60a47dc563876c8686be1f3b9435a",
+        "files": [
+          "tests/test_floor_ledger_snapshot.py"
+        ],
+        "summary": "16 passed in 0.53s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "e32681a7c3adbd5581d6cddedcca9e1521fe8814e7a9a401aba08a379f139d8b",
+        "result_sha256": "d49237ccb689fe9f8e17a86af549eb92b5c4699476da331c6f972e841e79ae06",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "908ca2213557d58ca7fbc76e37f329e63356b21004b51fae25f03e941037dac3",
+        "files": [
+          "tests/test_used_filesystem_callers_2049.py"
+        ],
+        "summary": "19 passed in 2.02s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "4e5d4ca45e6a80953c09141cb06f6e592f10570c22bf831b687b0d673ddf52da",
+        "result_sha256": "e5181410013a0334cfd6bfd035d1c75a69c0fc87aa2fa51012a8d2545eb58bac",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "b2e0195c443af61107f57b3acd0f8728456931b0e7432610b807646a8d5682dc",
+        "files": [
+          "tests/test_stage_partial_floor_1483.py"
+        ],
+        "summary": "8 passed in 2.35s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "63f7fdc32587eedf5ab8bdcc6c9a0013fb16d666875b844e0bd3d08bb0319132",
+        "result_sha256": "78c678d302394d19a9d803289617fa211672477e8bb367a470297016c0beed19",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "32b1fa6ce9534af5f4500262987de1c5bd28092cca12c15fb7999d87512bd5b1",
+        "files": [
+          "tests/test_fullstack_stage_ram_chain.py"
+        ],
+        "summary": "2 passed in 1.45s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "b13ff1bea393bc098a6446dd18c9536c9da291e1d5463af3417fa51f79a81677",
+        "result_sha256": "3557b12d4c3b23e9d16b17a8d57faef483b6b2c1085c732e2e680cbeed630f3b",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "b443b6b809618baa03ff355e0f6967f98fdf0960226115d69eb8c244df7b3947",
+        "files": [
+          "tests/test_mount_latency.py"
+        ],
+        "summary": "54 passed in 1.33s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "c8ebb4b2e39442660cdcd693afbb56fff8ca1dac141147207182d046b4f25366",
+        "result_sha256": "45b2d20cd951285847c606757e0dce8fc74950f043d663e5858baad5c233ed51",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "471bef0337319c4dc5f5006dce1d21d8aaf5d0fa335f73b3cfe9df0f0d881dfc",
+        "files": [
+          "tests/test_design_doc_line_references.py"
+        ],
+        "summary": "1 passed in 0.22s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "18c83ee06dbc20794ccdfa8d58562f01cae960d5cd971bf8762ea300718a540d",
+        "result_sha256": "a625b5c22c920229c4b91ad810ad0f002d086c406875a64f1cada72f5bf45ed2",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "d9f4beedcf3e22b2796294232bf847467439eca18d6aba20c3105cbc54d439d4",
+        "files": [
+          "tests/test_duplication_baseline.py"
+        ],
+        "summary": "8 passed in 20.82s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "ac4e1a0e0c99e9f7ef65c7367ed0a33a44204316121fbb4a0130e92fd65c03fb",
+        "result_sha256": "f3fba857123e6b163f6683a08e08c9098c145fc25566d79bfda6942fb10174aa",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "26ab5bd091882ba2ad28473b61234ae2c02becaa26d89eaefb36405c84b21ac0",
+        "files": [
+          "tests/test_wire_inventory.py"
+        ],
+        "summary": "8 passed in 46.42s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "c0c581c43f4aeead34a4248b2942b4bda196904be5d72d773959f6736a4f9599",
+        "result_sha256": "acd7288ad646ac8354f2ce39b380a14f0938fb33574f0f7bfabd367a7823c5c1",
+        "logs_verified": true,
+        "terminal_verified": true
+      }
+    ]
+  },
+  "evidence_directory": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover",
+  "reproduce": [
+    {
+      "action": "6d97b1503c8efdd44653103bb76853d9250433aaf9f86f9db3a44ecd5b123448",
+      "outcome": "5 intended pre-fix admission failures"
+    },
+    {
+      "action": "f1441e2d892a622b2f711ad2e63182d82cb11e05a22a0b04d1b5348dabac43bc",
+      "outcome": "9 intended failures against pre-fix code with corrected test fixtures"
+    },
+    {
+      "action": "0569da87c88ee21808a3bd30ad430c78a32ecd01784cb2b1a76bf92155bc7357",
+      "outcome": "2 intended identity-refresh failures"
+    },
+    {
+      "action": "f188bc020c5f261afa48a63cfd6a582f81a8f349fb2b4e36af47e2586075cb97",
+      "outcome": "4 original reviewer assertions fail before repair."
+    },
+    {
+      "actions": [
+        "8e328e5261469f30428367a345cb017639d5feb9337026f8ee97423123aad377",
+        "a1b9aec06b276b0ffbcf2b595946152d0568de330eaa26b9869dae2d2dda3024"
+      ],
+      "outcome": "Expanded pre-fix coverage: 18 failed, 16 passed. Both boot and namespace boundaries included."
+    },
+    {
+      "action": "119c317ff02c91b71924d22d8953b69228c48bae121a06155342e1c7953c04d6",
+      "outcome": "Positive RAM route fails on historical reviewed source at tmpfs registration."
+    },
+    {
+      "action": "ca60e0a4aead6f05af702cbc8ee1ffb2145597fc977817e7e98da1097bdfd5d7",
+      "outcome": "Historical round-3 reviewer reproduction: 1 failed and 1 passed; actual temporary bypasses the floor."
+    },
+    {
+      "action": "2e5d79007474ce734bf77ce5c943ee41c0f210b31ae1aa5ea1bfb3b9dcc8c1bd",
+      "outcome": "New pre-fix CLI matrix: 4 failed denial routes, 4 passing controls; stage/RAM and initial/retry covered. Verified failed terminal/log/cleanup evidence, no success CAS receipt."
+    }
+  ],
+  "integrated": {
+    "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/partial-integrated-e5c9047f.json",
+    "shards": 20,
+    "counts": {
+      "passed": 1425,
+      "failed": 0,
+      "skipped": 2,
+      "deselected": 1
+    },
+    "failures": [],
+    "actions": [
+      {
+        "action_key": "a10224d18dea2f4debd8d2d9e53e0e8fc5843daf78d8408839bb20bad604f886",
+        "files": [
+          "tests/test_a_declared_container_image_is_sealed_and_checked.py",
+          "tests/test_infeasible_future_leader_does_not_starve_window_1772.py",
+          "tests/test_prewarm_rollout.py",
+          "tests/test_the_prewarm_loop_follows_the_queues_own_claim_order.py"
+        ],
+        "summary": "41 passed in 3.22s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "a0fc88d932454f23043e7c8f06ac0d595eb32651f5c3138e48e8d3411a192edf",
+        "result_sha256": "a1a81a30f016aed8f971a35512847ae66ad3d4c76c815f6d5b5321c64d4b384e",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "52a74775fe2733b43405825746f762e8c751b2b3f88ad62ef00c3d003e283e4d",
+        "files": [
+          "tests/test_a_divergent_staged_copy_never_loops_its_mover.py",
+          "tests/test_local_resident_adoption.py",
+          "tests/test_produced_output_public_vocabulary.py",
+          "tests/test_the_prewarm_loop_follows_the_running_actions_progress.py"
+        ],
+        "summary": "46 passed in 13.16s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "b0965953b84b506b7e46a1deed3fcf22ffe2ff2d2ac5ce7138898bec42a29ed4",
+        "result_sha256": "816d1207e8aae5915c9b8c1ed7bb6d3b16c796b7fff55ec64face642cb5cc8f4",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "e776a784617b0ffa09ae56db9fb4839fa94421d01f2fe849fa72892edf8e64fc",
+        "files": [
+          "tests/test_a_mover_stages_the_range_it_declared_and_no_more.py",
+          "tests/test_local_resident_commands.py",
+          "tests/test_produced_output_restage.py",
+          "tests/test_the_prewarm_loop_leaves_claimed_work_alone.py"
+        ],
+        "summary": "59 passed in 71.80s (0:01:11)",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "2846b3d1e8499a9653e4f8ec3df93c1c621c2e4a874fcfdf7c025e20b9c25f4e",
+        "result_sha256": "bf6b991201376317f268465dc7b5e626307fd17c0a027a54c83e2ea457d2f863",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "217cc089304aae0c720f4ee1fb14d1938784196f464cc990e10ea45d08b3eb2c",
+        "files": [
+          "tests/test_a_mover_warms_the_range_it_staged.py",
+          "tests/test_local_resident_dispatch.py",
+          "tests/test_produced_spool.py",
+          "tests/test_the_prewarm_loop_refuses_a_row_that_does_not_fit.py"
+        ],
+        "summary": "35 passed in 10.28s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "b2987d63116d6b50e6b73a87b2f7e577b4d3d74b3b588f58bb64567f39dd6310",
+        "result_sha256": "e8ed5ab884e57565f4ea66b419032a371701c9460c43151287765e1691f58806",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "5141b71c9e3407c28772f83d0fa7f50dd25cb1205897a8fcea79cbe5301f8c59",
+        "files": [
+          "tests/test_a_promotion_handoff_defers_its_source_retirement.py",
+          "tests/test_local_resident_lifecycle.py",
+          "tests/test_produced_spool_host_window.py",
+          "tests/test_the_prewarm_loop_skips_a_released_origin_consumer.py"
+        ],
+        "summary": "47 passed in 4.43s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "820464cf61241328a2c6313acb17857f7e09fc0817c88170fb92af4f78df3b71",
+        "result_sha256": "02378830c64aa274d783771ad636b442a9ad1096d4fc6cc307f848f301b6170a",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "7ae49a880c8f9801912a37ebf5930266b6ee9332a57069a8e9890af07cf99078",
+        "files": [
+          "tests/test_a_promotion_handoff_defers_the_source_retirement.py",
+          "tests/test_local_resident_locking.py",
+          "tests/test_produced_spool_paced_export.py",
+          "tests/test_the_prewarm_loop_stops_for_a_terminal_consumer.py"
+        ],
+        "summary": "70 passed, 2 warnings in 35.66s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "2d229dde3e078ffbbdb56897169e36add14835d35d719e8f491567f40d8adb5b",
+        "result_sha256": "c4775445a9acd681b3787086d53cb45a64acca6b8b4ba2083ee65e05beb2e47e",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "e015cc5401813f522863cdb835804be63d5a64adf1f9ba139fb9b4bc3a0a3dc5",
+        "files": [
+          "tests/test_a_reserved_range_is_not_resident_until_published.py",
+          "tests/test_local_resident_metadata.py",
+          "tests/test_queue_bell_watch_lifecycle.py",
+          "tests/test_the_prewarm_loop_warms_more_than_one_row_when_they_fit.py"
+        ],
+        "summary": "28 passed in 2.51s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "ec8a9e4270e48ed1a8b165a3fb7288e200971f79fa05442b13672a5d34e671ae",
+        "result_sha256": "f425dd19a8ea5dce9dc587e463774aaf896b6497b1284ed145f13e84d4ac230f",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "f72216ea92469ce1faec96467a7b6f037bfa042a38368c204f739449d5f3dae5",
+        "files": [
+          "tests/test_a_residency_map_names_bytes_a_mover_verified.py",
+          "tests/test_local_resident_mover.py",
+          "tests/test_reader_lease_lifetime.py",
+          "tests/test_the_prewarm_loop_windows_a_manifest_larger_than_the_arc.py"
+        ],
+        "summary": "107 passed in 3.88s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "468dc791ec89fd33fdb2f85cbc81e2081acffe650b1b40802b5066cc90b5c90e",
+        "result_sha256": "c1a0baf0e33289b9a022bb1ea8301271735634979a0b7c2d36fde76184e50e59",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "88e810d23403cc10f2e541abbb00712c480f1552f02fa91dd8e50beb2f6d1822",
+        "files": [
+          "tests/test_advance_needs_names_its_fence_target.py",
+          "tests/test_local_resident_space_isolation.py",
+          "tests/test_resource_scope.py",
+          "tests/test_the_prewarm_loop_windows_a_manifest_that_declares_no_phases.py"
+        ],
+        "summary": "40 passed in 2.08s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "4823b4e8d658169ab9ccacfbf7cd605ec86482aad45713b8cb374bdfbe39f6fe",
+        "result_sha256": "c5f0ed3a75f18a0f41ab1d4545df028ea51c8a5708f284d21b1ba87c678b762c",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "d740ad9a2b024ea2b3be64e9b52c7f7aa6fa2eb62d505f709597e00f050e6acd",
+        "files": [
+          "tests/test_client_logical_request_validation.py",
+          "tests/test_local_resident_stage2.py",
+          "tests/test_runtime_capture_source_binding.py",
+          "tests/test_the_prewarm_pacer_does_not_hold_against_the_action_it_serves.py"
+        ],
+        "summary": "68 passed in 3.38s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "f798a58d9fd1eda07cb76f2676e1bcc40bf6cad571bcc57caf3af15c2583092e",
+        "result_sha256": "440860be788710888df0c533e251f68ffdbd9c6aba8cfc40f0789aef71d99277",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "58f6eac836134301a42abae616d80463e75d8a575770ecbd1bf671949874103e",
+        "files": [
+          "tests/test_client_sdk_surface.py",
+          "tests/test_local_scratch_core_recipes.py",
+          "tests/test_runtime_source_pin.py",
+          "tests/test_the_prewarm_pacer_holds_only_when_a_client_is_reading.py"
+        ],
+        "summary": "225 passed in 9.65s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "986395250e237241f3972f5054f049577057c6e9df92e775d6f1feaac21a2365",
+        "result_sha256": "4118bed4a3ca9c334a73e8c60c380fe488d8780ec47c6c56dab58479c238c58a",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "65c7827dc1798a3918735703c79a8036d90768999218833aa08ea0fa159e6442",
+        "files": [
+          "tests/test_container_image_inventory.py",
+          "tests/test_local_scratch_decorated_refusals.py",
+          "tests/test_scratch_lifetime_sdk_contract.py",
+          "tests/test_the_prewarm_reader_is_paced_by_the_disks.py"
+        ],
+        "summary": "125 passed in 6.97s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "2cbb9c186081a4299a72dbb6f5e404f7ed1065bd45cd8ba699a377fc4a564ce9",
+        "result_sha256": "aef9b43ee9115e346b9d05e93d78be202755a689432f58056a52c16424687d9d",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "48ef53841bacdfad34718d0cf24b6087474da8e9af7a801ef6947b700b580c16",
+        "files": [
+          "tests/test_design_doc_line_references.py",
+          "tests/test_local_scratch_host_kind.py",
+          "tests/test_scratch_lifetime_selection.py",
+          "tests/test_used_filesystem_callers_2049.py"
+        ],
+        "summary": "82 passed in 6.36s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "31252b3298b0e0c56a8eabca11a0e526958ee114fe774b98af131a06f13f51b0",
+        "result_sha256": "742bb179441426d2bae816481218d5d0702be1045b1bd9f8cd310e2afa9322d7",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "432d5e649e6a34f694e82caaf834e303eee88f5ff06a0c610ee94a128dd3bfff",
+        "files": [
+          "tests/test_duplication_baseline.py",
+          "tests/test_local_scratch_measured_placement.py",
+          "tests/test_stage_coverage_handoff_2197.py",
+          "tests/test_wire_inventory.py"
+        ],
+        "summary": "121 passed in 97.10s (0:01:37)",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "eba77f1883935276821c562672c348c25741750c67b16d01ae5b4198dfafa47c",
+        "result_sha256": "8c3dc06a98c8d2effe3f67c06f00f0e5be3edd913c47281d7be300717a98ad9d",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "c28b9a248b22cdbaf292b341a751af447401ae6e7f984e2686dc919fdcc7b0a4",
+        "files": [
+          "tests/test_filesystem_floor_1483.py",
+          "tests/test_local_scratch_retained_review_boundaries.py",
+          "tests/test_stage_partial_floor_1483.py"
+        ],
+        "summary": "53 passed, 2 skipped, 1 deselected in 19.86s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "0221f2af29f07f782626b28bce112719e139488c4d7684a86e0bab3db40985c0",
+        "result_sha256": "938eecf94a2d1932bbef566005bea51f9b0bdab81cea0f53c776f66428f4672d",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "403ca6e738d67cc49606d787c59370a5c842d75a3e224ac3634e666c649f7f39",
+        "files": [
+          "tests/test_filesystem_floor_accounting_1483.py",
+          "tests/test_pbtest_selection_index_1551.py",
+          "tests/test_submission_review_boundaries.py"
+        ],
+        "summary": "60 passed in 5.56s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "792fc133d4e93182e5e11f3689287e12f4b0c7b4c4727b75ec59f150aa4fd9ed",
+        "result_sha256": "196487e28b69d04450d7f51001599c5d3278d0089fbd714476142f03fd15da60",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "9beb1c2c5b2fd971313e154397506d34a74fb52cba647b62c23fa631a0d2136e",
+        "files": [
+          "tests/test_filesystem_floor_identity_1483.py",
+          "tests/test_prewarm_defers_to_tier_planner.py",
+          "tests/test_submission_review_lifetimes.py"
+        ],
+        "summary": "27 passed in 3.91s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "4b5bc12f842b8b27d77a60be8ed9319946b9db7c0f047d326c22bc45ffc2daf8",
+        "result_sha256": "f6787ab2ad4cafc89c10dd15079c17d6b9686e7c533dc5b60a5fe09b9ef61bb1",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "aec7e91abed7247d4e776501dbd3d5b543176b82919a1f6282f7224d25ce1afa",
+        "files": [
+          "tests/test_fleet_tool_flags_have_help.py",
+          "tests/test_prewarm_pool_contract.py",
+          "tests/test_supervisor_declares_the_spool_budget.py"
+        ],
+        "summary": "145 passed in 4.37s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "56aab844bd8f6e8e74018f5e91ebe218312904265e054efb0deabe7061970af7",
+        "result_sha256": "4951d9decf6edc987a88debec240381acc522690215d628aaf367d3b436db5cb",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "acd0f76f6e1e6dc2ca0fde9d83ac59ebafba50407a7d2533e78d6bb9871c3579",
+        "files": [
+          "tests/test_floor_ledger_snapshot.py",
+          "tests/test_prewarm_receipt_recovery.py",
+          "tests/test_the_prewarm_cycle_names_whose_reads_it_paced.py"
+        ],
+        "summary": "33 passed in 5.67s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "03d9cff0cc9f97f6703660ed3023a975408afef50ef4b2b756eb21eddfb338b1",
+        "result_sha256": "211b91a6b291f6d3657c2eb23f5ae5658f1c9a61fe141a290767075b43590680",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "9dc18b2afe9d93728ab0968fdb728b27a9f54062354a9bb753f5d69642bb5310",
+        "files": [
+          "tests/test_fullstack_stage_ram_chain.py",
+          "tests/test_prewarm_requires_known_receipts.py",
+          "tests/test_the_prewarm_loop_boots_from_the_published_generation.py"
+        ],
+        "summary": "13 passed in 10.17s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "536d8c6c185a24886d0ac7d121737cdda4deed454c70a56866df1b9452ce3c91",
+        "result_sha256": "0ca1e07cf0a75ffa4f2f9d4a49dbe8b80743d04d7766991b4229a493fb4b6d93",
+        "logs_verified": true,
+        "terminal_verified": true
+      }
+    ]
+  },
+  "historical_source_acceptance": {
+    "commit": "4c0b7511c8e341e327ad98551b4a35df0ced0f79",
+    "path": "docs/evidence/issue1483_source_acceptance_2026-10-26.json",
+    "sha256": "8b7a5527bc5b6d89c1e25efd17e5ec1d4c2f27ea96349f661029095c852dcfce",
+    "attachment": "/api/attachments/ee400308-e27d-40fb-9840-9513ab00f8fb/content",
+    "note": "The prior source qualification and exact-main guard failures remain historical evidence. They do not qualify the takeover repairs."
+  },
+  "ledger_source_note": "ledger_commit identifies the qualified inherited ledger; this evidence commit updates only its five scoped_repair_1483 entries. Whole-requirement axes are unchanged; ledger_sha256 binds the resulting bytes.",
+  "ledger_sha256": "2d51094c16b2a8c3337e39d0c79fcee3ef7c4530e51368ddbacf77a88137b7cc",
+  "retained_failed_pilots": [
+    {
+      "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/focus-0658ef3a.evidence.json",
+      "counts": {
+        "passed": 33,
+        "failed": 1,
+        "skipped": 0,
+        "deselected": 0
+      },
+      "actions": [
+        "5ce67209c800fa2e73095d9be44ef30f9e58610d1e66ba9f859904fd39432fc8",
+        "90dd0e3962a39b34797e8947b35659b3f0e2fc94a98eee83bf10f8a22b9c6be1"
+      ],
+      "reason": "Incorrect partial-copy test state expectation, corrected to preserve recoverable copying state."
+    },
+    {
+      "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/ram-positive-x86-1-73679132.evidence.json",
+      "counts": {
+        "passed": 15,
+        "failed": 1,
+        "skipped": 0,
+        "deselected": 0
+      },
+      "actions": [
+        "18f96571df2355679932d60897063ac9664bc9b577352f67a8fc63a14ed8d9ee"
+      ],
+      "reason": "Positive-route direct call omitted the CLI-supplied residency root, corrected in test only."
+    },
+    {
+      "report": "/mnt/shared/paperclip-runs/PRI-36/principal-takeover/ram-positive-gb10-1-73679132.evidence.json",
+      "counts": {
+        "passed": 15,
+        "failed": 1,
+        "skipped": 0,
+        "deselected": 0
+      },
+      "actions": [
+        "659d55c777e8c9eecbecf3dc3ecf6ed9b8b724166ea9e442d31eebeaa8c9aa81"
+      ],
+      "reason": "Positive-route direct call omitted the CLI-supplied residency root, corrected in test only."
+    }
+  ],
+  "historical_takeover_source_acceptance": {
+    "commit": "0e7923635769562421d0eed5f7d629c7be42a43b",
+    "remote_tree_equivalent_head": "1d1b534fcdac3527555e7fd68772345a92c7b284",
+    "path": "docs/evidence/issue1483_source_acceptance_2026-10-26.json",
+    "sha256": "d63e68ead4cfa0dde739603b41e77dd01b548e8c0615887b51b75d8f4e60ab79",
+    "attachment": "/api/attachments/ec7d92af-b3b6-4215-ba03-56b518e57ed5/content",
+    "note": "Historical round-2 takeover qualification. It misses the retained temporary; the new qualification below supersedes that gap."
+  },
+  "artifact_verifier": {
+    "path": "docs/evidence/issue1483_verify_2026-10-26.py",
+    "argv": [
+      "python3",
+      "docs/evidence/issue1483_verify_2026-10-26.py",
+      "/mnt/shared/paperclip-runs/PRI-36/principal-takeover",
+      "--partial"
+    ],
+    "historical_mode": "Omit --partial to verify the retained round-2 takeover matrix."
+  }
+}

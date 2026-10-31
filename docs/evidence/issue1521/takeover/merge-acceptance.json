@@ -1,0 +1,375 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "e57b7a3c160f95f9b8da90337b3ed93b021d96d7",
+  "scope": [
+    "SC-01",
+    "ID-02",
+    "ID-08",
+    "ID-09",
+    "SM-01",
+    "INV-08",
+    "SAFE-03",
+    "ACC-01",
+    "ACC-02"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1521-pri47",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1521",
+    "source_head": "85fa57bb7194afe9562193a7368d2e3a403a9293",
+    "repair_source_head": "affe5b27eedd8e2ac55e9b07e52ad7b64e0e1db8",
+    "status": "source qualification complete; independent review and batch merge pending",
+    "validated_repairs": [
+      {
+        "id": "ACC-02",
+        "actions": [
+          "6a74feb6d4c909c2bb8fb5b0a06349eab94d89b51bcb65ef3050a8e1fed5b7cc",
+          "dde22fce1c7ab1c69f9c4997184d774b0c50de0602cb8c57652918dea18a5f89",
+          "d2e39cde2a0b61b7741a9294d7130f3e46efe38e691d24160f0a62133f70f1fb",
+          "2b74073b0dd4465f2c311ac7664f12f3a17b2706b2153c5c9ae2ecb6b3d936a0",
+          "3262f79c304a6265e8eee8ccac29e94ec19cb60bde85ae84104622a0e6946c54",
+          "fb7f572d3fe78a0f23b3f03ea02d690708201d8a8b0d65e8f2dc63ae25e57f01",
+          "8175a559f3287f7541ccd8f5e8fed1e17d5bf5aee0da54027bb9953cc66d9233",
+          "5c1a9886e4688f39091f17c83e9fe845338e32cfc18872b341204d26952513fb",
+          "56206002dd3175fb5b33d495e3c068aec918e1c9ecdd1179a1662d94b65e2960",
+          "4759b241dc6bd7370220ad915309050bf6bafc5112f099f0482a4a7fef78a432",
+          "2abca1a7c51d971cdc6e2d4d572c9c96e1969a9e364dc5cca50fdc95fd957cad",
+          "93447a335e2cf34d160374eb2de431a325629e9511b658f4d777b7cdd048d423",
+          "161de394f3e5b409bd54057177d387e10922bbb25a3a0fb991a02042cccf784c",
+          "b92572b39601190345c75cc7eac6aad1261c39612b53bb1a2c028f0e2e5cf106",
+          "9af0b611d0aeaa5adf10ff601d72894519d12f3a29fd0b42459200e7037bf886",
+          "81c212e1f7bf4aad27496c64feda23611c171fa8d13dde3e60c162d3e79b2b31",
+          "3292922959505ef77b09452d9c08e63c2deee8e15a594bdf8948be04325d1e1a",
+          "c37c7c8f589cac3cdc0c684976315b317897e7ce52fb34b4f9cc4adeef01cf99",
+          "62f41544aadd84231e67a2e5c8af8067118095dae9bf88f4515bfdd082908114"
+        ],
+        "outcome": "executed, exit 0; 553 native executions, zero skips; canonical receipts below",
+        "receipts": [
+          {
+            "action_key": "6a74feb6d4c909c2bb8fb5b0a06349eab94d89b51bcb65ef3050a8e1fed5b7cc",
+            "receipt_sha256": "0017cfa550204fab89fd1e29c38283c198980c8ce8a1926e0b84cf7e62570256"
+          },
+          {
+            "action_key": "dde22fce1c7ab1c69f9c4997184d774b0c50de0602cb8c57652918dea18a5f89",
+            "receipt_sha256": "06dfce98c6043c8c192942b66357e8f02ae7c5f6c1aae154c49769c279f3d594"
+          },
+          {
+            "action_key": "d2e39cde2a0b61b7741a9294d7130f3e46efe38e691d24160f0a62133f70f1fb",
+            "receipt_sha256": "b8137ad9318e79a9623680ed07f43d803200fa6bc7f91af2de1acc66e2727325"
+          },
+          {
+            "action_key": "2b74073b0dd4465f2c311ac7664f12f3a17b2706b2153c5c9ae2ecb6b3d936a0",
+            "receipt_sha256": "2011fbd8aa2ad9f5f42ce0ea6dbfe9e740e1e3d256021b4030aa8d6589f81d6f"
+          },
+          {
+            "action_key": "3262f79c304a6265e8eee8ccac29e94ec19cb60bde85ae84104622a0e6946c54",
+            "receipt_sha256": "1842697740a70b32938af1f239005c1e1b94cee6d06388792f4c3cee0d4e95fd"
+          },
+          {
+            "action_key": "fb7f572d3fe78a0f23b3f03ea02d690708201d8a8b0d65e8f2dc63ae25e57f01",
+            "receipt_sha256": "e8e2f104d3aa0c236efd88e998f2ba9de8178153fb7f1bf8a38923e3df135abe"
+          },
+          {
+            "action_key": "8175a559f3287f7541ccd8f5e8fed1e17d5bf5aee0da54027bb9953cc66d9233",
+            "receipt_sha256": "17247b43a033f0415bd144255177e54dbd7a2052ee9d145b3a56cdbb3be9586b"
+          },
+          {
+            "action_key": "5c1a9886e4688f39091f17c83e9fe845338e32cfc18872b341204d26952513fb",
+            "receipt_sha256": "b5a9677a9b4f4f69a47a32a2b0ef4b371dd146ead454fabbe0489b0d76c932a2"
+          },
+          {
+            "action_key": "56206002dd3175fb5b33d495e3c068aec918e1c9ecdd1179a1662d94b65e2960",
+            "receipt_sha256": "383be2c1300a575e3ef4b0fb04f84f82014c1b48eafa9390372b1bc456046ab0"
+          },
+          {
+            "action_key": "4759b241dc6bd7370220ad915309050bf6bafc5112f099f0482a4a7fef78a432",
+            "receipt_sha256": "e1d0de0e5cbd89ee3df80185f9326e80de9b63076acf8e8a4bcfe5229b056a2f"
+          },
+          {
+            "action_key": "2abca1a7c51d971cdc6e2d4d572c9c96e1969a9e364dc5cca50fdc95fd957cad",
+            "receipt_sha256": "720fc5786993f3eae4270b0b3cfc10506c7498a8b3858f9b71d61423ab02f757"
+          },
+          {
+            "action_key": "93447a335e2cf34d160374eb2de431a325629e9511b658f4d777b7cdd048d423",
+            "receipt_sha256": "9218cb8e42d02c0b519d997da11490067b8e46fbf6e7341622ab7881c9b60cca"
+          },
+          {
+            "action_key": "161de394f3e5b409bd54057177d387e10922bbb25a3a0fb991a02042cccf784c",
+            "receipt_sha256": "af5cac2666d1040fe6837953ef18dbebc5acd6376fd8921a888e547ffc55e0b4"
+          },
+          {
+            "action_key": "b92572b39601190345c75cc7eac6aad1261c39612b53bb1a2c028f0e2e5cf106",
+            "receipt_sha256": "d1d53499122f0a5182a7dc486ed6722bfdb037d02467508135e8e8e1d98851d1"
+          },
+          {
+            "action_key": "9af0b611d0aeaa5adf10ff601d72894519d12f3a29fd0b42459200e7037bf886",
+            "receipt_sha256": "4138a8d80c15895df352c615fa3e3923c07a6de0b04596b2361fab420b0b0ea8"
+          },
+          {
+            "action_key": "81c212e1f7bf4aad27496c64feda23611c171fa8d13dde3e60c162d3e79b2b31",
+            "receipt_sha256": "669928b5f61269af563725627a16de0801f40c6db06bb3da93a71e30bfce5f8e"
+          },
+          {
+            "action_key": "3292922959505ef77b09452d9c08e63c2deee8e15a594bdf8948be04325d1e1a",
+            "receipt_sha256": "1247ec89dbb6e9955c26104f25dc3b16e633887f2a0fbcaca7772320887db08b"
+          },
+          {
+            "action_key": "c37c7c8f589cac3cdc0c684976315b317897e7ce52fb34b4f9cc4adeef01cf99",
+            "receipt_sha256": "e155ea9cc530a2ead121b101e9532a670e86c7bdbefbaf29a7f4d195985667ab"
+          },
+          {
+            "action_key": "62f41544aadd84231e67a2e5c8af8067118095dae9bf88f4515bfdd082908114",
+            "receipt_sha256": "ea1d37f0873dd776dd65baa1eb5078e5f8cca5022fa73c2009c7643ca07d7a6c"
+          }
+        ]
+      }
+    ],
+    "remaining_gaps": [
+      "Fresh independent Engineer23 Standards/Spec review of the published head.",
+      "PRI-128 composition validation, required provider checks and up-to-date merge branch.",
+      "#1521 item 1 and general starvation remain native child #2343.",
+      "All global requirement gaps retained in requirement_status."
+    ],
+    "note": "Scoped source-merge evidence only. This record is not an approval, batch merge, deployment or campaign-completion verdict."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "requirement_status": {
+    "SC-01": {
+      "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+      "target_enforcement": null,
+      "ledger_implementation": {
+        "commit": "PB:ca0f5555",
+        "path": "src/prismabuild/pool.py claim/admission paths",
+        "state": "yes"
+      },
+      "ledger_deployment": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "ledger_validation": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "ledger_workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "scoped_implementation": "Numeric ownership refactor at affe5b27, integrated with retained published ancestry at 85fa57bb. No predicate or source-default change.",
+      "scoped_validation": "Component evidence only: 28 actions / 480 executions on repair; 19 actions / 553 executions on integrated source.",
+      "scoped_deployment": "not performed",
+      "remaining_target": "Whole-requirement satisfaction is not established; all proposed and unknown obligations remain owed."
+    },
+    "ID-02": {
+      "target": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
+      "target_enforcement": null,
+      "ledger_implementation": {
+        "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
+        "path": "src/prismabuild/pool.py nonce/scope plumbing; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",
+        "state": "yes"
+      },
+      "ledger_deployment": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "ledger_validation": {
+        "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
+        "state": "partial"
+      },
+      "ledger_workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "scoped_implementation": "Numeric ownership refactor at affe5b27, integrated with retained published ancestry at 85fa57bb. No predicate or source-default change.",
+      "scoped_validation": "Component evidence only: 28 actions / 480 executions on repair; 19 actions / 553 executions on integrated source.",
+      "scoped_deployment": "not performed",
+      "remaining_target": "Whole-requirement satisfaction is not established; all proposed and unknown obligations remain owed."
+    },
+    "ID-08": {
+      "target": "Behavior attributed per (runtime_commit, generation_id).",
+      "target_enforcement": null,
+      "ledger_implementation": {
+        "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
+        "path": "runtime generation link; worker attestations; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",
+        "state": "yes"
+      },
+      "ledger_deployment": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): Offers from sparky, sparklina and dl380g10 announced runtime_commit 81d95cba8d91 at 1790169703 and a0fdcd2f7482 from 1790171012 to 1790171023 (13:43Z); the dl380g10 tier role runs the a0fdcd2f7482-1790170897-121d887b4732 tree; DESKTOP-P5UOGNJ is offline (PB#900) and stale on a80eea97.",
+        "state": "partial"
+      },
+      "ledger_validation": {
+        "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
+        "state": "partial"
+      },
+      "ledger_workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "scoped_implementation": "Numeric ownership refactor at affe5b27, integrated with retained published ancestry at 85fa57bb. No predicate or source-default change.",
+      "scoped_validation": "Component evidence only: 28 actions / 480 executions on repair; 19 actions / 553 executions on integrated source.",
+      "scoped_deployment": "not performed",
+      "remaining_target": "Whole-requirement satisfaction is not established; all proposed and unknown obligations remain owed."
+    },
+    "ID-09": {
+      "target": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
+      "target_enforcement": "application-side validity gate on campaign outputs",
+      "ledger_implementation": {
+        "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:cd7e1b97e5dc (#831) reads a generation's ending from its immutable attempts; 44098612105d (#887) counts a claim whose finish is in flight as outstanding.",
+        "path": "src/prismabuild/pool.py terminal records + CAS receipts (a-c); (d) application-side, referenced",
+        "state": "partial"
+      },
+      "ledger_deployment": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): #831 and #887 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs).",
+        "state": "yes"
+      },
+      "ledger_validation": {
+        "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0 attests a-c for its own record 2026-09-23 update (snapshot 13:50Z): #831 fail-before 6a8645b2e7f4 (9 failed), green 79adabbb74f9 (11 passed), 838c1c51a36d (185 passed).",
+        "state": "partial"
+      },
+      "ledger_workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "scoped_implementation": "Numeric ownership refactor at affe5b27, integrated with retained published ancestry at 85fa57bb. No predicate or source-default change.",
+      "scoped_validation": "Component evidence only: 28 actions / 480 executions on repair; 19 actions / 553 executions on integrated source.",
+      "scoped_deployment": "not performed",
+      "remaining_target": "Whole-requirement satisfaction is not established; all proposed and unknown obligations remain owed."
+    },
+    "SM-01": {
+      "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
+      "target_enforcement": "new gated transitions (lease-gated running, publication-success terminal, policy withdrawal)",
+      "ledger_implementation": {
+        "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:58bed81e040e (#794), cd7e1b97e5dc (#831), 44098612105d (#887) deployed; 5e0bdc037537 (#953), a12de512c6a0 (#962), f5ae2a06efc9 (#969) merged, not deployed",
+        "path": "src/prismabuild/pool.py ready/claimed/done/failed/withdrawn dirs + claim records (new read/lease-gated transitions absent)",
+        "state": "partial"
+      },
+      "ledger_deployment": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): #794, #831 and #887 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs); #953, #962 and #969 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
+        "state": "yes"
+      },
+      "ledger_validation": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): #831 fail-before 6a8645b2e7f4 (9 failed), green 79adabbb74f9 (11 passed) and 838c1c51a36d; #953 base 1bbf66324c08 (5 failed), head e0ebafc1cbd9 (3333 passed); #962 head fc58a8f0de58 (12/12 shards, 5381 passed); #969 red c6a01dc82d3f (4 failed). Component tests only; no lifecycle-wide conformance run. 2026-09-27 (#964, branch maintenance/964-20260927): the claim-side release fence now confirms a released key's index under the key's transition lock, so a ready row whose scan listed the index before the entry is refused by name (origin_consumer_released) instead of claimed; entry-without-record still reads as no release and unreadable evidence still denies as unknown. Component validation only: focused 7/7 shards green (45 passed), final-source race 3 passed and supervisor/spool 41 passed, adjacent sweep 15/16 shards green (5370 tests). No deployment and no lifecycle-wide conformance run; older running generations keep the window until adoption. Scoped record: docs/evidence/issue964_release_claim_fence_acceptance_2026-09-27.json.",
+        "state": "partial"
+      },
+      "ledger_workload_proof": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) was withdrawn from claimed by rob@sparky; the record is pb-queue/withdrawn/683cb3caa5ea....json. That exercises one transition on a real campaign; the other transitions have no workload record.",
+        "state": "partial"
+      },
+      "scoped_implementation": "Numeric ownership refactor at affe5b27, integrated with retained published ancestry at 85fa57bb. No predicate or source-default change.",
+      "scoped_validation": "Component evidence only: 28 actions / 480 executions on repair; 19 actions / 553 executions on integrated source.",
+      "scoped_deployment": "not performed",
+      "remaining_target": "Whole-requirement satisfaction is not established; all proposed and unknown obligations remain owed."
+    },
+    "INV-08": {
+      "target": "Retries never double-count; adoption verifies identity/trust without recompute.",
+      "target_enforcement": "PQ journal re-verify execution proof",
+      "ledger_implementation": {
+        "commit": "PB:ca0f5555 + PQ:95dbb24a",
+        "path": "src/prismabuild/pool.py attempt nonces; PQ checkpoint journal re-verify grammar (referenced, not re-read)",
+        "state": "partial"
+      },
+      "ledger_deployment": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "ledger_validation": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "ledger_workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "scoped_implementation": "Numeric ownership refactor at affe5b27, integrated with retained published ancestry at 85fa57bb. No predicate or source-default change.",
+      "scoped_validation": "Component evidence only: 28 actions / 480 executions on repair; 19 actions / 553 executions on integrated source.",
+      "scoped_deployment": "not performed",
+      "remaining_target": "Whole-requirement satisfaction is not established; all proposed and unknown obligations remain owed."
+    },
+    "SAFE-03": {
+      "target": "No false complete: terminal record plus CAS receipt attest exit 0 and PB's own records only; payload-identity verification is the application consumer's gate, never attested by terminal success.",
+      "target_enforcement": null,
+      "ledger_implementation": {
+        "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:d1e217607942 (#957) records every skip's node ID and reason; d3c6b4241e86 (#967) reconciles each shard's outcomes with its collection by node ID.",
+        "path": "src/prismabuild/pool.py terminal + CAS receipt publication rules",
+        "state": "yes"
+      },
+      "ledger_deployment": {
+        "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0 2026-09-23 update (snapshot 13:50Z): #957 and #967 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
+        "state": "yes"
+      },
+      "ledger_validation": {
+        "detail": "single admitted CPU repro attests PB-side rule only 2026-09-23 update (snapshot 13:50Z): #957 c749c91fcae9, cfb88c896310 (20 passed), 37-file set 35bedc758b9c (549 passed); #967 b31c34b551fd (567 passed), PQ full suite 63ebbe7e42cf and 39 more shards.",
+        "state": "partial"
+      },
+      "ledger_workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "scoped_implementation": "Numeric ownership refactor at affe5b27, integrated with retained published ancestry at 85fa57bb. No predicate or source-default change.",
+      "scoped_validation": "Component evidence only: 28 actions / 480 executions on repair; 19 actions / 553 executions on integrated source.",
+      "scoped_deployment": "not performed",
+      "remaining_target": "Whole-requirement satisfaction is not established; all proposed and unknown obligations remain owed."
+    },
+    "ACC-01": {
+      "target": "Schema plus real-producer parser fixtures incl. gzip/path/serialization variants.",
+      "target_enforcement": "new: PQ parser-fixture suite incl. gzip/path/serialization negatives",
+      "ledger_implementation": {
+        "commit": null,
+        "path": null,
+        "state": "no"
+      },
+      "ledger_deployment": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "ledger_validation": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "ledger_workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "scoped_implementation": "Numeric ownership refactor at affe5b27, integrated with retained published ancestry at 85fa57bb. No predicate or source-default change.",
+      "scoped_validation": "Component evidence only: 28 actions / 480 executions on repair; 19 actions / 553 executions on integrated source.",
+      "scoped_deployment": "not performed",
+      "remaining_target": "Whole-requirement satisfaction is not established; all proposed and unknown obligations remain owed."
+    },
+    "ACC-02": {
+      "target": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
+      "target_enforcement": "new: PB lifecycle/race suite incl. staged-lease races",
+      "ledger_implementation": {
+        "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+        "path": "tests/test_reader_lease_lifetime.py: rename/publish ordering, simultaneous egress, refcount double-acquire, retiring generations, epoch ABA, malformed taint, namespace isolation, promotion cover proof",
+        "state": "partial"
+      },
+      "ledger_deployment": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "ledger_validation": {
+        "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
+        "state": "partial"
+      },
+      "ledger_workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "scoped_implementation": "Numeric ownership refactor at affe5b27, integrated with retained published ancestry at 85fa57bb. No predicate or source-default change.",
+      "scoped_validation": "Component evidence only: 28 actions / 480 executions on repair; 19 actions / 553 executions on integrated source.",
+      "scoped_deployment": "not performed",
+      "remaining_target": "Whole-requirement satisfaction is not established; all proposed and unknown obligations remain owed."
+    }
+  },
+  "persistence": "Immutable PB records and CAS blobs were re-read and hashed. No physical power-loss durability claim; shared storage sync policy was not re-measured.",
+  "worker_attestation_signatures": "unchecked"
+}

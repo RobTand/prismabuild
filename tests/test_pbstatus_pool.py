@@ -114,6 +114,50 @@ def test_default_pool_status_lists_claimed_cpu_and_gpu_without_slurm(live_pool, 
     assert not any("SLURM" in note for note in result["scheduler"])
 
 
+@pytest.mark.parametrize("as_json", [False, True], ids=["table", "json"])
+@pytest.mark.parametrize("unit", ["layers", None], ids=["named-unit", "no-unit"])
+def test_pool_status_shows_committed_units_not_only_report_count(
+    live_pool, capsys, as_json, unit,
+):
+    expected = {}
+    for key, units in (("a" * 64, 1), ("b" * 64, 1000)):
+        path = live_pool.records.lease_path(key)
+        lease = json.loads(path.read_text())
+        lease["progress_observation"] = {
+            "phase": "run", "quiet_s": 5, "grace_s": 60, "accepted_count": 1,
+            "last_accepted": {"phase": "run", "units_completed": units, "unit": unit},
+        }
+        path.write_text(json.dumps(lease))
+        label = f" {unit}" if unit else ""
+        expected[key] = f"run committed {units}{label} quiet 5/60s (1 accepted)"
+
+    args = ["--recent", "0", "--queue-root", str(live_pool.root)]
+    assert pbstatus.main([*args, *(["--json"] if as_json else [])]) == 0
+    output = capsys.readouterr().out
+    if as_json:
+        jobs = json.loads(output)["jobs"]
+        assert {job["action_key"]: job["progress_observation"] for job in jobs} == expected
+    else:
+        for key, progress in expected.items():
+            row = next(line for line in output.splitlines() if line.startswith(key[:12]))
+            assert progress in row
+
+
+def test_activity_status_does_not_label_activity_samples_as_committed_work(live_pool):
+    key = "a" * 64
+    path = live_pool.records.lease_path(key)
+    lease = json.loads(path.read_text())
+    lease["progress_observation"] = {
+        "source": "activity", "phase": "activity", "quiet_s": 5, "grace_s": 60,
+        "accepted_count": 1, "stdout_bytes": 42, "cpu_seconds": 3,
+        "last_accepted": {"phase": "activity", "units_completed": 1, "unit": None},
+    }
+    path.write_text(json.dumps(lease))
+    jobs = fleet_census.action_rows(live_pool.root).value["jobs"]
+    row = next(job for job in jobs if job["action_key"] == key)
+    assert row["progress_observation"] == "activity quiet 5/60s (1 accepted) out 42B cpu 3s"
+
+
 def test_ready_pool_jobs_report_placement_and_admission_passes(live_pool, tmp_path):
     key = "c" * 64
     live_pool.publish(action_key=key, cas_root=tmp_path / "cas", checkout_root="/mnt/shared/status-fixture",

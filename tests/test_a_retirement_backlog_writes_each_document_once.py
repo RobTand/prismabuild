@@ -9,9 +9,10 @@ now selects every batch of an instance under one lock, runs each egress with
 no lock held, and files every complete receipt under one lock with one read
 and one write.
 
-The queue is R13's dead instance (`tests/r13_1053_replay.py`): ten unretired
-batches whose movers ended, whose funding is consumed and whose stage copies
-are gone, on a tier record naming this box.
+The queue uses the ten unretired batches of R13's dead instance
+(`tests/r13_1053_replay.py`). Their movers ended, their funding is consumed,
+and their stage copies are gone, on a tier record naming this box. Unrelated
+retired batches and prewrites are excluded.
 
 What must hold:
 
@@ -26,6 +27,7 @@ from __future__ import annotations
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
+import gzip
 import json
 from pathlib import Path
 import sys
@@ -47,8 +49,23 @@ from prismabuild import staged_path
 UNRETIRED = 10
 
 
+@pytest.fixture(scope="module")
+def retirement_bundle(tmp_path_factory):
+    bundle = r13.load_bundle()
+    bundle["commitments"]["batches"] = {
+        batch_id: entry
+        for batch_id, entry in bundle["commitments"]["batches"].items()
+        if batch_id in bundle["batch_records"]
+    }
+    bundle["prewrites"] = {}
+    path = tmp_path_factory.mktemp("retirement-bundle") / "instance.json.gz"
+    path.write_bytes(gzip.compress(json.dumps(bundle).encode(), mtime=0))
+    return path
+
+
 @pytest.fixture(autouse=True)
-def _isolated(monkeypatch):
+def _isolated(monkeypatch, retirement_bundle):
+    monkeypatch.setattr(r13, "FIXTURE", retirement_bundle)
     for name in ("PRISMABUILD_ACTION_NONCE", "PRISMABUILD_ACTION_SCOPE",
                  "PRISMABUILD_READER_HELPER_ROOT", "PRISMABUILD_ACTION_KEY"):
         monkeypatch.delenv(name, raising=False)

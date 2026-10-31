@@ -1,4 +1,5 @@
 """Qualification population/route controls with CAS I/O replaced at its boundary."""
+import ast
 from copy import deepcopy
 import importlib.util
 import json
@@ -13,6 +14,30 @@ spec = importlib.util.spec_from_file_location('_qualification_outcomes',
     Path(__file__).resolve().parents[1] / 'tools/fleet/pbtest_outcomes.py')
 pbtest_outcomes = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pbtest_outcomes)
+
+
+def test_controller_partitions_are_complete_and_bootstrap_pinned():
+    from record_compat_contract import KINDS, controller_partition, protocol_group
+
+    root = Path(__file__).resolve().parents[1]
+    files = sorted(root.glob('tests/test_record_compatibility_controller*.py'))
+    families = []
+    for path in files:
+        tree = ast.parse(path.read_text())
+        groups = [ast.literal_eval(node.value) for node in ast.walk(tree)
+                  if isinstance(node, ast.Assign)
+                  and any(isinstance(target, ast.Name) and target.id == 'family_group'
+                          for target in node.targets)]
+        assert len(groups) <= 1, path
+        families.extend(groups)
+    expected = {controller_partition(kind) for kind in KINDS
+                if protocol_group(kind) == 'controller'}
+    assert set(families) == expected
+    assert len(families) == len(expected)
+    paths = {path.relative_to(root).as_posix() for path in files}
+    assert {name for name in owner.CORPUS_FILES
+            if Path(name).name.startswith('test_record_compatibility_controller')} == paths
+    assert paths <= set(owner.QUALIFICATION_SOURCES)
 
 
 @pytest.fixture

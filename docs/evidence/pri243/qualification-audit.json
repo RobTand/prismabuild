@@ -1,0 +1,1404 @@
+{
+  "source_parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+  "actions": 9,
+  "entries": [
+    {
+      "action_key": "2a317fac0f5a67e7d52d063b3a7d552c406d90dc3f58641ec4ea3ebb53fdb2d3",
+      "report": "integration-guards",
+      "source_parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+      "source_snapshot": {
+        "commit": "09abcf6ed718ebf4df76c58b44f9a8d32013c7df",
+        "input": {
+          "bytes": 48395890,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "19e50d54e57074f1cb16e70266769222b78fd4f410e0a5f60911afa8a823601e"
+        },
+        "parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "source_bundle_verified": true,
+      "source_tree_equals_parent_except_sealed_generated_closure": true,
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/2a317fac0f5a67e7d52d063b3a7d552c406d90dc3f58641ec4ea3ebb53fdb2d3.json",
+      "terminal_sha256": "b0ebe78562c35c4476fce86e20474b340ecaeab01041ad3966192e23dbbf1977",
+      "request_path": "/mnt/shared/prismabuild-fleet/cas/requests/2a/2a317fac0f5a67e7d52d063b3a7d552c406d90dc3f58641ec4ea3ebb53fdb2d3.json",
+      "request_sha256": "c09af97e222037909ec4660227fdff9795675ac8f7cd2fea0781ca46316230e9",
+      "logs": {
+        "stdout": {
+          "bytes": 19822,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2a317fac0f5a67e7d52d063b3a7d552c406d90dc3f58641ec4ea3ebb53fdb2d3/f31dc01e6f498282770050d24c8c002fa1896762d9bdf574b12609ec81f0fe1e/00000001.stdout.2c09f097c4adc42b6e3fbda24fd80f2ac59d1f4b1587b24ae9e733495a04bfda.log",
+          "sha256": "2c09f097c4adc42b6e3fbda24fd80f2ac59d1f4b1587b24ae9e733495a04bfda"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2a317fac0f5a67e7d52d063b3a7d552c406d90dc3f58641ec4ea3ebb53fdb2d3/f31dc01e6f498282770050d24c8c002fa1896762d9bdf574b12609ec81f0fe1e/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "receipt_sha256": "69fb6954911ab9a30a3ac18c445b0609cbddafce57b5854eab58346fee2e09b5",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/executions/v1/69/69fb6954911ab9a30a3ac18c445b0609cbddafce57b5854eab58346fee2e09b5.json",
+      "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/a4/a4953635addaa6f534e5ff648bc436d89f8d4adbb1f10fc097e8b0153674dadd",
+      "claim_sha256": "c2bc17ca4f089a5598af7f893714548e68fc14aea097fe227fd8d8d1ff7707a4",
+      "claim_checks_passed": true,
+      "attestation_verified": null,
+      "payload_sha256": "a4953635addaa6f534e5ff648bc436d89f8d4adbb1f10fc097e8b0153674dadd",
+      "cleanup_complete": true,
+      "empty": true,
+      "settled": true,
+      "released": true,
+      "outcome_counts": {
+        "call:passed": 21
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_canary_placement_preflight.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "e8dc4ffad2f189995d1484ef39a28d0f98c89d96492946bc7e26b1027ad434b4",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_canary_placement_preflight.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_canary_placement_preflight.py": "a53615e6223dbd8d08e41d474c563d6dddebb8ba05a5b7ae71e39094cdd0a1d7"
+        },
+        "exitstatus": 0
+      },
+      "completion": {
+        "schema": "prismabuild.pbtest_completion.v1",
+        "collection_complete": true,
+        "collect_only": false,
+        "collection_errors": false,
+        "collected": [
+          "tests/test_canary_placement_preflight.py::test_box_local_publisher_without_a_worker_refuses_before_publication",
+          "tests/test_canary_placement_preflight.py::test_ineligible_publisher_refuses_before_publication[offer0]",
+          "tests/test_canary_placement_preflight.py::test_ineligible_publisher_refuses_before_publication[offer1]",
+          "tests/test_canary_placement_preflight.py::test_ineligible_publisher_refuses_before_publication[offer2]",
+          "tests/test_canary_placement_preflight.py::test_ineligible_publisher_refuses_before_publication[offer3]",
+          "tests/test_canary_placement_preflight.py::test_old_generation_and_busy_worker_allow_publication",
+          "tests/test_canary_placement_preflight.py::test_disabled_canary_does_not_require_a_publisher_worker",
+          "tests/test_canary_placement_preflight.py::test_staging_does_not_require_a_publisher_worker",
+          "tests/test_canary_placement_preflight.py::test_unknown_placement_refuses_before_publication",
+          "tests/test_canary_placement_preflight.py::test_missing_image_refuses_before_publication",
+          "tests/test_canary_placement_preflight.py::test_dry_run_refuses_impossible_placement_and_preserves_the_active_runtime",
+          "tests/test_canary_placement_preflight.py::test_offer_read_failure_refuses_before_publication",
+          "tests/test_canary_placement_preflight.py::test_driver_without_placement_preflight_refuses_before_publication",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[False-False-False]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[False-False-True]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[False-True-False]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[False-True-True]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[True-False-False]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[True-False-True]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[True-True-False]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[True-True-True]"
+        ],
+        "teardown_finished": [
+          "tests/test_canary_placement_preflight.py::test_box_local_publisher_without_a_worker_refuses_before_publication",
+          "tests/test_canary_placement_preflight.py::test_disabled_canary_does_not_require_a_publisher_worker",
+          "tests/test_canary_placement_preflight.py::test_driver_without_placement_preflight_refuses_before_publication",
+          "tests/test_canary_placement_preflight.py::test_dry_run_refuses_impossible_placement_and_preserves_the_active_runtime",
+          "tests/test_canary_placement_preflight.py::test_ineligible_publisher_refuses_before_publication[offer0]",
+          "tests/test_canary_placement_preflight.py::test_ineligible_publisher_refuses_before_publication[offer1]",
+          "tests/test_canary_placement_preflight.py::test_ineligible_publisher_refuses_before_publication[offer2]",
+          "tests/test_canary_placement_preflight.py::test_ineligible_publisher_refuses_before_publication[offer3]",
+          "tests/test_canary_placement_preflight.py::test_missing_image_refuses_before_publication",
+          "tests/test_canary_placement_preflight.py::test_offer_read_failure_refuses_before_publication",
+          "tests/test_canary_placement_preflight.py::test_old_generation_and_busy_worker_allow_publication",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[False-False-False]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[False-False-True]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[False-True-False]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[False-True-True]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[True-False-False]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[True-False-True]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[True-True-False]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[True-True-True]",
+          "tests/test_canary_placement_preflight.py::test_staging_does_not_require_a_publisher_worker",
+          "tests/test_canary_placement_preflight.py::test_unknown_placement_refuses_before_publication"
+        ],
+        "duplicate_teardown": false,
+        "outcome_nodeids": [
+          "tests/test_canary_placement_preflight.py::test_box_local_publisher_without_a_worker_refuses_before_publication",
+          "tests/test_canary_placement_preflight.py::test_disabled_canary_does_not_require_a_publisher_worker",
+          "tests/test_canary_placement_preflight.py::test_driver_without_placement_preflight_refuses_before_publication",
+          "tests/test_canary_placement_preflight.py::test_dry_run_refuses_impossible_placement_and_preserves_the_active_runtime",
+          "tests/test_canary_placement_preflight.py::test_ineligible_publisher_refuses_before_publication[offer0]",
+          "tests/test_canary_placement_preflight.py::test_ineligible_publisher_refuses_before_publication[offer1]",
+          "tests/test_canary_placement_preflight.py::test_ineligible_publisher_refuses_before_publication[offer2]",
+          "tests/test_canary_placement_preflight.py::test_ineligible_publisher_refuses_before_publication[offer3]",
+          "tests/test_canary_placement_preflight.py::test_missing_image_refuses_before_publication",
+          "tests/test_canary_placement_preflight.py::test_offer_read_failure_refuses_before_publication",
+          "tests/test_canary_placement_preflight.py::test_old_generation_and_busy_worker_allow_publication",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[False-False-False]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[False-False-True]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[False-True-False]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[False-True-True]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[True-False-False]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[True-False-True]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[True-True-False]",
+          "tests/test_canary_placement_preflight.py::test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy[True-True-True]",
+          "tests/test_canary_placement_preflight.py::test_staging_does_not_require_a_publisher_worker",
+          "tests/test_canary_placement_preflight.py::test_unknown_placement_refuses_before_publication"
+        ],
+        "run_nonce": "0debeb2cf9a499dd6f094cd1ef89daff08ab339ea27c7042b5b08d0cec9f5e1e"
+      }
+    },
+    {
+      "action_key": "1029c47876b43da4d37372dbfab0c62fc5697dc7f8bbf208f4bfff9a72eb061c",
+      "report": "integration-guards",
+      "source_parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+      "source_snapshot": {
+        "commit": "09abcf6ed718ebf4df76c58b44f9a8d32013c7df",
+        "input": {
+          "bytes": 48395890,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "19e50d54e57074f1cb16e70266769222b78fd4f410e0a5f60911afa8a823601e"
+        },
+        "parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "source_bundle_verified": true,
+      "source_tree_equals_parent_except_sealed_generated_closure": true,
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/1029c47876b43da4d37372dbfab0c62fc5697dc7f8bbf208f4bfff9a72eb061c.json",
+      "terminal_sha256": "e323331b29fec1dc8ced8718ad476744e972c1657844031fcf1d22d2acd262b2",
+      "request_path": "/mnt/shared/prismabuild-fleet/cas/requests/10/1029c47876b43da4d37372dbfab0c62fc5697dc7f8bbf208f4bfff9a72eb061c.json",
+      "request_sha256": "3cafdca515bd23cd60c11427ec240d760cd5d7372b5fff4a5c464fc058869400",
+      "logs": {
+        "stdout": {
+          "bytes": 11384,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/1029c47876b43da4d37372dbfab0c62fc5697dc7f8bbf208f4bfff9a72eb061c/2d2069c7f8a4c2c26e0c03733e714c2cb542d7df824f301f8af378996a675609/00000001.stdout.a8e0f09e061d849a3e247dbf7c4e0ea302c459c0c7136fc6579bff1a668b8b40.log",
+          "sha256": "a8e0f09e061d849a3e247dbf7c4e0ea302c459c0c7136fc6579bff1a668b8b40"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/1029c47876b43da4d37372dbfab0c62fc5697dc7f8bbf208f4bfff9a72eb061c/2d2069c7f8a4c2c26e0c03733e714c2cb542d7df824f301f8af378996a675609/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "receipt_sha256": "f7bb9a4b0adccfc5dbf3d386e77c22fc02665ab022cc19e58e21fc2048f87782",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/executions/v1/f7/f7bb9a4b0adccfc5dbf3d386e77c22fc02665ab022cc19e58e21fc2048f87782.json",
+      "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/64/64890f8906aba84bd0abb16fa1f83c5c070409c1d967ac4465f87b3a590e5e14",
+      "claim_sha256": "131e60d3467f74f1d50fc61fb4c1937abe3beb0b9a8b1d4edb7e18167e1c559f",
+      "claim_checks_passed": true,
+      "attestation_verified": null,
+      "payload_sha256": "64890f8906aba84bd0abb16fa1f83c5c070409c1d967ac4465f87b3a590e5e14",
+      "cleanup_complete": true,
+      "empty": true,
+      "settled": true,
+      "released": true,
+      "outcome_counts": {
+        "call:passed": 8
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_barrier_activation_boundary.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "e8dc4ffad2f189995d1484ef39a28d0f98c89d96492946bc7e26b1027ad434b4",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_barrier_activation_boundary.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_barrier_activation_boundary.py": "98c50b0553921d166b4dfc230963143685f5ac11e97e1f9df066129735255c55"
+        },
+        "exitstatus": 0
+      },
+      "completion": {
+        "schema": "prismabuild.pbtest_completion.v1",
+        "collection_complete": true,
+        "collect_only": false,
+        "collection_errors": false,
+        "collected": [
+          "tests/test_barrier_activation_boundary.py::test_default_barrier_refuses_mutation_before_history_io[publish]",
+          "tests/test_barrier_activation_boundary.py::test_default_barrier_refuses_mutation_before_history_io[activate]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_refuses_mutation_even_with_matching_history[False-publish]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_refuses_mutation_even_with_matching_history[False-activate]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_refuses_mutation_even_with_matching_history[True-publish]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_refuses_mutation_even_with_matching_history[True-activate]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_dry_run_reports_history_without_proving_participation[publish]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_dry_run_reports_history_without_proving_participation[activate]"
+        ],
+        "teardown_finished": [
+          "tests/test_barrier_activation_boundary.py::test_barrier_dry_run_reports_history_without_proving_participation[activate]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_dry_run_reports_history_without_proving_participation[publish]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_refuses_mutation_even_with_matching_history[False-activate]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_refuses_mutation_even_with_matching_history[False-publish]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_refuses_mutation_even_with_matching_history[True-activate]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_refuses_mutation_even_with_matching_history[True-publish]",
+          "tests/test_barrier_activation_boundary.py::test_default_barrier_refuses_mutation_before_history_io[activate]",
+          "tests/test_barrier_activation_boundary.py::test_default_barrier_refuses_mutation_before_history_io[publish]"
+        ],
+        "duplicate_teardown": false,
+        "outcome_nodeids": [
+          "tests/test_barrier_activation_boundary.py::test_barrier_dry_run_reports_history_without_proving_participation[activate]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_dry_run_reports_history_without_proving_participation[publish]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_refuses_mutation_even_with_matching_history[False-activate]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_refuses_mutation_even_with_matching_history[False-publish]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_refuses_mutation_even_with_matching_history[True-activate]",
+          "tests/test_barrier_activation_boundary.py::test_barrier_refuses_mutation_even_with_matching_history[True-publish]",
+          "tests/test_barrier_activation_boundary.py::test_default_barrier_refuses_mutation_before_history_io[activate]",
+          "tests/test_barrier_activation_boundary.py::test_default_barrier_refuses_mutation_before_history_io[publish]"
+        ],
+        "run_nonce": "e2c87b90552dbf7e7ca8e3b292cbe59e0dec46301e6668de36b02b0733d38987"
+      }
+    },
+    {
+      "action_key": "c6e2e6e7640183eebc89ec4d1985176ab9679a7de87f33d118d9a31a9e6a331d",
+      "report": "integration-guards",
+      "source_parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+      "source_snapshot": {
+        "commit": "09abcf6ed718ebf4df76c58b44f9a8d32013c7df",
+        "input": {
+          "bytes": 48395890,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "19e50d54e57074f1cb16e70266769222b78fd4f410e0a5f60911afa8a823601e"
+        },
+        "parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "source_bundle_verified": true,
+      "source_tree_equals_parent_except_sealed_generated_closure": true,
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/c6e2e6e7640183eebc89ec4d1985176ab9679a7de87f33d118d9a31a9e6a331d.json",
+      "terminal_sha256": "d5bc9a9f16ada3fb00a2fe5c965981e95af2025dfe2e4360209267b465601acb",
+      "request_path": "/mnt/shared/prismabuild-fleet/cas/requests/c6/c6e2e6e7640183eebc89ec4d1985176ab9679a7de87f33d118d9a31a9e6a331d.json",
+      "request_sha256": "dd2989ce89f8c8254dfe404ff8683c2b393170a2cca0d96a128f393c659b07d6",
+      "logs": {
+        "stdout": {
+          "bytes": 12008,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/c6e2e6e7640183eebc89ec4d1985176ab9679a7de87f33d118d9a31a9e6a331d/f857fdc763155bfe1f6a0cc40c60bf2580f84c7c6183de6b2c2d026fcefc2979/00000001.stdout.11c22acec54e80d7b2755ba5764739821cd0582959726ab66837275f172a509d.log",
+          "sha256": "11c22acec54e80d7b2755ba5764739821cd0582959726ab66837275f172a509d"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/c6e2e6e7640183eebc89ec4d1985176ab9679a7de87f33d118d9a31a9e6a331d/f857fdc763155bfe1f6a0cc40c60bf2580f84c7c6183de6b2c2d026fcefc2979/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "receipt_sha256": "130ad40e8867f9a24d7d708cd636ad3b6850ab07b6e17f1d0671d34026ce0474",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/executions/v1/13/130ad40e8867f9a24d7d708cd636ad3b6850ab07b6e17f1d0671d34026ce0474.json",
+      "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/ad/adcf76bd3cf5201d57d5d5e1ef21e3ba51c9ddbec4e24b244662f340de877e85",
+      "claim_sha256": "5a55faa7794726add91faf3dd1f299158bd3b36f09511b80aaa40fb2a62f665e",
+      "claim_checks_passed": true,
+      "attestation_verified": null,
+      "payload_sha256": "adcf76bd3cf5201d57d5d5e1ef21e3ba51c9ddbec4e24b244662f340de877e85",
+      "cleanup_complete": true,
+      "empty": true,
+      "settled": true,
+      "released": true,
+      "outcome_counts": {
+        "call:passed": 8
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_compat_capture_intake.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          8
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "e8dc4ffad2f189995d1484ef39a28d0f98c89d96492946bc7e26b1027ad434b4",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_compat_capture_intake.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_compat_capture_intake.py": "fcee12dcd77962f9ae22ee674ca39a01e1da8ae7fb1cec675e3f3e318a71752c"
+        },
+        "exitstatus": 0
+      },
+      "completion": {
+        "schema": "prismabuild.pbtest_completion.v1",
+        "collection_complete": true,
+        "collect_only": false,
+        "collection_errors": false,
+        "collected": [
+          "tests/test_compat_capture_intake.py::test_capture_intake_retains_its_guard_under_optimization[flag-refresh]",
+          "tests/test_compat_capture_intake.py::test_capture_intake_retains_its_guard_under_optimization[flag-adopt]",
+          "tests/test_compat_capture_intake.py::test_capture_intake_retains_its_guard_under_optimization[environment-refresh]",
+          "tests/test_compat_capture_intake.py::test_capture_intake_retains_its_guard_under_optimization[environment-adopt]",
+          "tests/test_compat_capture_intake.py::test_intent_refresh_rejects_non_source_or_unbound_changes[flag-roster]",
+          "tests/test_compat_capture_intake.py::test_intent_refresh_rejects_non_source_or_unbound_changes[flag-agent_digest]",
+          "tests/test_compat_capture_intake.py::test_intent_refresh_rejects_non_source_or_unbound_changes[environment-roster]",
+          "tests/test_compat_capture_intake.py::test_intent_refresh_rejects_non_source_or_unbound_changes[environment-agent_digest]"
+        ],
+        "teardown_finished": [
+          "tests/test_compat_capture_intake.py::test_capture_intake_retains_its_guard_under_optimization[environment-adopt]",
+          "tests/test_compat_capture_intake.py::test_capture_intake_retains_its_guard_under_optimization[environment-refresh]",
+          "tests/test_compat_capture_intake.py::test_capture_intake_retains_its_guard_under_optimization[flag-adopt]",
+          "tests/test_compat_capture_intake.py::test_capture_intake_retains_its_guard_under_optimization[flag-refresh]",
+          "tests/test_compat_capture_intake.py::test_intent_refresh_rejects_non_source_or_unbound_changes[environment-agent_digest]",
+          "tests/test_compat_capture_intake.py::test_intent_refresh_rejects_non_source_or_unbound_changes[environment-roster]",
+          "tests/test_compat_capture_intake.py::test_intent_refresh_rejects_non_source_or_unbound_changes[flag-agent_digest]",
+          "tests/test_compat_capture_intake.py::test_intent_refresh_rejects_non_source_or_unbound_changes[flag-roster]"
+        ],
+        "duplicate_teardown": false,
+        "outcome_nodeids": [
+          "tests/test_compat_capture_intake.py::test_capture_intake_retains_its_guard_under_optimization[environment-adopt]",
+          "tests/test_compat_capture_intake.py::test_capture_intake_retains_its_guard_under_optimization[environment-refresh]",
+          "tests/test_compat_capture_intake.py::test_capture_intake_retains_its_guard_under_optimization[flag-adopt]",
+          "tests/test_compat_capture_intake.py::test_capture_intake_retains_its_guard_under_optimization[flag-refresh]",
+          "tests/test_compat_capture_intake.py::test_intent_refresh_rejects_non_source_or_unbound_changes[environment-agent_digest]",
+          "tests/test_compat_capture_intake.py::test_intent_refresh_rejects_non_source_or_unbound_changes[environment-roster]",
+          "tests/test_compat_capture_intake.py::test_intent_refresh_rejects_non_source_or_unbound_changes[flag-agent_digest]",
+          "tests/test_compat_capture_intake.py::test_intent_refresh_rejects_non_source_or_unbound_changes[flag-roster]"
+        ],
+        "run_nonce": "b72147fc95b04c29f7bd19825de435785f9c74dddffa917cc441f6b248ab5166"
+      }
+    },
+    {
+      "action_key": "d323105fde5d760fb87c3ae2146b245a890291aad0e1de2357970deeee271c58",
+      "report": "integration-guards",
+      "source_parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+      "source_snapshot": {
+        "commit": "09abcf6ed718ebf4df76c58b44f9a8d32013c7df",
+        "input": {
+          "bytes": 48395890,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "19e50d54e57074f1cb16e70266769222b78fd4f410e0a5f60911afa8a823601e"
+        },
+        "parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "source_bundle_verified": true,
+      "source_tree_equals_parent_except_sealed_generated_closure": true,
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/d323105fde5d760fb87c3ae2146b245a890291aad0e1de2357970deeee271c58.json",
+      "terminal_sha256": "ebf5f6be5c75efc2cd617e1e75c67ac21a1e867c38c31a59289ddcf8c82b4e0e",
+      "request_path": "/mnt/shared/prismabuild-fleet/cas/requests/d3/d323105fde5d760fb87c3ae2146b245a890291aad0e1de2357970deeee271c58.json",
+      "request_sha256": "b38078f0d07353c003a2dc4752d87ce752ddba3129842598af1adc65bdfa8c71",
+      "logs": {
+        "stdout": {
+          "bytes": 10292,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/d323105fde5d760fb87c3ae2146b245a890291aad0e1de2357970deeee271c58/b308c9c693b16699f0c42610c07ae58a3240f9cdb31f8939e0eb41581a47caa1/00000001.stdout.44dcfc5d9a99e307cdf359da9f8245bb1531e04fca87ee19276148adcc2a7a68.log",
+          "sha256": "44dcfc5d9a99e307cdf359da9f8245bb1531e04fca87ee19276148adcc2a7a68"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/d323105fde5d760fb87c3ae2146b245a890291aad0e1de2357970deeee271c58/b308c9c693b16699f0c42610c07ae58a3240f9cdb31f8939e0eb41581a47caa1/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "receipt_sha256": "9674fd4a392bfc8d97a0339ad0f9a907c7543c3378e86059b05ba62b3a6d2e62",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/executions/v1/96/9674fd4a392bfc8d97a0339ad0f9a907c7543c3378e86059b05ba62b3a6d2e62.json",
+      "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/00/009fe49d25299803f59979e0c33e7fbe4c5e0e839949be9c2a909c384fa14c22",
+      "claim_sha256": "f8caf1433e803682f54bb0f91eb126f7baf9343c11f78725e77b6e7ffd75631b",
+      "claim_checks_passed": true,
+      "attestation_verified": null,
+      "payload_sha256": "009fe49d25299803f59979e0c33e7fbe4c5e0e839949be9c2a909c384fa14c22",
+      "cleanup_complete": true,
+      "empty": true,
+      "settled": true,
+      "released": true,
+      "outcome_counts": {
+        "call:passed": 8
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_wire_inventory.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          9
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "e8dc4ffad2f189995d1484ef39a28d0f98c89d96492946bc7e26b1027ad434b4",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_wire_inventory.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_wire_inventory.py": "58583e6a71bff1cbeae091a4383f7b207185e5fdfeb42a5d90d86b633dd0e6cc"
+        },
+        "exitstatus": 0
+      },
+      "completion": {
+        "schema": "prismabuild.pbtest_completion.v1",
+        "collection_complete": true,
+        "collect_only": false,
+        "collection_errors": false,
+        "collected": [
+          "tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned",
+          "tests/test_wire_inventory.py::test_symbolic_fstring_policies_retain_selected_source_bytes",
+          "tests/test_wire_inventory.py::test_inventory_finds_unregistered_imported_embedded_and_data_wires",
+          "tests/test_wire_inventory.py::test_control_classification_cannot_hide_a_new_durable_reader",
+          "tests/test_wire_inventory.py::test_inventory_follows_transitive_module_owners_without_importing_them",
+          "tests/test_wire_inventory.py::test_source_review_rebinding_compares_every_non_schema_expression",
+          "tests/test_wire_inventory.py::test_stale_source_review_retains_discovery_and_still_refuses[source]",
+          "tests/test_wire_inventory.py::test_stale_source_review_retains_discovery_and_still_refuses[line]"
+        ],
+        "teardown_finished": [
+          "tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned",
+          "tests/test_wire_inventory.py::test_control_classification_cannot_hide_a_new_durable_reader",
+          "tests/test_wire_inventory.py::test_inventory_finds_unregistered_imported_embedded_and_data_wires",
+          "tests/test_wire_inventory.py::test_inventory_follows_transitive_module_owners_without_importing_them",
+          "tests/test_wire_inventory.py::test_source_review_rebinding_compares_every_non_schema_expression",
+          "tests/test_wire_inventory.py::test_stale_source_review_retains_discovery_and_still_refuses[line]",
+          "tests/test_wire_inventory.py::test_stale_source_review_retains_discovery_and_still_refuses[source]",
+          "tests/test_wire_inventory.py::test_symbolic_fstring_policies_retain_selected_source_bytes"
+        ],
+        "duplicate_teardown": false,
+        "outcome_nodeids": [
+          "tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned",
+          "tests/test_wire_inventory.py::test_control_classification_cannot_hide_a_new_durable_reader",
+          "tests/test_wire_inventory.py::test_inventory_finds_unregistered_imported_embedded_and_data_wires",
+          "tests/test_wire_inventory.py::test_inventory_follows_transitive_module_owners_without_importing_them",
+          "tests/test_wire_inventory.py::test_source_review_rebinding_compares_every_non_schema_expression",
+          "tests/test_wire_inventory.py::test_stale_source_review_retains_discovery_and_still_refuses[line]",
+          "tests/test_wire_inventory.py::test_stale_source_review_retains_discovery_and_still_refuses[source]",
+          "tests/test_wire_inventory.py::test_symbolic_fstring_policies_retain_selected_source_bytes"
+        ],
+        "run_nonce": "d28ab6b4c960e10453deaeef7ca6da8c1b4be9369df9d301c29dfc6aa3c045c1"
+      }
+    },
+    {
+      "action_key": "1da0233c88cf57036aff8517f586c265145945df558f7cd3b898e03e59e17a51",
+      "report": "integration-guards",
+      "source_parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+      "source_snapshot": {
+        "commit": "09abcf6ed718ebf4df76c58b44f9a8d32013c7df",
+        "input": {
+          "bytes": 48395890,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "19e50d54e57074f1cb16e70266769222b78fd4f410e0a5f60911afa8a823601e"
+        },
+        "parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "source_bundle_verified": true,
+      "source_tree_equals_parent_except_sealed_generated_closure": true,
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/1da0233c88cf57036aff8517f586c265145945df558f7cd3b898e03e59e17a51.json",
+      "terminal_sha256": "77372de870beee4b0a3658dbf0ef1434f039e0e44c342f648f5c3837f4690bbc",
+      "request_path": "/mnt/shared/prismabuild-fleet/cas/requests/1d/1da0233c88cf57036aff8517f586c265145945df558f7cd3b898e03e59e17a51.json",
+      "request_sha256": "d380f38de37dc9165628e55f206da7f4ef32bbdb8c8ce4f897e70b802bce6dfc",
+      "logs": {
+        "stdout": {
+          "bytes": 61743,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/1da0233c88cf57036aff8517f586c265145945df558f7cd3b898e03e59e17a51/89caa4516dfa9d361b824d77937a600779ff5ca552812ad7c8222bff33af18d5/00000001.stdout.4f5732c1df3fa125cfc9d359266f3700cf4aefc8a263a78fda76a04e5415ee73.log",
+          "sha256": "4f5732c1df3fa125cfc9d359266f3700cf4aefc8a263a78fda76a04e5415ee73"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/1da0233c88cf57036aff8517f586c265145945df558f7cd3b898e03e59e17a51/89caa4516dfa9d361b824d77937a600779ff5ca552812ad7c8222bff33af18d5/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "receipt_sha256": "b626ebdb68e129ca2a4741f891d7ae9a7efca7db017ea318d061601a4b45065f",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/executions/v1/b6/b626ebdb68e129ca2a4741f891d7ae9a7efca7db017ea318d061601a4b45065f.json",
+      "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/15/1515121f59eee65a655ef278850b096310ffee2072a31ec7283aa7c84378cb90",
+      "claim_sha256": "249ea5d1ff5e95b61fd32e454ccdc1f4f77812b0547f7cc348ab070c3509f8c5",
+      "claim_checks_passed": true,
+      "attestation_verified": null,
+      "payload_sha256": "1515121f59eee65a655ef278850b096310ffee2072a31ec7283aa7c84378cb90",
+      "cleanup_complete": true,
+      "empty": true,
+      "settled": true,
+      "released": true,
+      "outcome_counts": {
+        "call:passed": 95
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_fleet_tool_flags_have_help.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          10
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "e8dc4ffad2f189995d1484ef39a28d0f98c89d96492946bc7e26b1027ad434b4",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_fleet_tool_flags_have_help.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_fleet_tool_flags_have_help.py": "002f65fa7031387b8e2d60a6a6458034c714f6266211cb6e50cee5516a7ff13b"
+        },
+        "exitstatus": 0
+      },
+      "completion": {
+        "schema": "prismabuild.pbtest_completion.v1",
+        "collection_complete": true,
+        "collect_only": false,
+        "collection_errors": false,
+        "collected": [
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[d38_gate.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[deferred_release.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[fleet_submit.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[manifest_promotion.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbmergeq_runtime.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest_capabilities.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest_collection.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prelaunch_tier.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prewarm_loop.py0]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[ram_promote.py0]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[role_log_identity.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[runtime_paths.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_move.py0]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_release.py0]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_rounding.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[submission_frontend.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[tier_cycle.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[admission_shared_io.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_claim_pass.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_failed_mover_reclaim.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_ram_promote_restart.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_stage_adopt.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_stage_egress.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_stage_reconcile.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_tier_cold_start.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_tier_cycle.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_tier_cycle_r13.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bootstrap_client.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[filesystem_floor_proof.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[fleet_membership.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[gate_1730_probe.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[install_ram_mount_unit.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[local_resident.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[local_scratch_profile.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[local_tier_loop.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[migrate_role_logs.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[mount_latency.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pb_gc.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbbell.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcampaign.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcanary.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcanary_submission.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcanary_verdict.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcanary_watch.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbevidence.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbgang.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbhold.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbmcp.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbmergeq.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbmetrics.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbrecover_checkout.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbresident.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbrun.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbsnapshot.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbstatus.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbsweep.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest_outcomes.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest_pins.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbwait.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pool_reset.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prewarm_loop.py1]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[produced_export.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[profile_finish_census.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prove_queue_bell.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[publish_runtime.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_claim_recovery.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_docker_stop.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_needrestart_broker_deferral.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_record_visibility.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_resource_scope.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_rollout.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_scratch_lifetime.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[ram_promote.py1]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[require_pool.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[resource_broker.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[resource_exec.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[resource_payload.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[retire_residency_plans.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[retire_worker.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[runtime_process_census.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[seal_and_publish.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[shape_gate.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[slurm_job.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_move.py1]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_ownership.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_reclaim.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_release.py1]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[supervise.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[tier_loop.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[updater_proof.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[upgrade_client.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[worker.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[worker_loop.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prove_d38_canary.py]"
+        ],
+        "teardown_finished": [
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[admission_shared_io.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_claim_pass.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_failed_mover_reclaim.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_ram_promote_restart.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_stage_adopt.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_stage_egress.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_stage_reconcile.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_tier_cold_start.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_tier_cycle.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_tier_cycle_r13.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bootstrap_client.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[d38_gate.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[deferred_release.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[filesystem_floor_proof.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[fleet_membership.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[fleet_submit.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[gate_1730_probe.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[install_ram_mount_unit.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[local_resident.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[local_scratch_profile.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[local_tier_loop.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[manifest_promotion.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[migrate_role_logs.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[mount_latency.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pb_gc.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbbell.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcampaign.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcanary.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcanary_submission.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcanary_verdict.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcanary_watch.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbevidence.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbgang.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbhold.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbmcp.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbmergeq.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbmergeq_runtime.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbmetrics.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbrecover_checkout.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbresident.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbrun.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbsnapshot.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbstatus.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbsweep.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest_capabilities.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest_collection.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest_outcomes.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest_pins.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbwait.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pool_reset.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prelaunch_tier.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prewarm_loop.py0]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prewarm_loop.py1]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[produced_export.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[profile_finish_census.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prove_d38_canary.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prove_queue_bell.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[publish_runtime.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_claim_recovery.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_docker_stop.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_needrestart_broker_deferral.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_record_visibility.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_resource_scope.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_rollout.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_scratch_lifetime.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[ram_promote.py0]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[ram_promote.py1]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[require_pool.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[resource_broker.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[resource_exec.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[resource_payload.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[retire_residency_plans.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[retire_worker.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[role_log_identity.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[runtime_paths.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[runtime_process_census.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[seal_and_publish.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[shape_gate.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[slurm_job.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_move.py0]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_move.py1]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_ownership.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_reclaim.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_release.py0]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_release.py1]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_rounding.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[submission_frontend.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[supervise.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[tier_cycle.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[tier_loop.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[updater_proof.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[upgrade_client.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[worker.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[worker_loop.py]"
+        ],
+        "duplicate_teardown": false,
+        "outcome_nodeids": [
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[admission_shared_io.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_claim_pass.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_failed_mover_reclaim.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_ram_promote_restart.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_stage_adopt.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_stage_egress.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_stage_reconcile.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_tier_cold_start.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_tier_cycle.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bench_tier_cycle_r13.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[bootstrap_client.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[d38_gate.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[deferred_release.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[filesystem_floor_proof.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[fleet_membership.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[fleet_submit.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[gate_1730_probe.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[install_ram_mount_unit.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[local_resident.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[local_scratch_profile.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[local_tier_loop.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[manifest_promotion.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[migrate_role_logs.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[mount_latency.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pb_gc.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbbell.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcampaign.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcanary.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcanary_submission.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcanary_verdict.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbcanary_watch.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbevidence.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbgang.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbhold.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbmcp.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbmergeq.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbmergeq_runtime.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbmetrics.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbrecover_checkout.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbresident.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbrun.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbsnapshot.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbstatus.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbsweep.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest_capabilities.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest_collection.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest_outcomes.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbtest_pins.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbwait.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pool_reset.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prelaunch_tier.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prewarm_loop.py0]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prewarm_loop.py1]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[produced_export.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[profile_finish_census.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prove_d38_canary.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[prove_queue_bell.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[publish_runtime.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_claim_recovery.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_docker_stop.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_needrestart_broker_deferral.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_record_visibility.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_resource_scope.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_rollout.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[qualify_scratch_lifetime.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[ram_promote.py0]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[ram_promote.py1]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[require_pool.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[resource_broker.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[resource_exec.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[resource_payload.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[retire_residency_plans.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[retire_worker.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[role_log_identity.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[runtime_paths.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[runtime_process_census.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[seal_and_publish.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[shape_gate.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[slurm_job.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_move.py0]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_move.py1]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_ownership.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_reclaim.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_release.py0]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_release.py1]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[stage_rounding.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[submission_frontend.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[supervise.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[tier_cycle.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[tier_loop.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[updater_proof.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[upgrade_client.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[worker.py]",
+          "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[worker_loop.py]"
+        ],
+        "run_nonce": "17e28ef0ea060895b878fb4e03add94b36e415b65bb7ce26ffffa5c078271955"
+      }
+    },
+    {
+      "action_key": "5b2b1cade79357abe6f1f46041f44bd182aba468fc70de902ad8e9b1440d5472",
+      "report": "integration-guards",
+      "source_parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+      "source_snapshot": {
+        "commit": "09abcf6ed718ebf4df76c58b44f9a8d32013c7df",
+        "input": {
+          "bytes": 48395890,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "19e50d54e57074f1cb16e70266769222b78fd4f410e0a5f60911afa8a823601e"
+        },
+        "parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "source_bundle_verified": true,
+      "source_tree_equals_parent_except_sealed_generated_closure": true,
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/5b2b1cade79357abe6f1f46041f44bd182aba468fc70de902ad8e9b1440d5472.json",
+      "terminal_sha256": "4dd00613a1126aeca018417ebb7c59236cb00a49d3952c322cc075f6a8e68690",
+      "request_path": "/mnt/shared/prismabuild-fleet/cas/requests/5b/5b2b1cade79357abe6f1f46041f44bd182aba468fc70de902ad8e9b1440d5472.json",
+      "request_sha256": "370f82ba98210b771971ed4cbc6227d86b05b0173005c187f31255209d9ecaa4",
+      "logs": {
+        "stdout": {
+          "bytes": 10271,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/5b2b1cade79357abe6f1f46041f44bd182aba468fc70de902ad8e9b1440d5472/2a1bdd76362984abbd47a7e79efd236af8708dfe09ad7bd6881cd6bb2121ffed/00000001.stdout.77ef5c9c37a521f4f45b4ea77d6f6910761fceb4a78835cf8daea9b81a72f845.log",
+          "sha256": "77ef5c9c37a521f4f45b4ea77d6f6910761fceb4a78835cf8daea9b81a72f845"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/5b2b1cade79357abe6f1f46041f44bd182aba468fc70de902ad8e9b1440d5472/2a1bdd76362984abbd47a7e79efd236af8708dfe09ad7bd6881cd6bb2121ffed/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "receipt_sha256": "b225077d8cade528fed3e552c368ff41580a19f80f746477711976e0aad44236",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/executions/v1/b2/b225077d8cade528fed3e552c368ff41580a19f80f746477711976e0aad44236.json",
+      "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/65/65f772f56e31f908a1a145a20a7af74e3f59de7ccd5d88396d58d137c87b8091",
+      "claim_sha256": "4e76874e44c1843edff7fb86715aa639a29c41b743420733c6389a88f733bd43",
+      "claim_checks_passed": true,
+      "attestation_verified": null,
+      "payload_sha256": "65f772f56e31f908a1a145a20a7af74e3f59de7ccd5d88396d58d137c87b8091",
+      "cleanup_complete": true,
+      "empty": true,
+      "settled": true,
+      "released": true,
+      "outcome_counts": {
+        "call:passed": 8
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_duplication_baseline.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          11
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "e8dc4ffad2f189995d1484ef39a28d0f98c89d96492946bc7e26b1027ad434b4",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_duplication_baseline.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_duplication_baseline.py": "c844a44dcec35e59bb4a0f375128a07f1354ed804479c39ecfc04ea149f71013"
+        },
+        "exitstatus": 0
+      },
+      "completion": {
+        "schema": "prismabuild.pbtest_completion.v1",
+        "collection_complete": true,
+        "collect_only": false,
+        "collection_errors": false,
+        "collected": [
+          "tests/test_duplication_baseline.py::test_scanner_finds_a_renamed_copy_and_ignores_same_file_pairs",
+          "tests/test_duplication_baseline.py::test_near_duplicate_pairs_only_shrink",
+          "tests/test_duplication_baseline.py::test_same_name_helpers_only_shrink",
+          "tests/test_duplication_baseline.py::test_same_name_distinct_records_are_exact_live_paths_with_reasons",
+          "tests/test_duplication_baseline.py::test_a_third_definition_of_an_exempt_name_is_still_a_growth",
+          "tests/test_duplication_baseline.py::test_must_differ_pairs_are_live_and_give_a_reason",
+          "tests/test_duplication_baseline.py::test_primitive_digest_sites_only_shrink",
+          "tests/test_duplication_baseline.py::test_digest_inventory_excludes_the_owner_and_finds_raw_sites"
+        ],
+        "teardown_finished": [
+          "tests/test_duplication_baseline.py::test_a_third_definition_of_an_exempt_name_is_still_a_growth",
+          "tests/test_duplication_baseline.py::test_digest_inventory_excludes_the_owner_and_finds_raw_sites",
+          "tests/test_duplication_baseline.py::test_must_differ_pairs_are_live_and_give_a_reason",
+          "tests/test_duplication_baseline.py::test_near_duplicate_pairs_only_shrink",
+          "tests/test_duplication_baseline.py::test_primitive_digest_sites_only_shrink",
+          "tests/test_duplication_baseline.py::test_same_name_distinct_records_are_exact_live_paths_with_reasons",
+          "tests/test_duplication_baseline.py::test_same_name_helpers_only_shrink",
+          "tests/test_duplication_baseline.py::test_scanner_finds_a_renamed_copy_and_ignores_same_file_pairs"
+        ],
+        "duplicate_teardown": false,
+        "outcome_nodeids": [
+          "tests/test_duplication_baseline.py::test_a_third_definition_of_an_exempt_name_is_still_a_growth",
+          "tests/test_duplication_baseline.py::test_digest_inventory_excludes_the_owner_and_finds_raw_sites",
+          "tests/test_duplication_baseline.py::test_must_differ_pairs_are_live_and_give_a_reason",
+          "tests/test_duplication_baseline.py::test_near_duplicate_pairs_only_shrink",
+          "tests/test_duplication_baseline.py::test_primitive_digest_sites_only_shrink",
+          "tests/test_duplication_baseline.py::test_same_name_distinct_records_are_exact_live_paths_with_reasons",
+          "tests/test_duplication_baseline.py::test_same_name_helpers_only_shrink",
+          "tests/test_duplication_baseline.py::test_scanner_finds_a_renamed_copy_and_ignores_same_file_pairs"
+        ],
+        "run_nonce": "30e8e5926cac2f0a8b28968bbaa82c7c9802df23236b111b45e8fbaa6d63a8db"
+      }
+    },
+    {
+      "action_key": "36d7dfee11709cfc515a0e5866456de7140b429497f58dfe92248a9949bbb4de",
+      "report": "integration-guards",
+      "source_parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+      "source_snapshot": {
+        "commit": "09abcf6ed718ebf4df76c58b44f9a8d32013c7df",
+        "input": {
+          "bytes": 48395890,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "19e50d54e57074f1cb16e70266769222b78fd4f410e0a5f60911afa8a823601e"
+        },
+        "parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "source_bundle_verified": true,
+      "source_tree_equals_parent_except_sealed_generated_closure": true,
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/36d7dfee11709cfc515a0e5866456de7140b429497f58dfe92248a9949bbb4de.json",
+      "terminal_sha256": "dabad6c039839573e8bcf31e400ccc070e370fd61511dea4ec19b1435d25d3e7",
+      "request_path": "/mnt/shared/prismabuild-fleet/cas/requests/36/36d7dfee11709cfc515a0e5866456de7140b429497f58dfe92248a9949bbb4de.json",
+      "request_sha256": "7cf2579d2878aee9a1a2cc236dbf47f1a10125e0455e476025d23b71ea770216",
+      "logs": {
+        "stdout": {
+          "bytes": 5957,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/36d7dfee11709cfc515a0e5866456de7140b429497f58dfe92248a9949bbb4de/88df26ac28ca0688aa8af374d2ea62cec1bf0b1b1968aef1a7607a62c3f15288/00000001.stdout.a900e93170b8780b42434eabefb3860980acd0f5026c366757abfecde85bbdfb.log",
+          "sha256": "a900e93170b8780b42434eabefb3860980acd0f5026c366757abfecde85bbdfb"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/36d7dfee11709cfc515a0e5866456de7140b429497f58dfe92248a9949bbb4de/88df26ac28ca0688aa8af374d2ea62cec1bf0b1b1968aef1a7607a62c3f15288/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "receipt_sha256": "cf1e482e21c15a1e999142c831ea468c60c4089879ae780562227771d4efbd32",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/executions/v1/cf/cf1e482e21c15a1e999142c831ea468c60c4089879ae780562227771d4efbd32.json",
+      "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/81/8133800e7f66ff380f4b582926c96d0478c24640b43a7f03546bb8c1abf6deb3",
+      "claim_sha256": "1d67b0e0e03d0b5cb6b18a76bb3096aa482e8dfd8e07f5c92385e3daf2af6293",
+      "claim_checks_passed": true,
+      "attestation_verified": null,
+      "payload_sha256": "8133800e7f66ff380f4b582926c96d0478c24640b43a7f03546bb8c1abf6deb3",
+      "cleanup_complete": true,
+      "empty": true,
+      "settled": true,
+      "released": true,
+      "outcome_counts": {
+        "call:passed": 1
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_design_doc_line_references.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "e8dc4ffad2f189995d1484ef39a28d0f98c89d96492946bc7e26b1027ad434b4",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_design_doc_line_references.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_design_doc_line_references.py": "ece54442c35343195fc85e4cd92eb2489bae4d5abcd655df8c25412d0535c63b"
+        },
+        "exitstatus": 0
+      },
+      "completion": {
+        "schema": "prismabuild.pbtest_completion.v1",
+        "collection_complete": true,
+        "collect_only": false,
+        "collection_errors": false,
+        "collected": [
+          "tests/test_design_doc_line_references.py::test_every_quoted_line_is_still_in_the_file_the_doc_names"
+        ],
+        "teardown_finished": [
+          "tests/test_design_doc_line_references.py::test_every_quoted_line_is_still_in_the_file_the_doc_names"
+        ],
+        "duplicate_teardown": false,
+        "outcome_nodeids": [
+          "tests/test_design_doc_line_references.py::test_every_quoted_line_is_still_in_the_file_the_doc_names"
+        ],
+        "run_nonce": "0cad7f3173fb4ee177fddc23261948bd42d7946573cd747bee75bc78686b11c6"
+      }
+    },
+    {
+      "action_key": "131322b1cb6e9a746df649154d6ca4771d5edd9db14fe2ceede773486b875ec8",
+      "report": "compatibility",
+      "source_parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+      "source_snapshot": {
+        "commit": "fdd6fc79a54934a0dbd4a67fad3458635bdf47aa",
+        "input": {
+          "bytes": 48395890,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "f1676d7b64d1d87b94260736bc65d5ed2fd07982070e50e353a831c8a073e163"
+        },
+        "parent": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "source_bundle_verified": true,
+      "source_tree_equals_parent_except_sealed_generated_closure": true,
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/131322b1cb6e9a746df649154d6ca4771d5edd9db14fe2ceede773486b875ec8.json",
+      "terminal_sha256": "78259c21bdc7c82d2989015a48b2a2f54473c1f8e9d75dcdff430251b4c8f082",
+      "request_path": "/mnt/shared/prismabuild-fleet/cas/requests/13/131322b1cb6e9a746df649154d6ca4771d5edd9db14fe2ceede773486b875ec8.json",
+      "request_sha256": "c7a24db7d804e543a3735fdf06daa624cea01f45a33f3840d2e7c30e5bfae944",
+      "logs": {
+        "stdout": {
+          "bytes": 363283,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/131322b1cb6e9a746df649154d6ca4771d5edd9db14fe2ceede773486b875ec8/a5f3de5003693688e154a9eed2545cac026c74a53ba2ce0e40670e2d4cad1c27/00000001.stdout.c86a47dc3a5a8e3f3e05572e1d7095b402ada93b88d742db80cdc241faf542c6.log",
+          "sha256": "c86a47dc3a5a8e3f3e05572e1d7095b402ada93b88d742db80cdc241faf542c6"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/131322b1cb6e9a746df649154d6ca4771d5edd9db14fe2ceede773486b875ec8/a5f3de5003693688e154a9eed2545cac026c74a53ba2ce0e40670e2d4cad1c27/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "receipt_sha256": "248664fae433b4335aa8c40c386a82d49364c762af0f8fdbf00aaf490961339e",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/executions/v1/24/248664fae433b4335aa8c40c386a82d49364c762af0f8fdbf00aaf490961339e.json",
+      "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/82/829ba7afc5561e321727f58e1bcb45fdd6ba91db5b70a57b1ca14b889474defb",
+      "claim_sha256": "6b10217226f2374b5d8ed5eae61bf5d96d0684e77601c1fc9205fc708113db05",
+      "claim_checks_passed": true,
+      "attestation_verified": null,
+      "payload_sha256": "829ba7afc5561e321727f58e1bcb45fdd6ba91db5b70a57b1ca14b889474defb",
+      "cleanup_complete": true,
+      "empty": true,
+      "settled": true,
+      "released": true,
+      "outcome_counts": {
+        "call:passed": 7
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_record_compatibility_controller_upgrade.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          3
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "e8dc4ffad2f189995d1484ef39a28d0f98c89d96492946bc7e26b1027ad434b4",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_record_compatibility_controller_upgrade.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_record_compatibility_controller_upgrade.py": "82c606b9c357593ae2e579402404af1e30eb091cb107aea9b72895a1f9bfddc1"
+        },
+        "exitstatus": 0
+      },
+      "completion": {
+        "schema": "prismabuild.pbtest_completion.v1",
+        "collection_complete": true,
+        "collect_only": false,
+        "collection_errors": false,
+        "collected": [
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[upgrade-intent/armed]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[upgrade-attestation/first]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[upgrade-attestation/repeated]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[upgrade-intent]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[upgrade-attestation]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[upgrade-intent]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[upgrade-attestation]"
+        ],
+        "teardown_finished": [
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[upgrade-attestation]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[upgrade-intent]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[upgrade-attestation/first]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[upgrade-attestation/repeated]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[upgrade-intent/armed]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[upgrade-attestation]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[upgrade-intent]"
+        ],
+        "duplicate_teardown": false,
+        "outcome_nodeids": [
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[upgrade-attestation]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[upgrade-intent]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[upgrade-attestation/first]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[upgrade-attestation/repeated]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[upgrade-intent/armed]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[upgrade-attestation]",
+          "tests/test_record_compatibility_controller_upgrade.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[upgrade-intent]"
+        ],
+        "run_nonce": "cdd4a7632f8e0eacccd4c21a93d1c4107a309c478bc5ffc21607fcea61849919"
+      }
+    },
+    {
+      "action_key": "b65406ddc95db56dc6ee4832a31d493d59835387fb0eede657d8c4b85c6fdb93",
+      "report": "capture",
+      "source_parent": "7585278f635e4e1d7cd7dc8eb324125b07969f40",
+      "source_snapshot": {
+        "commit": "52c340ed47d6ab92afbb5ba63e9e8bd9bf5b550f",
+        "input": {
+          "bytes": 48394911,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "cf441a5830ffd3a38c8b93b482444d4f9b84598902d52d369c3e774c33fb3ff7"
+        },
+        "parent": "7585278f635e4e1d7cd7dc8eb324125b07969f40",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "source_bundle_verified": true,
+      "source_tree_equals_parent_except_sealed_generated_closure": true,
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/done/b65406ddc95db56dc6ee4832a31d493d59835387fb0eede657d8c4b85c6fdb93.json",
+      "terminal_sha256": "7d277fdf6e3bc4d6ac59ac9027581e3a0e350a46bf724a835c22aefc6aa0f992",
+      "request_path": "/mnt/shared/prismabuild-fleet/cas/requests/b6/b65406ddc95db56dc6ee4832a31d493d59835387fb0eede657d8c4b85c6fdb93.json",
+      "request_sha256": "3e464a3727adfe5b1dccb244aaaf6b57db2f6e08a3e8b7edb7ed8ef429d2daa8",
+      "logs": {
+        "stdout": {
+          "bytes": 3007,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/b65406ddc95db56dc6ee4832a31d493d59835387fb0eede657d8c4b85c6fdb93/d5efcc53aa78ee431d6ed02f183c70607d9edf5a55b80514b490d25d38fb2627/00000001.stdout.5208869772034b4bfd8f3863752bf03ea91e9793afe83e46d631889c65c2feea.log",
+          "sha256": "5208869772034b4bfd8f3863752bf03ea91e9793afe83e46d631889c65c2feea"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/b65406ddc95db56dc6ee4832a31d493d59835387fb0eede657d8c4b85c6fdb93/d5efcc53aa78ee431d6ed02f183c70607d9edf5a55b80514b490d25d38fb2627/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "receipt_sha256": "1afd448f323fb95e0a4d493a2465da3190e4b3a20bebc97fc3d8cfadbb5302b9",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/executions/v1/1a/1afd448f323fb95e0a4d493a2465da3190e4b3a20bebc97fc3d8cfadbb5302b9.json",
+      "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/d0/d0f2d4d0940b61febd668753802d29457635c3f5770836a90d8114991381b1bb",
+      "claim_sha256": "140899745f1acdcfeefe9ec927edb994960bcbce28b2c58dcd7a8430c8cd6a77",
+      "claim_checks_passed": true,
+      "attestation_verified": null,
+      "payload_sha256": "d0f2d4d0940b61febd668753802d29457635c3f5770836a90d8114991381b1bb",
+      "cleanup_complete": true,
+      "empty": true,
+      "settled": true,
+      "released": true,
+      "outcome_counts": {},
+      "runtime": null,
+      "completion": null
+    }
+  ],
+  "passed": 156,
+  "failed": 0,
+  "skipped": 0,
+  "receipts": 9,
+  "worker_signing_keys": "unchecked; no cryptographic worker-attestation claim",
+  "scope": "Scoped source/component qualification; no runtime publication, activation, canary or campaign claim."
+}

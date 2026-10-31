@@ -4,14 +4,80 @@ from submission_support import patch_store
 
 import json
 from pathlib import Path
+import hashlib
 import sys
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools/fleet'))
-from prismabuild import pool, core as pb
+from prismabuild import pool, core as pb, resource_scope
 import pbwait
-from test_pool_broker_disconnect import make_failed_attempt
+from test_pool_broker_disconnect import make_failed_attempt as make_broker_failed_attempt
+
+
+def make_failed_attempt(tmp_path, monkeypatch, *, publish_receipt=True,
+                        finish_detail=None, finish_status='failed'):
+    checkout = tmp_path / 'checkout'
+    checkout.mkdir()
+    (checkout / 'task.py').write_text("from pathlib import Path\nPath('result').write_text('sealed receipt\\n')\n")
+    demand = {'cpu': 1, 'mem_gb': 2}
+    action = pb.seal_action({
+        'schema': pb.ACTION_SCHEMA_V2,
+        'task': {'definition_id': 'tests/receipt-reconciliation', 'definition_version': 'v1',
+                 'task_class': 'generation', 'determinism': 'deterministic',
+                 'artifact_family': 'generic', 'artifact_kind': 'generic',
+                 'argv': [sys.executable, 'task.py'], 'working_directory': '.',
+                 'result_path': 'result'},
+        'inputs': [], 'code_closure': pb.build_code_closure(checkout, ['task.py']),
+        'params': {'demand': demand},
+        'environment': {'variables': {}, 'toolchain': {}},
+        'execution_scope': {'portability': 'portable', 'platform_key': None,
+                            'host_class': None},
+    })
+    cas = pb.PrismaBuildCAS(tmp_path / 'cas')
+    cas.publish_action_request(action)
+    if publish_receipt:
+        result = checkout / 'result'
+        result.write_text('sealed receipt\n')
+        cas.publish_result(action, result, attestation=pb.preflight_action(
+            action, cas_root=cas.root, checkout_root=checkout))
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    queue.publish(action_key=action['action_key'], cas_root=cas.root,
+                  checkout_root=checkout, worker_script='/worker.py',
+                  resources=demand, max_attempts=1)
+    item = queue.claim(capacity=demand)
+    assert item is not None
+
+    def request(scope, operation, **extra):
+        if operation == 'create':
+            unit = 'prismabuild-job' + hashlib.sha256(
+                (scope.action_key + scope.nonce).encode()).hexdigest()[:32] + '.slice'
+            return {'ok': True, 'scope_id': unit, 'token': 'b' * 64,
+                    'cgroup_path': '/sys/fs/cgroup/prismabuild.slice/' + unit}
+        if operation == 'release':
+            return {'ok': True, 'released': True, 'scope_id': scope.unit}
+        return {'ok': True}
+
+    def sample(scope):
+        return {'action_key': scope.action_key, 'nonce': scope.nonce,
+                'host': pool.socket.gethostname(), 'scope_unit': scope.unit,
+                'sampled_unix': pool._now(), 'wall_seconds': 0.,
+                'cpu_seconds': 0., 'memory_peak_bytes': 0,
+                'memory_current_bytes': 0, 'oom_kill': 0, 'oom_local': 0,
+                'complete': True, 'errors': []}
+
+    monkeypatch.setattr(resource_scope.ResourceScope, '_request', request)
+    monkeypatch.setattr(resource_scope.ResourceScope, 'sample', sample)
+    monkeypatch.setattr(pool.cpu_admission, 'record_completion', lambda *args: None)
+    scope = queue._start_resource_scope(item)
+    from prismabuild.pool_reconcile import BROKER_EOF
+    outcome = {'status': 'failed', 'returncode': 125, 'stdout': '',
+               'stderr': BROKER_EOF, 'elapsed_s': 1., 'execution_timeout_s': None,
+               'resource_telemetry': scope.sample()}
+    terminal_path = queue.finish(action['action_key'], status=finish_status,
+                                 detail={**outcome, **(finish_detail or {})},
+                                 claim_snapshot=item)
+    return queue, cas, action, json.loads(terminal_path.read_text())
 
 
 @pytest.fixture
@@ -45,7 +111,8 @@ def rewrite_ending(fixture, edit):
     )
 
 
-def test_explicit_recovery_verifies_action_payload_without_rewriting_attempt(failure):
+def test_explicit_recovery_verifies_action_payload_without_rewriting_attempt(tmp_path, monkeypatch):
+    failure = make_broker_failed_attempt(tmp_path, monkeypatch)
     q, cas, action, ending = failure
     key = action['action_key']
     before = snapshots(q, key)

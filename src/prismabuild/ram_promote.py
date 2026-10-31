@@ -62,6 +62,7 @@ from prismabuild import storage_tiers  # noqa: E402
 
 from prismabuild.stage_move import _Copier, _delta, bound_unproven_endings, cpu_seconds, load_manifest, prior_move_record, proc_io, retire_conflicted_window
 from prismabuild import staged_path
+from prismabuild import filesystem_floor
 
 
 def _refused(args, reason: str, **extra) -> dict[str, object]:
@@ -411,7 +412,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.residency_root is None:
         args.residency_root = str(Path(args.pool_root) / pool.record_store.RESIDENCY)
 
-    receipt = promote(args)
+    try:
+        receipt = promote(args)
+    except filesystem_floor.FloorRefused as exc:
+        print(f"RAM promotion deferred: {exc}", file=sys.stderr)
+        return 75
     queue = pool.PoolQueue(Path(args.pool_root))
     queue.record_move(args.action_key, receipt)
     if args.receipt:

@@ -25,13 +25,14 @@ from . import immutable_files
 
 
 from collections.abc import Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
 import uuid
 
-from . import contracts, core
+from . import contracts, core, numeric_fields
 
 TAG = contracts.GANG_TAG
 GANGS = "gangs"
@@ -107,11 +108,13 @@ def _gang_read(path: Path, *, optional: bool = True, replaced: bool = False) -> 
             where="gang record",
             max_bytes=MAX_RECORD_BYTES,
         )
+        value = core.digest_primitives.decode_strict_json(raw, where="gang record")
     except FileNotFoundError:
         if optional:
             return None
         raise
-    value = core.digest_primitives.decode_strict_json(raw, where="gang record")
+    except (OSError, core.PrismaBuildError) as exc:
+        raise GangContractError(f"unreadable gang record: {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise GangContractError(f"non-object gang record: {path}")
     return value
@@ -133,7 +136,8 @@ def _link_new(path: Path, payload: Mapping[str, object]) -> bool:
 
 
 def publish_group(queue, group: str, members: list[Mapping[str, object]], *,
-                  skew_s: float = DEFAULT_SKEW_S) -> dict:
+                  skew_s: float = DEFAULT_SKEW_S,
+                  queue_wait_timeout_s: float | None = None) -> dict:
     """File the immutable group record once every member row is published.
 
     ``members`` are the published rows (``action_key``, ``published_unix``,
@@ -145,6 +149,8 @@ def publish_group(queue, group: str, members: list[Mapping[str, object]], *,
     if not (isinstance(skew_s, (int, float)) and not isinstance(skew_s, bool)
             and math.isfinite(skew_s) and 0 < skew_s <= 3600):
         raise GangContractError("gang skew_s must be finite in (0, 3600]")
+    from . import gang_wait
+    wait = gang_wait.timeout(queue_wait_timeout_s)
     entries = []
     for row in members:
         gang = declaration(row.get("gang"))
@@ -159,8 +165,33 @@ def publish_group(queue, group: str, members: list[Mapping[str, object]], *,
     record = {"schema": GROUP_SCHEMA, "group": group, "size": len(members),
               "skew_s": float(skew_s), "members": entries,
               "priority": max(entry["priority"] for entry in entries)}
-    if not _link_new(group_path(queue, group), record):
-        if read_group(queue, group) != record:
+    if wait is not None:
+        record["queue_wait_timeout_s"] = wait
+    standing = read_group(queue, group)
+    if standing is not None:
+        if standing != record:
+            raise GangContractError("a different record already names this gang group")
+        return record
+    from . import pool
+    with ExitStack() as locks:
+        for entry in sorted(entries, key=lambda entry: entry["action_key"]):
+            if not locks.enter_context(queue.action_transition_lock(
+                    str(entry["action_key"]), blocking=False)):
+                raise GangContractError("gang registration busy with a member transition")
+        standing = read_group(queue, group)
+        if standing is None:
+            for entry in entries:
+                current = pool.record_store.value_or_raise(queue.records.item(
+                    pool.record_store.READY, str(entry["action_key"])))
+                if (current is None or current.get("action_key") != entry["action_key"]
+                        or current.get("published_unix") != entry["published_unix"]
+                        or declaration(current.get("gang")) != {
+                            "group": group, "size": len(entries), "index": entry["index"]}):
+                    raise GangContractError("gang member publication changed before registration")
+            if _link_new(group_path(queue, group), record):
+                return record
+            standing = read_group(queue, group)
+        if standing != record:
             raise GangContractError("a different record already names this gang group")
     return record
 
@@ -171,13 +202,21 @@ def read_group(queue, group: str) -> dict | None:
         return None
     members = record.get("members")
     if (record.get("schema") != GROUP_SCHEMA or record.get("group") != group
-            or not isinstance(members, list) or record.get("size") != len(members)
+            or not isinstance(members, list) or type(record.get("size")) is not int
+            or record["size"] != len(members)
             or not 2 <= len(members) <= MAX_MEMBERS
             or [m.get("index") if isinstance(m, Mapping) else None for m in members]
             != list(range(len(members)))
             or any(not _is_hex(m.get("action_key"), 64) for m in members)
+            or any(type(m.get("index")) is not int
+                   or not numeric_fields.is_finite_number(m.get("published_unix"))
+                   or type(m.get("priority")) is not int for m in members)
+            or not numeric_fields.is_finite_number(record.get("skew_s"))
+            or not 0 < record["skew_s"] <= 3600
             or type(record.get("priority")) is not int):
         raise GangContractError(f"malformed gang group record {group}")
+    from . import gang_wait
+    gang_wait.timeout(record.get("queue_wait_timeout_s"))
     return record
 
 
@@ -191,7 +230,14 @@ def member(record: Mapping[str, object], item: Mapping[str, object], gang: Mappi
 
 
 def teardown(queue, group: str) -> dict | None:
-    return _gang_read(state_dir(queue, group) / "teardown.json")
+    record = _gang_read(state_dir(queue, group) / "teardown.json")
+    if record and (
+            record.get("schema") != TEARDOWN_SCHEMA or record.get("group") != group
+            or not isinstance(record.get("reason"), str)
+            or not isinstance(record.get("by"), str)
+            or not numeric_fields.is_finite_number(record.get("torn_down_unix"))):
+        raise GangContractError(f"malformed gang teardown {group}")
+    return record
 
 
 def elections(queue, group: str, size: int) -> dict[int, dict]:
@@ -201,8 +247,10 @@ def elections(queue, group: str, size: int) -> dict[int, dict]:
         if record is None:
             continue
         if (record.get("schema") != ELECT_SCHEMA or record.get("group") != group
-                or record.get("index") != index or not isinstance(record.get("host"), str)
+                or type(record.get("index")) is not int or record["index"] != index
+                or not isinstance(record.get("host"), str) or not record["host"]
                 or not _is_hex(record.get("action_key"), 64)
+                or not numeric_fields.is_finite_number(record.get("epoch_unix"))
                 or type(record.get("priority")) is not int):
             raise GangContractError(f"malformed gang election {group}/{index}")
         found[index] = record
@@ -242,6 +290,7 @@ def sibling_readiness(queue, record: Mapping[str, object], entry: Mapping[str, o
     for other in record["members"]:  # type: ignore[union-attr]
         if other["index"] == entry["index"]:
             continue
+        loan_pending = False
         claimed = _gang_read(
             queue.records.item_path(pool.record_store.CLAIMED, other["action_key"]),
             replaced=True,
@@ -251,14 +300,17 @@ def sibling_readiness(queue, record: Mapping[str, object], entry: Mapping[str, o
             other_host = claimed.get("claimed_host")
             state = "claimed"
         else:
-            ready = _gang_read(state_dir(queue, str(record["group"])) / f"ready-{other['index']}.json")
+            from . import gang_loans
+            loan_pending = gang_loans.pending(queue, str(record["group"]), other["index"])
+            ready = (None if loan_pending else _gang_read(
+                state_dir(queue, str(record["group"])) / f"ready-{other['index']}.json"))
             fresh = (ready is not None and ready.get("schema") == READY_SCHEMA
                      and ready.get("action_key") == other["action_key"]
                      and isinstance(ready.get("ready_unix"), (int, float))
                      and 0 <= now - float(ready["ready_unix"]) <= READY_FRESH_S)
             other_host = ready.get("host") if fresh else None  # type: ignore[union-attr]
             state = "ready" if fresh else "waiting"
-        if state == "waiting" and reclaimable:
+        if state == "waiting" and reclaimable and not loan_pending:
             election = elections(queue, str(record["group"]), int(record["size"])).get(other["index"])
             if election is not None and backfill_holders(queue, election):
                 other_host, state = election["host"], "backfill"
@@ -446,8 +498,8 @@ def member_states(queue, record: Mapping[str, object]) -> dict[int, str]:
             row = pool.record_store.value_or_raise(observation.result)
             name = observation.address.state
             if (row is not None and row.get("action_key") == other["action_key"]
-                    and float(row.get("published_unix", other["published_unix"]))
-                    == float(other["published_unix"])):
+                    and numeric_fields.is_finite_number(row.get("published_unix"))
+                    and row["published_unix"] == other["published_unix"]):
                 state = name
                 break
         states[int(other["index"])] = state
