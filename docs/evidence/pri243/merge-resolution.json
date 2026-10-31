@@ -1,0 +1,29 @@
+{
+  "automatic_merge_tree": "5d5624053940c30dc35a6c1515b2945cc80c0a77",
+  "source": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+  "original_conflicts": [
+    "tests/compat/capture-rollout.json",
+    "tests/compat/goldens-rollout.jsonl",
+    "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/provenance.json"
+  ],
+  "changed_from_automatic_merge": [
+    "docs/evidence/pri243/preserve_parents.py",
+    "tests/compat/capture-rollout.json",
+    "tests/compat/goldens-rollout.jsonl",
+    "tests/compat/history-controls/parent-rollout-8be4d4056fbc/capture-rollout.json",
+    "tests/compat/history-controls/parent-rollout-8be4d4056fbc/goldens-rollout.jsonl",
+    "tests/compat/history-controls/parent-rollout-8be4d4056fbc/historical-rollout.jsonl",
+    "tests/compat/history-controls/parent-rollout-a1bac460f128/capture-rollout.json",
+    "tests/compat/history-controls/parent-rollout-a1bac460f128/goldens-rollout.jsonl",
+    "tests/compat/history-controls/parent-rollout-a1bac460f128/historical-rollout.jsonl",
+    "tests/compat/history-controls/superseded-upgrade-intent-b54cb2fa908103ff/capture-rollout.json",
+    "tests/compat/history-controls/superseded-upgrade-intent-b54cb2fa908103ff/goldens-rollout.jsonl",
+    "tests/compat/history-controls/superseded-upgrade-intent-b54cb2fa908103ff/provenance.json",
+    "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54-a1bac460f128/capture-rollout.json",
+    "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54-a1bac460f128/goldens-rollout.jsonl",
+    "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54-a1bac460f128/provenance.json",
+    "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/provenance.json"
+  ],
+  "unexpected_changes": [],
+  "manual_resolution": "Main baseline golden+capture followed by unchanged strict integrated-writer capture/adoption. Main complete colliding archive retained at canonical path, complete PR archive preserved in distinct suffix identity. Both complete current parent fixture/capture/history sets preserved in parent-rollout paths. All other automatic merge entries retained."
+}

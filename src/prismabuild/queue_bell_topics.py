@@ -46,9 +46,10 @@ ADAPTIVE_TOPICS = (Topic("adaptive", "reservations", HOST_ID_PATTERN),
 TIER_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
 TIER_TOPICS = tuple(Topic(name, name, TIER_ID_PATTERN) for name in
                    (TIERS, TIER_RESERVATIONS, TIER_FUNDING, TIER_COMMITMENTS))
+GANG_TOPICS = (Topic("gangs", "gangs", r"[0-9a-f]{32}"),)
 TOPICS = {topic.name: topic for topic in
           (*OUTCOME_TOPICS, *WORKER_TOPICS, *HOST_RESERVATION_TOPICS,
-           *ADAPTIVE_TOPICS, *TIER_TOPICS)}
+           *ADAPTIVE_TOPICS, *TIER_TOPICS, *GANG_TOPICS)}
 
 
 class OutcomeNamespaces:
@@ -284,6 +285,42 @@ class TierInputs:
         # Tier observation fences and mint history enumerate all names. Unlike
         # host held censuses, their non-directory entries cannot be omitted.
         return entries
+
+
+class GangInputs:
+    """The group record and immediate state files, never record contents."""
+
+    topics = GANG_TOPICS
+
+    @staticmethod
+    def allows(relative: Path) -> bool:
+        parts = relative.parts
+        return (parts == ("gangs",) or (len(parts) == 2 and parts[0] == "gangs"
+                and GANG_TOPICS[0].accepts_id(parts[1])))
+
+    @staticmethod
+    def hint(relative: Path) -> tuple[str, str] | None:
+        parts = relative.parts
+        if not parts or parts[0] != "gangs":
+            return None
+        if len(parts) == 2:
+            group = parts[1][:-5] if parts[1].endswith(".json") else parts[1]
+        elif len(parts) == 3 and GangInputs.state_file(parts[2]):
+            group = parts[1]
+        else:
+            return None
+        return ("gangs", group) if GANG_TOPICS[0].accepts_id(group) else None
+
+    @staticmethod
+    def state_file(name: str) -> bool:
+        from ._gang import MAX_MEMBERS
+
+        if name in ("teardown.json", "started.json", "bounded-loan.json"):
+            return True
+        if re.fullmatch(r"terminal-[0-9a-f]{64}\.json", name):
+            return True
+        match = re.fullmatch(r"(?:elect|ready)-(0|[1-9][0-9]*)\.json", name)
+        return match is not None and int(match[1]) < MAX_MEMBERS
 
 
 class NamespaceInputs:
