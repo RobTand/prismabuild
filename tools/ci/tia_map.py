@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import io
 import json
 from pathlib import Path
 
@@ -42,7 +43,10 @@ def write_impact_map(records: list[Path], destination: Path, *, unmapped: dict |
               'tests': {node: sorted(ids[name] for name in values) for node, values in sorted(tests.items())}}
     encoded = (compact_ascii_json_bytes(result).decode() + '\n').encode()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(gzip.compress(encoded, mtime=0))
+    compressed = io.BytesIO()
+    with gzip.GzipFile(filename='', fileobj=compressed, mode='wb', mtime=0) as archive:
+        archive.write(encoded)
+    destination.write_bytes(compressed.getvalue())
     return result
 
 
