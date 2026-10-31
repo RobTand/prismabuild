@@ -68,14 +68,14 @@ def test_each_facet_addresses_only_its_own_candidates(tmp_path, monkeypatch, fie
     assert not result.complete and 'coverage-missing' in result.reasons
 
 
-def test_facets_and_publication_time_intersect_before_canonical_reads(tmp_path):
+def test_only_addressed_facet_and_publication_time_narrow_candidates(tmp_path):
     store = RecordStore(tmp_path)
     for item in [record(1,published=100),record(2,published=300),record(3,published=300,host='other')]:
         path=file_record(store,item)
         os.utime(path,(9999,9999))
     result=store.publication_candidates(facets={'checkout_root':'/task','published_by':'publisher'},
                                          published_after=200,published_before=400)
-    assert [c.action_key for c in result.candidates] == [f'{2:064x}']
+    assert sorted(c.action_key for c in result.candidates) == [f'{2:064x}', f'{3:064x}']
     assert result.entries_consumed == 3
 
 

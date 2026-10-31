@@ -67,3 +67,30 @@ def test_missing_requested_slot_remains_complete(reconciled_queue):
     assert response["complete"] and not response["truncated"]
     assert response["discovery"]["canonical_reads"] == 1
     assert response["unavailable"] == []
+
+
+@pytest.mark.parametrize("corruption", ["duplicate-field", "nonfinite", "oversized", "symlink"])
+def test_indexed_canonical_reader_is_bounded_and_strict(reconciled_queue, tmp_path, corruption):
+    from prismabuild import record_store
+    store, path, session = reconciled_queue
+    raw = path.read_bytes()
+    if corruption == "duplicate-field":
+        raw = raw.replace(b'"checkout_root": "/fixture"',
+                          b'"checkout_root": "/other", "checkout_root": "/fixture"')
+    elif corruption == "nonfinite":
+        raw = raw[:-1] + b', "untrusted": NaN}'
+    elif corruption == "oversized":
+        raw = raw[:-1] + b' ' * (8 * 1024 * 1024) + b'}'
+    if corruption == "symlink":
+        target = tmp_path / "outside.json"
+        target.write_bytes(raw)
+        path.unlink()
+        path.symlink_to(target)
+    else:
+        path.write_bytes(raw)
+    result = store.inspection_slot_result("ready", "a" * 64)
+    assert isinstance(result, record_store.Unknown)
+    assert result.reason == "record-unreadable" and result.path == path
+    response = session.call("pb_actions", {"checkout_root": "/fixture", "states": ["ready"]})
+    assert response["actions"] == [] and not response["complete"]
+    assert "canonical-record-unreadable" in response["discovery"]["reasons"]

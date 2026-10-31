@@ -82,14 +82,14 @@ def test_in_place_leaf_address_mismatch_retains_partial_rows(indexed_queue,
     assert [row["action_key"] for row in direct["actions"]] == [records[0]["action_key"]]
 
 
-@pytest.mark.parametrize("extra", [{"published_by": "other"}, {"max_age_s": 1}])
-def test_consistent_leaf_can_be_a_genuine_nonmatch(indexed_queue, extra):
+@pytest.mark.parametrize(("extra", "reads"), [({"published_by": "other"}, 2), ({"max_age_s": 1}, 0)])
+def test_consistent_leaf_can_be_a_genuine_nonmatch(indexed_queue, extra, reads):
     _, _, session = indexed_queue
     response = session.call("pb_actions", {"checkout_root": "/fixture",
                                            "states": ["ready"], **extra})
     assert response["complete"] and not response["truncated"]
     assert response["actions"] == [] and response["unavailable"] == []
-    assert response["discovery"]["canonical_reads"] == 0
+    assert response["discovery"]["canonical_reads"] == reads
 
 
 def test_valid_leaf_in_wrong_day_bucket_is_reported(indexed_queue):
@@ -104,3 +104,36 @@ def test_valid_leaf_in_wrong_day_bucket_is_reported(indexed_queue):
     assert not result.complete and result.candidates == ()
     assert "index-leaf-unreadable" in result.reasons
     assert result.entries_consumed == 1 and result.pages_consumed == 1
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("published_by", "publisher"), ("snapshot_parent", "parent"),
+    ("snapshot_commit", "commit"),
+])
+def test_secondary_leaf_facets_cannot_hide_canonical_matches(indexed_queue, field, value):
+    store, records, session = indexed_queue
+    leaf = next((store.root / "publication-index/v1/facets/checkout_root").glob(
+        "*/entries/" + records[0]["action_key"] + ".*.json"))
+    stamps = publication_index._namespace_stamps(store.root)
+    body = json.loads(leaf.read_bytes())
+    body["facets"][field] = "corrupted"
+    leaf.write_text(json.dumps(body))
+    assert publication_index._namespace_stamps(store.root) == stamps
+
+    response = session.call("pb_actions", {"checkout_root": "/fixture", field: value,
+                                           "states": ["ready"]})
+    assert {row["action_key"] for row in response["actions"]} == {
+        record["action_key"] for record in records}
+    assert response["discovery"]["canonical_reads"] == 2
+    assert response["complete"] and response["unavailable"] == []
+
+
+def test_secondary_predicates_stay_within_canonical_budget(indexed_queue, monkeypatch):
+    _, _, session = indexed_queue
+    monkeypatch.setattr(pbmcp, "ACTION_CANONICAL_READS", 1)
+    response = session.call("pb_actions", {"checkout_root": "/fixture",
+                                           "published_by": "other", "states": ["ready"]})
+    assert response["actions"] == []
+    assert response["discovery"]["canonical_reads"] == 1
+    assert not response["complete"] and response["unavailable"]
+    assert "canonical-read-budget-exhausted" in response["discovery"]["reasons"]
