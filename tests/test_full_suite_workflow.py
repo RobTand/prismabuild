@@ -24,34 +24,21 @@ def test_population_keeps_quarantine_and_two_cpu_and_excludes_only_root_gpu(tmp_
     assert plan['deselect'] == []
 
 
-def test_architecture_merge_preserves_failures_and_requires_both_pass_for_recovery():
-    def row(outcome, failure=''):
-        return {'outcome': outcome, 'duration': 2, 'failure': failure}
-    result = workflow.combine_architectures({
-        'x64': {'x': row('passed'), 'y': row('passed'), 'z': row('passed')},
-        'arm64': {'x': row('failed', 'bad arm result'), 'y': row('passed')}}, ['x64', 'arm64'])
-    assert result['x']['outcome'] == 'failed'
-    assert '[arm64]' in result['x']['failure']
-    assert result['y']['outcome'] == 'passed'
-    assert result['y']['duration'] == 4
-    assert result['z']['outcome'] == 'skipped'
-
-
 def test_missing_shard_or_no_verdict_refuses_complete_reporting(tmp_path):
     manifest = {'sha': 'a' * 40, 'include': [
-        {'arch': 'x64', 'shard': 0, 'files': ['tests/a.py']},
-        {'arch': 'arm64', 'shard': 0, 'files': ['tests/a.py']}]}
-    for arch in ['x64', 'arm64']:
-        path = tmp_path / f'full-suite-shard-{arch}-0'
+        {'index': 0, 'runner': 'ubuntu-latest', 'files': ['tests/a.py']},
+        {'index': 1, 'runner': 'ubuntu-24.04-arm', 'files': ['tests/b.py']}]}
+    for index, name in enumerate(['a', 'b']):
+        path = tmp_path / f'full-suite-shard-{index}'
         path.mkdir()
         (path / 'result.json').write_text(json.dumps({'verdict': 'pass', 'head_sha': 'a' * 40,
-                                                     'files': ['tests/a.py']}))
-        (path / 'junit.xml').write_text('<testsuite><testcase file="tests/a.py" classname="tests.a" name="test_x"/></testsuite>')
+                                                     'files': [f'tests/{name}.py']}))
+        (path / 'junit.xml').write_text(f'<testsuite><testcase file="tests/{name}.py" classname="tests.{name}" name="test_x"/></testsuite>')
     assert workflow.collect_shards(tmp_path, manifest)['tests/a.py::test_x']['outcome'] == 'passed'
-    (tmp_path / 'full-suite-shard-arm64-0/result.json').write_text(json.dumps({'verdict': None}))
+    (tmp_path / 'full-suite-shard-1/result.json').write_text(json.dumps({'verdict': None}))
     with pytest.raises(ValueError, match='verdict|identity'):
         workflow.collect_shards(tmp_path, manifest)
-    (tmp_path / 'full-suite-shard-arm64-0/result.json').unlink()
+    (tmp_path / 'full-suite-shard-1/result.json').unlink()
     with pytest.raises((ValueError, FileNotFoundError)):
         workflow.collect_shards(tmp_path, manifest)
 
@@ -104,3 +91,27 @@ def test_signed_artifact_download_drops_authorization(tmp_path, monkeypatch):
     monkeypatch.setattr(workflow.urllib.request, 'urlopen', public_download)
     api = workflow.report.GitHub('RobTand/prismabuild', 'test-only-secret')
     assert workflow.artifact_results(api, 7)['sha'] == 'old'
+
+
+def test_plan_uses_shared_partition_interface_and_round_robin_runners(tmp_path, monkeypatch):
+    (tmp_path / 'tests').mkdir()
+    for name in ['a', 'b']:
+        (tmp_path / 'tests' / f'test_{name}.py').write_text('')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(workflow.gate_select, 'tier_declarations', lambda root: (set(), {}))
+    monkeypatch.setattr(workflow.gate_select, 'read_json', lambda path: {'files': {'tests/test_a.py': 3}})
+    monkeypatch.setattr(workflow.gate_partition, 'default_unknown_seconds', lambda durations: 7, raising=False)
+    def shared_shards(files, durations, count, *, unknown_seconds):
+        assert files == ['tests/test_a.py', 'tests/test_b.py']
+        assert durations == {'tests/test_a.py': 3} and count == 2 and unknown_seconds == 7
+        return [{'index': 0, 'files': ['tests/test_b.py'], 'estimated_seconds': 7, 'unknown_files': ['tests/test_b.py']},
+                {'index': 1, 'files': ['tests/test_a.py'], 'estimated_seconds': 3, 'unknown_files': []}]
+    monkeypatch.setattr(workflow.gate_partition, 'shards', shared_shards, raising=False)
+    monkeypatch.setenv('GITHUB_OUTPUT', str(tmp_path / 'outputs'))
+    workflow.main(['plan', '--sha', 'a' * 40, '--shards', '2', '--output', str(tmp_path / 'out')])
+    matrix = json.loads((tmp_path / 'outputs').read_text().removeprefix('matrix='))
+    assert matrix == {'include': [{'index': 0, 'runner': 'ubuntu-latest'},
+                                  {'index': 1, 'runner': 'ubuntu-24.04-arm'}]}
+    manifest = json.loads((tmp_path / 'out/manifest.json').read_text())
+    assert manifest['include'][0]['files'] == ['tests/test_b.py']
+    assert manifest['sha'] == 'a' * 40

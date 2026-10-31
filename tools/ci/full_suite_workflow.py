@@ -36,24 +36,10 @@ def cpu_plan(root: Path, lanes: dict, sha: str) -> dict:
             'population': {'version': sha}, 'selected': [{'path': name} for name in files]}
 
 
-def combine_architectures(rows: dict, architectures: list[str]) -> dict:
-    combined = {}
-    for node in sorted({node for tests in rows.values() for node in tests}):
-        outcomes = [rows[arch].get(node, {}).get('outcome', 'skipped') for arch in architectures]
-        outcome = 'failed' if 'failed' in outcomes else ('passed' if set(outcomes) == {'passed'} else 'skipped')
-        combined[node] = {
-            'outcome': outcome,
-            'duration': sum(rows[arch].get(node, {}).get('duration', 0) for arch in architectures),
-            'failure': '\n'.join(f'[{arch}]\n{rows[arch][node]["failure"]}'
-                                 for arch in architectures if rows[arch].get(node, {}).get('outcome') == 'failed'),
-            'architectures': {arch: rows[arch].get(node, {}).get('outcome', 'absent') for arch in architectures}}
-    return combined
-
-
 def collect_shards(directory: Path, manifest: dict) -> dict:
-    by_arch = {entry['arch']: {} for entry in manifest['include']}
+    tests = {}
     for entry in manifest['include']:
-        folder = directory / f"full-suite-shard-{entry['arch']}-{entry['shard']}"
+        folder = directory / f"full-suite-shard-{entry['index']}"
         result = json.loads((folder / 'result.json').read_text())
         if (result.get('verdict') not in {'pass', 'fail'} or result.get('head_sha') != manifest['sha']
                 or sorted(result.get('files', [])) != sorted(entry['files'])):
@@ -61,11 +47,12 @@ def collect_shards(directory: Path, manifest: dict) -> dict:
         rows = report.parse_junit((folder / 'junit.xml').read_bytes())
         if not rows:
             raise ValueError('shard JUnit contains no outcomes')
-        previous = by_arch[entry['arch']]
-        if previous.keys() & rows.keys():
+        if tests.keys() & rows.keys():
             raise ValueError('duplicate tests across shards')
-        previous.update(rows)
-    return combine_architectures(by_arch, sorted(by_arch))
+        for row in rows.values():
+            row['runner'] = entry['runner']
+        tests.update(rows)
+    return tests
 
 
 def artifact_results(api: report.IssueAPI, artifact_id: int) -> dict:
@@ -153,7 +140,8 @@ def main(argv=None):
     plan = commands.add_parser('plan')
     plan.add_argument('--output', type=Path, required=True)
     plan.add_argument('--sha', required=True)
-    plan.add_argument('--shards', type=int, default=8)
+    plan.add_argument('--shards', type=int, default=16)
+    plan.add_argument('--population-only', action='store_true')
     collect = commands.add_parser('report')
     collect.add_argument('--input', type=Path, required=True)
     collect.add_argument('--manifest', type=Path, required=True)
@@ -167,18 +155,20 @@ def main(argv=None):
     population = cpu_plan(root, lanes, args.sha)
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / 'plan.json').write_text(json.dumps(population) + '\n')
+    files = [row['path'] for row in population['selected']]
+    (args.output / 'files.txt').write_text('\n'.join(files) + '\n')
+    if args.population_only:
+        return 0
     # The gate owns the duration-balancing implementation shared by both workflows.
-    assignments = gate_partition.balanced_shards(population, gate_select.read_json(
-        root / 'tools/ci/gate_durations.json'), args.shards)
-    include = []
-    for arch, runner in ARCHITECTURES.items():
-        for shard, files in enumerate(assignments):
-            if files:
-                include.append({'arch': arch, 'runner': runner, 'shard': shard, 'files': files})
-                (args.output / f'{arch}-{shard}.txt').write_text('\n'.join(files) + '\n')
+    durations = gate_select.read_json(root / 'tools/ci/gate_durations.json')['files']
+    assignments = gate_partition.shards(files, durations, args.shards,
+        unknown_seconds=gate_partition.default_unknown_seconds(durations))
+    runners = list(ARCHITECTURES.values())
+    include = [dict(row, runner=runners[row['index'] % len(runners)])
+               for row in assignments if row['files']]
     manifest = {'sha': args.sha, 'include': include}
     (args.output / 'manifest.json').write_text(json.dumps(manifest) + '\n')
-    matrix = {'include': [{k: row[k] for k in ['arch', 'runner', 'shard']} for row in include]}
+    matrix = {'include': [{k: row[k] for k in ['index', 'runner']} for row in include]}
     with open(os.environ['GITHUB_OUTPUT'], 'a') as handle:
         handle.write('matrix=' + json.dumps(matrix) + '\n')
 

@@ -5,13 +5,12 @@ GitHub Actions runs the full CPU suite nightly at 03:17 UTC and on manual
 the merge queue. This PR stacks on #2433 and reuses its population declarations,
 duration partitioner and `gate_run.py`; it does not change the gate's files.
 
-Each architecture runs the entire CPU population, including quarantined tests
-and the two-CPU population. Only the root and GPU populations declared by
+The CPU population includes quarantined tests and the two-CPU population. Only the root and GPU populations declared by
 `tools/verify.py` and its proof profiles are excluded. The initial matrix has
-eight duration-balanced shards on `ubuntu-latest` and eight on
+16 duration-balanced shards assigned round-robin across `ubuntu-latest` and
 `ubuntu-24.04-arm`, with four xdist workers per job and bounded native threads.
 Sixteen jobs leave capacity within the public repository's approximate
-20-job allowance. The inventory's roughly 4,000 CPU-seconds per architecture
+20-job allowance. The inventory's roughly 4,000 CPU-seconds
 suggests several minutes of test execution plus setup, targeting ten minutes.
 Hosted measurements, rather than that estimate, determine later adjustments.
 
@@ -23,8 +22,9 @@ infrastructure retry. Missing runner or setup output leaves reporting incomplete
 
 ## Artifacts and reporting
 
-The plan artifact records the exact tested SHA and every expected architecture,
-shard and file. Each shard publishes its runner verdict and legacy JUnit XML,
+The plan artifact records the exact tested SHA and every expected runner,
+shard and file. Each shard recomputes its assignment through the gate partition
+CLI from its own checkout; no file list passes between jobs. Each shard publishes its runner verdict and legacy JUnit XML,
 including after failure. The final report job runs with `if: always()` and the
 workflow's own token with `issues: write` and `actions: read`.
 
@@ -33,10 +33,9 @@ terminal test verdict and JUnit file. Missing or invalid input writes an
 incomplete snapshot and files nothing. Such snapshots cannot become history.
 Duplicate tests within an architecture refuse reporting.
 
-A test fails if either architecture fails. It recovers only when both
-architectures pass; absent and skipped tests cannot establish recovery. Failure
-excerpts identify the failing architecture. Per-architecture outcomes and total
-durations remain in the `full-suite-results` artifact, retained for 90 days.
+Every CPU test file runs once across the mixed-architecture matrix. A test
+recovers only when it passes; absent and skipped tests cannot establish recovery.
+Runner identity, outcomes and durations remain in the `full-suite-results` artifact, retained for 90 days.
 
 The reporter compares against the latest complete, non-dry-run results artifact
 from this workflow on `main`. Dry runs never suppress later issue filing.

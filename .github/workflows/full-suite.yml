@@ -30,7 +30,7 @@ jobs:
       - id: plan
         run: |
           python3 -I tools/ci/full_suite_workflow.py plan --output full-suite-plan \
-            --sha "$(git rev-parse HEAD)" --shards 8
+            --sha "$(git rev-parse HEAD)" --shards 16
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: full-suite-plan
@@ -50,24 +50,25 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.14'
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: full-suite-plan
-          path: full-suite-plan
       - name: Prepare dependencies with infrastructure retry
         run: |
           python -m pip install pytest==9.1.1 pytest-xdist==3.8.0 PyYAML==6.0.3 || \
             python -m pip install pytest==9.1.1 pytest-xdist==3.8.0 PyYAML==6.0.3
       - name: Run assigned CPU tests, retry only without a verdict
         env:
-          ASSIGNMENT: ${{ matrix.arch }}-${{ matrix.shard }}
+          SHARD_INDEX: ${{ matrix.index }}
         run: |
+          python -I tools/ci/full_suite_workflow.py plan --population-only \
+            --sha "$(git rev-parse HEAD)" --output full-suite-local
+          python tools/ci/gate_partition.py shard --files-from full-suite-local/files.txt \
+            --durations tools/ci/gate_durations.json --shards 16 --index "$SHARD_INDEX" \
+            --output-files full-suite-local/assigned.txt
           mkdir -p full-suite-shard
           code=75
           for attempt in 1 2; do
             rm -f full-suite-shard/junit.xml full-suite-shard/result.json
-            if python tools/ci/gate_run.py --plan full-suite-plan/plan.json \
-              --files-from "full-suite-plan/$ASSIGNMENT.txt" --workers 4 \
+            if python tools/ci/gate_run.py --plan full-suite-local/plan.json \
+              --files-from full-suite-local/assigned.txt --workers 4 \
               --result full-suite-shard/result.json --junitxml full-suite-shard/junit.xml; then
               code=0
             else
@@ -79,7 +80,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: full-suite-shard-${{ matrix.arch }}-${{ matrix.shard }}
+          name: full-suite-shard-${{ matrix.index }}
           path: full-suite-shard
           if-no-files-found: warn
   report:
