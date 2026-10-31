@@ -15933,7 +15933,7 @@ class PoolQueue:
         if gpu_job:
             load = _peer_placement.cpu_load(
                 offer, now=_now(), max_age_s=box_capacity.GPU_SAMPLE_MAX_AGE_S,
-                on_expiry=claim_wait.on_unix_deadline(self))
+                on_expiry=on_expiry)
             return load.load1 / load.preferred if load is not None else None
 
         detail = offer.get("observed_detail") or {}
@@ -15995,7 +15995,7 @@ class PoolQueue:
         local_offer = next((offer for offer in live if offer.get("host") == host), {})
         local = _peer_placement.cpu_load(
             local_offer, now=_now(), max_age_s=box_capacity.GPU_SAMPLE_MAX_AGE_S,
-                on_expiry=claim_wait.on_unix_deadline(self))
+            on_expiry=claim_wait.on_unix_deadline(self))
         if local is None or cpus > local.preferred or local.headroom >= cpus:
             return None
         generation = (str(item["action_key"]), repr(item.get("published_unix")))
