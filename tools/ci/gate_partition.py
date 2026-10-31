@@ -1,54 +1,91 @@
 #!/usr/bin/env python3
-"""Partition a complete gate plan into duration lanes without dropping files."""
+"""Deterministic duration-balanced shards shared by gate and nightly CI."""
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping, Sequence
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
-def default_unknown_seconds(durations):
-    raise NotImplementedError("shared p90 duration fallback")
+def _cost(value: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError('durations must be finite nonnegative numbers, not booleans')
+    return float(value)
 
 
-def shards(files, durations, count, *, unknown_seconds):
-    raise NotImplementedError("shared deterministic duration-balanced shards")
+def default_unknown_seconds(durations: Mapping[str, float]) -> float:
+    """Nearest-rank p90; empty or all-zero inventories use one second."""
+    costs = sorted(_cost(value) for value in durations.values())
+    return (costs[math.ceil(len(costs) * .9) - 1] or 1.0) if costs else 1.0
 
 
-def partition(plan: dict, durations: dict, threshold: float) -> dict:
-    if not math.isfinite(threshold) or threshold < 0:
-        raise ValueError('threshold must be finite and nonnegative')
-    costs = durations['files']
-    lanes = {'heavy': [], 'light': []}
-    unknown = []
-    for row in plan['selected']:
-        path = row['path']
-        cost = costs.get(path)
-        if cost is not None and (isinstance(cost, bool) or not isinstance(cost, (int, float)) or
-                                 not math.isfinite(cost) or cost < 0):
-            raise ValueError('invalid duration for ' + path)
-        if cost is None:
-            unknown.append(path)
-        lanes['heavy' if cost is None or cost >= threshold else 'light'].append(path)
-    return {**{name: sorted(files) for name, files in lanes.items()},
-            'threshold_seconds': threshold, 'unknown_files': sorted(unknown),
-            **{name + '_cpu_seconds': None if set(files) & set(unknown) else
-               round(sum(costs[path] for path in files), 3) for name, files in lanes.items()}}
+def shards(files: Sequence[str], durations: Mapping[str, float], count: int,
+           *, unknown_seconds: float) -> list[dict]:
+    """Assign longest files first, breaking cost ties by path and shard index."""
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError('count must be a positive integer')
+    if len(files) != len(set(files)):
+        raise ValueError('duplicate files')
+    costs = {path: _cost(value) for path, value in durations.items()}
+    unknown = _cost(unknown_seconds)
+    result = [{'index': index, 'files': [], 'estimated_seconds': 0.0, 'unknown_files': []}
+              for index in range(count)]
+    for path in sorted(files, key=lambda path: (-costs.get(path, unknown), path)):
+        row = min(result, key=lambda row: (row['estimated_seconds'], row['index']))
+        row['files'].append(path)
+        row['estimated_seconds'] += costs.get(path, unknown)
+        if path not in costs:
+            row['unknown_files'].append(path)
+    for row in result:
+        row['files'].sort()
+        row['unknown_files'].sort()
+    return result
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument('--files-from', type=Path, required=True)
+    common.add_argument('--durations', type=Path, required=True)
+    common.add_argument('--shards', type=int, required=True)
+    common.add_argument('--unknown-seconds', type=float)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--plan', type=Path, required=True)
-    parser.add_argument('--durations', type=Path, default=Path('tools/ci/gate_durations.json'))
-    parser.add_argument('--threshold', type=float, required=True)
-    parser.add_argument('--lane', choices=['heavy', 'light'], required=True)
-    parser.add_argument('--files-output', type=Path, required=True)
-    parser.add_argument('--output', type=Path, required=True)
+    commands = parser.add_subparsers(dest='command', required=True)
+    matrix = commands.add_parser('matrix', parents=[common])
+    matrix.add_argument('--runners', required=True)
+    matrix.add_argument('--output', type=Path, required=True)
+    shard = commands.add_parser('shard', parents=[common])
+    shard.add_argument('--index', type=int, required=True)
+    shard.add_argument('--output-files', type=Path, required=True)
     args = parser.parse_args(argv)
-    result = partition(json.loads(args.plan.read_text()), json.loads(args.durations.read_text()), args.threshold)
-    args.output.write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
-    args.files_output.write_text(''.join(path + '\n' for path in result[args.lane]))
+    try:
+        files = [line.strip() for line in args.files_from.read_text().splitlines() if line.strip()]
+        if any(PurePosixPath(path).is_absolute() or '..' in PurePosixPath(path).parts for path in files):
+            raise ValueError('files must be repository-relative paths without traversal')
+        durations = json.loads(args.durations.read_text())['files']
+        if not isinstance(durations, dict):
+            raise ValueError('duration files must be a mapping')
+        unknown = default_unknown_seconds(durations) if args.unknown_seconds is None else args.unknown_seconds
+        result = shards(files, durations, args.shards, unknown_seconds=unknown)
+        if args.command == 'matrix':
+            runners = [name.strip() for name in args.runners.split(',')]
+            if not all(runners):
+                raise ValueError('runners must be nonempty comma-separated names')
+            output = {'schema': 'prismabuild.gate_matrix.v1', 'shards': args.shards,
+                      'total_estimated_seconds': sum(row['estimated_seconds'] for row in result),
+                      'include': [{'index': row['index'], 'runner': runners[row['index'] % len(runners)],
+                                   'files': len(row['files']), 'estimated_seconds': row['estimated_seconds']}
+                                  for row in result]}
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(output, sort_keys=True, indent=2) + '\n')
+        else:
+            if not 0 <= args.index < args.shards:
+                raise ValueError('index is outside the shard range')
+            args.output_files.parent.mkdir(parents=True, exist_ok=True)
+            args.output_files.write_text(''.join(path + '\n' for path in result[args.index]['files']))
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        parser.error(str(error))
     return 0
 
 
