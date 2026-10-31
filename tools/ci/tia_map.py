@@ -15,7 +15,7 @@ except ImportError:
     from tia_bytes import raw_sha256, compact_ascii_json_bytes, sorted_json
 
 
-def write_impact_map(records: list[Path], destination: Path, *, unmapped: dict | None = None, duration_updates: dict | None = None) -> dict:
+def write_impact_map(records: list[Path], destination: Path, *, unmapped: dict | None = None, duration_updates: dict | None = None, baseline_failures: list | None = None) -> dict:
     if not records:
         raise ValueError('no recorder output')
     tests: dict[str, set[str]] = {}
@@ -38,7 +38,7 @@ def write_impact_map(records: list[Path], destination: Path, *, unmapped: dict |
     functions = sorted({function for values in tests.values() for function in values})
     ids = {name: index for index, name in enumerate(functions)}
     result = {'schema': SCHEMA, 'source_commit': commits.pop(), 'python': sorted(versions),
-              'unmapped': dict(sorted((unmapped or {}).items())), 'duration_updates': dict(sorted((duration_updates or {}).items())), 'files': dict(sorted(hashes.items())), 'functions': functions, 'unattributed': sorted(unattributed),
+              'baseline_failures': baseline_failures or [], 'unmapped': dict(sorted((unmapped or {}).items())), 'duration_updates': dict(sorted((duration_updates or {}).items())), 'files': dict(sorted(hashes.items())), 'functions': functions, 'unattributed': sorted(unattributed),
               'tests': {node: sorted(ids[name] for name in values) for node, values in sorted(tests.items())}}
     encoded = (compact_ascii_json_bytes(result).decode() + '\n').encode()
     destination.parent.mkdir(parents=True, exist_ok=True)

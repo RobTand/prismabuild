@@ -48,7 +48,8 @@ def extract(reports: list[Path], output: Path):
                             path.write_text(json.dumps(record))
                             paths.append(path)
         result = write_impact_map(paths, output, unmapped=json.loads(os.environ.get('PB_TIA_UNMAPPED', '{}')),
-                           duration_updates=json.loads(os.environ.get('PB_TIA_EXTRA_DURATIONS', '{}')))
+                           duration_updates=json.loads(os.environ.get('PB_TIA_EXTRA_DURATIONS', '{}')),
+                           baseline_failures=json.loads(os.environ.get('PB_TIA_BASELINE_FAILURES', '[]')))
     print(json.dumps({'tests': len(result['tests']), 'functions': len(result['functions']),
                       'bytes': output.stat().st_size, 'source_commit': result['source_commit']}))
 
@@ -59,7 +60,7 @@ def extract_cas(inputs: list[dict], output: Path):
         for entry in inputs:
             payload = Path(entry['blob_path']).read_bytes()
             if raw_sha256(payload) != entry['blob_sha256']:
-                raise ValueError('CAS result hash mismatch')
+                raise ValueError('recorded result or terminal-log hash mismatch')
             found = False
             for line in payload.decode().splitlines():
                 if line.startswith('tia-record: '):
@@ -72,7 +73,8 @@ def extract_cas(inputs: list[dict], output: Path):
             if not found:
                 raise ValueError(f"missing recorder output: {entry['action_key']}")
         result = write_impact_map(paths, output, unmapped=json.loads(os.environ.get('PB_TIA_UNMAPPED', '{}')),
-                           duration_updates=json.loads(os.environ.get('PB_TIA_EXTRA_DURATIONS', '{}')))
+                           duration_updates=json.loads(os.environ.get('PB_TIA_EXTRA_DURATIONS', '{}')),
+                           baseline_failures=json.loads(os.environ.get('PB_TIA_BASELINE_FAILURES', '[]')))
     print('tia-map: ' + base64.b64encode(output.read_bytes()).decode(), flush=True)
     print(json.dumps({'tests': len(result['tests']), 'functions': len(result['functions']),
                       'bytes': output.stat().st_size, 'source_commit': result['source_commit']}), flush=True)
