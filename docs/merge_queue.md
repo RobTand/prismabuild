@@ -28,8 +28,9 @@ cheap first check, not a substitute.
 
 ## What happens in the queue
 
-Mergify groups queued pull requests into batches. A batch holds one pull
-request when the queue is short and grows to seven when it backs up. For each
+Mergify groups queued pull requests into batches. In the default queue a batch
+holds one pull request when the queue is short and grows to seven when it
+backs up; the release queue always tests one pull request at a time. For each
 batch, Mergify opens a draft pull request on a `mergify/merge-queue/` branch
 that contains `main`, the batches queued ahead, and this batch. Two batches
 are tested at once.
@@ -50,10 +51,12 @@ failing run.
 ## When the gate fails
 
 - **A test failed.** Open the failing shard in the `gate` run, read the test, fix the
-  pull request, push, and add the `queue` label again.
+  pull request, push, then remove the `queue` label and add it again. Mergify
+  acts when the label is added, so a label that is still present doesn't
+  requeue the pull request.
 - **A job ended without a test verdict**, for example a lost runner or a
-  failed setup step. Its log says so. Re-add the label after the runners
-  recover.
+  failed setup step. Its log says so. After the runners recover, remove the
+  `queue` label and add it again.
 - **A test fails that your change can't affect.** Check the issues labelled
   `full-suite` for a known failure on `main`, and link it in your pull
   request.
