@@ -85,7 +85,8 @@ def action_proof(root, key, *, parent, snapshots):
     logs, streams = {}, {}
     for name in ("stdout", "stderr"):
         fact = terminal["detail"][name + "_log"]
-        raw = proof_blob(queue / fact["path"], fact)
+        from prismabuild import resolve_attempt_log
+        raw = resolve_attempt_log(queue, fact)
         logs[name] = fact
         streams[name] = raw.decode(errors="replace")
     receipt = pb.PrismaBuildCAS(cas_root).lookup(action)

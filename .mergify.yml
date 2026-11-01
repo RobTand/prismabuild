@@ -23,6 +23,22 @@
 # find the pull request that broke it. The gate itself reruns a shard that
 # ended without a test verdict; a test failure is never retried, so
 # max_checks_retries stays 0.
+# TL3's GitHub App requeues its own pull requests after Mergify dequeues them
+# with "@mergifyio queue" or "requeue". Mergify's default restrictions refuse
+# commands from a sender without write permission, so the app is allowed by
+# name, alongside people with write permission.
+commands_restrictions:
+  queue:
+    conditions:
+      - or:
+          - sender-permission>=write
+          - sender=tl3-robtand[bot]
+  requeue:
+    conditions:
+      - or:
+          - sender-permission>=write
+          - sender=tl3-robtand[bot]
+
 merge_queue:
   mode: serial
   max_parallel_checks: 2

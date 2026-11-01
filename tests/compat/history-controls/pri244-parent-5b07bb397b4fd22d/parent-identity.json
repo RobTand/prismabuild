@@ -1,0 +1,54 @@
+{
+  "credit": "original complete parent bytes; no new runtime or historical-generation credit",
+  "files": [
+    {
+      "bytes": 1453,
+      "git_blob": "d752ec2e987dfcbbcc283dd087ba0826b83e69e8",
+      "original": "tests/compat/capture-receipt.json",
+      "parent": "5b07bb397b4fd22d60890c35f92875cf04706951",
+      "preserved": "tests/compat/history-controls/pri244-parent-5b07bb397b4fd22d/capture-receipt.json",
+      "sha256": "d2f52a07745707c577e56af0d1060f98e6acc67f28f7c541c0a6705ee388ccda"
+    },
+    {
+      "bytes": 12398,
+      "git_blob": "4b3f86550941436ef3e388b13b4b4dee3f854988",
+      "original": "tests/compat/goldens-receipt.jsonl",
+      "parent": "5b07bb397b4fd22d60890c35f92875cf04706951",
+      "preserved": "tests/compat/history-controls/pri244-parent-5b07bb397b4fd22d/goldens-receipt.jsonl",
+      "sha256": "972dbc4600008600a55634dca8a8aa5f0b5dffecb5cafab845b1c53f32e8ab97"
+    },
+    {
+      "bytes": 26446,
+      "git_blob": "5da3d0889d3661ad82d9e75c39545a9bc77f3bb6",
+      "original": "tests/compat/historical-receipt.jsonl",
+      "parent": "5b07bb397b4fd22d60890c35f92875cf04706951",
+      "preserved": "tests/compat/history-controls/pri244-parent-5b07bb397b4fd22d/historical-receipt.jsonl",
+      "sha256": "6a4d3cc7de7d999ac07f17176b9a31ab939e1ebff1651ee90882fe27177bbb97"
+    },
+    {
+      "bytes": 1451,
+      "git_blob": "ee86df6a3f33fa816d7880687539777e9a14eef2",
+      "original": "tests/compat/history-controls/superseded-runtime-54a45eeafcdd8d67/capture-receipt.json",
+      "parent": "5b07bb397b4fd22d60890c35f92875cf04706951",
+      "preserved": "tests/compat/history-controls/pri244-parent-5b07bb397b4fd22d/history-controls/superseded-runtime-54a45eeafcdd8d67/capture-receipt.json",
+      "sha256": "224efe7cc6f1a8788e926488ac4b62bc633ccd4c724cec2ccb388677e11bb967"
+    },
+    {
+      "bytes": 12398,
+      "git_blob": "f14b7b6f999692f9d63752afdb70d14e71134f26",
+      "original": "tests/compat/history-controls/superseded-runtime-54a45eeafcdd8d67/goldens-receipt.jsonl",
+      "parent": "5b07bb397b4fd22d60890c35f92875cf04706951",
+      "preserved": "tests/compat/history-controls/pri244-parent-5b07bb397b4fd22d/history-controls/superseded-runtime-54a45eeafcdd8d67/goldens-receipt.jsonl",
+      "sha256": "54a45eeafcdd8d6754d74801a1cf72a5a29ce0fb2279ddbaccdd0d2d5093bf8f"
+    },
+    {
+      "bytes": 4402,
+      "git_blob": "09f869f77c398cb06189902d226fc8fa25a3ac4e",
+      "original": "tests/compat/history-controls/superseded-runtime-54a45eeafcdd8d67/provenance.json",
+      "parent": "5b07bb397b4fd22d60890c35f92875cf04706951",
+      "preserved": "tests/compat/history-controls/pri244-parent-5b07bb397b4fd22d/history-controls/superseded-runtime-54a45eeafcdd8d67/provenance.json",
+      "sha256": "6c435492ce5efa4b71f3e3d611e134e1ce45ee8ac4ae889dc8de69370c164778"
+    }
+  ],
+  "parent": "5b07bb397b4fd22d60890c35f92875cf04706951"
+}

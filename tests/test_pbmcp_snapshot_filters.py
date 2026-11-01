@@ -15,7 +15,7 @@ import pbmcp_fixture as fx
 
 
 @pytest.mark.parametrize("field", ["parent", "commit"])
-def test_snapshot_filter_finds_only_matching_git_identity(tmp_path, field):
+def test_snapshot_filter_finds_only_matching_git_identity(tmp_path, monkeypatch, field):
     fleet = fx.build(tmp_path)
     for key, value in [(fx.READY_KEY, "1" * 40), (fx.TWIN_KEY, "2" * 40)]:
         record = fleet.record("ready", fx.READY_KEY)
@@ -23,6 +23,12 @@ def test_snapshot_filter_finds_only_matching_git_identity(tmp_path, field):
         record["checkout_root"] = None
         record["checkout_snapshot"] = {"parent": value, "commit": value}
         fleet.queue.records.item_path("ready", key).write_text(json.dumps(record))
+    from prismabuild import publication_index
+    monkeypatch.setattr(publication_index, "_clock_fence", lambda: 10**30)
+    with fleet.queue.records.begin_publication_reconciliation() as run:
+        for _ in range(100):
+            if run.step(max_entries=8)["finished"]:
+                break
     session = pbmcp.Session(queue_root=fleet.queue_root, cas_root=fleet.cas_root,
                             repo_link=fleet.repo_link)
     body = session.call("pb_actions", {"snapshot_" + field: "1" * 40,

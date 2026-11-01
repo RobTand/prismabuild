@@ -307,6 +307,198 @@
     "binding": "IDLE_PRESSURE_FIELDS"
   },
   {
+    "path": "src/prismabuild/attempt_archive.py",
+    "owner": "_load_attempt_retention_config",
+    "fields": [
+      "archive_root",
+      "dataset",
+      "dataset_guid",
+      "queue_id",
+      "schema",
+      "store_id"
+    ],
+    "binding": "required"
+  },
+  {
+    "path": "src/prismabuild/attempt_archive.py",
+    "owner": "_load_attempt_retention_config",
+    "fields": [
+      "archive_root",
+      "dataset",
+      "dataset_guid",
+      "queue_id",
+      "schema",
+      "store_id"
+    ]
+  },
+  {
+    "path": "src/prismabuild/attempt_archive.py",
+    "owner": "_read_attempt_archive_manifest",
+    "fields": [
+      "chunks",
+      "descriptor",
+      "queue_id",
+      "schema",
+      "store_id"
+    ]
+  },
+  {
+    "path": "src/prismabuild/attempt_archive.py",
+    "owner": "_read_attempt_archive_manifest",
+    "fields": [
+      "descriptor",
+      "manifest_sha256",
+      "queue_id",
+      "schema",
+      "store_id"
+    ]
+  },
+  {
+    "path": "src/prismabuild/attempt_archive.py",
+    "owner": "_stream_archived_attempt_log",
+    "fields": [
+      "bytes",
+      "compressed_bytes",
+      "compressed_sha256",
+      "sha256"
+    ]
+  },
+  {
+    "path": "src/prismabuild/attempt_retention.py",
+    "owner": "<module>",
+    "unresolved": "256",
+    "binding": "MAX_RETENTION_KEYS"
+  },
+  {
+    "path": "src/prismabuild/attempt_retention.py",
+    "owner": "_read_attempt_retention_cursor",
+    "fields": [
+      "after_key",
+      "queue_id",
+      "schema"
+    ]
+  },
+  {
+    "path": "src/prismabuild/attempt_retention.py",
+    "owner": "_verify_attempt_generation_receipts",
+    "fields": [
+      "commit",
+      "content_sha256",
+      "directory",
+      "generation",
+      "receipt_sha256"
+    ]
+  },
+  {
+    "path": "src/prismabuild/attempt_retention.py",
+    "owner": "_verify_attempt_reader_gate",
+    "fields": [
+      "approvals",
+      "config_sha256",
+      "deferred_inventory_complete",
+      "expires_unix",
+      "generations",
+      "inventory_attested_by",
+      "inventory_complete",
+      "issued_unix",
+      "members",
+      "queue_id",
+      "queue_root",
+      "schema",
+      "store_id"
+    ],
+    "binding": "fields"
+  },
+  {
+    "path": "src/prismabuild/attempt_retention.py",
+    "owner": "_verify_attempt_reader_gate",
+    "fields": [
+      "approvals",
+      "config_sha256",
+      "deferred_inventory_complete",
+      "expires_unix",
+      "generations",
+      "inventory_attested_by",
+      "inventory_complete",
+      "issued_unix",
+      "members",
+      "queue_id",
+      "queue_root",
+      "schema",
+      "store_id"
+    ]
+  },
+  {
+    "path": "src/prismabuild/attempt_retention.py",
+    "owner": "_verify_attempt_reader_gate",
+    "fields": [
+      "by",
+      "config_sha256",
+      "inventory_sha256",
+      "reason",
+      "unix"
+    ]
+  },
+  {
+    "path": "src/prismabuild/attempt_retention.py",
+    "owner": "_verify_attempt_reader_gate",
+    "fields": [
+      "bytes",
+      "path",
+      "sha256"
+    ]
+  },
+  {
+    "path": "src/prismabuild/attempt_retention.py",
+    "owner": "_verify_attempt_reader_gate",
+    "fields": [
+      "capabilities",
+      "generation",
+      "id",
+      "role",
+      "schema",
+      "verified_unix"
+    ]
+  },
+  {
+    "path": "src/prismabuild/attempt_retention.py",
+    "owner": "_verify_attempt_reader_gate",
+    "fields": [
+      "evidence",
+      "generation",
+      "id",
+      "role"
+    ]
+  },
+  {
+    "path": "src/prismabuild/attempt_retention.py",
+    "owner": "_verify_attempt_reader_gate",
+    "fields": [
+      "pb_lead",
+      "tl_lead"
+    ]
+  },
+  {
+    "path": "src/prismabuild/attempt_retention.py",
+    "owner": "_verify_current_attempt_readers",
+    "fields": [
+      "generation",
+      "root"
+    ]
+  },
+  {
+    "path": "src/prismabuild/attempt_retention.py",
+    "owner": "survey_attempt_log_retention",
+    "unresolved": "_select_attempt_retention_keys(queue.root, cursor='', limit=max_keys)",
+    "binding": "keys"
+  },
+  {
+    "path": "src/prismabuild/attempt_retention.py",
+    "owner": "survey_attempt_log_retention",
+    "unresolved": "_select_attempt_retention_keys(queue.root, cursor=cursor, limit=max_keys)",
+    "binding": "keys"
+  },
+  {
     "path": "src/prismabuild/batch_ledger.py",
     "owner": "<module>",
     "fields": [
@@ -4153,6 +4345,11 @@
     "owner": "batch_members",
     "unresolved": "[i for i, line in enumerate(lines) if line.startswith('pull_requests:')]",
     "binding": "keys"
+  },
+  {
+    "path": "tools/ci/release_dry_run.py",
+    "owner": "validate_wheel",
+    "unresolved": "{row[0] for row in rows}"
   },
   {
     "path": "tools/duplication_inventory.py",
