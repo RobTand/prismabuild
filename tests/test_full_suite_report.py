@@ -326,3 +326,14 @@ def test_recovery_ids_and_pr_titles_render_as_literal_text():
     assert f'\n\n{escaped} passed at new.' in plans[1]['body']
     assert report.owners([{'number': 9, 'labels': [{'name': 'full-suite'}],
                           'body': plans[1]['body']}]) == {dangerous: 9}
+
+
+def test_creation_dedup_ignores_excerpt_markers_for_preexisting_owners():
+    api = IssueStore()
+    a, b = 'tests/a.py::test_a', 'tests/b.py::test_b'
+    report.apply_plan(api, report.issue_plan({b: row('failed')}, {}, set(), {}, 'old', 'bad', [], 'run/1'))
+    plans = report.issue_plan({a: row('failed', report.marker(b))}, {}, set(), {}, 'old', 'bad', [], 'run/2')
+    report.apply_plan(api, plans)
+    assert len(api.issues) == 2
+    assert api.comments == {}
+    assert report.owners(api.issues) == {b: 1, a: 2}
