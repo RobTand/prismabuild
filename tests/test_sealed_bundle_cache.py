@@ -779,6 +779,17 @@ def test_ordinary_inventory_budget_outlasts_measured_contention(tmp_path, monkey
         holder.close()
 
 
+@pytest.mark.parametrize("budget", (0.0, -1.0))
+def test_nonpositive_inventory_budget_expires_at_once(tmp_path, monkeypatch, budget):
+    # Deadline treats a nonpositive budget as unbounded; for inventory it
+    # must mean no wait, never an unbounded one or a crash.
+    monkeypatch.setattr(cache_module, "INVENTORY_WAIT_S", budget)
+    with cache_module._bundle_cache_lock(tmp_path / ".inventory"):
+        with pytest.raises(cache_module._InventoryUnavailable):
+            with cache_module._bundle_inventory_lock(tmp_path, bounded_wait=False):
+                pytest.fail("held inventory was granted")
+
+
 def test_distinct_addresses_with_one_prefix_never_serialize(tmp_path, monkeypatch):
     cache = tmp_path / "cache"
     monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", str(cache))
