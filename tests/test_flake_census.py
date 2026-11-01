@@ -247,3 +247,74 @@ def test_quarantine_of_a_function_owns_its_parameters_but_not_sibling_functions(
     assert result['classification']['quarantined'] == ['tests/a.py::test_x[param]']
     assert result['classification']['intermittent'] == ['tests/a.py::test_x_extra']
     assert result['tests']['tests/a.py::test_x[param]']['owners'] == [123]
+
+
+@pytest.mark.parametrize('unavailable', ['artifact_missing', 'interrupted', 'bad_xml', 'disk_missing'])
+def test_report_keeps_valid_observations_when_one_shard_is_unavailable(tmp_path, monkeypatch, unavailable):
+    manifest = dict(sha='sha', repeats=2, include=[], quarantine=[], deferred=[])
+    source = tmp_path / 'input'
+    node = 'tests/test_a.py::test_x'
+    for arch, runner in census.ARCHITECTURES.items():
+        for repeat in range(2):
+            index = len(manifest['include'])
+            manifest['include'].append(dict(index=index, architecture=arch, runner=runner,
+                                            repeat=repeat, files=['tests/test_a.py']))
+            if index == 3 and unavailable == 'artifact_missing':
+                continue
+            folder = source / str(index)
+            folder.mkdir(parents=True)
+            failed = arch == 'x64' and repeat == 1
+            record = dict(verdict='fail' if failed else 'pass', head_sha='sha',
+                          files=['tests/test_a.py'], pytest_exit_code=int(failed), budget={'status': 'pass'})
+            if index == 3 and unavailable == 'interrupted':
+                record.update(verdict='fail', pytest_exit_code=2, budget={'status': 'unavailable'})
+            (folder / 'result.json').write_text(json.dumps(record))
+            failure = '<failure>assert bad == good</failure>' if failed else ''
+            xml = ('<testsuite><testcase file="tests/test_a.py" classname="tests.test_a" name="test_x">'
+                   + failure + '</testcase></testsuite>')
+            (folder / 'junit.xml').write_text('<not-xml' if index == 3 and unavailable == 'bad_xml' else xml)
+            if index != 3 or unavailable != 'disk_missing':
+                (folder / 'disk.txt').write_text('13400000000 10000 /home/rob/pbt17\n')
+    manifest_path = tmp_path / 'manifest.json'
+    manifest_path.write_text(json.dumps(manifest))
+    output = tmp_path / 'result/results.json'
+    api = CensusStore()
+    def no_writes(path, data):
+        pytest.fail('an incomplete census must never file: ' + path)
+    api.request = no_writes
+    monkeypatch.setattr(census.report.GitHub, 'from_environment', lambda repository: api)
+    monkeypatch.setenv('GITHUB_REPOSITORY', 'example/repo')
+    monkeypatch.setenv('GITHUB_RUN_ID', '123')
+    monkeypatch.delenv('GITHUB_TOKEN', raising=False)
+    monkeypatch.setenv('GITHUB_STEP_SUMMARY', str(tmp_path / 'job-summary.md'))
+    code = census.main(['report', '--manifest', str(manifest_path), '--input', str(source), '--output', str(output)])
+    result = json.loads(output.read_text())
+    assert node in result['tests'], 'completed shards must survive an unavailable shard'
+    assert result['tests'][node]['counts']['x64'] == dict(passed=1, failed=1, skipped=0, missing=0)
+    missing = int(unavailable != 'disk_missing')
+    assert result['tests'][node]['counts']['arm64'] == dict(passed=2 - missing, failed=0, skipped=0, missing=missing)
+    assert len(result['disk_samples']) == (3 if unavailable in {'artifact_missing', 'disk_missing'} else 4)
+    assert result['tests'][node]['failures'][0]['disk']['available_bytes'] == 13400000000
+    assert code == 2 and result['complete'] is False
+    assert result['errors'][0]['index'] == 3
+    assert result['plans'] == [] and result['filed'] == []
+    summary = (tmp_path / 'job-summary.md').read_text()
+    assert 'x64 1P/1F/0S/0M' in summary
+    assert '13400000000' in summary
+
+
+def test_crlf_owner_suppresses_census_planning():
+    result = dict(census.classify_samples(samples_for({arch: [{'x': 'passed'}, {'x': 'failed'}]
+        for arch in ['x64', 'arm64']}), 2, []), sha='abc', complete=True, run_url='run')
+    owner = {'number': 8, 'body': census.report.marker('x') + '\r\n\r\nDetails', 'labels': []}
+    assert census.census_issue_plans(result, [owner]) == []
+
+
+def test_crlf_owner_suppresses_census_precreate_recheck():
+    result = dict(census.classify_samples(samples_for({arch: [{'x': 'passed'}, {'x': 'failed'}]
+        for arch in ['x64', 'arm64']}), 2, []), sha='abc', complete=True, run_url='run')
+    plans = census.census_issue_plans(result, [])
+    api = CensusStore()
+    api.issues.append({'number': 8, 'body': census.report.marker('x') + '\r\n\r\nDetails', 'labels': []})
+    assert census.file_new_issues(api, plans) == []
+    assert len(api.issues) == 1
