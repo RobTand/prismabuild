@@ -136,6 +136,25 @@ def read_assessment(path):
     return value
 
 
+def _load_qualification_tools(checkout):
+    # Both the source checkout and the older flat runtime layout are supported.
+    locations = {
+        'shape_gate': 'tools/shape_gate.py',
+        'pbtest_outcomes': 'tools/pbtest_outcomes.py',
+    }
+    if Path(checkout, 'tools/fleet').is_dir():
+        locations = {
+            'shape_gate': 'tools/fleet/shape_gate.py',
+            'pbtest_outcomes': 'tools/fleet/pbtest_outcomes.py',
+        }
+    def load(name):
+        spec = importlib.util.spec_from_file_location('_bootstrap_' + name, Path(checkout, locations[name]))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    return load('shape_gate'), load('pbtest_outcomes')
+
+
 def verify_qualification(assessment, *, checkout, fleet_root):
     """Verify actual CAS actions/logs, exact source and whole-file populations.
 
@@ -146,15 +165,7 @@ def verify_qualification(assessment, *, checkout, fleet_root):
     from . import pool
     plan = assessment['plan']
     index = _qualification_index(assessment, checkout)
-    tools = Path(checkout) / 'tools'
-    if (tools / 'fleet').is_dir():
-        tools /= 'fleet'
-    def load(name):
-        spec = importlib.util.spec_from_file_location('_bootstrap_' + name, tools / (name + '.py'))
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    gate, outcomes = load('shape_gate'), load('pbtest_outcomes')
+    gate, outcomes = _load_qualification_tools(checkout)
     cas = pb.PrismaBuildCAS(Path(fleet_root) / 'cas')
     lanes, keys, runtimes = {}, [], []
     expected_files = set((*CORPUS_FILES, *ROOT_FILES))

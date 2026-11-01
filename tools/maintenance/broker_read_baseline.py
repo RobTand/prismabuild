@@ -32,7 +32,7 @@ def run_synthetic(root, populations=(0, 8, 64), cycles=2):
     root.mkdir(parents=True, exist_ok=False)
     checkout = Path(__file__).resolve().parents[2]
     sources = {name: raw_sha256((checkout / name).read_bytes()) for name in _SOURCES}
-    spec = importlib.util.spec_from_file_location('_baseline_broker', checkout / _SOURCES[0])
+    spec = importlib.util.spec_from_file_location('_baseline_broker', Path(checkout, 'tools/fleet/resource_broker.py'))
     broker = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(broker)
     cases = []
