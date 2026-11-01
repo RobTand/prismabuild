@@ -1,0 +1,116 @@
+[
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/tia_diff.py",
+      "owner": "analyze_changes",
+      "fields": [
+        ""
+      ]
+    },
+    "count": 1,
+    "reason": "analyze_changes subtracts the empty-string sentinel from NUL-delimited Git changed paths. The resolved singleton [''] is a path-list cleanup constant, not a JSON record field set; retain this exact observation without changing the diff contract."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/gate_select.py",
+      "owner": "changed_files",
+      "fields": [
+        ""
+      ]
+    },
+    "count": 1,
+    "reason": "changed_files removes the empty-string sentinel after splitting NUL-delimited git diff output, while --no-renames retains both rename sides. The resolved singleton [''] is not a wire allowlist; pin the existing path cleanup observation."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/gate_run.py",
+      "owner": "_budget_timings",
+      "unresolved": "observed"
+    },
+    "count": 1,
+    "reason": "_budget_timings compares the observed JUnit filenames with every assigned file and refuses incomplete coverage. Preserve the symbolic observed set because its members are selected paths, not fixed serialized fields; no budget or coverage assertion changes."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/gate_shadow.py",
+      "owner": "audit",
+      "unresolved": "full"
+    },
+    "count": 1,
+    "reason": "audit compares assignment and JUnit filename coverage with the full selected population. Preserve the symbolic full set used in both comparisons; it prevents an incomplete shadow-accuracy report from claiming a verdict and is not a durable record field set."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/full_suite_workflow.py",
+      "owner": "collect_shards",
+      "unresolved": "{node.split('::', 1)[0] for node in rows}"
+    },
+    "count": 1,
+    "reason": "collect_shards compares filenames derived from parsed JUnit node IDs with each manifest entry's assigned files, after verifying head identity and complete runner/budget evidence. Pin the exact symbolic comprehension; it enforces complete per-shard coverage rather than a new closed wire shape."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/gate_select.py",
+      "owner": "estimate",
+      "unresolved": "values.keys()"
+    },
+    "count": 1,
+    "reason": "estimate subtracts the available duration-map keys from selected file paths to report missing costs instead of estimating unknown work as free. Retain values.keys() symbolically; the keys are test filenames rather than record fields."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/tia_select.py",
+      "owner": "plan",
+      "unresolved": "recorded"
+    },
+    "count": 1,
+    "reason": "plan subtracts filenames represented in the recorded test map from the full population and marks absent files unmapped for conservative selection. Preserve the symbolic recorded set; it is map-coverage evidence, not a new durable schema."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/tia_evaluate.py",
+      "owner": "run_mutation.collection_killed",
+      "unresolved": "baseline_bad"
+    },
+    "count": 1,
+    "reason": "run_mutation.collection_killed subtracts baseline failure/error node IDs from collection errors before crediting a mutation kill. Preserve baseline_bad symbolically so pre-existing collection failures cannot count as newly detected defects; this is evaluation control, not record fields."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/tia_evaluate.py",
+      "owner": "run_mutation.killed",
+      "unresolved": "baseline_bad"
+    },
+    "count": 1,
+    "reason": "run_mutation.killed subtracts baseline failure/error node IDs from completed mutation outcomes before crediting a kill. Preserve baseline_bad symbolically; the completion requirement and independent baseline remain unchanged, with no wire contract change."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/gate_run.py",
+      "owner": "run_plan",
+      "unresolved": "eligible"
+    },
+    "count": 1,
+    "reason": "run_plan rejects explicitly assigned test files outside the selected plan and rejects duplicates separately. Preserve the symbolic eligible filename set used by the subset check; pinning it neither expands assignment authority nor changes serialized fields."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/gate_partition.py",
+      "owner": "setup_shards",
+      "unresolved": "path"
+    },
+    "count": 1,
+    "reason": "setup_shards excludes paths already assigned to isolated shards before packing remaining files. The scanner records the symbolic path membership operand because set(isolated) appears in a comparison; it is a filename, not a closed field set. Preserve the observation without changing partition or sandbox grouping behavior."
+  }
+]
