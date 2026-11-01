@@ -1,0 +1,537 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "08eeec252e099286168d8572711d87c6e1e21c3e",
+  "scope": [
+    "SC-01",
+    "ID-08",
+    "ID-09",
+    "SAFE-03"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-2449-pbtest-basetemp",
+    "issue": "https://github.com/RobTand/prismabuild/issues/2449",
+    "validated_repairs": [
+      {
+        "id": "SC-01",
+        "scope": "Disposable pytest scratch only; PB admission and containment remain unchanged.",
+        "actions": [
+          "3978caddd7c91fff39c4099f8ed1f92553ecd6ad0675cbf372f52026297e8186",
+          "ca106b183536a85153c3291b95bb38384dbeb67b96a49273e34b30b3fe9c32ea",
+          "8a0cf888c93218a81be6049d3a84dd814022e53b6601ff13777642434653f46f",
+          "8ce82b391f8cb89578c6932a827981e29ad106562adfb7614c1106748cee70bb",
+          "edd1b995603812c317e4b5c2e40ad688a075f44f6a3ce52d9c5e5ce7fce61495",
+          "988e349d7778a1690a39026db2a0ddb2480b9c5b63f090c1a72b59c44471894c",
+          "4960e74f64effcb42532c4805ac3c3f01a13a358b606f1ff921c625214534cf4",
+          "f924491cf5266c5ade6876f074af28d661ad2f6059ad354eda2a2e3a2eda968c",
+          "82f183a106a56d4f49b3ed3e5cf7aba0614731a829615651124201a3b95ea372",
+          "c397cf5af27693f70b517d6f873ba233c258ab4b0540515184784fe9ad46e60c",
+          "1e494493debb0044d884a1f06a426252ecb7e6ca1d9f1dd08cdda3149a92cb24",
+          "4036d39bcb9490d0888419e2ab261d31165454e56ef6ce988f4b8078ef588d31",
+          "cfac60fa7cdcd7d8371a10261c4d26df546641b5168450bf57598ca5617f7cf4",
+          "172e8a998f59fbda74ab24e5670cdd2983326acca949df2be10e47105d31da68",
+          "0f319973d1ab696c722c9f6e382a288175aea935815cdbb139a5200ad1679f9d",
+          "355457e496a6827f6f8f329f105199e461f0c5b29c1467d68046b82fa34688ce",
+          "5edbf76561ccb68d8fb917fc689daad0fac4627c9bf49aecc872efc6e1f33e3d",
+          "24594f0fcf420fea28de19d34e3f0293efc273ae4e5c594f7e4345a778c45e39",
+          "7778fa1685fb665f01ca226e7dc6be843ff23f9ad6d6936413116f173a1911a3",
+          "7b4954f1a1e391e46afb933fc02ef92af7a0dd53d0d9592a344265911c5e42cb",
+          "4df9ba8a3320609321bc8a9fa6c9c743a509522e91eaff3dc321c41a69a4b70d",
+          "9e7f357c2f271d40a7e86d18d80795e3c087abcf995e9a5663c20614239866a5",
+          "66cf880be0f0cace924e34fe790bdae6998642de3900972dabe57fb9698e9a3b",
+          "6bd19332ed8a782b531fce466f6832cb84b523b66fa5a265722f9667dd229cb5",
+          "aeec44428941165a9ee9ab9256453a0f5edce524d15f454259736f0e9498b947",
+          "49d2fe4c8dc68d0ea32df71f17e5a4364963ec3d2fa232fc47d7c0e70df62087",
+          "1d16a8624a9b72a44eb080c79ecf8bf726bd1edb4491379fe2bca204cbea1a86"
+        ],
+        "outcome": "206 retained GB10 passes; 1473 portable passes; 645 native diagnostic passes on sparky; 11 real-shard socket diagnostic passes on dl380g10. No skips in successful runs. All success receipts content-verified."
+      }
+    ],
+    "remaining_gaps": [
+      "20 archival broker compatibility tests cannot run: identical bwrap /proc mount refusal on baseline and candidate.",
+      "Fresh independent review and actual source merge remain pending.",
+      "Whole staged-read requirement axes remain unchanged; no root/GPU qualification or campaign-completion claim."
+    ],
+    "note": "Source implementation and component evidence only. The caller-helper choice preserves sealed compiler TMPDIR and declared scratch contracts. Arbitrary pbrun/pbcampaign commands require the documented helper convention. SIGKILL/OOM and cleanup failures retain existing lock-proven 24-hour recovery. No global staged-read validation/deployment axis is upgraded."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "publication": {
+    "state": "not deployed",
+    "requires": "next runtime publication",
+    "generation_observed": "4f93835c8656-1793070920-291773253e78",
+    "fleet_administration": "No publication, rollout, service restart/reconfiguration or manual live-temp deletion"
+  },
+  "source_sha256": {
+    "src/prismabuild/pbtest_owned_temp.py": "dfff40155bece958cc8168011e5872e0a5d54b6170e1939002001e7994e1199b",
+    "src/prismabuild/pytest_temp.py": "94a65391779c602e85ddcb6f4639c27773eafdf52190d47bf4d25215f05f7e8e",
+    "tools/fleet/pbcampaign.py": "c2a320c57d7d23f4a54aad6b606803b500fcc73385d578b7063fa6b95ab7b0ed",
+    "tools/fleet/publish_runtime.py": "9ca970787d058cca14ec3b4ddc97612c3f2c1796e87d4d1016c83f11858e6cf6",
+    "tools/fleet/pytest_action.py": "2287aea0b639fef8939a6a65ea386ee16e223728f003d518561f6279a1901ed4",
+    "tools/maintenance/check_cleanup_obligation_mutants.py": "b3f90d8d3485062236599b5bd7e7e5862ec5de850f2fdd69ff38b55494582bfc",
+    "tools/maintenance/checkout_recovery_repeat_1711.py": "3571b368a398062fdc1e43ee5cf97f102f279ffb309470975394e6d809feff14",
+    "tools/maintenance/measure_pytest_sockets_2449.py": "8c139c6d7df32a6175d720ad587df8420ea38de025ed3ce792c90a9771ef839f",
+    "tools/maintenance/submission_collect.py": "65284c86da7a39e4341105f3e4710d132199efbb6fa34214ea649b7292de09be",
+    "tools/maintenance/submission_controls.py": "f790ff6ab9e9b39bc67a561d6764b08cf6fa8b47fcb795d8a951e8f3a3842a78",
+    "tools/qualify_test_time_isolation.py": "8a24c447bd05a34bdcad364d3ef09ff2f88043e82c0fb1d3c8b4a381382723b8"
+  },
+  "validation": {
+    "priority": -10,
+    "green_source_commits": [
+      "dff496e0a103dbb22cfdfba3bbeef707c22b79cf",
+      "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+    ],
+    "routing": "Initial runs and 645-test native diagnostic on GB10. Lead authorized portable replacements after team saturation; exact outstanding tagged keys withdrawn first. Portable shards reserve two CPUs, four GiB and one native thread per worker.",
+    "successful_shards": [
+      {
+        "action_key": "3978caddd7c91fff39c4099f8ed1f92553ecd6ad0675cbf372f52026297e8186",
+        "files": [
+          "tests/test_pytest_temp_2449.py"
+        ],
+        "outcome": "5 passed in 0.46s",
+        "receipt_sha256": "1f3e46cad1ec6cb745d8c546ef47c0444770479613b2160526669381d8f02a46",
+        "source": "dff496e0a103dbb22cfdfba3bbeef707c22b79cf"
+      },
+      {
+        "action_key": "ca106b183536a85153c3291b95bb38384dbeb67b96a49273e34b30b3fe9c32ea",
+        "files": [
+          "tests/test_pbtest_attempt_temp_1542.py"
+        ],
+        "outcome": "12 passed in 1.89s",
+        "receipt_sha256": "cf46ffe7ce9c3177f97e119d5b95961375fca411081dcba553bb330b6ee88682",
+        "source": "dff496e0a103dbb22cfdfba3bbeef707c22b79cf"
+      },
+      {
+        "action_key": "8a0cf888c93218a81be6049d3a84dd814022e53b6601ff13777642434653f46f",
+        "files": [
+          "tests/test_pbtest_attempt_temp_expiry.py"
+        ],
+        "outcome": "7 passed in 3.23s",
+        "receipt_sha256": "73f20f4dc12858105145fb8f8822f1aba6e3e450315e3d580df0638cd5da77ad",
+        "source": "dff496e0a103dbb22cfdfba3bbeef707c22b79cf"
+      },
+      {
+        "action_key": "8ce82b391f8cb89578c6932a827981e29ad106562adfb7614c1106748cee70bb",
+        "files": [
+          "tests/test_pbtest_scratch_roots_1710.py"
+        ],
+        "outcome": "26 passed in 0.67s",
+        "receipt_sha256": "c9b56e890916725345d1e48dd3fa68589943ab1d4c3c9d0e312d776d2827f4ce",
+        "source": "dff496e0a103dbb22cfdfba3bbeef707c22b79cf"
+      },
+      {
+        "action_key": "edd1b995603812c317e4b5c2e40ad688a075f44f6a3ce52d9c5e5ce7fce61495",
+        "files": [
+          "tests/test_broker_bridge_publication_2229.py",
+          "tests/test_pbtest_automatic_history_2286.py",
+          "tests/test_pbtest_interrupted_trace_1455.py",
+          "tests/test_pbtest_scratch_roots_1710.py",
+          "tests/test_scratch_lifetime_sdk_contract.py"
+        ],
+        "outcome": "67 passed in 5.99s",
+        "receipt_sha256": "3c6af63d00b049f7fa58c4b78732a8c2720239fc4fc3f42ac4a659e97835bb38",
+        "source": "dff496e0a103dbb22cfdfba3bbeef707c22b79cf"
+      },
+      {
+        "action_key": "988e349d7778a1690a39026db2a0ddb2480b9c5b63f090c1a72b59c44471894c",
+        "files": [
+          "tests/test_docker_shim_memory.py",
+          "tests/test_pbtest_capability_cohorts.py",
+          "tests/test_pbtest_prints_its_action_keys.py",
+          "tests/test_pbtest_tmp_retention_option_1535.py"
+        ],
+        "outcome": "89 passed in 4.88s",
+        "receipt_sha256": "73cb3cae9a02f6d50a7dd92c0a6ddd90aaff43289475bbbf4a621cd08462ac74",
+        "source": "dff496e0a103dbb22cfdfba3bbeef707c22b79cf"
+      },
+      {
+        "action_key": "4960e74f64effcb42532c4805ac3c3f01a13a358b606f1ff921c625214534cf4",
+        "files": [
+          "tests/test_broker_bridge_2229.py",
+          "tests/test_pbtest_bounds_every_test_it_shards.py",
+          "tests/test_pbtest_outcomes_load_is_lazy_1554.py",
+          "tests/test_pbtest_streams_pbrun_lines.py",
+          "tests/test_test_tiers.py"
+        ],
+        "outcome": "68 passed in 7.14s",
+        "receipt_sha256": "8267da365c483241f2bbbcb2ce9f32ce4f0c58005e6b0202a18549de8331c8fc",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "f924491cf5266c5ade6876f074af28d661ad2f6059ad354eda2a2e3a2eda968c",
+        "files": [
+          "tests/test_broker_listener_restart_semantics.py",
+          "tests/test_pbtest_bounds_resident_clients_1348.py",
+          "tests/test_pbtest_plan_only.py",
+          "tests/test_pbtest_trace_pinned_procfs_reader_1550.py"
+        ],
+        "outcome": "35 passed in 4.20s",
+        "receipt_sha256": "1bb5eb7306143670b8e984dae9b99f555d1cdcf3f53c235fa1387f311c50daa0",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "82f183a106a56d4f49b3ed3e5cf7aba0614731a829615651124201a3b95ea372",
+        "files": [
+          "tests/test_broker_read_baseline.py",
+          "tests/test_pbtest_capability_claim_eligibility.py",
+          "tests/test_pbtest_program_fits_one_argument.py",
+          "tests/test_pbtest_unobserved_outcome.py"
+        ],
+        "outcome": "23 passed in 2.63s",
+        "receipt_sha256": "e7c09c784dcdaf7f6f4c611f9a30bfad866b7c92517a560291a535be3806f188",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "c397cf5af27693f70b517d6f873ba233c258ab4b0540515184784fe9ad46e60c",
+        "files": [
+          "tests/test_broker_scope_contract_1301.py",
+          "tests/test_pbtest_collection_owner_shard.py",
+          "tests/test_pbtest_publishes_its_own_shards.py",
+          "tests/test_pbtest_verdict_c26_vectors.py"
+        ],
+        "outcome": "28 passed, 18 warnings in 6.09s",
+        "receipt_sha256": "cfbaeb4e14bb75f3ff29cb4ecc84d0c067dcf8e2430824c590cc907bc533cc33",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "1e494493debb0044d884a1f06a426252ecb7e6ca1d9f1dd08cdda3149a92cb24",
+        "files": [
+          "tests/test_docker_shim_cpu_affinity.py",
+          "tests/test_pbtest_cpu_shards_declare_their_bound.py",
+          "tests/test_pbtest_reconciles_outcomes.py",
+          "tests/test_pbtest_worker_threads_1192.py"
+        ],
+        "outcome": "88 passed in 14.04s",
+        "receipt_sha256": "cc34ffbb578eb2500db252d575caa126a3f3c976cf3afea8cb7c3d4547eab5ce",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "4036d39bcb9490d0888419e2ab261d31165454e56ef6ce988f4b8078ef588d31",
+        "files": [
+          "tests/test_docker_shim_global_options.py",
+          "tests/test_pbtest_dependency_pins.py",
+          "tests/test_pbtest_record_binding_1842.py",
+          "tests/test_pbtest_workers.py"
+        ],
+        "outcome": "94 passed in 28.35s",
+        "receipt_sha256": "bc51a83ecb8caa1dabe98e2aae60079906d3ceb0a31a4fdca31c02ba8bbd7807",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "cfac60fa7cdcd7d8371a10261c4d26df546641b5168450bf57598ca5617f7cf4",
+        "files": [
+          "tests/test_docker_shim_relays_termination_1599.py",
+          "tests/test_pbtest_digest_owner_shard_1553.py",
+          "tests/test_pbtest_record_phases_1842.py",
+          "tests/test_pbtest_xdist_shared_skip_1220.py"
+        ],
+        "outcome": "54 passed in 56.48s",
+        "receipt_sha256": "04d3d38f0e96eeab4712540ed483054877af0f1e78a4361ae4f96ec5d584e0cb",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "172e8a998f59fbda74ab24e5670cdd2983326acca949df2be10e47105d31da68",
+        "files": [
+          "tests/test_fixture_broker_process.py",
+          "tests/test_pbtest_empty_capability_union_1495.py",
+          "tests/test_pbtest_record_privacy_1842.py",
+          "tests/test_pool_broker_disconnect.py"
+        ],
+        "outcome": "29 passed in 10.06s",
+        "receipt_sha256": "9ef22b7516876665da30f62b5bddc5c1a25abc6e119754e50dc4320187981d3a",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "0f319973d1ab696c722c9f6e382a288175aea935815cdbb139a5200ad1679f9d",
+        "files": [
+          "tests/test_git_runners_1307.py",
+          "tests/test_pbtest_exit_completion_1530.py",
+          "tests/test_pbtest_records_skip_reasons.py",
+          "tests/test_produced_output_lifecycle.py"
+        ],
+        "outcome": "105 passed, 3 warnings in 11.76s",
+        "receipt_sha256": "e0259b88030d9e840ababe5b28ef8064db0b4337f84db7ce9a1b3d2c966935ea",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "355457e496a6827f6f8f329f105199e461f0c5b29c1467d68046b82fa34688ce",
+        "files": [
+          "tests/test_gitignore_pbrun_patterns.py",
+          "tests/test_pbtest_fleet_data_needs_a_manifest.py",
+          "tests/test_pbtest_recovers_unobserved.py",
+          "tests/test_produced_output_lifecycle_r2.py"
+        ],
+        "outcome": "31 passed, 3 warnings in 3.35s",
+        "receipt_sha256": "174bd7ccc81cb33f3ce04f62c779ec3ba7efb2f57af5f511dba387a2da821e7e",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "5edbf76561ccb68d8fb917fc689daad0fac4627c9bf49aecc872efc6e1f33e3d",
+        "files": [
+          "tests/test_live_store_guard.py",
+          "tests/test_pbtest_gpu_options.py",
+          "tests/test_pbtest_reports_whether_pytest_ran.py",
+          "tests/test_pytest_temp_2449.py"
+        ],
+        "outcome": "122 passed in 13.08s",
+        "receipt_sha256": "2192e8eb99a1646dc486a815ea4d71d38b46b5c37a8aa536c5897c526a5cd158",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "24594f0fcf420fea28de19d34e3f0293efc273ae4e5c594f7e4345a778c45e39",
+        "files": [
+          "tests/test_materializer_git_runner_1318.py",
+          "tests/test_pbtest_gpu_shards_declare_their_bound.py",
+          "tests/test_pbtest_requested_paths.py",
+          "tests/test_resource_broker.py"
+        ],
+        "outcome": "122 passed in 2.88s",
+        "receipt_sha256": "8a3652d1919521f2bc31e84cb3cbb171fcf4d89e268aa30a5eaf5392758be0bd",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "7778fa1685fb665f01ca226e7dc6be843ff23f9ad6d6936413116f173a1911a3",
+        "files": [
+          "tests/test_needrestart_broker_restart_exclusion.py",
+          "tests/test_pbtest_history_provenance_2286.py",
+          "tests/test_pbtest_reserves_disk_metadata.py",
+          "tests/test_scratch_lifetime_directory.py"
+        ],
+        "outcome": "41 passed in 4.50s",
+        "receipt_sha256": "5f2bd6061072c716cb38c80355bc775ec0406eda3776e6337e67fb12b441f229",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "7b4954f1a1e391e46afb933fc02ef92af7a0dd53d0d9592a344265911c5e42cb",
+        "files": [
+          "tests/test_pbrun_placement.py",
+          "tests/test_pbtest_honours_collect_ignore_1304.py",
+          "tests/test_pbtest_reserves_its_threads.py",
+          "tests/test_scratch_lifetime_ownership.py"
+        ],
+        "outcome": "365 passed in 53.85s",
+        "receipt_sha256": "14140dd2b419dbcd579b801f0b03459477ea6c2a616fca5ae10bf99154c3dd8d",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "4df9ba8a3320609321bc8a9fa6c9c743a509522e91eaff3dc321c41a69a4b70d",
+        "files": [
+          "tests/test_pbtest.py",
+          "tests/test_pbtest_identifies_its_checkout_once.py",
+          "tests/test_pbtest_retries_an_offer_discovery_timeout.py",
+          "tests/test_scratch_lifetime_pool.py"
+        ],
+        "outcome": "75 passed, 16 warnings in 29.56s",
+        "receipt_sha256": "654c5deda0274456167c07302a19f6562d67dcaa36464e31410e6ac516c1a6d7",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "9e7f357c2f271d40a7e86d18d80795e3c087abcf995e9a5663c20614239866a5",
+        "files": [
+          "tests/test_pbtest_authoritative_records_1842.py",
+          "tests/test_pbtest_incomplete_summary_1365.py",
+          "tests/test_pbtest_sealed_basetemp_1469.py",
+          "tests/test_scratch_lifetime_selection.py"
+        ],
+        "outcome": "50 passed in 6.36s",
+        "receipt_sha256": "10e8a3a1ffad52e770f9c9dc6b16d1b6783cf5b3aed3d12289c1603b90084c82",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "66cf880be0f0cace924e34fe790bdae6998642de3900972dabe57fb9698e9a3b",
+        "files": [
+          "tests/test_pbtest_automatic_duration_packing_2286.py",
+          "tests/test_pbtest_native_directory_collection_1458.py",
+          "tests/test_pbtest_seals_interpreter_1462.py",
+          "tests/test_snapshot_git_refusal_1430.py"
+        ],
+        "outcome": "60 passed in 24.37s",
+        "receipt_sha256": "e1558e4246f41feb6512b7da8091534849767b9fd060d3da397b4af7d88b59a3",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "6bd19332ed8a782b531fce466f6832cb84b523b66fa5a265722f9667dd229cb5",
+        "files": [
+          "tests/test_pbtest_balances_shards_by_measured_duration.py",
+          "tests/test_pbtest_nested_hooks_2243.py",
+          "tests/test_pbtest_seals_its_shard_deadline.py",
+          "tests/test_snapshot_ignores_personal_git_excludes.py"
+        ],
+        "outcome": "30 passed in 7.88s",
+        "receipt_sha256": "a7712d8a26bfea501788a7e390c8d829368d32f9ed9fde85a41622a1ba3e4c39",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "aeec44428941165a9ee9ab9256453a0f5edce524d15f454259736f0e9498b947",
+        "files": [
+          "tests/test_pbtest_bound_failure_kinds.py",
+          "tests/test_pbtest_node_groups_2286.py",
+          "tests/test_pbtest_selection_index_1551.py",
+          "tests/test_submission_git_deadline_1888.py"
+        ],
+        "outcome": "53 passed in 16.68s",
+        "receipt_sha256": "403caabcfac4537b64cd407260b1e2a3c4630c72ae63a1e447c5cc6bc3b08aac",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      }
+    ],
+    "socket_measurements": [
+      {
+        "action_key": "49d2fe4c8dc68d0ea32df71f17e5a4364963ec3d2fa232fc47d7c0e70df62087",
+        "measurement": {
+          "returncode": 0,
+          "base": "/home/rob/pbt17/pb-gokbg0kl/pytest",
+          "removed": true,
+          "binds": 7,
+          "longest": {
+            "path": "/home/rob/pbt17/pb-gokbg0kl/pytest/test_connected_finish_releases0/broker.sock",
+            "bytes": 78
+          }
+        },
+        "receipt_sha256": "bdad10193bdc921c393701fa010d9e0c034570bf0d2110c6a206807ef63e50d8",
+        "log": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-sockets.log"
+      },
+      {
+        "action_key": "1d16a8624a9b72a44eb080c79ecf8bf726bd1edb4491379fe2bca204cbea1a86",
+        "measurement": {
+          "returncode": 0,
+          "base": "/home/rob/pbt17/pb-nvplnv6m/pytest",
+          "removed": true,
+          "binds": 4,
+          "longest": {
+            "path": "/home/rob/pbt17/s-2l6b35xh/pb-jtlw1_1r/pytest/popen-gw0/test_xxxxxxxxxxxxxxxxxxxxxxxxx0/service.sock",
+            "bytes": 100
+          }
+        },
+        "receipt_sha256": "1e6740e5e989ac922c5bd71c2680ddfe41c4c4e937763d26d86ee9c23aea5ec7",
+        "log": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-shard-sockets.log"
+      }
+    ],
+    "reds": [
+      {
+        "action_key": "3dd8b80baa1ea41cc22bdd48bd44f966ad6834ec345f1cfab85add47fa463dc8",
+        "outcome": "1 failed, 63 deselected in 0.27s",
+        "receipt": null,
+        "terminal_record": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-layout-red-3dd8b80baa1ea41cc22bdd48bd44f966ad6834ec345f1cfab85add47fa463dc8.terminal.json",
+        "log": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-layout-red.log"
+      },
+      {
+        "action_key": "6c788e521f7810364c3b659c463d9581458c4c48df54bb04d64a352f074edb0c",
+        "outcome": "1 failed, 348 deselected in 0.93s",
+        "receipt": null,
+        "terminal_record": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-layout-red-6c788e521f7810364c3b659c463d9581458c4c48df54bb04d64a352f074edb0c.terminal.json",
+        "log": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-layout-red.log"
+      },
+      {
+        "action_key": "847813f948ba6e3067c66df3d892e044078dc10c8be4e1f087d2d4f94c0e6d6e",
+        "outcome": "1 failed, 8 deselected in 0.12s",
+        "receipt": null,
+        "terminal_record": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-layout-red-847813f948ba6e3067c66df3d892e044078dc10c8be4e1f087d2d4f94c0e6d6e.terminal.json",
+        "log": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-layout-red.log"
+      },
+      {
+        "action_key": "d575807a259eb9cdb5f7ef883de7ec70411f24c16d4143d43990b6a3287e84ab",
+        "outcome": "3 failed in 0.19s",
+        "receipt": null,
+        "terminal_record": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-cleanup-red-d575807a259eb9cdb5f7ef883de7ec70411f24c16d4143d43990b6a3287e84ab.terminal.json",
+        "log": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-cleanup-red.log"
+      },
+      {
+        "action_key": "b26c79da72cce652aa76004e6e7ec360288c99872a04855ce7bc43ddfaba84e5",
+        "outcome": "1 failed, 11 deselected in 0.22s",
+        "receipt": null,
+        "terminal_record": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-cleanup-red-b26c79da72cce652aa76004e6e7ec360288c99872a04855ce7bc43ddfaba84e5.terminal.json",
+        "log": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-cleanup-red.log"
+      }
+    ],
+    "infrastructure_refusals": [
+      {
+        "action_key": "370e208b1a5fdc7d6438c327979f2f6930734e2ccff46ba4ad47431b8c7a2d45",
+        "outcome": "20 collected; none ran; bwrap_proc_mount refused: Operation not permitted",
+        "receipt": null,
+        "terminal_record": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-portable-370e208b1a5fdc7d6438c327979f2f6930734e2ccff46ba4ad47431b8c7a2d45.terminal.json",
+        "log": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-portable.log",
+        "source": "6ee0cec58864f1afbf04fd800563df0e0ded7eba"
+      },
+      {
+        "action_key": "4b79532a0aeb959a2b981438d8fa6fd5a13289d8e79a156b81691a9751dcca07",
+        "outcome": "20 collected; none ran; bwrap_proc_mount refused: Operation not permitted",
+        "receipt": null,
+        "terminal_record": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-archive-baseline-4b79532a0aeb959a2b981438d8fa6fd5a13289d8e79a156b81691a9751dcca07.terminal.json",
+        "log": "/home/rob/tmp/pb-lead/scratch/pbtest-basetemp/rework-archive-baseline.log",
+        "source": "1921c3718d4c5fcaa3b4e95fcbab3cdecf609c96"
+      }
+    ],
+    "withdrawals": [
+      {
+        "action_key": "fcb640fd044a0693341b9b4e9592a0d83685b30282c054c3132393af2cfe165c",
+        "state_before": "ready",
+        "state_after": "withdrawn"
+      },
+      {
+        "action_key": "fe4fa0ea557acb2874b4d058d0f9a0f7854597a930f3a2a4711defdeddfeb5ce",
+        "state_before": "ready",
+        "state_after": "withdrawn"
+      },
+      {
+        "action_key": "a4bcbe49a070ba006ce286731aff33cf4b4e2c317451994f611ac55fb499e1db",
+        "state_before": "ready",
+        "state_after": "withdrawn"
+      },
+      {
+        "action_key": "72a2b83711f744035757ee619c016175ba53f4ebfbeb4f998d9068e28fd94c2f",
+        "state_before": "ready",
+        "state_after": "withdrawn"
+      },
+      {
+        "action_key": "6eb80cf1e151123c0302e5e48b0e4d35e8d52b9683add46436ab39f0a73b0a48",
+        "state_before": "ready",
+        "state_after": "withdrawn"
+      },
+      {
+        "action_key": "74f03c80fb1e03eb5041610aab301fdd36ed304b07a1b794060d360d8d080a06",
+        "state_before": "ready",
+        "state_after": "withdrawn"
+      },
+      {
+        "action_key": "eabb03df0813b5b77dcb84c34b0edc1df4ea439c3e5674588ee6e9b16ff72216",
+        "state_before": "ready",
+        "state_after": "withdrawn"
+      },
+      {
+        "action_key": "7f893b589e98a973d2a66556dec29e037149b1a33278a9f1b8c4fcc943357a00",
+        "state_before": "ready",
+        "state_after": "withdrawn"
+      },
+      {
+        "action_key": "2f2f876b29317ea84a00f5df0471a814db8206d0307b132b78046005ec52e5f6",
+        "state_before": "ready",
+        "state_after": "withdrawn"
+      },
+      {
+        "action_key": "6544f5c7a9b0df26211a23a79dc961cf7e74cb66199c04d75e7df9ab978a0e1f",
+        "state_before": "ready",
+        "state_after": "withdrawn"
+      },
+      {
+        "action_key": "4d1893df7a6d551233ce72f97dfa31c14a32cad35087756b5fc5f76e93feccc9",
+        "state_before": "ready",
+        "state_after": "withdrawn"
+      },
+      {
+        "action_key": "7a89cce01f473f1a6b8d312cc502008518ce7752ab9ca33b51304fab600b04f7",
+        "state_before": "ready",
+        "state_after": "withdrawn"
+      }
+    ],
+    "artifact_note": "Terminal records, full red logs, PB reports, receipt verification output and exact withdrawal records are under /home/rob/tmp/pb-lead/scratch/pbtest-basetemp/. Coordinator clients were stopped before withdrawing ready copies; no duplicate tagged copies were left to run."
+  }
+}
