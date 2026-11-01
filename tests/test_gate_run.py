@@ -237,3 +237,27 @@ def test_case():
     assert (root / 'directory-visits').read_text().splitlines() == ['visit']
     assert (root / 'order').read_text().splitlines() == ['long', 'short']
     assert {case.get('file') for case in ET.parse(root / 'junit.xml').iter('testcase')} == set(files)
+
+
+def test_assigned_collection_preserves_imported_dependency_bytecode(tmp_path):
+    root = tmp_path
+    (root / 'tests').mkdir()
+    (root / 'pytest.ini').write_text('[pytest]\n')
+    (root / 'gate_fixture_dependency.py').write_text('VALUE = 42\n')
+    filename = 'tests/test_assigned.py'
+    (root / filename).write_text('''import importlib.util
+from pathlib import Path
+import sys
+
+
+def test_regular_dependency_bytecode():
+    sys.dont_write_bytecode = False
+    sys.pycache_prefix = None
+    import gate_fixture_dependency
+    assert gate_fixture_dependency.VALUE == 42
+    assert Path(importlib.util.cache_from_source(gate_fixture_dependency.__file__)).is_file()
+''')
+    code = runner.run_plan({'selected': [{'path': filename}], 'deselect': []},
+                           root=root, output=root / 'result.json', junit=root / 'junit.xml',
+                           workers=1, affinity={0})
+    assert code == 0
