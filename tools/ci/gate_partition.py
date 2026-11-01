@@ -51,6 +51,7 @@ def shards(files: Sequence[str], durations: Mapping[str, float], count: int,
 SANDBOX_TEST_FILES = frozenset({
     'tests/test_record_compatibility.py',
     'tests/test_current_receipt_compat_composition.py',
+    'tests/test_compat_bundle_cache_isolation.py',
 })
 # CPU-equivalent cost: four workers times the observed per-slot setup wall time.
 SANDBOX_SETUP_SECONDS = 40.0
