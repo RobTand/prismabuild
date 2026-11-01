@@ -62,6 +62,9 @@ sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 
 _SCRIPT = Path(__file__).resolve()
 CHECKOUT = _SCRIPT.parents[1] if _SCRIPT.parent.name == "tools" else _SCRIPT.parents[2]
+_SHAPE_GATE_SOURCE = "tools/fleet/shape_gate.py"
+_CANARY_DRIVER_SOURCE = "tools/fleet/pbcanary.py"
+_UPGRADE_CLIENT_SOURCE = "tools/fleet/upgrade_client.py"
 sys.path.insert(0, str(CHECKOUT / "src"))
 from prismabuild import fleet_roster  # noqa: E402
 from prismabuild.compatibility_window import (  # noqa: E402
@@ -886,21 +889,21 @@ class _CanaryPrecondition(Exception):
 def _shape_gate_path() -> Path:
     """The pre-publish shape gate (#987), read from the publishing checkout."""
 
-    return CHECKOUT / "tools" / "fleet" / "shape_gate.py"
+    return CHECKOUT / _SHAPE_GATE_SOURCE
 
 
 def _load_shape_gate():
     """Import the checkout's shape gate, the module that judges its receipt."""
 
-    path = _shape_gate_path()
-    if not path.is_file():
+    shape_gate_source = Path(CHECKOUT, _SHAPE_GATE_SOURCE)
+    if not shape_gate_source.is_file():
         raise SystemExit(
-            f"no shape gate at {path}: this checkout cannot verify a gate "
+            f"no shape gate at {shape_gate_source}: this checkout cannot verify a gate "
             "receipt.  Nothing was published."
         )
-    spec = importlib.util.spec_from_file_location("shape_gate", path)
+    spec = importlib.util.spec_from_file_location("shape_gate", shape_gate_source)
     if spec is None or spec.loader is None:
-        raise SystemExit(f"cannot load the shape gate at {path}: no import spec")
+        raise SystemExit(f"cannot load the shape gate at {shape_gate_source}: no import spec")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -1108,7 +1111,7 @@ def _roster_option_record(args, candidate: fleet_roster.Roster | None) -> dict[s
 def _canary_driver_path() -> Path:
     """Where crew A's driver (issue #688 deliverable 1) is expected."""
 
-    return CHECKOUT / "tools" / "fleet" / "pbcanary.py"
+    return CHECKOUT / _CANARY_DRIVER_SOURCE
 
 
 def _load_canary_module():
@@ -1127,16 +1130,16 @@ def _load_canary_module():
     (``None`` counts as 0, a string message as 1).
     """
 
-    driver = _canary_driver_path()
-    if not driver.is_file():
+    canary_driver_source = Path(CHECKOUT, _CANARY_DRIVER_SOURCE)
+    if not canary_driver_source.is_file():
         raise _CanaryPrecondition(
-            f"no canary driver at {driver}: crew A has not landed "
+            f"no canary driver at {canary_driver_source}: crew A has not landed "
             "tools/fleet/pbcanary.py in this checkout"
         )
-    spec = importlib.util.spec_from_file_location("pbcanary", driver)
+    spec = importlib.util.spec_from_file_location("pbcanary", canary_driver_source)
     if spec is None or spec.loader is None:
         raise _CanaryPrecondition(
-            f"cannot load canary driver at {driver}: no import spec"
+            f"cannot load canary driver at {canary_driver_source}: no import spec"
         )
     module = importlib.util.module_from_spec(spec)
     try:
@@ -1145,12 +1148,12 @@ def _load_canary_module():
         raise
     except Exception as exc:
         raise _CanaryPrecondition(
-            f"canary driver at {driver} failed to import: {exc!r}"
+            f"canary driver at {canary_driver_source} failed to import: {exc!r}"
         ) from exc
     entry = getattr(module, "run_canary", None)
     if entry is None:
         raise _CanaryPrecondition(
-            f"canary driver at {driver} has no run_canary(generation=...) "
+            f"canary driver at {canary_driver_source} has no run_canary(generation=...) "
             "entry: assumed crew-A shape drifted; refusing to invent a verdict"
         )
     return module
@@ -2249,24 +2252,24 @@ def _agent_definitions(*, expected_sha=None):
     the checkout's module out of anybody else's import table.
     """
 
-    source = CHECKOUT / "tools" / "fleet" / "upgrade_client.py"
+    upgrade_client_source = Path(CHECKOUT, _UPGRADE_CLIENT_SOURCE)
     spec = importlib.util.spec_from_file_location(
-        "_publish_runtime_upgrade_client", source
+        "_publish_runtime_upgrade_client", upgrade_client_source
     )
     if spec is None or spec.loader is None:
-        raise SystemExit(f"cannot read the client agent at {source}")
+        raise SystemExit(f"cannot read the client agent at {upgrade_client_source}")
     module = importlib.util.module_from_spec(spec)
     # A preflight must not create __pycache__ in the checkout. Compile the
     # source bytes directly so the check neither writes nor trusts a cached
     # version of the definitions it is supposed to read from this source.
     try:
-        raw = source.read_bytes()
+        raw = upgrade_client_source.read_bytes()
         actual_sha = hashlib.sha256(raw).hexdigest()
         if expected_sha is not None and actual_sha != expected_sha:
             raise SystemExit("rollout marker semantics identity differs from the armed updater hash")
-        code = compile(raw, str(source), "exec")
+        code = compile(raw, str(upgrade_client_source), "exec")
     except (OSError, SyntaxError) as exc:
-        raise SystemExit(f"cannot read the client agent at {source}: {exc}") from exc
+        raise SystemExit(f"cannot read the client agent at {upgrade_client_source}: {exc}") from exc
     exec(code, module.__dict__)
     # Bind the bytes actually executed, independently of later pathname reads.
     module._pb_source_sha256 = actual_sha

@@ -182,3 +182,163 @@ def test_a_superseded_run_stops_its_jobs():
     assert workflow['concurrency']['cancel-in-progress'] is True
     conditions = {name: str(job.get('if', '')) for name, job in workflow['jobs'].items()}
     assert [name for name, condition in conditions.items() if 'always()' in condition] == []
+
+
+
+def workflow_fixture(tmp_path, jobs, plan_attempt=1, workflow_attempt=2):
+    import json
+    arguments = cli_fixture(tmp_path)
+    # The legacy prefix is for the nightly caller; workflow mode adds its own attempt.
+    arguments[arguments.index('--prefix') + 1] = 'run'
+    path = tmp_path / 'jobs.json'
+    path.write_text(json.dumps(jobs))
+    return [*arguments, '--jobs', str(path), '--plan-attempt', str(plan_attempt),
+            '--workflow-attempt', str(workflow_attempt)]
+
+
+def workflow_job(index, attempt=1, stage=1, status='completed'):
+    return {'name': f'shard-{index}-a{stage}', 'run_attempt': attempt, 'status': status,
+            'started_at': f'2026-11-01T00:{attempt:02d}:{index:02d}Z'}
+
+
+def save_workflow_result(tmp_path, index, verdict='pass', stage=1, workflow_attempt=1):
+    import json
+    directory = tmp_path / 'artifacts' / f'run-{workflow_attempt}-a{stage}-{index}'
+    directory.mkdir(parents=True)
+    directory.joinpath('result.json').write_text(json.dumps(record('a.py' if index == 0 else 'b.py', verdict)))
+    directory.joinpath('junit.xml').write_text('<testsuites/>')
+
+
+def test_failed_job_rerun_reuses_successful_shards_from_its_plan(tmp_path):
+    import json
+    arguments = workflow_fixture(tmp_path, [workflow_job(0), workflow_job(1), workflow_job(1, 2),
+                                                dict(workflow_job(0), run_attempt=2)])
+    save_workflow_result(tmp_path, 0)
+    save_workflow_result(tmp_path, 1, 'fail')
+    save_workflow_result(tmp_path, 1, workflow_attempt=2)
+    run = cli('finish', *arguments)
+    assert run.returncode == 0, run.stdout + run.stderr
+    result = json.loads((tmp_path / 'output.json').read_text())
+    assert result['artifact_sources'] == {'0': {'1': 'run-1-a1-0'}, '1': {'1': 'run-2-a1-1'}}
+    assert result['missing_indices'] == []
+
+
+@pytest.mark.parametrize('old_retry', ['pass', 'fail'])
+def test_new_first_attempt_invalidates_a_previous_workflow_retry(tmp_path, old_retry):
+    import json
+    jobs = [workflow_job(0), workflow_job(0, stage=2), workflow_job(1), workflow_job(0, 2)]
+    arguments = workflow_fixture(tmp_path, jobs)
+    save_workflow_result(tmp_path, 0)
+    save_workflow_result(tmp_path, 0, None, workflow_attempt=2)
+    save_workflow_result(tmp_path, 0, old_retry, stage=2)
+    save_workflow_result(tmp_path, 1)
+    run = cli('finish', *arguments)
+    assert run.returncode == 75, run.stdout + run.stderr
+    result = json.loads((tmp_path / 'output.json').read_text())
+    assert result['missing_indices'] == [0]
+    assert result['artifact_sources']['0'] == {'1': 'run-2-a1-0'}
+    retry = cli('retries', *arguments)
+    assert retry.returncode == 0, retry.stdout + retry.stderr
+    assert [row['index'] for row in json.loads((tmp_path / 'output.json').read_text())['include']] == [0]
+
+
+def test_lost_rerun_cannot_fall_back_to_a_previous_passing_artifact(tmp_path):
+    jobs = [workflow_job(0), workflow_job(1), workflow_job(0, 2)]
+    arguments = workflow_fixture(tmp_path, jobs)
+    save_workflow_result(tmp_path, 0)
+    save_workflow_result(tmp_path, 1)
+    run = cli('finish', *arguments)
+    assert run.returncode == 75, run.stdout + run.stderr
+    assert 'missing verdicts [0]' in run.stdout
+
+
+def test_manual_rerun_of_only_the_retry_can_complete_the_original_first_attempt(tmp_path):
+    arguments = workflow_fixture(tmp_path, [workflow_job(0), workflow_job(0, 2, stage=2), workflow_job(1)])
+    save_workflow_result(tmp_path, 0, None)
+    save_workflow_result(tmp_path, 0, stage=2, workflow_attempt=2)
+    save_workflow_result(tmp_path, 1)
+    run = cli('finish', *arguments)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+
+def test_explicit_failure_in_the_current_shard_generation_remains_final(tmp_path):
+    arguments = workflow_fixture(tmp_path, [workflow_job(0, 2), workflow_job(0, 2, stage=2), workflow_job(1)])
+    save_workflow_result(tmp_path, 0, workflow_attempt=2)
+    save_workflow_result(tmp_path, 0, 'fail', stage=2, workflow_attempt=2)
+    save_workflow_result(tmp_path, 1)
+    run = cli('finish', *arguments)
+    assert run.returncode == 1, run.stdout + run.stderr
+    assert 'GATE_TEST_FAILURE' in run.stdout
+
+
+@pytest.mark.parametrize('job_attempt', [1, 3])
+def test_full_rerun_cannot_reuse_an_old_plan_or_future_workflow_results(tmp_path, job_attempt):
+    jobs = [workflow_job(0, job_attempt), workflow_job(1, job_attempt)]
+    arguments = workflow_fixture(tmp_path, jobs, plan_attempt=2)
+    save_workflow_result(tmp_path, 0, workflow_attempt=job_attempt)
+    save_workflow_result(tmp_path, 1, workflow_attempt=job_attempt)
+    run = cli('finish', *arguments)
+    assert run.returncode == 75, run.stdout + run.stderr
+
+
+def test_full_rerun_uses_its_own_artifacts_even_for_the_same_commit(tmp_path):
+    import json
+    jobs = [workflow_job(i, n) for i in range(2) for n in (1, 2)]
+    arguments = workflow_fixture(tmp_path, jobs, plan_attempt=2)
+    for i in range(2):
+        save_workflow_result(tmp_path, i, 'fail')
+        save_workflow_result(tmp_path, i, workflow_attempt=2)
+    run = cli('finish', *arguments)
+    assert run.returncode == 0, run.stdout + run.stderr
+    result = json.loads((tmp_path / 'output.json').read_text())
+    assert result['artifact_sources'] == {'0': {'1': 'run-2-a1-0'}, '1': {'1': 'run-2-a1-1'}}
+
+
+def test_incomplete_job_inventory_cannot_accept_an_unobserved_shard(tmp_path):
+    arguments = workflow_fixture(tmp_path, [workflow_job(0)])
+    save_workflow_result(tmp_path, 0)
+    save_workflow_result(tmp_path, 1)
+    run = cli('finish', *arguments)
+    assert run.returncode == 75, run.stdout + run.stderr
+
+
+def test_gate_artifacts_follow_the_plan_job_across_failed_job_reruns():
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/gate.yml').read_text())
+    jobs = workflow['jobs']
+    assert jobs['plan']['outputs']['artifact_attempt'] == '${{ github.run_attempt }}'
+    assert workflow['permissions']['actions'] == 'read'
+    for name in ['shards', 'retry-shards', 'retry-plan', 'pr-gate', 'gate']:
+        job = jobs[name]
+        downloads = [step['with']['name'] for step in job['steps']
+                     if 'download-artifact@' in step.get('uses', '') and 'name' in step['with']]
+        assert downloads == ['gate-plan-${{ needs.plan.outputs.artifact_attempt }}']
+    for name in ['retry-plan', 'pr-gate', 'gate']:
+        job = jobs[name]
+        inventory = next(step for step in job['steps'] if 'github-script@' in step.get('uses', ''))
+        assert 'listJobsForWorkflowRun' in inventory['with']['script']
+        assert "filter: 'all'" in inventory['with']['script']
+        for step in job['steps']:
+            if 'gate_actions.py' in step.get('run', ''):
+                assert '--plan-attempt' in step['run']
+                assert '--workflow-attempt' in step['run']
+                assert '--jobs gate-artifacts/jobs.json' in step['run']
+                assert '--prefix gate-result ' in step['run']
+    for name, pattern in [('retry-plan', 'gate-result-*-a1-*'),
+                          ('pr-gate', 'gate-result-*'), ('gate', 'gate-result-*')]:
+        step = next(step for step in jobs[name]['steps'] if 'pattern' in step.get('with', {}))
+        assert step['with']['pattern'] == pattern
+    for name in ['shards', 'retry-shards']:
+        upload = next(step for step in jobs[name]['steps'] if 'upload-artifact@' in step.get('uses', ''))
+        assert 'github.run_attempt' in upload['with']['name']
+        assert not upload['with'].get('overwrite', False)
+
+
+def test_inherited_job_copies_do_not_supply_coverage_for_a_full_rerun(tmp_path):
+    jobs = [job for i in range(2) for job in
+            [workflow_job(i), dict(workflow_job(i), run_attempt=2)]]
+    arguments = workflow_fixture(tmp_path, jobs, plan_attempt=2)
+    for i in range(2):
+        save_workflow_result(tmp_path, i)
+    run = cli('finish', *arguments)
+    assert run.returncode == 75, run.stdout + run.stderr
