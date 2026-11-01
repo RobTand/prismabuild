@@ -30,6 +30,14 @@ def test_sandbox_files_share_one_setup_charge_without_losing_coverage():
                                   unknown_seconds=2, setup_seconds=8) == result
 
 
+def test_the_bundle_cache_isolation_file_gets_a_sandbox_shard():
+    partition = load('gate_partition')
+    files = ['tests/test_compat_bundle_cache_isolation.py', 'plain.py']
+    result = partition.setup_shards(files, {}, 2, unknown_seconds=2, setup_seconds=8)
+    holder = next(row for row in result if files[0] in row['files'])
+    assert holder['sandbox'] is True
+
+
 def test_setup_partition_preserves_unknown_files_and_normal_api():
     partition = load('gate_partition')
     files = ['new.py', 'known.py']
