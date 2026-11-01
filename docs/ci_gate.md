@@ -68,7 +68,8 @@ python tools/ci/gate_run.py --plan plan.json --files-from assigned.txt --workers
 
 The gate's optional `--setup-aware` partition groups the two sandbox files and
 charges 40 CPU-equivalent seconds for their shared setup. Groups costing at
-least 60 seconds get their own shard, while at least one shard remains for
+least 60 seconds and the measured CPU-sensitive timing audit get their own
+shards, while at least one shard remains for
 short files. This prevents a long file from waiting behind unrelated collection
 and fixture work. The shared nightly `shards(...)` interface retains its
 original longest-processing-time algorithm.
@@ -535,6 +536,11 @@ shared build/audit fixtures, so it was dropped. Files above 60 estimated seconds
 instead get a dedicated shard, up to the existing shard limit minus one. The
 rest retain duration-balanced packing; every file remains selected exactly once.
 This avoids collecting unrelated modules beside the longest serial files.
+The repository timing audit also gets one of the existing shards. Trial
+41266469261 passed all 19,656 tests in 196 seconds but that audit took 33.509
+seconds while sharing a 113-file shard, above its unchanged 30-second enforcement
+threshold. Isolating it reduces CPU contention without changing its checks,
+its 20-second policy or the 1.5 enforcement tolerance.
 
 The 90-second cutoff separates the retained examples well. Applying refreshed
 hosted costs, the 169- and 173-file PR selections estimate 255 and 262 seconds
