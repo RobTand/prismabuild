@@ -155,12 +155,14 @@ def test_all_cores_offers_the_inherited_affinity_not_the_machine(
     """The issue's reproduction: two CPUs inherited, 80 advertised."""
 
     module = _worker_loop()
+    thread = _CallingThread({2, 3})
 
-    offer = _offer(module, [*BASE, "--all-cores"], affinity={2, 3},
+    offer = _offer(module, [*BASE, "--all-cores"], affinity=thread,
                    cpu_count=80)
 
     assert offer["cpu"] == 2, (
         "a confined worker advertised CPUs it cannot run an action on")
+    assert thread.applied == [], "an unpinned loop set its caller's affinity"
 
 
 def test_explicit_slots_cannot_advertise_more_cpus_than_the_affinity() -> None:
