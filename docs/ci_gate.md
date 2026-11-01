@@ -508,10 +508,25 @@ whether to fan out. A small selection uses one x64 shard to avoid duplicating
 setup and coverage; larger selections use both architectures without increasing
 the shard limit. The final check verifies every selected file exactly once.
 
-A head without required gate tooling fails before dependency setup, with
-instructions to merge `origin/main`. That is a final failure because retrying
-the same incompatible head cannot repair it. Setup and planning infrastructure
-failures retain exit 75 and the infrastructure-only retry.
+For pull requests GitHub loads the workflow from the synthetic merge commit,
+while tests and selection use the PR head. Before Python setup or any gate
+script runs, an inline Git check requires every tracked `tools/ci/gate_*` file
+at the head to match that workflow commit, `github.sha`. This includes scripts,
+requirements and policy data, including added, removed and renamed helpers.
+A confirmed difference, or missing required tooling, fails finally with
+"merge origin/main and push again". Retrying that head cannot repair it.
+Unrelated target changes need no merge when the tooling trees still match.
+
+This compatibility check keeps selection, test imports and budget enforcement
+in one PR-head checkout. It avoids loading newer scripts beside older policy
+or helper modules from a second tree. The deliberate tradeoff is that even a
+compatible upstream tooling or data change requires merging main. The same
+check applies to authenticated queue drafts; their integrated heads normally
+already contain target tooling. Authentication, coverage, a1/a2 retries and
+failed-job rerun artifact resolution are unchanged. An unavailable workflow
+commit is fetched by its immutable SHA; fetch or comparison errors return
+`NO_VERDICT`, exit 75, rather than claiming an incompatibility. Other setup and
+planning infrastructure failures retain exit 75 and the infrastructure-only retry.
 
 Selection summaries show counts, reason categories, the first 50 selected
 files and the first 50 exclusions. Long cells are abbreviated. Budget summaries
