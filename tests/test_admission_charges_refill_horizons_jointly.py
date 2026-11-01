@@ -80,6 +80,21 @@ READER_FOOTPRINT = 12
 NEWCOMER_FOOTPRINT = 14
 
 
+@pytest.fixture
+def inherited_cycle_interval(request, monkeypatch) -> None:
+    """Model a preceding CLI test leaving its interval in this process."""
+
+    monkeypatch.setattr(tier_loop, "CYCLE_INTERVAL_S",
+                        getattr(request, "param", 60.0))
+
+
+@pytest.fixture(autouse=True)
+def admission_clock(monkeypatch, inherited_cycle_interval) -> None:
+    """Keep claims, reports, leases and cycle timestamps on one clock."""
+
+    monkeypatch.setattr(time, "time", lambda: 1_800_000_000.0)
+
+
 class Consumer:
     """One consumer of its own manifest: ``phases`` phases of ``PHASE_GIB``.
 
@@ -512,6 +527,7 @@ def test_a_lone_newcomer_beside_holders_that_never_grow_is_admitted(
 # ------------------------------------------------------------- the ratchet
 
 
+@pytest.mark.parametrize("inherited_cycle_interval", [60.0, 5.0], indirect=True)
 def test_a_reader_that_slows_keeps_the_footprint_it_was_charged(
         tmp_path: Path) -> None:
     """A slower rate shortens the horizon but not the commitment.
