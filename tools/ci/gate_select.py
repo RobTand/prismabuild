@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import ast
 import importlib.util
 import heapq
@@ -269,7 +270,18 @@ def exclusion_entries(quarantine: dict) -> list[dict]:
 def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: dict,
                 index: dict | None = None, mode: str = 'selection', helper_graph: dict | None = None) -> dict:
     root = Path(root)
-    index = dependency_index(root) if index is None else index
+    triggers = sorted(path for path in set(changed) if
+        path in {'conftest.py', 'tests/conftest.py', 'pyproject.toml', 'tools/verify.py',
+                 'tests/proof_execution.json', 'tests/receipt_execution.json', '.github/workflows/gate.yml'} or
+        path.startswith(('tools/ci/gate_', 'tests/test_gate_')))
+    if triggers:
+        # Every discovered test is already selected. Parsing imports and helper
+        # edges cannot add coverage, including to the shadow selection.
+        names = index if index is not None else (path.relative_to(root).as_posix()
+                for path in sorted((root / 'tests').rglob('*.py')))
+        index = {name: (set(), set()) for name in names}
+    else:
+        index = dependency_index(root) if index is None else index
     if mode not in {'selection', 'full'}:
         raise ValueError('mode must be selection or full')
     all_tests = {path for path in index if path.startswith('tests/') and Path(path).name.startswith('test_')}
@@ -282,10 +294,6 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
     version_body = {'policy': POLICY, 'files': sorted(population), 'fast': sorted(fast),
                     'other_lanes': other_lanes, 'exclusions': exclusions, 'durations': durations}
     version = digest.canonical_sha256(version_body)
-    triggers = sorted(path for path in set(changed) if
-        path in {'conftest.py', 'tests/conftest.py', 'pyproject.toml', 'tools/verify.py',
-                 'tests/proof_execution.json', 'tests/receipt_execution.json', '.github/workflows/gate.yml'} or
-        path.startswith(('tools/ci/gate_', 'tests/test_gate_')))
     reasons: dict[str, list[str]] = {}
     affected = set(changed) | production_import_closure(index, changed)
     import_targets: dict[str, set[str]] = {}
@@ -355,19 +363,28 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
 
 
 def summary(plan: dict) -> str:
+    """A bounded preview; plan.json is the complete machine-readable record."""
+    preview_entries = 50
     def cell(value):
-        return str(value).replace('|', '\\|').replace('\n', ' ')
-    lines = ['## Merge gate selection', '', f"Population `{plan['population']['version']}`",
+        text = str(value).replace('|', '\\|').replace('\n', ' ')
+        return text[:500] + ('...' if len(text) > 500 else '')
+    counts = Counter(reason.split(':', 1)[0] for row in plan['selected'] for reason in row['reasons'])
+    lines = ['## Merge gate selection', '', f"Population `{cell(plan['population']['version'])}`",
              f"Selected {len(plan['selected'])} of {plan['population']['size']} files.",
              f"Estimated test wall seconds at 5 workers: {plan['estimate']['wall_seconds']!s}.",
-             'Runner pickup and setup are additional. Missing durations mean an unknown estimate.', '',
+             'Runner pickup and setup are additional. Missing durations mean an unknown estimate.',
+             'Complete selection, reasons and exclusions are in the plan.json artifact.', '',
+             'Selection reasons: ' + '; '.join(f'{cell(reason)}: {count}' for reason, count in sorted(counts.items())[:50]), '',
              '| Test file | Reasons | Estimated seconds |', '| --- | --- | ---: |']
-    lines.extend(f"| {cell(row['path'])} | {cell('; '.join(row['reasons']))} | {row['estimated_seconds']} |"
-                 for row in plan['selected'])
+    lines.extend(f"| {cell(row['path'])} | {cell('; '.join(row['reasons']))} | {cell(row['estimated_seconds'])} |"
+                 for row in plan['selected'][:preview_entries])
+    if len(plan['selected']) > preview_entries:
+        lines += ['', f"{len(plan['selected']) - preview_entries} more selected files in plan.json."]
     lines += ['', '<details><summary>Other lanes and exclusions</summary>', '',
+              f"{len(plan['deferred'])} entries; complete record in plan.json.", '',
               '| Test | Reason | Owning issue |', '| --- | --- | --- |']
     lines.extend(f"| {cell(row['path'])} | {cell(row['reason'])} | {('#' + str(row['issue'])) if row['issue'] else 'separate lane'} |"
-                 for row in plan['deferred'])
+                 for row in plan['deferred'][:preview_entries])
     lines += ['', '</details>', '']
     return '\n'.join(lines)
 

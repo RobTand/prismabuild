@@ -283,7 +283,7 @@ def test_log_returns_a_bounded_tail_of_the_stream_asked_for(
     assert errors["log"]["lines"] == ["a warning"]
 
 
-def test_log_never_reads_more_than_its_cap_and_says_it_skipped_a_head(
+def test_log_verifies_all_bytes_and_retains_only_its_cap(
     fleet: fx.Fleet,
 ) -> None:
     small = pbmcp.Session(queue_root=fleet.queue_root, cas_root=fleet.cas_root,
@@ -291,7 +291,8 @@ def test_log_never_reads_more_than_its_cap_and_says_it_skipped_a_head(
     body = small.call("pb_log", {"key_prefix": fx.DONE_KEY[:12],
                                  "tail_lines": 5})
     log = body["log"]
-    assert log["bytes_read"] <= 12
+    assert log["retained_bytes"] <= 12
+    assert log["bytes_read"] == len(fx.STDOUT.encode())
     assert log["truncated_head"] is True
     assert log["total_bytes"] == len(fx.STDOUT.encode())
     assert "first line" not in log["lines"]

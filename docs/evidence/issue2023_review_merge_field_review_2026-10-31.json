@@ -1,0 +1,284 @@
+[
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "<module>",
+      "unresolved": "256",
+      "binding": "MAX_RETENTION_KEYS"
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_retention.py:<module> after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_reader_gate",
+      "fields": [
+        "approvals",
+        "config_sha256",
+        "deferred_inventory_complete",
+        "expires_unix",
+        "generations",
+        "inventory_attested_by",
+        "inventory_complete",
+        "issued_unix",
+        "members",
+        "queue_id",
+        "queue_root",
+        "schema",
+        "store_id"
+      ],
+      "binding": "fields"
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_retention.py:_verify_attempt_reader_gate after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "survey_attempt_log_retention",
+      "unresolved": "_select_attempt_retention_keys(queue.root, cursor='', limit=max_keys)",
+      "binding": "keys"
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_retention.py:survey_attempt_log_retention after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "survey_attempt_log_retention",
+      "unresolved": "_select_attempt_retention_keys(queue.root, cursor=cursor, limit=max_keys)",
+      "binding": "keys"
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_retention.py:survey_attempt_log_retention after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_archive.py",
+      "owner": "_load_attempt_retention_config",
+      "fields": [
+        "archive_root",
+        "dataset",
+        "dataset_guid",
+        "queue_id",
+        "schema",
+        "store_id"
+      ],
+      "binding": "required"
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_archive.py:_load_attempt_retention_config after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_read_attempt_retention_cursor",
+      "fields": [
+        "after_key",
+        "queue_id",
+        "schema"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_retention.py:_read_attempt_retention_cursor after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_reader_gate",
+      "fields": [
+        "approvals",
+        "config_sha256",
+        "deferred_inventory_complete",
+        "expires_unix",
+        "generations",
+        "inventory_attested_by",
+        "inventory_complete",
+        "issued_unix",
+        "members",
+        "queue_id",
+        "queue_root",
+        "schema",
+        "store_id"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_retention.py:_verify_attempt_reader_gate after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_archive.py",
+      "owner": "_load_attempt_retention_config",
+      "fields": [
+        "archive_root",
+        "dataset",
+        "dataset_guid",
+        "queue_id",
+        "schema",
+        "store_id"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_archive.py:_load_attempt_retention_config after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_reader_gate",
+      "fields": [
+        "by",
+        "config_sha256",
+        "inventory_sha256",
+        "reason",
+        "unix"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_retention.py:_verify_attempt_reader_gate after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_archive.py",
+      "owner": "_stream_archived_attempt_log",
+      "fields": [
+        "bytes",
+        "compressed_bytes",
+        "compressed_sha256",
+        "sha256"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_archive.py:_stream_archived_attempt_log after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_reader_gate",
+      "fields": [
+        "bytes",
+        "path",
+        "sha256"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_retention.py:_verify_attempt_reader_gate after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_reader_gate",
+      "fields": [
+        "capabilities",
+        "generation",
+        "id",
+        "role",
+        "schema",
+        "verified_unix"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_retention.py:_verify_attempt_reader_gate after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_archive.py",
+      "owner": "_read_attempt_archive_manifest",
+      "fields": [
+        "chunks",
+        "descriptor",
+        "queue_id",
+        "schema",
+        "store_id"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_archive.py:_read_attempt_archive_manifest after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_generation_receipts",
+      "fields": [
+        "commit",
+        "content_sha256",
+        "directory",
+        "generation",
+        "receipt_sha256"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_retention.py:_verify_attempt_generation_receipts after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_archive.py",
+      "owner": "_read_attempt_archive_manifest",
+      "fields": [
+        "descriptor",
+        "manifest_sha256",
+        "queue_id",
+        "schema",
+        "store_id"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_archive.py:_read_attempt_archive_manifest after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_reader_gate",
+      "fields": [
+        "evidence",
+        "generation",
+        "id",
+        "role"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_retention.py:_verify_attempt_reader_gate after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_current_attempt_readers",
+      "fields": [
+        "generation",
+        "root"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_retention.py:_verify_current_attempt_readers after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_reader_gate",
+      "fields": [
+        "pb_lead",
+        "tl_lead"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain the #2023 source policy at src/prismabuild/attempt_retention.py:_verify_attempt_reader_gate after merging main ccd01ac16faf0c1bff0422ccdb366444ee7b20e5. This pins the archive/retention boundary; no existing main policy is removed and no live apply is authorized."
+  }
+]
