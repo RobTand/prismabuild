@@ -156,6 +156,7 @@ def _field_policy_tree(root):
         'src/prismabuild/plain.py': "ALLOWED_FIELDS = {'schema', 'value'}\ndef check(row):\n    required = {'schema'}\n    if set(row) != required: raise ValueError('fields')\n",
         'tools/embedded.py': "SCRIPT = \"def check(row):\\n    fields = {'embedded'}\\n    if set(row) != fields: raise ValueError('fields')\\n# schema\\n\"\n",
         'tools/extensionless': "def check(row):\n    optional = {'extra'}\n    return row\n",
+        'tools/status.py': "def check(row):\n    return row.get('schema') == 'example.status.v1'\n",
         'fleet/check.sh': "python3 <<'PYTHON'\ndef check(row):\n    allowed = {'shell'}\n    return row\nPYTHON\n",
         'tests/ignored.py': "TEST_FIELDS = {'control'}\n",
     }
@@ -199,5 +200,6 @@ def test_pinned_field_guard_does_not_scan_corpus_or_retained_records(tmp_path, m
 
     monkeypatch.setattr(wire_inventory, 'syntax_tree', policy_source)
     monkeypatch.setattr(wire_inventory, 'retained_inventory', forbidden)
+    monkeypatch.setattr(wire_inventory, 'source_expression', forbidden)
     monkeypatch.setitem(globals(), 'ROOT', tmp_path)
     test_closed_field_sets_remain_pinned()
