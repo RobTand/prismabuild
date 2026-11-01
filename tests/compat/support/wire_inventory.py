@@ -53,25 +53,35 @@ def syntax_tree(path, snippet):
         return ast.parse(sanitized), True
 
 
-def sources(root, observations):
+def source_paths(root, *, include_tests=True):
     for base in ("src", "tools", "tests", "fleet"):
+        if base == "tests" and not include_tests:
+            continue
         for path in sorted((root / base).rglob("*")):
-            if not path.is_file() or path.suffix not in (".py", "", ".sh"):
+            if path.is_file() and path.suffix in (".py", "", ".sh"):
+                yield str(path.relative_to(root))
+
+
+def sources(root, observations, *, include_tests=True, paths=None):
+    paths = source_paths(root, include_tests=include_tests) if paths is None else paths
+    for name in paths:
+        path = root / name
+        if not path.is_file():
+            continue
+        raw = path.read_bytes()
+        for block, snippet, line in source_units(path, raw):
+            source = {"path": str(path.relative_to(root)), "sha256": hashlib.sha256(raw).hexdigest(),
+                      "block": block, "line_start": line}
+            try:
+                tree, template = syntax_tree(path, snippet)
+            except (SyntaxError, UnicodeError) as error:
+                observations["unparsed_sources"].append({**source, "reason": type(error).__name__,
+                    "python_suffix": path.suffix == ".py", "contains_wire_schema": b"schema" in snippet
+                        and bool(re.search(rb"[A-Za-z][\w.-]+\.v\d+", snippet))})
                 continue
-            raw = path.read_bytes()
-            for block, snippet, line in source_units(path, raw):
-                source = {"path": str(path.relative_to(root)), "sha256": hashlib.sha256(raw).hexdigest(),
-                          "block": block, "line_start": line}
-                try:
-                    tree, template = syntax_tree(path, snippet)
-                except (SyntaxError, UnicodeError) as error:
-                    observations["unparsed_sources"].append({**source, "reason": type(error).__name__,
-                        "python_suffix": path.suffix == ".py", "contains_wire_schema": b"schema" in snippet
-                            and bool(re.search(rb"[A-Za-z][\w.-]+\.v\d+", snippet))})
-                    continue
-                observations["parsed_sources"].append(source)
-                source["shell_template"] = template
-                yield source, tree
+            observations["parsed_sources"].append(source)
+            source["shell_template"] = template
+            yield source, tree
 
 
 def catalogue(root):
@@ -107,27 +117,47 @@ def classifications(root):
     return result
 
 
+def inventory_metadata(root):
+    """Validate catalogue identities and reviewed disposition declarations."""
+    known = catalogue(root)
+    reviewed = classifications(root)
+    assert not known.keys() & reviewed.keys(), "a kind cannot be qualified and excluded from the window"
+    for kind in known.values():
+        tuple(kind["name"] + "/" + variant for variant in kind["variants"])
+    for row in reviewed.values():
+        for category in ("occurrences", "schema_builders", "reader_checks"):
+            row["witnesses"][category]
+    return known, reviewed
+
+
+def validated_archive(archive):
+    """Validate one retained archive without recursively auditing its sources."""
+    manifest = json.loads(archive.with_suffix("").with_suffix(".json").read_bytes())
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == manifest["archive_sha256"]
+    receipt_name = manifest.get("provenance_file", "RUNTIME_VERSION.json")
+    members = {}
+    with tarfile.open(archive) as contents:
+        for member in contents:
+            path = Path(member.name)
+            assert member.isfile() and not path.is_absolute() and ".." not in path.parts and member.name not in members
+            raw = contents.extractfile(member).read()
+            assert member.name in manifest["files"] or member.name == receipt_name
+            expected = manifest["receipt_sha256"] if member.name == receipt_name else manifest["files"][member.name]
+            assert hashlib.sha256(raw).hexdigest() == expected
+            members[member.name] = raw
+        assert set(manifest["files"]) < members.keys() and len(members) == len(manifest["files"]) + 1
+    return manifest, members
+
+
 def retained_inventory(root):
     for archive in sorted((root / "tests/compat/generations").glob("*.tar.gz")):
-        manifest = json.loads(archive.with_suffix("").with_suffix(".json").read_bytes())
-        assert hashlib.sha256(archive.read_bytes()).hexdigest() == manifest["archive_sha256"]
+        manifest, members = validated_archive(archive)
         with tempfile.TemporaryDirectory(prefix="compat-source-inventory-") as directory:
             destination = Path(directory)
-            receipt_name = manifest.get("provenance_file", "RUNTIME_VERSION.json")
-            with tarfile.open(archive) as contents:
-                names = set()
-                for member in contents:
-                    path = Path(member.name)
-                    assert member.isfile() and not path.is_absolute() and ".." not in path.parts and member.name not in names
-                    names.add(member.name)
-                    raw = contents.extractfile(member).read()
-                    assert member.name in manifest["files"] or member.name == receipt_name
-                    expected = manifest["receipt_sha256"] if member.name == receipt_name else manifest["files"][member.name]
-                    assert hashlib.sha256(raw).hexdigest() == expected
-                    path = destination / path
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(raw)
-                assert set(manifest["files"]) < names and len(names) == len(manifest["files"]) + 1
+            for name, raw in members.items():
+                path = destination / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw)
             rows, _ = audit(destination)
             yield manifest["generation"], manifest["archive_sha256"], rows
 
@@ -157,36 +187,12 @@ def source_expression(node, source):
     return ast.unparse(node)
 
 
-def audit(root, observations=None):
-    observations = observations if observations is not None else {}
-    observations.update({key: [] for key in ("parsed_sources", "unparsed_sources", "unresolved_schema_builders", "serialization_sites")})
-    known = catalogue(root)
-    reviewed = classifications(root)
-    assert not known.keys() & reviewed.keys(), "a kind cannot be qualified and excluded from the window"
-    required_generations = set()
-    for name in ("window.json", "prepared.json"):
-        path = root / "tests/compat/generations" / name
-        if path.exists():
-            document = json.loads(path.read_bytes())
-            required_generations.update(row["generation"] for row in
-                                        (document["generations"] if isinstance(document, dict) else document))
-    captured = {"current": set(), "historical": defaultdict(set), "absent_inputs": defaultdict(set)}
-    for path in (root / "tests/compat").glob("*.jsonl"):
-        if not path.name.startswith(("goldens", "historical", "absent-inputs", "absent-participants")):
-            continue
-        for line in path.read_text().splitlines():
-            item = json.loads(line)
-            if path.name.startswith("goldens"):
-                captured["current"].add(item["case"])
-            elif path.name.startswith(("absent-inputs", "absent-participants")):
-                kind = next(row for row in known.values() if row["name"] == item["case"].split("/")[0])
-                assert kind.get("older_participant_absence") or (kind.get("caller_input") and kind.get("older_input_absence") and not kind["writers"])
-                captured["absent_inputs"][item["generation"]].add(item["case"])
-            else:
-                captured["historical"][item["generation"]].add(item["case"])
+def source_index(root, known, *, include_tests=True, paths=None):
+    """Freeze first-pass hashes and bindings, without retaining syntax trees."""
+    observations = {"parsed_sources": [], "unparsed_sources": []}
     wire_ids = {row["name"]: wire for wire, row in known.items()}
     constants, imports, exports = {}, {}, {}
-    for unit, tree in sources(root, observations):
+    for unit, tree in sources(root, observations, include_tests=include_tests, paths=paths):
         path = unit["path"]
         module = module_name(path)
         local, aliases = {}, {}
@@ -215,6 +221,18 @@ def audit(root, observations=None):
                     aliases[name.asname or name.name] = name.name
         imports[path, unit["block"]] = (local, aliases)
         exports.update({module + "." + name: origin for name, origin in aliases.items()})
+    return {**observations, "constants": constants, "imports": imports, "exports": exports}
+
+
+def _source_inventory(root, observations, known, *, include_tests=True, include_records=True, paths=None, index=None):
+    selected = set(paths) if index is not None and paths is not None else None
+    if index is None:
+        index = source_index(root, known, include_tests=include_tests, paths=paths)
+    observations.update({key: [] for key in ("parsed_sources", "unparsed_sources", "unresolved_schema_builders", "serialization_sites")})
+    for category in ("parsed_sources", "unparsed_sources"):
+        observations[category] = [dict(row) for row in index[category]
+                                  if selected is None or row["path"] in selected]
+    constants, imports, exports = (index[key] for key in ("constants", "imports", "exports"))
 
     def imported_constant(name):
         visited = set()
@@ -289,14 +307,15 @@ def audit(root, observations=None):
                 scope = scope_values(node, scope)
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 if WIRE.fullmatch(node.value):
-                    rows[node.value]["occurrences"].append({"path": path, "owner": owner, "line": node.lineno, "embedded": embedded})
+                    if include_records:
+                        rows[node.value]["occurrences"].append({"path": path, "owner": owner, "line": node.lineno, "embedded": embedded})
                 elif "schema" in node.value:
                     try:
                         walk(ast.parse(node.value), owner + ":embedded", True, scope, node.value)
                     except SyntaxError:
                         pass
             schema, names, expansion, schema_node = None, [], False, None
-            if isinstance(node, ast.Dict):
+            if include_records and isinstance(node, ast.Dict):
                 for key, value in zip(node.keys, node.values):
                     if key is None:
                         expansion = True
@@ -306,13 +325,15 @@ def audit(root, observations=None):
                             schema_node = value
                             schema = resolve(value, scope)
             if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Name) and node.func.id == "dict":
+                if include_records and isinstance(node.func, ast.Name) and node.func.id == "dict":
                     names = [kw.arg for kw in node.keywords if kw.arg]
                     expansion = any(kw.arg is None for kw in node.keywords)
                     schema_node = next((kw.value for kw in node.keywords if kw.arg == "schema"), None)
                     schema = resolve(schema_node, scope)
-                target = ast.unparse(node.func)
-                if target.endswith(("json.dump", "json.dumps", "write_json", "write_record", "write_document", "_write_json_atomic", "_write_atomic", "_publish_immutable", "publish_immutable")):
+                target = (ast.unparse(node.func) if include_records else
+                          node.func.id if isinstance(node.func, ast.Name) else
+                          node.func.attr if isinstance(node.func, ast.Attribute) else "")
+                if include_records and target.endswith(("json.dump", "json.dumps", "write_json", "write_record", "write_document", "_write_json_atomic", "_write_atomic", "_publish_immutable", "publish_immutable")):
                     observations["serialization_sites"].append({"path": path, "owner": owner, "line": node.lineno,
                                                                 "call": target, "embedded": embedded})
                     # Boundaries remain source witnesses until a production adapter covers them.
@@ -341,7 +362,7 @@ def audit(root, observations=None):
                                 pin(part, owner, scope, source)
                         elif not is_keys(fields):
                             pin(fields, owner, scope, source)
-                for expression in ast.walk(node):
+                for expression in ast.walk(node) if include_records else ():
                     wire = resolve(expression, scope)
                     if isinstance(wire, str) and WIRE.fullmatch(wire) and "schema" in source_expression(node, source).lower():
                         rows[wire]["reader_checks"].append({"path": path, "owner": owner, "line": node.lineno,
@@ -368,6 +389,60 @@ def audit(root, observations=None):
 
         walk(tree, "<module>" if source_file["block"] is None else
              ("<shell-json@" if source_file["shell_template"] else "<shell-python@") + source_file["block"] + ">")
+    policies = [row for row in policies if production(row["path"])]
+    return rows, sorted(policies, key=lambda row: (row["path"], row["owner"], json.dumps(row, sort_keys=True)))
+
+
+def field_policies(root, *, paths=None):
+    """Discover every production policy without auditing corpus record captures."""
+    return _source_inventory(root, {}, catalogue(root), include_tests=False, include_records=False, paths=paths)[1]
+
+
+def validate_builders(wire, builders, known, reviewed):
+    if wire not in known and wire not in reviewed and wire in (
+            "buffered-sequential-write-fdatasync-read.v1", "contiguous-residency-exact-cover.v1",
+            "repeated-shake256-block.v1", "prismaquant.prismabuild.action.v1"):
+        assert not any(production(row["path"]) for row in builders), "production constructor for " + wire
+
+
+def validate_source(root, path, index, known, reviewed):
+    """Run the audit's second pass and constructor checks for one source file."""
+    rows, _ = _source_inventory(root, {}, known, paths=[path], index=index)
+    for wire, row in rows.items():
+        validate_builders(wire, row["schema_builders"], known, reviewed)
+
+
+def capture_metadata(root, known):
+    """Read descriptor/capture fields and validate declared absence eligibility."""
+    required_generations = set()
+    for name in ("window.json", "prepared.json"):
+        path = root / "tests/compat/generations" / name
+        if path.exists():
+            document = json.loads(path.read_bytes())
+            required_generations.update(row["generation"] for row in
+                                        (document["generations"] if isinstance(document, dict) else document))
+    captured = {"current": set(), "historical": defaultdict(set), "absent_inputs": defaultdict(set)}
+    for path in (root / "tests/compat").glob("*.jsonl"):
+        if not path.name.startswith(("goldens", "historical", "absent-inputs", "absent-participants")):
+            continue
+        for line in path.read_text().splitlines():
+            item = json.loads(line)
+            if path.name.startswith("goldens"):
+                captured["current"].add(item["case"])
+            elif path.name.startswith(("absent-inputs", "absent-participants")):
+                kind = next(row for row in known.values() if row["name"] == item["case"].split("/")[0])
+                assert kind.get("older_participant_absence") or (kind.get("caller_input") and kind.get("older_input_absence") and not kind["writers"])
+                captured["absent_inputs"][item["generation"]].add(item["case"])
+            else:
+                captured["historical"][item["generation"]].add(item["case"])
+    return required_generations, captured
+
+
+def audit(root, observations=None):
+    observations = observations if observations is not None else {}
+    known, reviewed = inventory_metadata(root)
+    required_generations, captured = capture_metadata(root, known)
+    rows, policies = _source_inventory(root, observations, known)
     for base in ("src", "tools", "tests"):
         for path in sorted((root / base).rglob("*.json")):
             try:
@@ -404,6 +479,7 @@ def audit(root, observations=None):
                     ("occurrences", "schema_builders", "reader_checks")}}
     result = []
     for wire, value in sorted(rows.items()):
+        validate_builders(wire, value["schema_builders"], known, reviewed)
         witnesses = [row for row in value["occurrences"] if production(row["path"])]
         for category in ("occurrences", "schema_builders", "json_boundaries", "reader_checks"):
             for row in value[category]:
@@ -436,11 +512,9 @@ def audit(root, observations=None):
         elif wire in ("buffered-sequential-write-fdatasync-read.v1", "contiguous-residency-exact-cover.v1",
                       "repeated-shake256-block.v1"):
             disposition = "algorithm_identifier_not_record"
-            assert not any(row["scope"] == "production" for row in value["schema_builders"])
         elif wire == "prismaquant.prismabuild.action.v1":
             disposition = "retired_rejected_schema"
             value["disposition_reason"] = "core.validate_action accepts action.v2 only; no current v1 constructor"
-            assert not any(row["scope"] == "production" for row in value["schema_builders"])
         elif not witnesses and value.get("retained"):
             disposition = "retained_only_requires_review"
         elif not witnesses:
@@ -454,8 +528,7 @@ def audit(root, observations=None):
     for category in observations.values():
         for row in category:
             row["scope"] = "production" if production(row["path"]) else "test_or_corpus_control"
-    policies = [row for row in policies if production(row["path"])]
-    return result, sorted(policies, key=lambda row: (row["path"], row["owner"], json.dumps(row, sort_keys=True)))
+    return result, policies
 
 
 def main():

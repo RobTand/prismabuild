@@ -11,20 +11,6 @@
       "reason": "Historical flake cluster #1782 is closed. Provisional hosted-runner requalification belongs to #2434."
     },
     {
-      "target": "tests/test_docker_shim_relays_termination_1599.py::test_a_signal_before_the_container_exists_is_unresolved_and_not_a_stop",
-      "issue": 2518,
-      "reason": "Intermittent: got 'unknown' instead of 'creation_unresolved' on shard 9 of hosted pr-gate run 41275507377 (attempt 1) for a change the test cannot reach; a full rerun of the same commit passed. Cause under investigation in #2518. Remove this entry with that fix.",
-      "evidence": {
-        "outcomes": {
-          "passed": 1,
-          "failed": 1
-        },
-        "hosted_runs": [
-          "https://github.com/RobTand/prismabuild/actions/runs/41275507377"
-        ]
-      }
-    },
-    {
       "target": "tests/test_sealed_bundle_cache.py::test_concurrent_processes_share_one_atomic_fill",
       "issue": 2525,
       "reason": "Intermittent: observed two packs instead of one atomic fill in a full rerun of the gate canary on #2519, whose change the test cannot reach; the canary's other attempts passed it. Whether the test races or the cache can double-fill is under investigation in #2525. Remove this entry with that fix.",
@@ -53,20 +39,6 @@
           "https://github.com/RobTand/prismabuild/actions/runs/41263788184",
           "https://github.com/RobTand/prismabuild/actions/runs/41264576986",
           "https://github.com/RobTand/prismabuild/actions/runs/41264693316"
-        ]
-      }
-    },
-    {
-      "target": "tests/test_docker_shim_relays_termination_1599.py::test_a_container_created_after_the_client_is_gone_is_found_and_stopped",
-      "issue": 2518,
-      "reason": "Intermittent, same docker-shim timing family as the #2518 node: failed on a hosted pr-gate shard of run 41337112476 for #2531, a gate-tooling change it cannot reach. Remove this entry with the #2518 fix.",
-      "evidence": {
-        "outcomes": {
-          "failed": 1
-        },
-        "source_pr": 2531,
-        "hosted_runs": [
-          "https://github.com/RobTand/prismabuild/actions/runs/41337112476"
         ]
       }
     },
@@ -479,20 +451,6 @@
         1997
       ],
       "reason": "The archival-replay capability requires retained runtime inputs absent from the gate image. Archival TMPDIR qualification is tracked by #1997."
-    },
-    {
-      "target": "tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned",
-      "issue": 2516,
-      "reason": "Passes since #2515 reconciled the pins, but took 62.462 s on a hosted gate shard against the 30 s limit, and the shrink-only budget cannot add an exception. Returns to the gate when the audit fits the budget (#2516).",
-      "evidence": {
-        "outcomes": {
-          "passed": 1,
-          "failed_budget": 1
-        },
-        "hosted_runs": [
-          "https://github.com/RobTand/prismabuild/actions/runs/41331895355"
-        ]
-      }
     },
     {
       "target": "tests/test_a_shared_mount_row_without_a_data_manifest_is_warned_or_refused.py::test_require_data_manifest_refuses_a_logical_requests_common_before_it_is_cut",
