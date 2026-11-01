@@ -9,11 +9,10 @@ single-job PR selection run. The label takes effect on the next push or reopen:
 label changes don't trigger the workflow, because Mergify's own `queued` and
 `dequeued` labels would otherwise rerun `pr-gate` on queued pull requests. No CI
 job uses the fleet.
-Mergify enforcement is pending the lead's separate queue-configuration PR.
-Current branch protection requires only `issue-link`, and the current queue
-checks PRs in place. The intended policy requires `pr-gate` to queue and the
-final job `gate` to merge. Full queue coverage depends on `gate` succeeding on
-authenticated batch SHAs, not on a check of an individual source PR.
+Mergify requires `pr-gate` to queue and the final job `gate` to merge, enforced
+by the batched queue configuration merged in #2453. Full queue coverage
+depends on `gate` succeeding on authenticated batch SHAs, not on a check of
+an individual source PR.
 
 The full plan records a shadow selection while coverage stays full. The full
 matrix defaults to sixteen shards, alternating `ubuntu-24.04` and `ubuntu-24.04-arm`.
@@ -92,7 +91,17 @@ The per-file scheduling table still uses the PB inventory's summed medians;
 it estimates shard balance, rather than setting per-test cost limits.
 
 The gate runner checks xunit1 JUnit times, including setup and teardown, after
-pytest completes. It prints every overrun with its precise node ID and limit.
+pytest completes. Enforcement uses the runner's named
+`BUDGET_ENFORCEMENT_TOLERANCE = 1.5`: a cost failure requires a time strictly
+greater than the policy limit times 1.5. A test above its policy limit but at
+or below that threshold passes with a warning in the result JSON, job summary
+and JUnit suite output. For the default 20-second policy, times above 20 and
+through 30 seconds warn; times above 30 seconds fail with the precise node ID.
+Hosted-runner timing noise can push borderline tests just over their limits,
+as the timing guard's 20.527-second run showed. The shrink-only policy cannot
+add an exception for that borderline test, so tolerance belongs in enforcement.
+The JSON limits and their ratchet remain unchanged; warnings keep creeping
+costs visible for #2448.
 The policy may only shrink versus `plan.base_sha`, the event's
 `pull_request.base.sha`: neither the default nor an existing exception may
 increase, and no new exception may be added. Removing an exception is allowed.
