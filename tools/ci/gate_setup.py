@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 NO_VERDICT = 75
+ROOT_OWNED_INTERPRETER_FILES = frozenset({'tests/test_proof_runtime_observation.py'})
 
 
 def install_bubblewrap(execute):
@@ -53,7 +54,7 @@ def _export(name, value):
             handle.write(value + '\n')
 
 
-def prepare(files, *, sandbox_mode='full', execute=subprocess.run):
+def prepare_assigned_gate(files, *, sandbox_mode='full', execute=subprocess.run):
     spec = importlib.util.spec_from_file_location('gate_partition', Path(__file__).with_name('gate_partition.py'))
     partition = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(partition)
@@ -61,6 +62,12 @@ def prepare(files, *, sandbox_mode='full', execute=subprocess.run):
     scratch = json.loads((root / 'tools/fleet/fleet_boxes.json').read_text())['action_tmpdir']
     execute(['sudo', 'install', '-d', '-m', '0700', '-o', str(os.getuid()), '-g', str(os.getgid()), scratch], check=True)
     _export('GITHUB_ENV', 'TMPDIR=' + scratch)
+    if set(files) & ROOT_OWNED_INTERPRETER_FILES:
+        # These controls observe the real executable's owner. No namespace,
+        # prefix relocation or recursive ownership rewrite is needed.
+        executable = Path(sys.executable).resolve()
+        print(f'GATE_SETUP_OWNERSHIP: {executable}; original uid={executable.stat().st_uid}', flush=True)
+        execute(['sudo', 'chown', 'root:root', str(executable)], check=True)
     sandbox = bool(set(files) & partition.SANDBOX_TEST_FILES)
     print(f'GATE_SETUP: sandbox={sandbox}; mode={sandbox_mode}; files={len(files)}', flush=True)
     if not sandbox or sandbox_mode == 'never':
@@ -96,7 +103,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         files = [line.strip() for line in args.files_from.read_text().splitlines() if line.strip()]
-        prepare(files, sandbox_mode=args.sandbox_mode)
+        prepare_assigned_gate(files, sandbox_mode=args.sandbox_mode)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print('NO_VERDICT: ' + str(error), flush=True)
         return NO_VERDICT

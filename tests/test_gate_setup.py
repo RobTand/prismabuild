@@ -71,7 +71,7 @@ def test_setup_fault_is_no_verdict(tmp_path, monkeypatch, capsys):
     files = tmp_path / 'files.txt'; files.write_text('plain.py\n')
     def unavailable(*args, **kwargs):
         raise OSError('injected hosted setup failure')
-    monkeypatch.setattr(setup, 'prepare', unavailable)
+    monkeypatch.setattr(setup, 'prepare_assigned_gate', unavailable)
     assert setup.main(['--files-from', str(files)]) == 75
     assert 'NO_VERDICT: injected hosted setup failure' in capsys.readouterr().out
 
@@ -148,7 +148,7 @@ def test_root_owned_interpreter_fixture_needs_no_namespace_or_relocation(monkeyp
     def execute(command, **kwargs):
         operations.append(command)
         return SimpleNamespace(returncode=0)
-    setup.prepare(['tests/test_proof_runtime_observation.py'], execute=execute)
+    setup.prepare_assigned_gate(['tests/test_proof_runtime_observation.py'], execute=execute)
     assert ['sudo', 'chown', 'root:root', str(Path(setup.sys.executable).resolve())] in operations
     assert not any(word in {'apt-get', 'bwrap', 'mv', 'cp', 'ldconfig'}
                    for command in operations for word in command)
