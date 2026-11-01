@@ -19,7 +19,8 @@ SPEC.loader.exec_module(gate)
 
 def pull(title="fix: repair claim ownership", *, labels=(), count=1, body="Change type: feature"):
     return {"title": title, "labels": [{"name": name} for name in labels],
-            "body": body, "changed_files": count}
+            "body": body, "changed_files": count,
+            "head": {"sha": "head"}, "base": {"sha": "base"}}
 
 
 def test_change(before="", after="def test_claim():\n    assert claim() == 'owned'\n", **fields):
@@ -131,12 +132,12 @@ def test_incomplete_or_api_limited_inventory_is_not_a_pass():
 
 def test_cli_returns_json_and_rejects_invalid_input(tmp_path):
     payload = tmp_path / "input.json"
-    payload.write_text(json.dumps({"pull": pull(), "files": [test_change()]}))
+    payload.write_text(json.dumps({"pull": pull(), "current": pull(), "files": [test_change()]}))
     command = [sys.executable, str(ROOT / "tools/ci/check_regression_test.py"), str(payload)]
     done = subprocess.run(command, capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout)["tests"] == ["tests/test_claim.py::test_claim"]
-    payload.write_text(json.dumps({"pull": pull(), "files": []}))
+    payload.write_text(json.dumps({"pull": pull(), "current": pull(), "files": []}))
     denied = subprocess.run(command, capture_output=True, text=True)
     assert denied.returncode == 1
     assert not json.loads(denied.stdout)["allowed"]

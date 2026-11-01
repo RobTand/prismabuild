@@ -51,16 +51,10 @@ jobs:
               file.after = file.status === 'removed' ? '' : await source(pull.head.sha, file.filename);
             }
             const {data: current} = await github.rest.pulls.get(api);
-            if (current.head.sha !== pull.head.sha || current.base.sha !== pull.base.sha
-                || current.title !== pull.title || current.body !== pull.body
-                || JSON.stringify(current.labels) !== JSON.stringify(pull.labels)) {
-              core.setFailed('PR changed while gathering evidence; rerun the check.');
-              return;
-            }
             const helperPath = path.join(process.env.RUNNER_TEMP, 'check_regression_test.py');
             const inputPath = path.join(process.env.RUNNER_TEMP, 'regression-test-input.json');
             fs.writeFileSync(helperPath, helper);
-            fs.writeFileSync(inputPath, JSON.stringify({pull, files}));
+            fs.writeFileSync(inputPath, JSON.stringify({pull, current, files}));
             const result = await exec.getExecOutput('python3', [helperPath, inputPath], {ignoreReturnCode: true});
             core.info(result.stdout);
             if (result.exitCode !== 0) core.setFailed('Regression-test gate rejected this PR; see the verdict above.');
