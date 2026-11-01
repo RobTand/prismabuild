@@ -184,3 +184,41 @@ def test_release_train_pr_needs_no_change_type_but_lookalike_branches_do():
     assert gate.check_pull_request(release, []).allowed
     for ref in ("tlx/release-83df53ab", "fix/tl/release-83df53ab", "prismabuild-2281"):
         assert not gate.check_pull_request({**release, "head": {"ref": ref}}, []).allowed
+
+
+
+def merge_queue_batch():
+    repository = {"full_name": "RobTand/prismabuild"}
+    return {
+        **pull("Mergify merge queue batch", body="- member PR", count=0),
+        "draft": True,
+        "user": {"login": "mergify[bot]", "id": 37929162, "type": "Bot"},
+        "head": {"ref": "mergify/merge-queue/batch-id", "repo": dict(repository)},
+        "base": {"repo": dict(repository)},
+    }
+
+
+def test_authenticated_merge_queue_draft_is_not_applicable_without_change_type():
+    verdict = gate.check_pull_request(merge_queue_batch(), [])
+    assert verdict.allowed
+    assert "not applicable" in verdict.reason
+    assert verdict.tests == ()
+
+
+@pytest.mark.parametrize("location,field,value", [
+    (None, "draft", False),
+    ("user", "login", "ordinary-author"),
+    ("user", "id", 37929163),
+    ("user", "type", "User"),
+    ("head", "ref", "mergify/other/batch-id"),
+    ("head", "ref", "prismabuild-2428-regression-test-drafts"),
+    ("head", "repo", {"full_name": "external/prismabuild"}),
+    ("head", "repo", None),
+    ("base", "repo", None),
+])
+def test_merge_queue_lookalikes_still_require_change_type(location, field, value):
+    subject = merge_queue_batch()
+    (subject if location is None else subject[location])[field] = value
+    verdict = gate.check_pull_request(subject, [])
+    assert not verdict.allowed
+    assert "Declare exactly one Change type:" in verdict.reason
