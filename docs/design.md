@@ -3994,14 +3994,23 @@ without the member or the ordinary package import boundary.
   Deadline callers bypass a contended miss lock.
   The first hit probe opens metadata and payload descriptors under a nonblocking
   shared inventory flock. After taking the address lock, an ordinary caller
-  waits for that shared inventory lock before treating the entry as absent.
+  waits for that shared inventory lock before treating the entry as absent,
+  with a one-second acquisition budget using the existing monotonic Deadline.
   Both release inventory before copying and verification. Open
   descriptors survive eviction. Four warm deadline readers can all hit.
   Exclusive inventory locking covers only bookkeeping, space reservations,
   trimming and publication. Ordinary fillers wait for inventory reservation
-  and publication while retaining the address lock, so inventory contention
-  cannot discard a completed fill and cause an identical waiter to pack again
-  (#2525). Deadline callers retain nonblocking inventory and address locks,
+  and publication while retaining the address lock, each with that same
+  acquisition bound, so ordinary short contention still coalesces fills
+  (#2525). An expired acquisition ends cache work for that call: a caller
+  that has not packed seals fresh once; an already packed caller keeps its
+  completed output without retrying storage or packing again. A stopped live
+  inventory owner cannot make every address wait indefinitely. Only a
+  contended timed acquisition launches a disposable interpreter which blocks
+  in flock on the inherited inventory descriptor. Subprocess timeout owns
+  killing and reaping it; successful acquisition remains held by the parent's
+  open file description. Fast uncontended probes spawn no helper, and no
+  polling loop or signal handler is added. Deadline callers retain nonblocking inventory and address locks,
   with fresh-seal fallback on contention. A killed owner's flocks are released
   by the kernel; the existing pending-owner probe reaps its abandoned staging.
   Each hit copies to a private destination-side file, computing one SHA-256

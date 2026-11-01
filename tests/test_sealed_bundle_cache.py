@@ -524,7 +524,7 @@ def observed(args, **kwargs):
 subprocess.run = observed
 counts = {False: 0, True: 0}
 @contextmanager
-def gated(path, *, nonblocking=False, shared=False):
+def gated(path, *, nonblocking=False, shared=False, **kwargs):
     if role == "first" and path.name == ".inventory":
         counts[shared] += 1
         selected = ((stage == "read" and shared and counts[shared] == 2)
@@ -545,7 +545,7 @@ def gated(path, *, nonblocking=False, shared=False):
         with lock(path, nonblocking=True, shared=shared) as probe:
             assert probe is None, "first filler must still own the address"
         control.send("waiting")
-    with lock(path, nonblocking=nonblocking, shared=shared) as locked:
+    with lock(path, nonblocking=nonblocking, shared=shared, **kwargs) as locked:
         yield locked
 cache._bundle_cache_lock = gated
 snapshot = submission.snapshot_checkout(Path(checkout), cas=core.PrismaBuildCAS(Path(store)))
