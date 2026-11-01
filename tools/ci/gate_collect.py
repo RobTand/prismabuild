@@ -24,7 +24,8 @@ class GateCollection:
         items.sort(key=lambda item: self.ranks[item.path])
 
 
-def pytest_configure(config):
+@pytest.hookimpl(specname='pytest_configure')
+def pytest_gate_configure(config):
     try:
         files = json.loads(os.environ['GATE_ASSIGNED_FILES'])
         if (not isinstance(files, list) or not files or
