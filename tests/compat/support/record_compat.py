@@ -106,6 +106,41 @@ runpy.run_path(driver, run_name="__main__")
 '''
 
 
+def isolated_prelude():
+    """Capacity observation the test harness gives every isolated interpreter.
+
+    Empty outside the test suite, where ``queue_space_support`` is not importable.
+    """
+    try:
+        from queue_space_support import isolated_prelude as prelude
+    except ModuleNotFoundError as error:
+        if error.name != "queue_space_support":
+            raise
+        return ""
+    return prelude()
+
+
+_PRELUDE_RUNNER = """
+import runpy, sys
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+
+
+def with_prelude(command, prelude):
+    """Run ``prelude`` in the isolated interpreter before its sealed driver.
+
+    The driver, its adapters and the archival bootstrap are never edited: the
+    prelude is a ``-c`` program ahead of them, or a prefix of the archival one.
+    """
+    if not prelude:
+        return command
+    driver = next(i for i, part in enumerate(command) if part.endswith("compat_isolate.py"))
+    if command[driver - 3:driver - 2] == ["-c"]:
+        return [*command[:driver - 2], prelude + command[driver - 2], *command[driver - 1:]]
+    return [*command[:driver], "-c", prelude + _PRELUDE_RUNNER, *command[driver:]]
+
+
 def archival_result(process, expected):
     first, separator, payload = process.stdout.partition("\n")
     observed = None
@@ -362,7 +397,8 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
     if namespace:
         command = namespace + ["--"] + command
     try:
-        process = subprocess.run(command, input=json.dumps(request), text=True, env=environment,
+        process = subprocess.run(with_prelude(command, isolated_prelude()), input=json.dumps(request),
+                                 text=True, env=environment,
                                  capture_output=True, timeout=45)
     except (OSError, subprocess.TimeoutExpired) as exc:
         result = {"returncode": 2, "process_returncode": None,
