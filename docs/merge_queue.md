@@ -55,19 +55,20 @@ failing run.
 
 A pull request that left the queue after a failed check stays out of it, even
 with the `queue` label still on. Removing the label and adding it again does
-not bring it back. Comment `@mergifyio requeue` instead; Mergify then queues
-it as soon as its `pr-gate` check passes.
+not bring it back. Comment `@mergifyio queue` instead; Mergify then queues it
+as soon as its `pr-gate` check passes. The older `@mergifyio requeue` still
+works but is deprecated.
 
 - **A test in this pull request failed.** Open the failing shard in the `gate`
   run, read the test, fix the pull request, push, then comment
-  `@mergifyio requeue`.
+  `@mergifyio queue`.
 - **The failure is not this pull request's**, for example a flaky test in an
   unrelated file. Mergify's comment says whether the pull request was tested
   alone. Make sure the flaky test has an owning issue and a quarantine entry
-  (see docs/ci_gate.md), then comment `@mergifyio requeue`.
+  (see docs/ci_gate.md), then comment `@mergifyio queue`.
 - **A job ended without a test verdict**, for example a lost runner or a
   failed setup step. Its log says so. After the runners recover, comment
-  `@mergifyio requeue`.
+  `@mergifyio queue`.
 - **A test fails that your change can't affect.** Check the issues labelled
   `full-suite` for a known failure on `main`, and link it in your pull
   request.
