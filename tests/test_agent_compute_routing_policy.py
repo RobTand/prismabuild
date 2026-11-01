@@ -71,3 +71,7 @@ def test_later_passages_keep_the_remote_exception():
     assert "five times per architecture through `pbtest` before handoff" not in operating
     assert "github-hosted runners of both architectures" in operating
     assert "buildbuddy" in operating
+    assert "fast worktree checks are development evidence" not in operating
+    assert "to confirm a fix -- submits there (" not in operating
+    skill = policy_text(ROOT / "skills" / "prismabuild" / "SKILL.md")
+    assert "work that does not run vllm still submits," not in skill
