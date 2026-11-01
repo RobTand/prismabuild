@@ -128,11 +128,12 @@ reader._isolate_child_fds = isolate
 reader.select = SimpleNamespace(select=expire_after_marker)
 def blocked(path):
     if Path(path) == queue.records.dir(pool.record_store.READY):
-        # Force cancellation between the old marker's truncate and write.
-        with marker.open("w", encoding="utf-8") as stream:
-            os.write(ready_write, b"E")
-            fd = os.open(blocker, os.O_RDONLY)
-            stream.write("entered")
+        # Publish the marker completely before allowing the parent to
+        # expire the reader. Cancellation may now land anywhere after this
+        # acknowledgement without leaving a half-written test marker.
+        marker.write_text("entered", encoding="utf-8")
+        os.write(ready_write, b"E")
+        fd = os.open(blocker, os.O_RDONLY)
         try:
             return []
         finally:

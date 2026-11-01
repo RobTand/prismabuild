@@ -163,7 +163,7 @@ class _Slow:
                     self.reads += 1
                 if name == self.hang_name:
                     self.hung.set()
-                    self.release.wait(60.0)
+                    assert self.release.wait(60.0), "the hung receipt was not released"
                 delay(self.read_s)
             return real(path, *args, **kwargs)
 
@@ -484,27 +484,26 @@ def test_a_hung_read_among_parallel_readers_reads_dead_within_the_bound(
     slow = _Slow(monkeypatch, delay=lambda _seconds: None)
     _file_cold_receipts(queue, count=20)
     slow.hang_name = f"{PREFIX}0010.json"
-    before_checkpoint, resume_checkpoint, checkpoint_finished = (
-        threading.Event() for _ in range(3))
-    native_entry_reads = kept_reads._entry_reads
+    taking_hung = threading.Event()
+    native_executor = kept_reads.ThreadPoolExecutor
 
-    def scheduled_reads(entries, entry_io, *, readers, checkpoint):
-        if any(entry.name == slow.hang_name for entry in entries):
-            native_checkpoint = checkpoint
+    class ObservedExecutor(native_executor):
+        def submit(self, fn, *args, **kwargs):
+            future = super().submit(fn, *args, **kwargs)
+            if any(entry.name == slow.hang_name for entry in args[0]):
+                native_result = future.result
 
-            def pause_checkpoint():
-                if not before_checkpoint.is_set():
-                    assert slow.hung.wait(60), "the receipt read never hung"
-                    before_checkpoint.set()
-                    assert resume_checkpoint.wait(60), "checkpoint was not released"
-                native_checkpoint()
-                checkpoint_finished.set()
+                def result(timeout=None):
+                    # _entry_reads has finished its checkpoint and is taking
+                    # this result. It cannot checkpoint again until the hung
+                    # read is released, regardless of worker scheduling.
+                    taking_hung.set()
+                    return native_result(timeout)
 
-            checkpoint = pause_checkpoint
-        return native_entry_reads(entries, entry_io, readers=readers,
-                                  checkpoint=checkpoint)
+                future.result = result
+            return future
 
-    monkeypatch.setattr(kept_reads, "_entry_reads", scheduled_reads)
+    monkeypatch.setattr(kept_reads, "ThreadPoolExecutor", ObservedExecutor)
     errors = []
 
     def background_cycle():
@@ -516,7 +515,8 @@ def test_a_hung_read_among_parallel_readers_reads_dead_within_the_bound(
     worker = threading.Thread(target=background_cycle, daemon=True)
     worker.start()
     try:
-        assert before_checkpoint.wait(60), "consumer never reached its checkpoint"
+        assert slow.hung.wait(60), "the hung read never started"
+        assert taking_hung.wait(60), "consumer never reached the hung result"
         path = queue.records.tier_record_path(TIER)
         announced = path.read_bytes()
         assert queue._tier_loop_alive(TIER, now=clock.now)[0]
@@ -524,12 +524,9 @@ def test_a_hung_read_among_parallel_readers_reads_dead_within_the_bound(
         assert queue._tier_loop_alive(TIER, now=clock.now)[0]
         clock.advance(POLL_S)
         assert not queue._tier_loop_alive(TIER, now=clock.now)[0]
-        resume_checkpoint.set()
-        assert checkpoint_finished.wait(60), "the checkpoint never completed"
         assert path.read_bytes() == announced
         assert worker.is_alive()
     finally:
-        resume_checkpoint.set()
         slow.release.set()
         worker.join(60.0)
     assert not worker.is_alive()
