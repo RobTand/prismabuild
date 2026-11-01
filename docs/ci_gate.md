@@ -438,3 +438,11 @@ final correction drops that flag and passes another 152 cases in five verified
 actions. Failing actions have terminal records/logs and no success receipt.
 No x86 admission check remains pending. Complete keys and receipt digests are
 in `tools/ci/gate_evidence.json`.
+
+## Gate speed qualification
+
+The speed round measures three baseline and three revised full-population
+canaries, one at a time, with no overlap with an active merge-queue gate.
+It keeps the population, 16 shards, both hosted architectures, test budgets
+and infrastructure-only retry unchanged. Large PR selections will use the
+same balanced shards, with `pr-gate` remaining the required PR check.
