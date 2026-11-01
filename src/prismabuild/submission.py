@@ -6544,6 +6544,10 @@ def _publish_sealed(action, prepared, *, args: SubmissionRequest, store: FleetSt
         store=store, display=display)
 
     q = pool.PoolQueue(store.queue_root)
+    from .filesystem_capacity import queue_space_diagnostic
+    space = queue_space_diagnostic(store.queue_root)
+    if space["state"] != "ok":
+        emit_display(display, f"pbrun: {space['note']}", channel="stderr", flush=True)
 
     if not placement_announced:
         announce_placement(
