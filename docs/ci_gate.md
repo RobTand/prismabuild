@@ -28,8 +28,9 @@ stays near the account's 20 hosted Linux jobs.
 Each shard uses four pytest-xdist workers within inherited CPU affinity.
 Actions are pinned by commit SHA. Setup uses Python 3.14 and pip caching with
 pytest 9.1.1, pytest-xdist 3.8.0, PyYAML 6.0.3 and setuptools 80.9.0.
-Hosted setup installs bubblewrap and creates the real local scratch directory
-declared in the fleet roster. It exports that directory as TMPDIR. Proof capture
+Hosted setup creates the real local scratch directory declared in the fleet
+roster. Only shards assigned the compatibility sandbox fixtures install
+bubblewrap and relocate Python. It exports that directory as TMPDIR. Proof capture
 runs without setup-python's ambient LD_* loader overrides; the interpreter must
 also pass its version check without those overrides. Native threads are bounded to
 one and each test has the integration tier's 300-second failure bound. A test over 60 seconds is reported as a cost issue for #2328, not a speed
@@ -55,10 +56,10 @@ retains empty shards when there are fewer files than shards.
 ```sh
 python tools/ci/gate_select.py --base "$BASE_SHA" --head "$HEAD_SHA" --mode full \
   --output plan.json --files-output files.txt
-python tools/ci/gate_partition.py matrix --files-from files.txt \
+python tools/ci/gate_partition.py matrix --setup-aware --files-from files.txt \
   --durations tools/ci/gate_durations.json --shards 16 \
   --runners ubuntu-24.04,ubuntu-24.04-arm --output matrix.json
-python tools/ci/gate_partition.py shard --files-from files.txt \
+python tools/ci/gate_partition.py shard --setup-aware --files-from files.txt \
   --durations tools/ci/gate_durations.json --shards 16 --index 0 \
   --output-files assigned.txt
 python tools/ci/gate_run.py --plan plan.json --files-from assigned.txt --workers 4 \
@@ -87,8 +88,11 @@ include an earlier 49.002-second duplication audit and 37.809-second history
 audit, larger than the latest 21.952 and 34.428-second observations.
 
 Issue #2448, under #2328, owns reducing these costs and shrinking the slow list.
-The per-file scheduling table still uses the PB inventory's summed medians;
-it estimates shard balance, rather than setting per-test cost limits.
+The per-file scheduling table uses hosted JUnit observations from three
+baseline runs of 41260080645. It takes each architecture's median per-file sum
+and then the larger architecture median. Unobserved files retain their PB
+inventory estimates with separate provenance. This table schedules coverage;
+it does not set per-test cost limits.
 
 The gate runner checks xunit1 JUnit times, including setup and teardown, after
 pytest completes. Enforcement uses the runner's named
@@ -169,10 +173,11 @@ Both `test_record_compatibility.py` and
 41247411735 passed all 24 compatibility cases and eight selected-interpreter
 controls on both architectures. Initial trials refused UID-map setup; disabling
 Ubuntu's AppArmor userns restriction allowed namespace entry. The compatibility
-sandbox intentionally hides `/opt`, so setup copies Python's installed prefix
-under root-owned `/usr/local/pb-gate-python`, preserving interpreter/library
-bytes, registers its shared library with ldconfig, and relocates its sysconfig
-installation metadata to the copied extension-module directory. The two
+sandbox intentionally hides `/opt`, so setup relocates Python's installed prefix
+to `/usr/local/pb-gate-python`, preserving interpreter/library bytes, registers
+its shared library with ldconfig, and relocates its sysconfig installation
+metadata. The speed round measures the cheaper same-filesystem move and the
+need for ownership changes below. The two
 previously deferred customization controls also return to the gate. This is
 hosted-VM setup, not a change to the test owners or their attestation checks.
 The selection agent's admitted PB actions instead refused `/proc` mounting with
@@ -481,3 +486,24 @@ Whole-population triggers discover filenames without building an unused import
 and helper graph. Shadow coverage is still the complete population. Shards
 start long files first so short files can fill the remaining workers while a
 long file finishes. Neither optimization removes or retries a test.
+
+The gate's optional `--setup-aware` partition keeps the two real namespace
+fixtures together and charges their shared setup once. The shared nightly
+`shards(...)` API and the CLI's default partition retain their original
+behavior. Assignment precedes setup. Ordinary shards install only the pinned
+Python dependencies and create the roster scratch directory. The runtime
+observation file additionally needs a root-owned executable, so its shard
+changes that one binary's owner without relocating its prefix.
+
+Bubblewrap installation first uses the image's existing apt indexes. A failed
+install permits one bounded index refresh and another install. Same-filesystem
+Python relocation uses `mv`, retaining a symlink for installed entry points
+and setup-python's cache post-step. A cross-filesystem move retains the copy
+fallback. The compatibility fixtures pass without recursive `chown`; readonly
+namespace bindings preserve their containment checks. These are ephemeral
+hosted-VM setup operations, never fleet changes.
+
+Startup markers separate the runner's pre-work from pytest startup.
+`GATE_PREFLIGHT_START` to `GATE_PYTEST_START` was 5–10 ms in the first fan-out
+trial; the remaining 16–46 s before xdist announced nodes belongs to pytest
+startup. This distinction avoids attributing that gap to plan validation.
