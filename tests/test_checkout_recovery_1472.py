@@ -75,15 +75,24 @@ def test_missing_magic_link_identity_refuses_even_when_maps_and_names_are_comple
     assert any("map_files identity unavailable" in item for item in result["errors"]), result
 
 
-def test_unchanged_maps_and_names_do_not_hide_changed_authoritative_identity(case, monkeypatch):
+@pytest.mark.parametrize("selected_successor", [False, True], ids=["natural", "selected-successor"])
+def test_unchanged_maps_and_names_do_not_hide_changed_authoritative_identity(
+        case, monkeypatch, selected_successor):
     process = _process(case)
     _planned(case)
+    selected = _selected_inodes(case)
     reads = 0
 
     def changed(original):
         nonlocal reads
         reads += 1
         info = original()
+        if selected_successor:
+            # Force the old +1 injection to collide, independent of filesystem
+            # allocation: the first identity is below every selected inode.
+            fields = list(info)
+            fields[1] = min(inode for device, inode in selected if device == info.st_dev) - 1
+            info = os.stat_result(fields)
         if reads == 1:
             return info
         fields = list(info)
