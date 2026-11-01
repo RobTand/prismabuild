@@ -39,7 +39,7 @@ def marker(node: str) -> str:
 def ownership_nodes(body: str) -> list[str]:
     """Only the leading standalone metadata block can declare test ownership."""
     nodes = []
-    for line in body.split('\n'):
+    for line in body.replace('\r\n', '\n').split('\n'):
         match = MARKER.fullmatch(line)
         if match is None:
             break

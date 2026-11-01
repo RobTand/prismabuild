@@ -327,6 +327,15 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
 
 
 @pytest.fixture(autouse=True)
+def _ample_queue_space(monkeypatch):
+    """Queue diagnostics depend on explicit samples, never the test host."""
+    from prismabuild import filesystem_capacity
+    from queue_space_support import queue_space_os
+
+    monkeypatch.setattr(filesystem_capacity, "os", queue_space_os())
+
+
+@pytest.fixture(autouse=True)
 def d38_config(monkeypatch, tmp_path):
     """Private record-only fleet setting; enforcement tests opt in explicitly."""
 
