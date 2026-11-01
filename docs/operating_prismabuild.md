@@ -1211,6 +1211,33 @@ native threads per process; admission cannot infer those needs from argv.
 
 ## Wait, detach, and give up
 
+The source API for worker refusal reports is `PoolQueue.claim_or_observe`
+and `serve_or_observe_once` (#1947). Their `value` is the existing claim or
+execution result. `blocked_on` contains typed source interests, monotonic
+deadlines, refusal reasons, and coverage gaps. Empty READY snapshots, operator
+holds, admission contention, and unstarted maintenance deferral also report
+their dependencies. Legacy `claim` and `serve_once` calls keep their existing
+return values and wait behavior.
+
+Inspect `blocked_on.coverage.gaps` when a refused claim cannot declare complete
+dependency coverage. Unknown variants log `Unmapped claim refusal` or
+`Unmapped claim decision` and request `source_recovery` within five seconds.
+Known unavailable evidence also carries an explicit unknown or unreadable
+state and a recovery deadline. A malformed READY row skipped by the legacy
+listing also reports its unreadable path and bounded recovery. The legacy
+claim value and quarantine behavior remain unchanged. `lock_retry` bounds
+claim-lock retry to one second. A report schedules no work itself and grants no resource credit.
+
+The [claim refusal contract](design.md#claim-refusal-reports-1947) lists each
+timer's source, bound, and cancellation condition. In particular, #1262 has no
+yield timer, while the four bounded preferences retain their original 20 s
+starts and resident-copy preference retains publication plus 30 s.
+
+Report completeness does not establish deployed notification coverage. This
+slice changes no `--poll-s`, `--max-idle`, runtime generation, service, or
+publication default. Worker event waiting remains a later integration step
+with its own baseline, coverage, and release gates.
+
 When a terminal carries `supersedes_terminal`, `pbwait --json` and `--endings`
 include an optional `superseded` object. `pbstatus` includes the same summary
 on job and ending rows, with a readable note in its tables. The summary names

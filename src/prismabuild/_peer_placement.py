@@ -18,7 +18,8 @@ class CpuLoad:
         return self.preferred - self.load1
 
 
-def cpu_load(offer: Mapping, *, now: float, max_age_s: float) -> CpuLoad | None:
+def cpu_load(offer: Mapping, *, now: float, max_age_s: float,
+             on_expiry: Callable[[str, float], None] | None = None) -> CpuLoad | None:
     detail = offer.get("observed_detail")
     tiers = offer.get("cpu_tiers")
     if not isinstance(detail, Mapping) or not isinstance(tiers, Mapping):
@@ -32,6 +33,8 @@ def cpu_load(offer: Mapping, *, now: float, max_age_s: float) -> CpuLoad | None:
             or any(type(cpu) is not int or cpu < 0 for cpu in preferred)
             or len(set(preferred)) != len(preferred)):
         return None
+    if on_expiry is not None:
+        on_expiry(f"peer_observation_freshness:{offer.get('host', '?')}", stamp + max_age_s)
     return CpuLoad(float(load), len(preferred))
 
 
@@ -102,6 +105,8 @@ class PlacementPass:
         self, offers: Callable[[], Sequence[Mapping]],
         peer: Callable[[str, Mapping], PeerObservation | None],
         *, history: PlacementHistory, wall_clock: Callable[[], float],
+        on_deadline: Callable[[TimedPreference, tuple[str, str], float], None] | None = None,
+        on_unavailable: Callable[[str, bool], None] | None = None,
     ) -> None:
         self._read_offers = offers
         self._read_peer = peer
@@ -109,10 +114,16 @@ class PlacementPass:
         self._peers: dict[str, PeerObservation | Exception | None] = {}
         self._history = history
         self._wall_clock = wall_clock
+        self._on_deadline = on_deadline
+        self._on_unavailable = on_unavailable
 
     def timer_expired(self, preference: TimedPreference, generation: tuple[str, str]) -> bool:
         started = self._history._deferrals.setdefault((preference, generation), time.monotonic())
-        return time.monotonic() - started >= 20.0
+        expires = started + 20.0
+        expired = time.monotonic() >= expires
+        if not expired and self._on_deadline is not None:
+            self._on_deadline(preference, generation, expires)
+        return expired
 
     def cpu_host_evidence(
         self, generation: tuple[str, str], host: str, capacity: PeerCapacity,
@@ -140,6 +151,8 @@ class PlacementPass:
             except (OSError, ValueError, TypeError) as exc:
                 self._peers[host] = exc
         peer = self._peers[host]
+        if self._on_unavailable is not None and (peer is None or isinstance(peer, Exception)):
+            self._on_unavailable(host, isinstance(peer, Exception))
         if isinstance(peer, Exception):
             raise peer
         return peer
