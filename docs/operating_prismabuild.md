@@ -1211,6 +1211,33 @@ native threads per process; admission cannot infer those needs from argv.
 
 ## Wait, detach, and give up
 
+The source API for worker refusal reports is `PoolQueue.claim_or_observe`
+and `serve_or_observe_once` (#1947). Their `value` is the existing claim or
+execution result. `blocked_on` contains typed source interests, monotonic
+deadlines, refusal reasons, and coverage gaps. Empty READY snapshots, operator
+holds, admission contention, and unstarted maintenance deferral also report
+their dependencies. Legacy `claim` and `serve_once` calls keep their existing
+return values and wait behavior.
+
+Inspect `blocked_on.coverage.gaps` when a refused claim cannot declare complete
+dependency coverage. Unknown variants log `Unmapped claim refusal` or
+`Unmapped claim decision` and request `source_recovery` within five seconds.
+Known unavailable evidence also carries an explicit unknown or unreadable
+state and a recovery deadline. A malformed READY row skipped by the legacy
+listing also reports its unreadable path and bounded recovery. The legacy
+claim value and quarantine behavior remain unchanged. `lock_retry` bounds
+claim-lock retry to one second. A report schedules no work itself and grants no resource credit.
+
+The [claim refusal contract](design.md#claim-refusal-reports-1947) lists each
+timer's source, bound, and cancellation condition. In particular, #1262 has no
+yield timer, while the four bounded preferences retain their original 20 s
+starts and resident-copy preference retains publication plus 30 s.
+
+Report completeness does not establish deployed notification coverage. This
+slice changes no `--poll-s`, `--max-idle`, runtime generation, service, or
+publication default. Worker event waiting remains a later integration step
+with its own baseline, coverage, and release gates.
+
 When a terminal carries `supersedes_terminal`, `pbwait --json` and `--endings`
 include an optional `superseded` object. `pbstatus` includes the same summary
 on job and ending rows, with a readable note in its tables. The summary names
@@ -5011,6 +5038,128 @@ produced-output exporter and `pbstatus`/`pbmcp` -- is on a generation that
 merges `movers-retired/`, and keep it off until one such sweep has been
 observed to fold with the store. A sweep without the flag reports the
 candidates and retires none of them.
+
+## Survey and retire attempt logs (#2023)
+
+Deploy archive-aware PB readers and both TL runners before enabling retirement.
+Include active and rollback generations, draining workers, detached clients,
+MCP, frozen/pinned deferred runtimes and recovery readers. Obtain explicit TL
+lead go and PB lead approval for the exact inventory/config. Source support
+alone does not authorize live archive work. Follow the schema and custody
+requirements in [the attempt archive contract](design.md#attempt-log-archive-and-queue-retention-2023).
+
+External readers use `prismabuild.resolve_attempt_log(queue_root, descriptor) -> bytes`.
+Its typed signature is:
+
+```python
+def resolve_attempt_log(queue_root: os.PathLike[str] | str, descriptor: Mapping[str, object]) -> bytes
+```
+
+Pass the terminal or attempt's `{path, bytes, sha256}` descriptor unchanged.
+The function returns verified live or archived bytes. A corrupt live file never
+falls back to archived bytes. The public call allocates memory proportional to
+the log; MCP uses the private streaming verifier to retain only its bounded tail.
+
+Import the resolver and these exception classes directly from `prismabuild`:
+
+| Exception | Meaning |
+|---|---|
+| `InvalidLogDescriptor` | The path, exact nonnegative integer byte count or lowercase SHA256 is invalid. |
+| `AttemptLogMissing` | Both the live address and exact archive index are absent. |
+| `AttemptLogIntegrityError` | Bytes, size, mode, identity or archive metadata disagree with their address. |
+| `AttemptArchiveUnavailable` | Configured storage cannot be verified or read, or its codec cannot complete. |
+
+A missing configured store or missing payload behind an index is unavailable
+history. Do not treat these errors as an empty log or shorter attempt history.
+
+Have the lead provision PB-owned `storage_pool/shared/pb-queue-evidence` at
+`/mnt/shared/prismabuild-fleet/queue-evidence`. Set the **child** dataset's
+effective `sync=standard` and `compression=zstd`; do not change its parent.
+Record its GUID and actual mountpoint. Create the queue-specific `v1/<queue-id>`
+directory and immutable `store.json` binding its queue, store, dataset and GUID.
+The GC tool does not provision a dataset. Apply must run where local ZFS and
+mount observations can verify the synchronous backing dataset.
+
+Install queue `attempt-log-retention.json` with the exact schema and explicit
+archive path. Leave `retention_days` absent for the 14-day default. To request a
+shorter window, first qualify the complete reader gate; never set less than
+0.5 days. A short-window survey also refuses a missing/invalid gate. Put the
+gate and member proofs in an operator-owned directory without group/other write
+permission, and publish those files read-only. Bind actual generation receipts,
+receipt-covered resolver source, inventory digest and config digest. Keep the
+external/process completeness attestations and both approvals within 24 hours.
+Current worker offers and deferred identities are automatically rechecked.
+
+Run the initial survey with an explicit queue root:
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pb_gc.py \
+  --queue-root QUEUE --summary
+```
+
+Inspect eligible/retained bytes, unknown sizes, skip reasons, archive health,
+reader gate and cursor. The report is a bounded page, not a whole-queue byte
+estimate. A configured archive stores the continuation cursor outside the queue;
+retained keys cannot starve later pages. Without a configured archive, pass the
+reported key with `--attempt-log-after KEY` on the next survey. The end wraps to
+new keys inserted earlier in lexical order. Queue receipts remain live.
+
+After both approvals and the full reader gate verify, apply the logs-only pass:
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pb_gc.py \
+  --queue-root QUEUE --summary --apply --all-lock-takers-verify \
+  --retire-attempt-logs --attempt-log-max-keys 1 --attempt-log-max-bytes 16777216
+```
+
+Start with small, lead-set limits and size later batches from measured
+replication capacity. The example caps the survey at one key and retirement at
+16 MiB of logical log payloads. `--attempt-log-max-keys N` accepts 1 through 256;
+its default remains 256. `--attempt-log-max-bytes B` accepts nonnegative integer
+bytes and defaults to unlimited. Apply stops before a descriptor that would
+exceed the aggregate byte budget, without overshoot. Zero-byte logs fit zero.
+If the next descriptor alone exceeds the budget, raise the cap to fit it before
+retrying; retirement does not skip that descriptor to spend the budget elsewhere.
+
+The apply summary and receipt report `bytes_retired` and `stopped_on_budget`,
+plus the actual continuation cursor. After a byte stop, the next ordinary run
+re-surveys the partly processed key through the normal cursor checkpoint.
+Uncertain unlink outcomes keep their byte reservations, so the budget can be
+exhausted while confirmed `bytes_retired` remains below the cap. Snapshot retention can pin freed
+blocks and `used` can grow after unlinks. A logical payload cap does not bound
+physical space freed or replication wire bytes; measure snapshot and receive
+backlogs when choosing the next batch.
+
+Inspect terminal exit status and `gc-receipts/attempt-logs-*.json`, including
+skips. A process interruption may leave valid archive entries and live duplicate
+logs, or an already covered deletion prefix. Rerun to adopt verified publications.
+Concurrent collectors also adopt an exact verified archive when another collector
+publishes and unlinks between the initial index probe and live open. This uses
+one bounded archive recheck; missing or corrupt archives still stop the batch.
+An unavailable or misbound archive refuses; never remove an index or assume a
+missing store is empty history. Verify actual resolver delivery after rollout.
+
+This flag runs the logs-only pass and skips the legacy metadata sweep.
+Only immutable stdout/stderr payloads retire. All attempt JSON, reconciliation,
+intent, broker proof, done/failed and other records remain live. The PB lead
+allows resolver-preserved references for this release, so foreign dependency,
+supersession and storage references do not require new writer fencing. Active
+ownership still retains every generation. Metadata follow-up #2025 must revisit
+strict reference fencing before removing any referenced records.
+
+The hourly `prismabuild-attempt-log-survey.timer` ships without an install target.
+Its service also requires `%h/.config/prismabuild/attempt-log-survey-enabled`.
+Install/enable it only after reviewing the queue configuration. It runs surveys
+and cannot enable apply. No maintenance timer grants live retirement approval.
+
+Use `pbstatus`'s `queue_space` observation to watch available bytes and inodes.
+Warnings start below 16 GiB, critical below 4 GiB or the inode floor. Submission
+prints the same report without introducing a new admission refusal. If the
+filesystem does not expose its quota through `statvfs`, monitor that quota
+separately. Fourteen days at 0.89 GiB/hour is about 299 GiB and does not fit 80G.
+Twenty-four hours is about 21 GiB, plus retained metadata, active evidence and
+headroom. Measure those components before choosing a qualified shorter window;
+this release does not bound metadata growth.
 
 ## Read the spool retirements
 

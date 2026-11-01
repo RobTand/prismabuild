@@ -3,12 +3,45 @@
   "status": "inventory-based exclusions; historical entries remain provisional pending hosted qualification",
   "entries": [
     {
+      "target": "tests/test_pbwait.py::test_prefix_resolution_bounds_a_private_blocked_pool_scan",
+      "issue": 2035,
+      "reason": "Intermittent failure at line 123 ('' != 'entered'). Review of #2479 found that the test's 0.05-second bound lets the reader stop between truncating and writing its marker, so a slow hosted runner can observe an empty marker. Failed on shard 9 of hosted gate run 41267195546; passed in 41266469261 and 41260080645 attempt 3. Its timing-allowlist entry already names #2035. Remove this entry with the fix for #2035.",
+      "evidence": {
+        "outcomes": {
+          "passed": 2,
+          "failed": 1
+        },
+        "hosted_runs": [
+          "https://github.com/RobTand/prismabuild/actions/runs/41267195546",
+          "https://github.com/RobTand/prismabuild/actions/runs/41266469261",
+          "https://github.com/RobTand/prismabuild/actions/runs/41260080645"
+        ]
+      }
+    },
+    {
       "target": "tests/test_qualify_scratch_lifetime.py::test_launcher_exit_after_pin_never_signals_replacement",
       "issue": 2434,
       "source_issues": [
         1782
       ],
       "reason": "Historical flake cluster #1782 is closed. Provisional hosted-runner requalification belongs to #2434."
+    },
+    {
+      "target": "tests/test_queue_bell.py::test_namespace_entry_changes_wake_waiters[rename-out]",
+      "issue": 2484,
+      "reason": "Intermittent: waited the full 60 s with 'inotify did not consume the publication' on shard 0 of merge-queue gate run 41267910346, unrelated to the change under test; passed in the other recent queue gates. The cause, a test race or a lost wakeup in the bell, is under investigation in #2484. Remove this entry with that fix.",
+      "evidence": {
+        "outcomes": {
+          "passed": 3,
+          "failed": 1
+        },
+        "hosted_runs": [
+          "https://github.com/RobTand/prismabuild/actions/runs/41267910346",
+          "https://github.com/RobTand/prismabuild/actions/runs/41263788184",
+          "https://github.com/RobTand/prismabuild/actions/runs/41264576986",
+          "https://github.com/RobTand/prismabuild/actions/runs/41264693316"
+        ]
+      }
     },
     {
       "target": "tests/test_an_owner_waiting_on_its_own_export_is_not_no_progress.py",
@@ -537,23 +570,6 @@
           }
         }
       ]
-    },
-    {
-      "target": "tests/test_admission_charges_refill_horizons_jointly.py::test_a_reader_that_slows_keeps_the_footprint_it_was_charged",
-      "issue": 2462,
-      "reason": "Depends on the wall clock: it builds claim and report times from one time.time() read while tier_cycle.residency_window reads the clock again, so a slow pass flips the outcome. Failed in 2 of 3 single-job full-population pr-gate runs on content that passed the 16-shard queue gate. Remove this entry with the fix for #2462.",
-      "evidence": {
-        "source_commit": "8f72a0caecb688fb02363c9bec44ef18930bb7f0",
-        "outcomes": {
-          "passed": 1,
-          "failed": 2
-        },
-        "hosted_runs": [
-          "https://github.com/RobTand/prismabuild/actions/runs/41259310026",
-          "https://github.com/RobTand/prismabuild/actions/runs/41260354001",
-          "https://github.com/RobTand/prismabuild/actions/runs/41257519367"
-        ]
-      }
     }
   ],
   "cost_exclusions": [],

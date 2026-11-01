@@ -53,10 +53,10 @@ def selected(result):
     return {row['path'] for row in result['selected']}
 
 
-def test_fast_plus_direct_importers_without_transitive_fanout(tmp_path):
+def test_fast_plus_direct_and_transitive_production_importers(tmp_path):
     result = plan(tree(tmp_path), ['src/prismabuild/pool.py'])
     assert selected(result) == {'tests/test_fast.py', 'tests/test_direct.py',
-                                'tests/test_nested.py'}
+                                'tests/test_nested.py', 'tests/test_indirect.py'}
     reasons = {row['path']: row['reasons'] for row in result['selected']}
     assert 'fast tier' in reasons['tests/test_fast.py']
     assert any('src/prismabuild/pool.py' in reason for reason in reasons['tests/test_direct.py'])
@@ -95,15 +95,15 @@ def test_quarantine_and_cost_exclusions_are_owned_and_node_ids_stay_precise(tmp_
     root = tree(tmp_path)
     result = select.create_plan(root, ['src/prismabuild/pool.py'],
         durations={'source': 'fixture', 'files': {'tests/test_fast.py': 3, 'tests/test_direct.py': 7,
-            'tests/test_nested.py': 2, 'tests/test_pair.py': 4}},
+            'tests/test_nested.py': 2, 'tests/test_pair.py': 4, 'tests/test_indirect.py': 2}},
         quarantine={'entries': [
             {'target': 'tests/test_direct.py::test_bad[param]', 'reason': 'observed flake', 'issue': 9001},
             {'target': 'tests/test_nested.py', 'reason': 'broken at baseline', 'issue': 9001}],
             'cost_exclusions': [{'target': 'tests/test_pair.py', 'reason': 'measured cost', 'issue': 9001}]})
-    assert selected(result) == {'tests/test_fast.py', 'tests/test_direct.py'}
+    assert selected(result) == {'tests/test_fast.py', 'tests/test_direct.py', 'tests/test_indirect.py'}
     assert result['deselect'] == ['tests/test_direct.py::test_bad[param]']
     assert result['estimate']['wall_seconds'] == 7
-    assert result['estimate']['serial_seconds'] == 10
+    assert result['estimate']['serial_seconds'] == 12
     assert result['population']['version']
     assert {(row['path'], row['issue']) for row in result['deferred']} >= {
         ('tests/test_nested.py', 9001), ('tests/test_pair.py', 9001),
@@ -205,7 +205,8 @@ def test_full_queue_plan_retains_population_and_records_shadow_selection(tmp_pat
     result = plan(root, ['src/prismabuild/pool.py'], mode='full')
     assert len(result['selected']) == result['population']['size'] == 9
     assert {row['path'] for row in result['shadow_selected']} == {
-        'tests/test_fast.py', 'tests/test_direct.py', 'tests/test_nested.py'}
+        'tests/test_fast.py', 'tests/test_direct.py', 'tests/test_nested.py',
+        'tests/test_indirect.py'}
     assert result['mode'] == 'full'
 
 
@@ -324,3 +325,227 @@ def test_environment_lanes_require_a_real_owner_and_capability(tmp_path, owner, 
         select.create_plan(tree(tmp_path), [], durations={'files': {}}, quarantine={
             'environment_lanes': [{'target': 'tests/test_direct.py', 'lane': lane,
                                    'issue': owner, 'reason': 'Requires the broker'}]})
+
+
+@pytest.mark.parametrize('production_import', [
+    'from prismabuild._gpu_submission_policy import _require_gb10_memory_subset',
+    'from ._gpu_submission_policy import _require_gb10_memory_subset',
+    'from . import _gpu_submission_policy',
+])
+def test_private_production_module_reaches_public_importers_and_test_helpers(tmp_path, production_import):
+    root = tree(tmp_path)
+    files = {
+        'src/prismabuild/_gpu_submission_policy.py': 'def _require_gb10_memory_subset(): pass\n',
+        'src/prismabuild/manifest.py': production_import + '\n',
+        'tools/fleet/pbcampaign.py': 'from prismabuild.manifest import load_manifest\n',
+        'tests/gpu_support.py': 'import pbcampaign\n',
+        'tests/test_gpu_policy.py': 'from .gpu_support import manifest\n',
+        'tests/test_public_manifest.py': 'from prismabuild import manifest\n',
+        'tests/test_unrelated.py': 'import unrelated\n',
+    }
+    for name, source in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    result = plan(root, ['src/prismabuild/_gpu_submission_policy.py'])
+    assert selected(result) == {
+        'tests/test_fast.py', 'tests/test_gpu_policy.py', 'tests/test_public_manifest.py'}
+    reasons = {row['path']: row['reasons'] for row in result['selected']}
+    assert any('gpu_support.py' in reason for reason in reasons['tests/test_gpu_policy.py'])
+
+
+def test_production_import_closure_handles_cycles_deleted_modules_and_parent_imports(tmp_path):
+    root = tree(tmp_path)
+    files = {
+        'src/prismabuild/sub/bridge.py': 'from .. import missing\nfrom . import cycle\n',
+        'src/prismabuild/sub/cycle.py': 'from .bridge import caller\n',
+        'src/prismabuild/sub/__init__.py': 'from .bridge import caller\n',
+        'tests/test_cycle.py': 'from prismabuild.sub import cycle\n',
+    }
+    for name, source in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    assert selected(plan(root, ['src/prismabuild/missing.py'])) == {
+        'tests/test_fast.py', 'tests/test_cycle.py'}
+
+
+def test_repository_gpu_policy_private_module_selects_public_campaign_consumer(tmp_path):
+    root = tree(tmp_path)
+    for name in ('src/prismabuild/_gpu_submission_policy.py', 'tools/fleet/pbcampaign.py',
+                 'tests/test_gpu_submission_eligibility_2036.py'):
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((ROOT / name).read_text())
+    assert 'tests/test_gpu_submission_eligibility_2036.py' in selected(
+        plan(root, ['src/prismabuild/_gpu_submission_policy.py']))
+
+
+@pytest.mark.parametrize('source', [
+    'COUNTERS = {"census": 1}\n',
+    '"""Example: import census"""\n',
+])
+def test_production_strings_do_not_create_import_edges_but_test_heuristics_remain(tmp_path, source):
+    root = tree(tmp_path)
+    (root / 'tools/backlog_census').mkdir()
+    (root / 'tools/backlog_census/census.py').write_text('VALUE = 1\n')
+    (root / 'src/prismabuild/pool.py').write_text(source)
+    (root / 'tests/test_named_string.py').write_text('MODULE = "census"\n')
+    (root / 'tests/census_support.py').write_text('MODULE = "census"\n')
+    (root / 'tests/test_string_helper.py').write_text('from . import census_support\n')
+    assert selected(plan(root, ['tools/backlog_census/census.py'])) == {
+        'tests/test_fast.py', 'tests/test_named_string.py', 'tests/test_string_helper.py'}
+
+
+@pytest.mark.parametrize('source', [
+    'import importlib\nmod = importlib.import_module("prismabuild.private")\n',
+    'import importlib as loader\nmod = loader.import_module("prismabuild.private")\n',
+    'from importlib import import_module as load\nmod = load("prismabuild.private")\n',
+    'mod = __import__("prismabuild.private")\n',
+    'import importlib\nmod = importlib.import_module(".private", "prismabuild")\n',
+    'import importlib\nmod = importlib.import_module(".private", package="prismabuild")\n',
+])
+def test_recognized_literal_dynamic_production_imports_reach_tests(tmp_path, source):
+    root = tree(tmp_path)
+    (root / 'src/prismabuild/private.py').write_text('VALUE = 1\n')
+    (root / 'src/prismabuild/pool.py').write_text(source)
+    assert selected(plan(root, ['src/prismabuild/private.py'])) == {
+        'tests/test_fast.py', 'tests/test_direct.py', 'tests/test_nested.py', 'tests/test_indirect.py'}
+
+
+@pytest.mark.parametrize('loader', [
+    'importlib.util.spec_from_file_location("outcomes", OUTCOMES)',
+    'importlib.machinery.SourceFileLoader("outcomes", str(OUTCOMES))',
+    'runpy.run_path(str(OUTCOMES))',
+])
+def test_production_sibling_path_loading_reaches_test_helper_consumers(tmp_path, loader):
+    root = tree(tmp_path)
+    (root / 'tools/fleet/pbtest_outcomes.py').write_text('VALUE = 1\n')
+    (root / 'tools/fleet/shape_gate.py').write_text(
+        'from pathlib import Path\nimport importlib.util\nimport importlib.machinery\nimport runpy\n'
+        'OUTCOMES = Path(__file__).parent.resolve() / "pbtest_outcomes.py"\n'
+        'def load():\n    return ' + loader + '\n')
+    (root / 'tests/shape_support.py').write_text('from tools.fleet import shape_gate\n')
+    (root / 'tests/test_shape_consumer.py').write_text('from .shape_support import load\n')
+    assert selected(plan(root, ['tools/fleet/pbtest_outcomes.py'])) == {
+        'tests/test_fast.py', 'tests/test_shape_consumer.py'}
+
+
+def test_repository_outcomes_path_selects_shape_gate_consumer(tmp_path):
+    root = tree(tmp_path)
+    for name in ('tools/fleet/shape_gate.py', 'tools/fleet/pbtest_outcomes.py'):
+        (root / name).write_text((ROOT / name).read_text())
+    (root / 'tests/test_shape_consumer.py').write_text('from tools.fleet import shape_gate\n')
+    assert 'tests/test_shape_consumer.py' in selected(
+        plan(root, ['tools/fleet/pbtest_outcomes.py']))
+
+
+def test_production_module_and_path_strings_require_a_recognized_loader(tmp_path):
+    root = tree(tmp_path)
+    (root / 'tools/fleet/pbtest_outcomes.py').write_text('VALUE = 1\n')
+    (root / 'src/prismabuild/private.py').write_text('VALUE = 1\n')
+    (root / 'src/prismabuild/pool.py').write_text(
+        'def store(value): return value\n'
+        'VALUES = {"path": "tools/fleet/pbtest_outcomes.py"}\n'
+        'store("prismabuild.private")\n')
+    assert selected(plan(root, ['tools/fleet/pbtest_outcomes.py', 'src/prismabuild/private.py'])) == {
+        'tests/test_fast.py'}
+
+
+@pytest.mark.parametrize('setup,target,inside', [
+    ('', 'str(Path("/tmp") / "config.py")', False),
+    ('DIRECTORY = Path("/tmp")\nTARGET = DIRECTORY / "config.py"\n', 'str(TARGET)', False),
+    ('DIRECTORY = Path(__file__).parent / "nested"\nTARGET = DIRECTORY / "config.py"\n',
+     'str(TARGET)', True),
+    ('TARGET = Path(__file__).parent / "config.py"\nTARGET = Path("/tmp") / "config.py"\n',
+     'str(TARGET)', False),
+])
+def test_production_loader_conservatively_includes_external_and_nested_basename_literals(tmp_path, setup, target, inside):
+    root = tree(tmp_path)
+    (root / 'tools/fleet/config.py').write_text('VALUE = 1\n')
+    (root / 'tools/fleet/nested').mkdir()
+    (root / 'tools/fleet/nested/config.py').write_text('VALUE = 2\n')
+    (root / 'tools/fleet/loader.py').write_text(
+        'from pathlib import Path\nimport runpy\n' + setup + 'runpy.run_path(' + target + ')\n')
+    (root / 'tests/test_loader_consumer.py').write_text('from tools.fleet import loader\n')
+    assert selected(plan(root, ['tools/fleet/config.py'])) == {
+        'tests/test_fast.py', 'tests/test_loader_consumer.py'}
+    expected = {'tests/test_fast.py', 'tests/test_loader_consumer.py'} if inside else {'tests/test_fast.py'}
+    assert selected(plan(root, ['tools/fleet/nested/config.py'])) == expected
+
+
+@pytest.mark.parametrize('source', [
+    'def load():\n    path = Path(__file__).parent / "config.py"\n'
+    '    runpy.run_path(str(path))\n'
+    'def unrelated(entry):\n    path = Path(entry.path)\n',
+    'path = Path(__file__).parent / "config.py"\n'
+    'runpy.run_path(str(path))\npath = Path("/tmp") / "config.py"\n',
+    'def load(directory):\n    runpy.run_path(str(Path(directory) / "config.py"))\n',
+    'def load(directory):\n    path = Path(directory) / "config.py"\n'
+    '    runpy.run_path(str(path))\n',
+    'def load(flag, directory):\n    path = Path(__file__).parent / "config.py"\n'
+    '    if flag:\n        path = Path(directory)\n    runpy.run_path(str(path))\n',
+])
+def test_production_loader_keeps_evidence_with_other_writes_and_uncertain_values(tmp_path, source):
+    root = tree(tmp_path)
+    (root / 'tools/fleet/config.py').write_text('VALUE = 1\n')
+    (root / 'tools/fleet/loader.py').write_text('from pathlib import Path\nimport runpy\n' + source)
+    (root / 'tests/test_loader_consumer.py').write_text('from tools.fleet import loader\n')
+    assert selected(plan(root, ['tools/fleet/config.py'])) == {
+        'tests/test_fast.py', 'tests/test_loader_consumer.py'}
+
+
+def test_repository_digest_loader_keeps_its_function_local_core_binding():
+    path = 'tools/maintenance/diag_811_e1_checkout_cache.py'
+    assert 'src/prismabuild/core.py' in select.dependencies(
+        (ROOT / path).read_text(), path, production=True)[1]
+
+
+@pytest.mark.parametrize('source', [
+    pytest.param('path = Path("/tmp") / "config.py"\n'
+                 'path, _ = Path(__file__).parent / "config.py", None\n'
+                 'runpy.run_path(str(path))\n', id='unpacking'),
+    pytest.param('path = Path("/tmp") / "config.py"\n'
+                 'for path in [Path(__file__).parent / "config.py"]:\n'
+                 '    runpy.run_path(str(path))\n', id='loop-target'),
+    pytest.param('path = Path("/tmp") / "config.py"\n'
+                 '[runpy.run_path(str(path)) for path in [Path(__file__).parent / "config.py"]]\n',
+                 id='comprehension-target'),
+    pytest.param('path = Path("/tmp") / "config.py"\n'
+                 'with nullcontext(Path(__file__).parent / "config.py") as path:\n'
+                 '    runpy.run_path(str(path))\n', id='with-target'),
+    pytest.param('path = Path("/tmp") / "config.py"\n'
+                 'try:\n    raise LookupError(Path(__file__).parent / "config.py")\n'
+                 'except LookupError as path:\n    runpy.run_path(str(path))\n', id='except-name'),
+    pytest.param('def outer():\n    path = Path(__file__).parent / "config.py"\n'
+                 '    def load():\n        return runpy.run_path(str(path))\n'
+                 '    return load\n', id='closure'),
+    pytest.param('def outer():\n    path = Path(__file__).parent / "config.py"\n'
+                 '    return lambda: runpy.run_path(str(path))\n', id='lambda'),
+    pytest.param('def outer():\n    path = Path(__file__).parent / "config.py"\n'
+                 '    def middle():\n        def load():\n            return runpy.run_path(str(path))\n'
+                 '        return load\n    return middle\n', id='nested-scope'),
+])
+def test_production_loader_literals_survive_untracked_writes_and_enclosing_scopes(tmp_path, source):
+    root = tree(tmp_path)
+    (root / 'tools/fleet/config.py').write_text('VALUE = 1\n')
+    (root / 'tools/fleet/loader.py').write_text(
+        'from pathlib import Path\nfrom contextlib import nullcontext\nimport runpy\n' + source)
+    (root / 'tests/test_loader_consumer.py').write_text('from tools.fleet import loader\n')
+    assert selected(plan(root, ['tools/fleet/config.py'])) == {
+        'tests/test_fast.py', 'tests/test_loader_consumer.py'}
+
+
+def test_whole_population_trigger_does_not_build_an_unused_import_graph(tmp_path, monkeypatch):
+    root = tree(tmp_path)
+    expected = plan(root, ['tools/ci/gate_run.py'], mode='full')
+    def unexpected_scan(*args):
+        raise AssertionError('whole-population planning parsed an unnecessary dependency graph')
+    monkeypatch.setattr(select, 'dependency_index', unexpected_scan)
+    for mode in ('selection', 'full'):
+        actual = plan(root, ['tools/ci/gate_run.py'], mode=mode)
+        assert selected(actual) == selected(expected)
+        assert {row['path'] for row in actual['shadow_selected']} == selected(expected)
+        assert actual['population'] == expected['population']
+        assert actual['deferred'] == expected['deferred']
+        assert actual['deselect'] == expected['deselect']

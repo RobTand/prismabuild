@@ -44,16 +44,83 @@ def shards(files: Sequence[str], durations: Mapping[str, float], count: int,
     return result
 
 
+
+
+# Stable-path compatibility fixtures hide /opt and need a namespace-capable bwrap.
+# The hosted dependency probes and full canaries qualify this set on both arches.
+SANDBOX_TEST_FILES = frozenset({
+    'tests/test_record_compatibility.py',
+    'tests/test_current_receipt_compat_composition.py',
+})
+# CPU-equivalent cost: four workers times the observed per-slot setup wall time.
+SANDBOX_SETUP_SECONDS = 40.0
+ISOLATE_FILE_SECONDS = 60.0
+
+
+def setup_shards(files: Sequence[str], durations: Mapping[str, float], count: int,
+                 *, unknown_seconds: float, setup_seconds: float = SANDBOX_SETUP_SECONDS,
+                 isolation_seconds: float = ISOLATE_FILE_SECONDS) -> list[dict]:
+    """Group shared setup and isolate long files from collection/fixture work.
+
+    The original shards() contract remains unchanged for nightly consumers.
+    Setup costs use the same CPU-equivalent seconds as file durations.
+    """
+    shards(files, durations, count, unknown_seconds=unknown_seconds)  # Validate the shared contract.
+    overhead, threshold = _cost(setup_seconds), _cost(isolation_seconds)
+    sandbox = sorted(set(files) & SANDBOX_TEST_FILES)
+    representative = sandbox[0] if sandbox else None
+    grouped = [path for path in files if path not in sandbox[1:]]
+    costs = dict(durations)
+    if sandbox:
+        costs[representative] = sum(durations.get(path, unknown_seconds) for path in sandbox) + overhead
+    isolated = sorted((path for path in grouped if costs.get(path, unknown_seconds) >= threshold),
+                      key=lambda path: (-costs.get(path, unknown_seconds), path))[:count - 1]
+    result = [{'index': index, 'files': [path],
+               'estimated_seconds': costs.get(path, unknown_seconds), 'unknown_files': []}
+              for index, path in enumerate(isolated)]
+    remaining = [path for path in grouped if path not in set(isolated)]
+    packed = shards(remaining, costs, count - len(isolated), unknown_seconds=unknown_seconds)
+    for row in packed:
+        row['index'] += len(isolated)
+    result.extend(packed)
+    for row in result:
+        row['sandbox'] = representative in row['files']
+        row['isolated'] = row['index'] < len(isolated)
+        if row['sandbox']:
+            row['files'] = sorted([*row['files'], *sandbox[1:]])
+        row['unknown_files'] = sorted(path for path in row['files'] if path not in durations)
+    return result
+
+
+def selection_shard_count(files: Sequence[str], durations: Mapping[str, float], maximum: int,
+                          *, workers: int, single_shard_seconds: float) -> int:
+    """Keep small PRs on one slot; larger selections share the full gate matrix."""
+    unknown = default_unknown_seconds(durations)
+    # Reuse partition validation so an unknown file or invalid cost cannot be free.
+    packed = shards(files, durations, workers, unknown_seconds=unknown)
+    wall = max(row['estimated_seconds'] for row in packed)
+    useful = sum(durations.get(path, unknown) > 0 for path in files)
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError('workers must be a positive integer')
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1:
+        raise ValueError('maximum must be a positive integer')
+    threshold = _cost(single_shard_seconds)
+    return 1 if wall <= threshold else min(maximum, max(1, useful))
+
+
 def main(argv: list[str] | None = None) -> int:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument('--files-from', type=Path, required=True)
     common.add_argument('--durations', type=Path, required=True)
     common.add_argument('--shards', type=int, required=True)
     common.add_argument('--unknown-seconds', type=float)
+    common.add_argument('--setup-aware', action='store_true', help='gate only: group sandbox fixtures and charge their setup')
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     matrix = commands.add_parser('matrix', parents=[common])
     matrix.add_argument('--runners', required=True)
+    matrix.add_argument('--single-shard-seconds', type=float, help='selection only: keep cheap work in one job')
+    matrix.add_argument('--workers', type=int, default=4)
     matrix.add_argument('--output', type=Path, required=True)
     shard = commands.add_parser('shard', parents=[common])
     shard.add_argument('--index', type=int, required=True)
@@ -67,7 +134,13 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(durations, dict):
             raise ValueError('duration files must be a mapping')
         unknown = default_unknown_seconds(durations) if args.unknown_seconds is None else args.unknown_seconds
-        result = shards(files, durations, args.shards, unknown_seconds=unknown)
+        if args.command == 'matrix' and args.single_shard_seconds is not None:
+            args.shards = selection_shard_count(files, durations, args.shards, workers=args.workers,
+                                                single_shard_seconds=args.single_shard_seconds)
+        if args.command == 'matrix' and args.single_shard_seconds is not None and args.setup_aware:
+            args.shards = min(args.shards, max(1, len(files) - max(0, len(set(files) & SANDBOX_TEST_FILES) - 1)))
+        balance = setup_shards if args.setup_aware else shards
+        result = balance(files, durations, args.shards, unknown_seconds=unknown)
         if args.command == 'matrix':
             runners = [name.strip() for name in args.runners.split(',')]
             if not all(runners):
@@ -77,6 +150,12 @@ def main(argv: list[str] | None = None) -> int:
                       'include': [{'index': row['index'], 'runner': runners[row['index'] % len(runners)],
                                    'files': len(row['files']), 'estimated_seconds': row['estimated_seconds']}
                                   for row in result]}
+            if args.setup_aware:
+                output.update(partition='setup-v2', setup_seconds=SANDBOX_SETUP_SECONDS,
+                              isolation_seconds=ISOLATE_FILE_SECONDS)
+                for item, row in zip(output['include'], result):
+                    item['sandbox'] = row['sandbox']
+                    item['isolated'] = row['isolated']
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(output, indent=2) + '\n')
         else:
