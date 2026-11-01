@@ -99,3 +99,43 @@ def test_relocation_moves_the_prefix_and_keeps_old_entry_points_valid(tmp_path):
     assert (target / 'bin/python').read_bytes() == b'interpreter bytes'
     assert (prefix / 'bin/python').read_bytes() == b'interpreter bytes'
     assert (target / 'bin/pytest').read_text() == f'#!{prefix}/bin/python\n'
+
+
+def test_setup_matrix_shard_and_retry_aggregation_use_the_same_assignment(tmp_path):
+    import json
+    import sys
+    files = ['tests/test_record_compatibility.py',
+             'tests/test_current_receipt_compat_composition.py', 'tests/test_plain.py']
+    listing = tmp_path / 'files.txt'; listing.write_text('\n'.join(files) + '\n')
+    durations = tmp_path / 'durations.json'
+    durations.write_text(json.dumps({'files': dict(zip(files, [9, 1, 8]))}))
+    matrix = tmp_path / 'matrix.json'
+    common = ['--files-from', str(listing), '--durations', str(durations),
+              '--shards', '2', '--setup-aware']
+    def cli(script, *arguments):
+        return subprocess.run([sys.executable, str(ROOT / 'tools/ci' / script), *arguments],
+                              capture_output=True, text=True, check=False)
+    result = cli('gate_partition.py', 'matrix', *common, '--runners', 'x64,arm64',
+                 '--output', str(matrix))
+    assert result.returncode == 0, result.stderr
+    data = json.loads(matrix.read_text())
+    assert [row['sandbox'] for row in data['include']] == [True, False]
+    plan = {'selected': [{'path': path} for path in files], 'mode': 'full',
+            'population': {'version': 'v1'}, 'head_sha': 'head', 'base_sha': 'base'}
+    plan_path = tmp_path / 'plan.json'; plan_path.write_text(json.dumps(plan))
+    for index, expected in enumerate([sorted(files[:2]), files[2:]]):
+        assigned = tmp_path / f'assigned-{index}.txt'
+        result = cli('gate_partition.py', 'shard', *common, '--index', str(index),
+                     '--output-files', str(assigned))
+        assert result.returncode == 0, result.stderr
+        assert assigned.read_text().splitlines() == expected
+        directory = tmp_path / 'artifacts' / f'proof-a1-{index}'
+        directory.mkdir(parents=True)
+        (directory / 'result.json').write_text(json.dumps(dict(
+            mode='full', population_version='v1', head_sha='head', base_sha='base',
+            files=expected, verdict='pass', pytest_exit_code=0)))
+    result = cli('gate_actions.py', 'finish', '--plan', str(plan_path), '--matrix', str(matrix),
+                 '--durations', str(durations), '--artifacts', str(tmp_path / 'artifacts'),
+                 '--prefix', 'proof', '--output', str(tmp_path / 'final.json'))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads((tmp_path / 'final.json').read_text())['missing_indices'] == []
