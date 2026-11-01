@@ -51,7 +51,7 @@ class _CallingThread:
     def __init__(self, affinity) -> None:
         self.affinity = affinity
         self.applied: list[set[int]] = []
-        #: The mask the thread held each time the loop read the queue.
+        #: The mask the thread held each time the loop read its ledger.
         self.serving: list[set[int]] = []
 
     def get(self, _pid):
@@ -107,6 +107,10 @@ def _offer(module, argv: list[str], *, affinity, cpu_count: int = 80,
             self.root = Path(_root)
 
         def ledger(self) -> _Ledger:
+            # The loop reads its ledger in its own thread while it serves;
+            # discovery (``ready_items``) runs in a bounded child instead.
+            if not isinstance(thread.affinity, BaseException):
+                thread.serving.append(set(thread.affinity))
             return _Ledger(seen)
 
         def claim_hold(self):
@@ -118,7 +122,6 @@ def _offer(module, argv: list[str], *, affinity, cpu_count: int = 80,
         def ready_items(self) -> list:
             # The loop discovers the candidate list before it publishes or
             # admits; this double stands in for an empty queue.
-            thread.serving.append(set(thread.affinity))
             return []
 
         def serve_once(self, **_kwargs):
