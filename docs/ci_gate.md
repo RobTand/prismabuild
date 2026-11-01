@@ -149,9 +149,23 @@ regression counts directory visits and refuses import of an unassigned file.
 Splitting individual test cases across workers was trialled and rejected because
 it duplicated shared build fixtures; the gate retains `--dist=loadfile`.
 
-Artifacts are separated by workflow attempt and shard/attempt index to avoid
-stale evidence on reruns. Plans include base/head SHAs, population version,
-quarantine and duration provenance. Job summaries report selection/assignment
+The plan job exposes the workflow attempt that produced `gate-plan-N` and its
+shadow-selection artifact. Downstream jobs use that output, so GitHub's **Re-run
+failed jobs** can reuse the original plan without expecting a new plan artifact.
+A full **Re-run all jobs** executes the plan again and starts a new plan namespace.
+
+Shard results remain immutable, named by the workflow attempt that actually ran
+the shard and by its infrastructure stage, `a1` or `a2`. Control jobs read the
+paginated GitHub REST job inventory and choose each shard's latest execution
+within the current plan namespace. Successful jobs that GitHub did not rerun
+retain their original coverage. A rerun with no uploaded result is no verdict;
+it cannot fall back to an older pass. An `a2` result predating a newer `a1` is
+ignored. An explicit failure in either applicable stage stays final; GitHub's
+manual rerun deliberately replaces that job execution, while the automatic
+infrastructure retry still never retries a recorded test failure. The aggregate
+records the exact artifact sources and still checks every assigned file once.
+
+Plans include base/head SHAs, population version, quarantine and duration provenance. Job summaries report selection/assignment
 and verdicts. JUnit and final effective results remain available on failures.
 
 ## Shadow selection
