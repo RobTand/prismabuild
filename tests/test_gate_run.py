@@ -185,8 +185,8 @@ def test_long_files_start_first_without_changing_assigned_coverage(tmp_path):
     assert observed == ['tests/test_z_long.py', 'tests/test_b_medium.py', 'tests/test_a_short.py']
 
 
-def test_a_long_file_can_use_both_assigned_workers(tmp_path):
-    """File ownership stays with this shard, while test cases use both CPUs."""
+def test_a_file_stays_on_one_worker_to_preserve_shared_fixtures(tmp_path):
+    """Shared build and audit fixtures must not be duplicated across workers."""
     import json
     root = tmp_path / 'project'
     (root / 'tests').mkdir(parents=True)
@@ -197,7 +197,7 @@ def test_a_long_file_can_use_both_assigned_workers(tmp_path):
     (root / path).write_text('''from pathlib import Path
 import pytest
 
-@pytest.mark.parametrize('case', range(40))
+@pytest.mark.parametrize('case', range(4))
 def test_case(case, worker_id):
     Path(__file__).with_name('worker-' + str(case)).write_text(worker_id)
 ''')
@@ -205,4 +205,4 @@ def test_case(case, worker_id):
     code = runner.run_plan(plan, root=root, output=root / 'result.json',
                            junit=root / 'junit.xml', workers=2, affinity={0, 1})
     assert code == 0
-    assert len({(root / 'tests' / ('worker-' + str(case))).read_text() for case in range(4)}) == 2
+    assert len({(root / 'tests' / ('worker-' + str(case))).read_text() for case in range(4)}) == 1

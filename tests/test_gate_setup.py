@@ -152,3 +152,30 @@ def test_root_owned_interpreter_fixture_needs_no_namespace_or_relocation(monkeyp
     assert ['sudo', 'chown', 'root:root', str(Path(setup.sys.executable).resolve())] in operations
     assert not any(word in {'apt-get', 'bwrap', 'mv', 'cp', 'ldconfig'}
                    for command in operations for word in command)
+
+
+
+def test_long_files_avoid_other_collection_and_fixture_work():
+    partition = load('gate_partition')
+    files = ['long-a.py', 'long-b.py', *[f'short-{i}.py' for i in range(8)]]
+    durations = dict(zip(files, [100, 80, *([30] * 8)]))
+    rows = partition.setup_shards(files, durations, 4, unknown_seconds=2)
+    assert rows[0]['files'] == ['long-a.py']
+    assert rows[1]['files'] == ['long-b.py']
+    assert [row['estimated_seconds'] for row in rows] == [100, 80, 120, 120]
+    assert sorted(path for row in rows for path in row['files']) == sorted(files)
+    assert rows == partition.setup_shards(list(reversed(files)), durations, 4, unknown_seconds=2)
+
+
+def test_sandbox_group_can_be_isolated_without_repeating_its_setup_charge():
+    partition = load('gate_partition')
+    files = ['tests/test_record_compatibility.py',
+             'tests/test_current_receipt_compat_composition.py', 'large.py',
+             *[f'short-{i}.py' for i in range(8)]]
+    durations = dict(zip(files, [65, 10, 100, *([30] * 8)]))
+    rows = partition.setup_shards(files, durations, 4, unknown_seconds=2, setup_seconds=8)
+    assert rows[0]['files'] == ['large.py']
+    assert rows[1]['files'] == sorted(files[:2])
+    assert rows[1]['estimated_seconds'] == 83
+    assert sum(row['sandbox'] for row in rows) == 1
+    assert sorted(path for row in rows for path in row['files']) == sorted(files)
