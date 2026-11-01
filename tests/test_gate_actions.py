@@ -160,8 +160,12 @@ def test_failure_evidence_from_either_attempt_overrides_a_passing_attempt(code, 
     assert result['effective_attempts'][0] == failed_attempt
 
 
-def test_canary_label_changes_re_evaluate_gate_workflow():
+def test_label_changes_do_not_rerun_the_gate_workflow():
+    # Mergify adds and removes its own labels (queued, dequeued) on queued pull
+    # requests. A label trigger reran pr-gate on each of them while the queue
+    # requires pr-gate to succeed, so a queued pull request could fall out of
+    # the queue during the rerun. gate-canary takes effect on the next push.
     import yaml
     workflow = yaml.safe_load((ROOT / '.github/workflows/gate.yml').read_text())
-    assert {'opened', 'synchronize', 'reopened', 'labeled', 'unlabeled'} <= set(
-        workflow['on']['pull_request']['types'])
+    types = set(workflow['on']['pull_request']['types'])
+    assert types == {'opened', 'synchronize', 'reopened'}
