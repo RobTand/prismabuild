@@ -35,9 +35,11 @@ def console_script(entry_points: str) -> str | None:
     """The target of the ``prismabuild`` command in ``[console_scripts]``, if any.
 
     Only that group installs a command. A malformed file or a duplicated name
-    has no trustworthy target.
+    has no trustworthy target. Installers read the file without ConfigParser's
+    [DEFAULT] inheritance, so no section name may act as the default: a header
+    is one line and can never be a newline.
     """
-    parser = configparser.ConfigParser(interpolation=None, delimiters=("=",))
+    parser = configparser.ConfigParser(interpolation=None, delimiters=("=",), default_section="\n")
     parser.optionxform = str
     try:
         parser.read_string(entry_points)
