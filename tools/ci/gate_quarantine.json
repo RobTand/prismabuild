@@ -3,21 +3,6 @@
   "status": "inventory-based exclusions; historical entries remain provisional pending hosted qualification",
   "entries": [
     {
-      "target": "tests/test_sealed_bundle_cache.py::test_concurrent_processes_share_one_atomic_fill",
-      "issue": 2525,
-      "reason": "Intermittent: observed two packs instead of one atomic fill in a full rerun of the gate canary on #2519, whose change the test cannot reach; the canary's other attempts passed it. Whether the test races or the cache can double-fill is under investigation in #2525. Remove this entry with that fix.",
-      "evidence": {
-        "outcomes": {
-          "passed": 1,
-          "failed": 1
-        },
-        "source_pr": 2519,
-        "hosted_runs": [
-          "https://github.com/RobTand/prismabuild/actions/runs/41332774966"
-        ]
-      }
-    },
-    {
       "target": "tests/test_record_compatibility_controller_archival.py",
       "issue": 1997,
       "source_issues": [
