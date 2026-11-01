@@ -2811,8 +2811,9 @@ to do with. Every new or changed test follows the
 [test quality rules](contributing.md#test-quality--rob-2026-10-24-2249). They
 cover determinism, assertions that can fail, and repairing a flaky test. A
 flaky-test fix must pass each touched file five times per architecture before
-handoff, either through `pbtest` on the fleet or on GitHub-hosted runners of both
-architectures (Rob's routing policy, amended 2026-11-01). At least two of those
+handoff, either through `pbtest` on the fleet or on free remote compute
+(BuildBuddy, or GitHub-hosted runners of both architectures), per Rob's routing
+policy amended 2026-11-01. At least two of those
 runs use two xdist workers (`--workers-per-shard 2` under `pbtest`); under
 `pbtest`, varied `--pytest-args` keep the result cache from serving them.
 

@@ -68,9 +68,9 @@ and executes that snapshot on an eligible worker. `--cwd` belongs to pbrun;
 `--checkout` belongs to pbtest. Inspect the published tool's `--help` for
 options rather than inventing aliases.
 
-Example of a large or long-running CPU suite that needs fleet compute, sized
-for eight processes and eight GiB total (fast relevant tests run in your
-worktree instead):
+Example of a CPU suite placed on fleet compute, sized for eight processes and
+eight GiB total (tests may instead run on free remote compute, BuildBuddy or
+GitHub-hosted CI, but never directly on a fleet host outside PrismaBuild):
 
 ```bash
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
