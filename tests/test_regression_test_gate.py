@@ -252,9 +252,13 @@ def test_missing_node_skips_off_github_actions(tmp_path, monkeypatch, github_act
 
 def run_regression_workflow_snapshot(tmp_path, labels, current_changes):
     """Drive the shipped github-script against two deterministic REST snapshots."""
+    import os
     import shutil
     import yaml
     if not shutil.which('node'):
+        # Hosted CI must run these cases: the merge gate does not fail on skips.
+        if os.environ.get('GITHUB_ACTIONS') == 'true':
+            pytest.fail('Node.js is required on GitHub Actions to exercise the workflow adapter')
         pytest.skip('Node.js unavailable; hosted CI exercises the workflow adapter')
     workflow = yaml.safe_load((ROOT / '.github/workflows/regression-test.yml').read_text())
     script = workflow['jobs']['regression-test']['steps'][0]['with']['script']
@@ -294,7 +298,6 @@ new AsyncFunction('require', 'context', 'github', 'core', 'exec', input.script)(
     console.error(error); process.exitCode = 1;
   });
 '''
-    import os
     result = subprocess.run(['node', '-e', driver, str(payload)], capture_output=True, text=True,
                             env={**os.environ, 'RUNNER_TEMP': str(tmp_path)}, timeout=60)
     assert result.returncode == 0, result.stderr
@@ -336,6 +339,43 @@ def test_nonlabel_verdict_metadata_changes_still_invalidate_evidence(tmp_path, f
     result = run_regression_workflow_snapshot(tmp_path, [], {field: value})
     assert result['failures']
     assert 'PR changed while gathering evidence' in ''.join(result['messages'] + result['failures'])
+
+
+@pytest.mark.parametrize('field,value', [
+    ('head', {'sha': 'new-head'}), ('base', {'sha': 'new-base'}),
+    ('title', 'New title'), ('body', 'Change type: ci'),
+])
+def test_python_evidence_rejects_nonlabel_verdict_metadata_changes(field, value):
+    before = pull('Add a control')
+    assert gate.regression_evidence_matches(before, {**before, field: value}) is False
+
+
+def write_replay_input(tmp_path, **fields):
+    payload = tmp_path / 'input.json'
+    payload.write_text(json.dumps({'pull': pull('Add a control'), 'current': pull('Add a control'),
+                                  'files': [], **fields}))
+    return [sys.executable, str(ROOT / 'tools/ci/check_regression_test.py'), str(payload)]
+
+
+def test_cli_rejects_replay_when_current_differs_from_pull(tmp_path):
+    command = write_replay_input(tmp_path, current={**pull('Add a control'), 'title': 'Renamed'})
+    done = subprocess.run(command, capture_output=True, text=True)
+    assert done.returncode == 1, done.stderr
+    verdict = json.loads(done.stdout)
+    assert not verdict['allowed']
+    assert 'PR changed while gathering evidence' in verdict['reason']
+
+
+def test_cli_rejects_replay_input_without_current(tmp_path):
+    command = write_replay_input(tmp_path)
+    payload = Path(command[-1])
+    data = json.loads(payload.read_text())
+    del data['current']
+    payload.write_text(json.dumps(data))
+    done = subprocess.run(command, capture_output=True, text=True)
+    assert done.returncode == 2, done.stderr
+    assert not json.loads(done.stdout)['allowed']
+    assert 'invalid' in json.loads(done.stdout)['reason']
 
 
 @pytest.mark.parametrize('labels,current_labels,expected', [
