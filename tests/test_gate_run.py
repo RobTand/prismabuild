@@ -313,7 +313,9 @@ def pytest_generate_tests(metafunc):
              'tests/test_with spaces.py', 'tests/test_é.py']
     environment = {**os.environ, 'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1',
                    'PYTHONPATH': str(ROOT / 'tools/ci')}
-    environment.pop('GATE_ASSIGNED_FILES', None)
+    # An inherited -k or plugin would change both collections the same way and hide a difference.
+    for name in ('GATE_ASSIGNED_FILES', 'PYTEST_ADDOPTS', 'PYTEST_PLUGINS'):
+        environment.pop(name, None)
     collected = []
     for mode in ['plain', 'assigned']:
         report = tmp_path / (mode + '.json')
