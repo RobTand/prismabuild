@@ -22,8 +22,10 @@ def _field_policy_paths(root):
 @pytest.mark.parametrize('path', _field_policy_paths(ROOT))
 def test_closed_field_sets_remain_pinned(path):
     policies = field_policies(ROOT, paths=[path])
-    expected = [row for row in json.loads((ROOT / "tests/compat/field_sets.json").read_bytes()) if row['path'] == path]
-    assert policies == expected
+    expected = json.loads((ROOT / "tests/compat/field_sets.json").read_bytes())
+    if expected and path == expected[0]['path']:
+        assert expected == sorted(expected, key=lambda row: (row['path'], row['owner'], json.dumps(row, sort_keys=True)))
+    assert policies == [row for row in expected if row['path'] == path]
 
 
 def test_symbolic_fstring_policies_retain_selected_source_bytes(tmp_path, monkeypatch):
