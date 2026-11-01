@@ -537,11 +537,14 @@ shared build/audit fixtures, so it was dropped. Files above 60 estimated seconds
 instead get a dedicated shard, up to the existing shard limit minus one. The
 rest retain duration-balanced packing; every file remains selected exactly once.
 This avoids collecting unrelated modules beside the longest serial files.
-The repository timing audit also gets one of the existing shards. Trial
-41266469261 passed all 19,656 tests in 196 seconds but that audit took 33.509
-seconds while sharing a 113-file shard, above its unchanged 30-second enforcement
-threshold. Isolating it reduces CPU contention without changing its checks,
-its 20-second policy or the 1.5 enforcement tolerance.
+Trial 41266469261 passed all 19,656 tests in 196 seconds but the repository
+timing audit took 33.509 seconds while sharing a 113-file shard, above its
+unchanged 30-second enforcement threshold. A later dedicated-shard experiment
+measured 16.224 seconds, but that special case is removed from the review
+branch. The scan itself costs 20–33 seconds, including 32.7 seconds in the
+172-file selection of run 41266808306. Its owner is splitting the guard into
+per-file tests on `prismabuild-2448-timing-guard-split`; scheduling is not its
+root fix. Its checks, budget and tolerance are unchanged here.
 
 The 90-second cutoff separates the retained examples well. Applying refreshed
 hosted costs, the 169- and 173-file PR selections estimate 255 and 262 seconds
@@ -554,7 +557,7 @@ It is a scheduling estimate, not a cutoff on coverage or an execution deadline.
 
 ## Speed-round measurements
 
-The final-configuration trial is [41267195546](https://github.com/RobTand/prismabuild/actions/runs/41267195546), head `baa99b84`: 1,256 files, 19,656 passes, 104 skips and one test failure. All sixteen shards started within six seconds. Workflow start to final verdict was 226 seconds, with no retry. The timing audit passed on x64 in 16.224 seconds after isolation, versus 33.509 seconds beside other shard work in trial 41266469261. No test exceeded 60 seconds.
+The latest trial is [41267195546](https://github.com/RobTand/prismabuild/actions/runs/41267195546), head `baa99b84`: 1,256 files, 19,656 passes, 104 skips and one test failure. All sixteen shards started within six seconds. Workflow start to final verdict was 226 seconds, with no retry. It used the temporary timing-audit isolation, since removed. The timing audit passed on x64 in 16.224 seconds alone, versus 33.509 seconds beside other shard work in trial 41266469261. No test exceeded 60 seconds. The retained scheduler is the one used in 41266469261, which finished in 196 seconds with all pytest cases passing but the guard over its cost threshold. Both results remain red evidence, for different reasons.
 
 The final verdict correctly remained red on `tests/test_pbwait.py::test_prefix_resolution_bounds_a_private_blocked_pool_scan`: it observed an empty marker under its 0.05-second reader bound, consistent with termination during `write_text`. Its existing timing-debt owner is open issue #2035. This speed change does not edit, exclude or retry that test. A clean hosted verdict remains pending that independent failure; this run provides timing evidence, not a clean qualification.
 
@@ -620,12 +623,16 @@ Per-shard cells are job seconds / pickup seconds.
 
 ## Single-job and fan-out test times
 
-| Run | Common cases | p50 s | p90 s | p99 s | >20 s | Timing guard s |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 41259310026:1 | 19515 | 0.096 | 0.65 | 2.598 | 14 | 28.976 |
-| 41260354001:1 | 19515 | 0.062 | 0.576 | 2.222 | 5 | 17.35 |
-| 41267195546:1 | 19515 | 0.037 | 0.395 | 2.152 | 2 | 16.224 |
+The following distributions exclude `test_repository_has_no_unallowlisted_timing_calls`. Its individual time is listed separately; the other 19,514 matched passing cases keep their normal inclusion.
 
-These are matched passing node identities, not all outcomes. The full fan-out mixes architectures. For the identical 9,586-case x64 subset, the two single-job runs and the final fan-out have p50/p90/p99 0.100/0.678/2.670, 0.066/0.612/2.125 and 0.046/0.502/2.454 seconds. Sources and VM load differ; this is observational evidence, not an isolated architecture benchmark.
+| Run | Common cases without guard | p50 s | p90 s | p99 s | >20 s | Guard alone s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 41259310026:1 | 19514 | 0.096 | 0.650 | 2.597 | 13 | 28.976 |
+| 41260354001:1 | 19514 | 0.062 | 0.576 | 2.219 | 5 | 17.350 |
+| 41267195546:1 | 19514 | 0.037 | 0.395 | 2.149 | 2 | 16.224 |
+
+These are matched passing node identities, not all outcomes. The latest fan-out mixes architectures and used the since-removed dedicated guard shard. For the identical 9,585-case x64 subset excluding the guard, the two single-job runs and the latest fan-out have p50/p90/p99 0.100/0.678/2.659, 0.066/0.611/2.124 and 0.046/0.502/2.452 seconds. Sources and VM load differ; this is observational evidence, not an isolated architecture benchmark or a claim that fan-out repairs the guard.
+
+The review branch removes the guard-specific partition exception and its test. All gate Python, gate tests, durations and workflow content now match the already-qualified `878cd6c4` snapshot exactly. That snapshot passed 176 cases per repeat, five fresh repeats per architecture including two xdist repeats per architecture, for 1,760 passes and ten verified terminal completions/CAS receipts. The additional isolated variant passed 1,770 cases in ten verified actions, but is retained as experimental evidence only. Main's subsequent quarantine-explanation change and documentation updates do not change the tested gate logic.
 
 The planning profile is PrismaBuild action `78a123c1d4346f105dc77cb318970707e05f50904b570c3b655514fdceadb700`, with verified terminal exit 0 and CAS receipt `8c387a9c43992803d7d55ef9f3e4a103f3b31a903d12b077a82f71b52f51db6e`. On that x64 development worker, cProfile recorded 0.175 seconds for the whole-population trigger fast path and 90.155 instrumented seconds for an ordinary `pool.py` shadow plan. Dependency extraction used 58.863 seconds and helper matching 30.376 seconds. Profiler overhead and worker hardware make these unsuitable as hosted wall estimates. Ordinary dependency traversal remains expensive and is left unchanged for the separate #2472 owner.

@@ -55,9 +55,6 @@ SANDBOX_TEST_FILES = frozenset({
 # CPU-equivalent cost: four workers times the observed per-slot setup wall time.
 SANDBOX_SETUP_SECONDS = 40.0
 ISOLATE_FILE_SECONDS = 60.0
-# Hosted run 41266469261 passed pytest but this CPU-heavy repository audit took
-# 33.509s while sharing a slot. Reserve an existing shard; keep its budget intact.
-CPU_SENSITIVE_TEST_FILES = frozenset({'tests/test_no_timing_sensitive_tests.py'})
 
 
 def setup_shards(files: Sequence[str], durations: Mapping[str, float], count: int,
@@ -76,8 +73,7 @@ def setup_shards(files: Sequence[str], durations: Mapping[str, float], count: in
     costs = dict(durations)
     if sandbox:
         costs[representative] = sum(durations.get(path, unknown_seconds) for path in sandbox) + overhead
-    isolated = sorted((path for path in grouped if
-                       costs.get(path, unknown_seconds) >= threshold or path in CPU_SENSITIVE_TEST_FILES),
+    isolated = sorted((path for path in grouped if costs.get(path, unknown_seconds) >= threshold),
                       key=lambda path: (-costs.get(path, unknown_seconds), path))[:count - 1]
     result = [{'index': index, 'files': [path],
                'estimated_seconds': costs.get(path, unknown_seconds), 'unknown_files': []}

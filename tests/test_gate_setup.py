@@ -179,15 +179,3 @@ def test_sandbox_group_can_be_isolated_without_repeating_its_setup_charge():
     assert rows[1]['estimated_seconds'] == 83
     assert sum(row['sandbox'] for row in rows) == 1
     assert sorted(path for row in rows for path in row['files']) == sorted(files)
-
-
-def test_cpu_cost_guard_is_isolated_from_other_shard_work():
-    partition = load('gate_partition')
-    guard = 'tests/test_no_timing_sensitive_tests.py'
-    files = ['long.py', guard, *[f'short-{i}.py' for i in range(8)]]
-    durations = dict(zip(files, [100, 27, *([30] * 8)]))
-    rows = partition.setup_shards(files, durations, 4, unknown_seconds=2)
-    assert rows[0]['files'] == ['long.py']
-    assert rows[1]['files'] == [guard]
-    assert [row['estimated_seconds'] for row in rows] == [100, 27, 120, 120]
-    assert sorted(path for row in rows for path in row['files']) == sorted(files)
