@@ -2,7 +2,9 @@
 
 PB's TIA tools record calls by pytest node ID, compare Python ASTs, and emit
 pytest targets with a reason for each selected file. TIA remains opt-in. Keep
-full queue tests and compare its plans in shadow. The tools do not change
+full queue tests. Do not enable TIA shadow mode until the review fixes, at least
+100 valid mutation comparisons, and a map refreshed on hosted runtimes are
+accepted. The tools do not change
 CI workflows. PB's CI uses GitHub Actions on GitHub-hosted runners, with Mergify
 as the merge queue. The lead owns that integration in #2433.
 
@@ -10,7 +12,10 @@ as the merge queue. The lead owns that integration in #2433.
 
 `tools/ci/tia_record.py` is a stdlib-only pytest plugin for Python 3.12 or
 later. It reserves an unused `sys.monitoring` tool ID and listens for
-`PY_START`. Each callback returns `DISABLE`. Test boundaries and fixture
+`PY_START`, `PY_RESUME`, and `PY_THROW`. Start and normal-resume callbacks
+return `DISABLE` after their first event per code object and boundary. Exception
+resumptions use the global `PY_THROW` event, which cannot return `DISABLE`.
+Test boundaries and fixture
 boundaries call `restart_events()`. The recorder keys functions by repository
 path and `co_qualname`, including nested functions and methods.
 
@@ -53,7 +58,8 @@ takes module fallback, even when other tests also called it directly.
 
 The nightly refresh must run the complete gate population with both
 `tools.ci.tia_record` and `tools.ci.tia_population` in `PYTEST_PLUGINS`.
-The second plugin applies the gate's unchanged node quarantine. PB's `pbtest`
+The second plugin applies the gate's unchanged node quarantine with pytest's
+prefix semantics, including every parameter case of an excluded test. PB's `pbtest`
 partitions development map runs, with at least 4 GiB per shard. CI's nightly
 refresh runs on GitHub Actions and does not submit through PB.
 
@@ -99,7 +105,8 @@ Their metadata names the reason, observed hosts, and action keys.
    The GitHub Actions refresh runs pytest directly on its hosted runner with
    short private scratch outside Git and cleanup in a trap or `finally`.
    The lead owns this CI wiring. Refresh after test, fixture, configuration,
-   or import changes and retain full queue tests while comparing shadow plans.
+   or import changes. Enable shadow comparisons only after the review acceptance
+   conditions above are met; retain full queue tests throughout.
 
 ## AST changes and targets
 
@@ -154,9 +161,9 @@ gate measurement.
 ## Evaluation status
 
 The development evidence and acceptance limits are recorded below.
-No CI job relies on TIA yet. Keep the queue's full population and collect shadow
-plans until the population map, mutation comparison, and overhead results are
-accepted. The historical replay does not demonstrate a speed benefit.
+No CI job relies on TIA yet. Keep the queue's full population. TIA shadow mode
+is also withheld until the review fixes, 100 valid comparisons, and a hosted
+runtime map refresh are accepted. The historical replay does not demonstrate a speed benefit.
 
 The repeatable evaluation tool has these commands:
 
@@ -175,8 +182,15 @@ The repeatable evaluation tool has these commands:
   failures, collection errors, counts, skips, and incomplete runs separately.
   Baseline failures are valid only when every failing node is explicitly named
   in the map's known-main-baseline metadata. Other baseline failures invalidate
-  the row. Kills count new failing nodes relative to that baseline. Timeouts
-  invalidate the row and never count as kills.
+  the row. Kills count new failing nodes relative to that baseline. A valid
+  execution requires exit 0 or 1, JUnit, and a matching
+  `prismabuild.tia_completion.v1` record from `tia_completion.py`. The record
+  must show completed collection, every collected node reaching teardown, no
+  collection errors, and no interruption. Partial JUnit is insufficient.
+  Exit 2 never establishes a valid comparison. Mutation-caused collection
+  failures are separate `tia_collection_killed` and `static_collection_killed`
+  evidence, after a valid baseline; they do not count toward valid comparisons.
+  Timeouts invalidate the row and never count as kills.
 - `overhead` runs five interleaved plain/recorded pairs of the fast tier in one
   PB measurement action. It records Python, observed load, exit codes, and
   timings. Tests assert no timing threshold.
@@ -353,9 +367,10 @@ Its receipt and result hash were verified. This was an ordinary admitted
 functional check under batch load, not a new timing qualification. A redundant
 measurement request was withdrawn from ready after `transition_busy` denials
 on both Sparks. The qualified 6.07% figure above remains the earlier measured
-sample and is not generalized to the new scratch layout.
+sample. It predates the new resume and throw subscriptions and is not an
+overhead measurement of the current recorder or scratch layout.
 
-## Final contract qualification
+## Pre-review contract qualification
 
 The final 25-contract suite passed five times on x86 and five times on ARM,
 including two xdist runs per architecture. Every run used a distinct action key.
@@ -375,7 +390,83 @@ hashes were verified, and each report collected the same 25 contracts.
 | ARM | 3 | 1 | `fc7dbd9145b0c811c58e8cb732faff6ef64ac6023e1bdb0fc47d80859ca13c0b` |
 | ARM | 4 | 1 | `f07bfc2a229e7bb943d3007e32fafe7db215cb25bc52286d9ae4d9e5468d5709` |
 
-These runs qualify the final contract suite. Mutation acceptance remains open.
+These runs qualified the pre-review 25-contract suite. The review corrections
+below extend the suite to 33 contracts. Mutation acceptance remains open.
+
+## Review corrections
+
+The independent review at `78c477da` found four defects. Action
+`d8332c2abac0d2e0dbdc0912f65ecef9545c7ceaf0be7d8e1dace4ff1b8e8e8d`
+reproduced them with eight failing regressions and 25 passing prior contracts.
+Its terminal stdout hash is
+`81f7be7c3b114f557b6880f03a8a029fdef97d146313d1c9e055583a1146ed70`.
+It has no receipt. Final green action
+`67693c0ee86bbee7dc33836abd4dedbe75d245ba5fd4c3654c3e4f15b34ea0e5`
+passed all 33 contracts under xdist at source `48cfc523`. The duplication guard
+passed all eight tests in
+`6e53eb2b3c0f0e38c3532e33ce489c0167fc48e7c16e260178584f71bb2e0432`;
+the timing guard passed all 33 tests in
+`67b91fa1f4ea9bd1ee7bf125f0144153e4331e04a85df82f622c00343f8efa10`.
+All three ran on dl380g10. Their terminal records, receipts, and stdout hashes
+are verified.
+
+Initial green `ee9066fde4ebfa38d01e876e2d15aa0ccb3bf14488261356d75ecbd671f2c3e5`
+passed 33 tests, but portable repeats exposed ancestor pytest root discovery in
+fixture repositories. Actions
+`d082b3ff3400433c99b50fc9ed78c9b5ec74082e94e7ae240e086a82a7d6770d` and
+`856b7ad938d7588f3bf8f2c43fde4262ef710dd36c17e7d606ee5afe745e1284`
+each failed the exact collected-node assertion on ARM. Evaluation now seals
+`--rootdir=<evaluated checkout>` so node IDs describe that checkout on every host.
+The duplication guard also rejected a second JSON serialization recipe in
+`03a221e4b546bafb03b47ce5b1668e2b42a85d4fe921fd44154a7e8d322f5678`.
+The completion plugin now reuses `tia_bytes.sorted_json`. These failures are
+retained and are excluded from final qualification.
+
+Final portable repeat qualification at source `48cfc523` passed all 33 contracts
+in five submissions, including three xdist runs. All five landed on dl380g10,
+x86 Python 3.14. No five-run ARM qualification of the corrected source is
+claimed; earlier ARM root-discovery failures remain recorded above. Portable
+placement was retained as requested.
+
+| Run | Workers | Action key |
+| --- | ---: | --- |
+| Initial final source | 2 | `67693c0ee86bbee7dc33836abd4dedbe75d245ba5fd4c3654c3e4f15b34ea0e5` |
+| Repeat 0 | 2 | `6e900aad895b59288f179154693f2ea92bd35ac20147abf9ad780731fb4b1007` |
+| Repeat 1 | 2 | `21523052bb7067016677d7e9bde16fc045a9cffed5548aab19f4bbbed30232a3` |
+| Repeat 2 | 1 | `0301a30f4ac9c2cbe311095b0ee8a905b73db27389ae78ef7f075f13b77ec0dc` |
+| Repeat 3 | 1 | `f58f2c8258b0470ccb927868736ae8dd869d66e639b62d5902413927c9cd7067` |
+
+All five complete shard verdicts, terminal records, CAS receipts, and stdout
+hashes are verified. No tests were skipped.
+
+- Default selection and replay commands use the adjacent gate's actual
+  `load_gate_json`, `replay_selection`, and `summarize_replay` APIs. Integration
+  contracts invoke both default commands without substituting gate modules.
+- Evaluation arms require explicit collection and execution completion evidence.
+  A real interrupted pytest run with partial JUnit is invalid. A real collection
+  failure remains separate kill evidence, outside the valid comparison count.
+- Generator attribution covers normal and exception-driven resumptions across
+  test boundaries. The deterministic contract advances one shared generator
+  under three node IDs and verifies attribution to each.
+- Population exclusions use pytest's prefix matching. Both `[False]` and
+  `[True]` cases of the excluded completion test are removed during recording.
+
+The 53 existing comparisons predate this completion protocol. All 159 arm
+return codes were rechecked and are 0 or 1; none used exit 2. They remain
+historical evidence, not runs of the corrected recorder or a hosted-runtime
+map refresh. The large mutation campaign remains held until the lead releases it.
+The static-selection miss found during evaluation has its own fix in #2474,
+tracked by #2472. Its broader selection must be assessed separately from the
+frozen static rule used by the historical TIA evaluation. Its verified replay
+of the same 150 PRs has selected-file p50/p90 207/1,043 before and 247/1,165 after,
+using a 1,249-file current population. That replay is not a new TIA comparison.
+Action `1f767987e1c127889d2eb5d64a1a02c8446862a0ce83146295a1cf8749f76635`
+has a verified terminal, receipt, and stdout hash. Missing duration inventory
+entries leave wall-time costs unknown. A selected GPU-policy witness passes on
+baseline and kills `return not classes` in action
+`f80db52a19b7b28259fa3e4d95b77e8bbfacb1d58d747072223435f62aa1c476`.
+This bounded diagnostic executes the selected killing node, not the complete
+1,112-file selection. It does not resume the held mutation campaign.
 
 ## Mutation acceptance remains open
 
@@ -508,7 +599,9 @@ became claimed before their fresh check and were left running:
 - `521acdb7248b2de9127d4ee6ede37f42856c8e577b9df372b7a65627652614be`
 - `ac985f4a1124a4076511909e561b8c501782a68208072a3a1c638839b219e120`
 
-No mutation submissions resume before 02:05:38 UTC. The resubmission manifest
+The lead extended the hold at 01:55 UTC until explicitly lifted because TL3
+Kani proofs are memory-bound. The earlier 02:05:38 UTC boundary no longer
+authorizes resumption, including after completion notifications. The resubmission manifest
 retains the same frozen arms, inputs, resources, scratch convention, and
 bounds. The newline-delimited withdrawn-key ledger has SHA-256
 `05dd40125bbeadc6a088608581a8399a72830a528c1e84a5b1812b26948be150`.
@@ -608,7 +701,8 @@ describes executed branches under the measured Python and architecture; it
 does not prove unexecuted branches or configurations.
 Unchanged bytes in a changed module do not prove unchanged coverage after
 tests, fixtures, other imports, or configuration evolve. Refresh the map with
-those changes and retain full-suite shadow comparisons during integration.
+those changes. Accept the review fixes, 100 valid comparisons, and a map refreshed
+on hosted runtimes before starting full-suite shadow comparisons.
 Fixture dependency sharing covers calls observed in the parent during setup.
 Child-only setup calls are recorded under the parent test node, but are not
 merged into the cached fixture dependencies of every later consumer. Finalizer
