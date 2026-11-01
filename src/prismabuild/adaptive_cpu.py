@@ -1702,12 +1702,16 @@ class Controller:
                 adaptive_snapshot.publish(self.base, self.ledger.base / 'adaptive')
 
     def sample(self):
+        self.next_sample_unix = None
         if self._sampler is not None:
-            return self._sampler()
+            observation = self._sampler()
+            self.next_sample_unix = time.time() + MIN_INTERVAL_S
+            return observation
         path = self.base / 'cpu-sample.json'
         previous = read_json(path)
         # No proc census for each candidate inside the same sampling interval.
         if 0 <= time.time() - previous.get('sampled_unix', 0) < MIN_INTERVAL_S:
+            self.next_sample_unix = previous.get('sampled_unix', 0) + MIN_INTERVAL_S
             return previous.get('observation', {})
         control_before = control_plane_counters(set(self.cpus))
         current = counters(set(self.cpus))
@@ -1721,6 +1725,7 @@ class Controller:
         current['boot_ticks'] = boot_ticks()
         elapsed = current['sampled_unix'] - previous.get('sampled_unix', 0)
         if 0 <= elapsed < MIN_INTERVAL_S:
+            self.next_sample_unix = previous.get('sampled_unix', 0) + MIN_INTERVAL_S
             return previous.get('observation', {})
         observation = {}
         if MIN_INTERVAL_S <= elapsed <= MAX_INTERVAL_S and previous.get('cpus', {}).keys() == current['cpus'].keys():
@@ -1765,6 +1770,7 @@ class Controller:
                     for key, (busy, total) in zip(current['cpus'], deltas)}
         current['observation'] = observation
         self.write_state('cpu-sample.json', current)
+        self.next_sample_unix = current['sampled_unix'] + MIN_INTERVAL_S
         return observation
 
     def _funding(self, owner, holders, demand, census):
