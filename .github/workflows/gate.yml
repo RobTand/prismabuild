@@ -179,7 +179,7 @@ jobs:
         retention-days: 7
   retry-plan:
     name: Plan infrastructure retry
-    if: ${{ always() && needs.plan.result == 'success' }}
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     needs:
     - plan
     - shards
@@ -214,7 +214,7 @@ jobs:
         python3 tools/ci/gate_actions.py retries --plan gate-artifacts/plan.json             --matrix gate-artifacts/job-matrix.json --artifacts verdicts             --prefix gate-result-${{ github.run_attempt }} --output gate-artifacts/retry-matrix.json             >> "$GITHUB_OUTPUT"
   retry-shards:
     name: shard-${{ matrix.index }}-a2
-    if: ${{ always() && needs.retry-plan.result == 'success' && needs.retry-plan.outputs.retry == 'true' }}
+    if: ${{ !cancelled() && needs.retry-plan.result == 'success' && needs.retry-plan.outputs.retry == 'true' }}
     needs:
     - plan
     - retry-plan
@@ -291,7 +291,7 @@ jobs:
         retention-days: 7
   pr-gate:
     name: pr-gate
-    if: ${{ always() && !(github.event.pull_request.head.repo.full_name == github.repository && ((startsWith(github.head_ref, 'mergify/merge-queue/') && github.event.pull_request.user.login == 'mergify[bot]' && github.event.pull_request.user.id == 37929162) || contains(github.event.pull_request.labels.*.name, 'gate-canary'))) }}
+    if: ${{ !cancelled() && !(github.event.pull_request.head.repo.full_name == github.repository && ((startsWith(github.head_ref, 'mergify/merge-queue/') && github.event.pull_request.user.login == 'mergify[bot]' && github.event.pull_request.user.id == 37929162) || contains(github.event.pull_request.labels.*.name, 'gate-canary'))) }}
     needs:
     - plan
     - shards
@@ -341,7 +341,7 @@ jobs:
         retention-days: 7
   gate:
     name: gate
-    if: ${{ always() && github.event.pull_request.head.repo.full_name == github.repository && ((startsWith(github.head_ref, 'mergify/merge-queue/') && github.event.pull_request.user.login == 'mergify[bot]' && github.event.pull_request.user.id == 37929162) || contains(github.event.pull_request.labels.*.name, 'gate-canary')) }}
+    if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository && ((startsWith(github.head_ref, 'mergify/merge-queue/') && github.event.pull_request.user.login == 'mergify[bot]' && github.event.pull_request.user.id == 37929162) || contains(github.event.pull_request.labels.*.name, 'gate-canary')) }}
     needs:
     - plan
     - shards
