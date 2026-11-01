@@ -169,6 +169,22 @@ jobs:
         esac
         echo "$marker: shard ${{ matrix.index }}, attempt 1" | tee -a "$GITHUB_STEP_SUMMARY"
         exit "$code"
+    - name: Temporary canary fault, first workflow attempt only
+      if: ${{ success() && matrix.index == 0 && github.run_attempt == 1 && contains(github.event.pull_request.labels.*.name, 'gate-canary') }}
+      shell: bash
+      run: |
+        python - <<'PYTHON'
+        import json
+        from pathlib import Path
+        path = Path('gate-artifacts/result.json')
+        result = json.loads(path.read_text())
+        assert result['verdict'] == 'pass'
+        result.update(verdict='fail', pytest_exit_code=1,
+                      canary_failure='Deliberate shard failure to qualify Re-run failed jobs')
+        path.write_text(json.dumps(result) + '\n')
+        print('GATE_TEST_FAILURE: deliberate rerun canary, shard 0, workflow attempt 1')
+        PYTHON
+        exit 1
     - name: Upload verdict and JUnit
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
