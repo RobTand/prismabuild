@@ -6,6 +6,7 @@ import base64
 import configparser
 import csv
 from email.parser import BytesParser
+import importlib.metadata
 import io
 import json
 import os
@@ -31,14 +32,33 @@ def candidate_version(candidate: str, metadata: dict) -> str:
     return version
 
 
+class _EntryPointsText(importlib.metadata.Distribution):
+    """An entry_points.txt read the way importlib.metadata, and so pip, reads it."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def read_text(self, filename: str) -> str | None:
+        return self._text if filename == "entry_points.txt" else None
+
+    def locate_file(self, path):
+        return path
+
+
 def console_script(entry_points: str) -> str | None:
     """The target of the ``prismabuild`` command in ``[console_scripts]``, if any.
 
-    Only that group installs a command. A malformed file or a duplicated name
-    has no trustworthy target. Installers read the file without ConfigParser's
-    [DEFAULT] inheritance, so no section name may act as the default: a header
-    is one line and can never be a newline.
+    Only that group installs a command. Installers read the file with different
+    parsers, so both must find exactly one directly declared target:
+    importlib.metadata's line reader (used by pip), and a strict ConfigParser
+    that rejects duplicates. ConfigParser's [DEFAULT] inheritance is disabled
+    with a default section name no header can declare: a header is one line.
     """
+    try:
+        installed = [entry.value for entry in _EntryPointsText(entry_points).entry_points
+                     if entry.group == "console_scripts" and entry.name == "prismabuild"]
+    except (TypeError, ValueError):
+        return None
     parser = configparser.ConfigParser(interpolation=None, delimiters=("=",), default_section="\n")
     parser.optionxform = str
     try:
@@ -47,7 +67,8 @@ def console_script(entry_points: str) -> str | None:
         return None
     if not parser.has_option("console_scripts", "prismabuild"):
         return None
-    return parser.get("console_scripts", "prismabuild").strip()
+    target = parser.get("console_scripts", "prismabuild").strip()
+    return target if installed == [target] else None
 
 
 def validate_wheel(wheel: Path, version: str) -> dict:
