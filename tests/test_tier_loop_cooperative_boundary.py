@@ -20,6 +20,14 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def cycle_interval_is_restored():
+    """Check process state after the test and its monkeypatches finish."""
+    previous = tier_loop.CYCLE_INTERVAL_S
+    yield
+    assert tier_loop.CYCLE_INTERVAL_S == previous
+
+
 @pytest.fixture
 def scope(tmp_path, monkeypatch):
     gate = tmp_path / "maintenance.json"
