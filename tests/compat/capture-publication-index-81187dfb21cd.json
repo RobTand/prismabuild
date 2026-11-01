@@ -1,0 +1,35 @@
+{
+  "capture_name": "publication-index-capture-81187dfb21cd-01",
+  "capture_report_sha256": "1ad2f698f185b5f9405d948d93d40feef10d59e2a8bf94a7311fa748fe749618",
+  "excluded_cases": [],
+  "files": {
+    "absent-participants-publication-index-81187dfb21cd.jsonl": "ea183c88e9f9baecb15971cffd9ba898dabfcc3749cc666c48f42dd777a63d60",
+    "goldens-publication-index-81187dfb21cd.jsonl": "58029617c87bb1fcb72e3c31e72226f159ec275dc20b09b1b0b8e35e6a7a7ccc"
+  },
+  "finished_at": "2026-10-26T18:38:53.008803+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "independent_writer_reproduction_required": true,
+  "retained_failures": [],
+  "selected_cases": [
+    "publication-index/bucket-coverage",
+    "publication-index/leaf",
+    "publication-index/namespace-coverage"
+  ],
+  "source_git": {
+    "parents": [
+      "81187dfb21cd96e5055091bfb554a237611b9508"
+    ],
+    "snapshot": "e1155396c88bbd2f1e0a480d113ba911100e95b6",
+    "tree": "0d5ea782c6d24b0160b812bd6817579398ae853d"
+  },
+  "started_at": "2026-10-26T18:38:45.713513+00:00",
+  "verified_producer": {
+    "action_key": "a37efd2db8f2b59781c8ef9dab932d4a06ba16329b53da577821310300b7a744",
+    "receipt_sha256": "7fb59bc28776c722d67f72b0e815ff60ba1ac2d811e172d331b2367171c7696a",
+    "request_sha256": "cba6259ee78ee911a9ff3529d78e47eac76b454253e6c13601b8c8d90f5e7d93",
+    "source_parent": "81187dfb21cd96e5055091bfb554a237611b9508"
+  }
+}

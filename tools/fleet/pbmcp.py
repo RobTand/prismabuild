@@ -1258,13 +1258,10 @@ class Session:
         from, the box it submitted on, or the keys it already holds -- and
         this says so rather than pretending to a filter it cannot honour.
 
-        The window is bounded before anything is filtered.  Terminal records
-        number in the thousands on the live queue, and filtering by a field
-        inside the record means reading it, so the newest ``limit`` by
-        modification time are selected by ``stat`` first.  ``scanned`` and
-        ``truncated`` are returned for that reason: a key that is not in the
-        answer may be a key that is not yours, or a key older than the window,
-        and a caller must be able to tell those apart.
+        Exact publication metadata and age address advisory candidates before
+        canonical reads. Explicit keys bypass candidate discovery. Unfiltered
+        listings retain the recent-terminal window. Incomplete discovery never
+        establishes absence.
         """
 
         wanted_states = [str(one) for one in (states or STATES)]
@@ -1274,13 +1271,23 @@ class Session:
                             states=list(STATES))
         limit = max(0, int(limit))
         selected = [_valid_prefix(one) for one in (keys or ())]
+        now = time.time()
+        facets = {name: value for name, value in {
+            "checkout_root": checkout_root, "snapshot_parent": snapshot_parent,
+            "snapshot_commit": snapshot_commit, "published_by": published_by,
+        }.items() if value is not None}
         scan = call.read(
             "actions",
             lambda: _scan_actions(self.queue_root, states=wanted_states,
-                                  keys=selected, limit=limit))
+                                  keys=selected, limit=limit, facets=facets,
+                                  published_after=(None if max_age_s is None
+                                                   else now - float(max_age_s))))
         returned = None
         if scan is not None:
-            now = time.time()
+            for reason in scan.get("discovery", {}).get("reasons", ()):
+                call.unavailable.append({"section": "actions",
+                                         "type": "CandidateDiscoveryIncomplete",
+                                         "error": reason})
             kept = [row for row in (scan.get("rows") or [])
                     if _matches(row, tags=tags, priority_min=priority_min,
                                 priority_max=priority_max,
@@ -1299,6 +1306,7 @@ class Session:
             "returned": None if returned is None else len(returned),
             "limit": limit,
             "truncated": scan.get("truncated"),
+            "discovery": scan.get("discovery"),
             "filter": {
                 "states": wanted_states, "tags": list(tags or []),
                 "priority_min": priority_min, "priority_max": priority_max,
@@ -1886,7 +1894,9 @@ def _without_admission_samples(value):
 
 
 def _scan_actions(queue_root: Path, *, states: Sequence[str],
-                  keys: Sequence[str], limit: int) -> dict:
+                  keys: Sequence[str], limit: int,
+                  facets: Mapping[str, str] | None = None,
+                  published_after: float | None = None) -> dict:
     """Rows for a bounded window of the queue, read before anything is filtered.
 
     The window is chosen by ``stat`` and only then read.  Terminal records
@@ -1914,6 +1924,11 @@ def _scan_actions(queue_root: Path, *, states: Sequence[str],
                         scanned += 1
                         rows.append(_row(state, record, now))
         return {"rows": rows, "scanned": scanned, "truncated": False}
+    if facets or published_after is not None:
+        return _scan_publication_candidates(root, states=states,
+                                             facets=facets or {},
+                                             published_after=published_after,
+                                             now=now)
     for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         if state not in states:
             continue
@@ -1936,6 +1951,60 @@ def _scan_actions(queue_root: Path, *, states: Sequence[str],
             if record is not None:
                 rows.append(_row(path.parent.name, record, now))
     return {"rows": rows, "scanned": scanned, "truncated": truncated}
+
+
+ACTION_CANDIDATE_ENTRIES = 256
+ACTION_CANDIDATE_PAGES = 32
+ACTION_CANONICAL_READS = 256
+
+
+def _scan_publication_candidates(root: Path, *, states: Sequence[str],
+                                  facets: Mapping[str, str],
+                                  published_after: float | None,
+                                  now: float) -> dict:
+    store = pool.record_store.RecordStore(root)
+    capture = store.publication_candidates(
+        facets=facets, published_after=published_after,
+        max_entries=ACTION_CANDIDATE_ENTRIES, max_pages=ACTION_CANDIDATE_PAGES)
+    generations: dict[str, set[float]] = {}
+    for candidate in capture.candidates:
+        generations.setdefault(candidate.action_key, set()).add(candidate.published_unix)
+    rows = []
+    scanned = reads = 0
+    reasons = list(capture.reasons)
+    exhausted = False
+    for key, publications in generations.items():
+        for state in states:
+            if reads >= ACTION_CANONICAL_READS:
+                reasons.append("canonical-read-budget-exhausted")
+                exhausted = True
+                break
+            reads += 1
+            result = store.inspection_slot_result(state, key)
+            if isinstance(result, pool.record_store.Unknown):
+                reasons.append("canonical-record-unreadable")
+                continue
+            if isinstance(result, pool.record_store.Absent):
+                continue
+            record = result.value
+            scanned += 1
+            if record.get("action_key") != key:
+                reasons.append("candidate-key-mismatch")
+                continue
+            published = record.get("published_unix")
+            if type(published) not in (int, float) or published not in publications:
+                reasons.append("candidate-generation-changed")
+                continue
+            rows.append(_row(state, record, now))
+        if exhausted:
+            break
+    complete = capture.complete and not reasons
+    return {"rows": rows, "scanned": scanned, "truncated": not complete,
+            "discovery": {"source": "publication-index-v1", "complete": complete,
+                          "reasons": list(dict.fromkeys(reasons)),
+                          "entries_consumed": capture.entries_consumed,
+                          "pages_consumed": capture.pages_consumed,
+                          "canonical_reads": reads}}
 
 
 def _row(state: str, record: Mapping[str, object], now: float) -> dict:
@@ -2129,8 +2198,10 @@ TOOLS: tuple[dict, ...] = (
                          "description": "Explicit action keys or prefixes; "
                                         "bypasses the newest-N window."},
                 "limit": {"type": "integer", "minimum": 0,
-                          "description": "Maximum rows, and the size of the "
-                                         "newest-first window scanned."},
+                          "description": "Maximum returned rows. Unfiltered "
+                                         "listings also use it as the recent "
+                                         "terminal window; indexed discovery "
+                                         "has independent fixed work budgets."},
             },
             "additionalProperties": False,
         },
