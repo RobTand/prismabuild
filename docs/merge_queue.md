@@ -25,6 +25,9 @@ cheap first check, not a substitute.
   the queue.
 - Remove the `queue` label to take the pull request out of the queue.
 - Add `release` as well to use the release queue, which is served first.
+- The comment commands `@mergifyio queue` and `@mergifyio requeue` also work, for
+  people with write permission and for TL3's GitHub App (`tl3-robtand[bot]`),
+  which requeues its own pull requests after a dequeue.
 
 ## What happens in the queue
 
