@@ -20,6 +20,14 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def cycle_interval_is_restored():
+    """Check process state after the test and its monkeypatches finish."""
+    previous = tier_loop.CYCLE_INTERVAL_S
+    yield
+    assert tier_loop.CYCLE_INTERVAL_S == previous
+
+
 @pytest.fixture
 def scope(tmp_path, monkeypatch):
     gate = tmp_path / "maintenance.json"
@@ -61,8 +69,10 @@ def scope(tmp_path, monkeypatch):
     monkeypatch.setattr(tier_loop, "_start", start)
     monkeypatch.setattr(tier_loop, "tier_cycle_line", lambda *args: {"event": "cycle-final"})
     monkeypatch.setattr(tier_loop, "cycle", lambda *args, **kwargs: events.append("cycle") or [])
-    return SimpleNamespace(gate=gate, parked=parked, args=args, events=events,
-                           root=tmp_path, Queue=Queue, Records=Records, published=published)
+    with pytest.MonkeyPatch.context() as interval:
+        interval.setattr(tier_loop, "CYCLE_INTERVAL_S", args.interval_s)
+        yield SimpleNamespace(gate=gate, parked=parked, args=args, events=events,
+                              root=tmp_path, Queue=Queue, Records=Records, published=published)
 
 
 def close(scope, epoch=101.5):
