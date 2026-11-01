@@ -6,6 +6,7 @@ name: Merge gate
     types: [opened, synchronize, reopened]
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: merge-gate-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -31,6 +32,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
+      artifact_attempt: ${{ github.run_attempt }}
       matrix: ${{ steps.plan.outputs.matrix }}
       shards: ${{ steps.plan.outputs.shards }}
       compatible: ${{ steps.head-contract.outputs.compatible }}
@@ -120,7 +122,7 @@ jobs:
         persist-credentials: false
     - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
       with:
-        name: gate-plan-${{ github.run_attempt }}
+        name: gate-plan-${{ needs.plan.outputs.artifact_attempt }}
         path: gate-artifacts
     - name: Compute assignment before setup
       shell: bash
@@ -197,21 +199,30 @@ jobs:
         sparse-checkout: tools/ci
     - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
       with:
-        name: gate-plan-${{ github.run_attempt }}
+        name: gate-plan-${{ needs.plan.outputs.artifact_attempt }}
         path: gate-artifacts
     - name: Download first attempt verdicts
       continue-on-error: true
       uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
       with:
-        pattern: gate-result-${{ github.run_attempt }}-a1-*
+        pattern: gate-result-*-a1-*
         path: verdicts
+    - name: Read workflow job execution lineage
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+      with:
+        script: |
+          const fs = require('fs');
+          const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+            ...context.repo, run_id: context.runId, filter: 'all', per_page: 100,
+          });
+          fs.writeFileSync('gate-artifacts/jobs.json', JSON.stringify(jobs));
     - name: Retry only missing verdicts
       id: retry
       shell: bash
       run: |
         set -Eeuo pipefail
         trap 'echo "NO_VERDICT: retry planning infrastructure failed"; exit 75' ERR
-        python3 tools/ci/gate_actions.py retries --plan gate-artifacts/plan.json             --matrix gate-artifacts/job-matrix.json --artifacts verdicts             --prefix gate-result-${{ github.run_attempt }} --output gate-artifacts/retry-matrix.json             >> "$GITHUB_OUTPUT"
+        python3 tools/ci/gate_actions.py retries --plan gate-artifacts/plan.json             --matrix gate-artifacts/job-matrix.json --artifacts verdicts             --prefix gate-result --jobs gate-artifacts/jobs.json             --plan-attempt "${{ needs.plan.outputs.artifact_attempt }}" --workflow-attempt "$GITHUB_RUN_ATTEMPT" --output gate-artifacts/retry-matrix.json             >> "$GITHUB_OUTPUT"
   retry-shards:
     name: shard-${{ matrix.index }}-a2
     if: ${{ !cancelled() && needs.retry-plan.result == 'success' && needs.retry-plan.outputs.retry == 'true' }}
@@ -232,7 +243,7 @@ jobs:
         persist-credentials: false
     - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
       with:
-        name: gate-plan-${{ github.run_attempt }}
+        name: gate-plan-${{ needs.plan.outputs.artifact_attempt }}
         path: gate-artifacts
     - name: Compute assignment before setup
       shell: bash
@@ -321,17 +332,26 @@ jobs:
         sparse-checkout: tools/ci
     - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
       with:
-        name: gate-plan-${{ github.run_attempt }}
+        name: gate-plan-${{ needs.plan.outputs.artifact_attempt }}
         path: gate-artifacts
     - name: Download attempt verdicts
       continue-on-error: true
       uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
       with:
-        pattern: gate-result-${{ github.run_attempt }}-*
+        pattern: gate-result-*
         path: verdicts
+    - name: Read workflow job execution lineage
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+      with:
+        script: |
+          const fs = require('fs');
+          const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+            ...context.repo, run_id: context.runId, filter: 'all', per_page: 100,
+          });
+          fs.writeFileSync('gate-artifacts/jobs.json', JSON.stringify(jobs));
     - name: Aggregate complete coverage and final verdicts
       run: |
-        python3 tools/ci/gate_actions.py finish --plan gate-artifacts/plan.json             --matrix gate-artifacts/job-matrix.json --artifacts verdicts             --prefix gate-result-${{ github.run_attempt }} --output gate-artifacts/final.json             --effective-output gate-artifacts/effective --summary "$GITHUB_STEP_SUMMARY"
+        python3 tools/ci/gate_actions.py finish --plan gate-artifacts/plan.json             --matrix gate-artifacts/job-matrix.json --artifacts verdicts             --prefix gate-result --jobs gate-artifacts/jobs.json             --plan-attempt "${{ needs.plan.outputs.artifact_attempt }}" --workflow-attempt "$GITHUB_RUN_ATTEMPT" --output gate-artifacts/final.json             --effective-output gate-artifacts/effective --summary "$GITHUB_STEP_SUMMARY"
     - if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
@@ -371,17 +391,26 @@ jobs:
         sparse-checkout: tools/ci
     - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
       with:
-        name: gate-plan-${{ github.run_attempt }}
+        name: gate-plan-${{ needs.plan.outputs.artifact_attempt }}
         path: gate-artifacts
     - name: Download attempt verdicts
       continue-on-error: true
       uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
       with:
-        pattern: gate-result-${{ github.run_attempt }}-*
+        pattern: gate-result-*
         path: verdicts
+    - name: Read workflow job execution lineage
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+      with:
+        script: |
+          const fs = require('fs');
+          const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+            ...context.repo, run_id: context.runId, filter: 'all', per_page: 100,
+          });
+          fs.writeFileSync('gate-artifacts/jobs.json', JSON.stringify(jobs));
     - name: Aggregate complete coverage and final verdicts
       run: |
-        python3 tools/ci/gate_actions.py finish --plan gate-artifacts/plan.json             --matrix gate-artifacts/job-matrix.json --artifacts verdicts             --prefix gate-result-${{ github.run_attempt }} --output gate-artifacts/final.json             --effective-output gate-artifacts/effective --summary "$GITHUB_STEP_SUMMARY"
+        python3 tools/ci/gate_actions.py finish --plan gate-artifacts/plan.json             --matrix gate-artifacts/job-matrix.json --artifacts verdicts             --prefix gate-result --jobs gate-artifacts/jobs.json             --plan-attempt "${{ needs.plan.outputs.artifact_attempt }}" --workflow-attempt "$GITHUB_RUN_ATTEMPT" --output gate-artifacts/final.json             --effective-output gate-artifacts/effective --summary "$GITHUB_STEP_SUMMARY"
     - name: Audit shadow selection
       if: always()
       continue-on-error: true
