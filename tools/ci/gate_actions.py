@@ -7,6 +7,7 @@ from collections import Counter
 import importlib.util
 import json
 from pathlib import Path
+import re
 import shutil
 import sys
 
@@ -74,6 +75,52 @@ def _read_result(path):
         return None
 
 
+def workflow_artifacts(jobs, assignments, prefix, plan_attempt, workflow_attempt):
+    """Resolve inherited GitHub jobs to their actual immutable result artifacts."""
+    if (type(plan_attempt) is not int or type(workflow_attempt) is not int or
+            not 1 <= plan_attempt <= workflow_attempt or not isinstance(jobs, list)):
+        raise ValueError('workflow lineage requires a job list and positive ordered attempts')
+    executions = {}
+    indices = {row['index'] for row in assignments}
+    for job in jobs:
+        if not isinstance(job, dict):
+            raise ValueError('invalid workflow job inventory')
+        match = re.fullmatch(r'shard-(\d+)-a([12])', job.get('name', ''))
+        if not match:
+            continue
+        index, stage = map(int, match.groups())
+        attempt, started = job.get('run_attempt'), job.get('started_at')
+        if type(attempt) is not int or attempt < 1 or not isinstance(started, str) or not started:
+            raise ValueError('shard job is missing its execution identity')
+        if index not in indices or attempt > workflow_attempt:
+            continue
+        # GitHub gives inherited successful jobs new IDs/run_attempt values but
+        # preserves started_at. filter=all retains their original execution too.
+        identity = (index, stage, started)
+        if identity not in executions or attempt < executions[identity]['run_attempt']:
+            executions[identity] = job
+    latest = {}
+    for (index, stage, _), job in executions.items():
+        attempt = job['run_attempt']
+        if attempt < plan_attempt:
+            continue
+        key = (index, stage)
+        if key not in latest or attempt > latest[key]['run_attempt']:
+            latest[key] = job
+        elif attempt == latest[key]['run_attempt']:
+            raise ValueError('ambiguous duplicate shard execution in workflow inventory')
+    if any((index, 1) not in latest for index in indices):
+        raise ValueError('workflow job inventory does not cover every first-attempt shard')
+    sources = {index: {} for index in indices}
+    for index in indices:
+        first = latest[index, 1]['run_attempt']
+        for stage in (1, 2):
+            job = latest.get((index, stage))
+            if job and job['run_attempt'] >= first and job.get('status') == 'completed':
+                sources[index][stage] = f"{prefix}-{job['run_attempt']}-a{stage}-{index}"
+    return sources
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['retries', 'finish'])
@@ -82,6 +129,9 @@ def main(argv=None):
     parser.add_argument('--durations', type=Path, default=Path('tools/ci/gate_durations.json'))
     parser.add_argument('--artifacts', type=Path, required=True)
     parser.add_argument('--prefix', default='gate-result')
+    parser.add_argument('--jobs', type=Path, help='paginated REST filter=all workflow job inventory')
+    parser.add_argument('--plan-attempt', type=int)
+    parser.add_argument('--workflow-attempt', type=int)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--effective-output', type=Path)
     parser.add_argument('--summary', type=Path)
@@ -100,10 +150,19 @@ def main(argv=None):
         if (len(matrix['include']) != len(assignments) or
                 sorted(row['index'] for row in matrix['include']) != list(range(len(assignments)))):
             raise ValueError('matrix indices do not match the complete partition')
-        attempts = {attempt: {row['index']: _read_result(args.artifacts /
-                    f"{args.prefix}-a{attempt}-{row['index']}" / 'result.json') for row in assignments}
-                    for attempt in (1, 2)}
+        if args.jobs is not None:
+            sources = workflow_artifacts(json.loads(args.jobs.read_text()), assignments,
+                                         args.prefix, args.plan_attempt, args.workflow_attempt)
+        elif args.plan_attempt is not None or args.workflow_attempt is not None:
+            raise ValueError('workflow attempts require the complete job inventory')
+        else:
+            sources = {row['index']: {stage: f"{args.prefix}-a{stage}-{row['index']}"
+                                     for stage in (1, 2)} for row in assignments}
+        attempts = {stage: {index: _read_result(args.artifacts / names[stage] / 'result.json')
+                            for index, names in sources.items() if stage in names}
+                    for stage in (1, 2)}
         result = assess_attempts(plan, assignments, attempts)
+        result['artifact_sources'] = sources
         if args.command == 'retries':
             include = [row for row in matrix['include'] if row['index'] in result['retry_indices']]
             # Keep a valid nonempty expression even when the job's `if` skips the matrix.
@@ -115,7 +174,7 @@ def main(argv=None):
             return 0
         if args.effective_output:
             for index, attempt in result['effective_attempts'].items():
-                source = args.artifacts / f'{args.prefix}-a{attempt}-{index}'
+                source = args.artifacts / sources[index][attempt]
                 target = args.effective_output / str(index)
                 target.mkdir(parents=True, exist_ok=True)
                 for name in ('result.json', 'junit.xml'):
