@@ -46,7 +46,7 @@ jobs:
     name: pr-gate
     needs: runners
     if: >-
-      ${{ always() && !(github.event.pull_request.head.repo.full_name == github.repository &&
+      ${{ !cancelled() && !(github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.head_ref, 'mergify/merge-queue/') &&
       github.event.pull_request.user.login == 'mergify[bot]' &&
       github.event.pull_request.user.id == 37929162) &&
@@ -279,7 +279,7 @@ jobs:
           retention-days: 7
   retry-plan:
     name: Plan infrastructure retry
-    if: ${{ always() && needs.plan.result == 'success' }}
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     needs: [runners, plan, shards]
     runs-on: ${{ fromJSON(needs.runners.outputs.labels)[0] }}
     timeout-minutes: 10
@@ -314,7 +314,7 @@ jobs:
           python tools/ci/gate_actions.py retries --plan gate-artifacts/plan.json             --matrix gate-artifacts/job-matrix.json --artifacts verdicts             --prefix gate-result-${{ github.run_attempt }} --output gate-artifacts/retry-matrix.json             >> "$GITHUB_OUTPUT"
   retry-shards:
     name: shard-${{ matrix.index }}-a2
-    if: ${{ always() && needs.retry-plan.result == 'success' && needs.retry-plan.outputs.retry == 'true' }}
+    if: ${{ !cancelled() && needs.retry-plan.result == 'success' && needs.retry-plan.outputs.retry == 'true' }}
     needs: [plan, retry-plan]
     continue-on-error: true
     strategy:
@@ -405,7 +405,7 @@ jobs:
   gate:
     name: gate
     if: >-
-      ${{ always() && github.event.pull_request.head.repo.full_name == github.repository &&
+      ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository &&
       ((startsWith(github.head_ref, 'mergify/merge-queue/') &&
       github.event.pull_request.user.login == 'mergify[bot]' &&
       github.event.pull_request.user.id == 37929162) ||
