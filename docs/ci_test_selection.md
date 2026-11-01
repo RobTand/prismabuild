@@ -355,10 +355,32 @@ measurement request was withdrawn from ready after `transition_busy` denials
 on both Sparks. The qualified 6.07% figure above remains the earlier measured
 sample and is not generalized to the new scratch layout.
 
+## Final contract qualification
+
+The final 25-contract suite passed five times on x86 and five times on ARM,
+including two xdist runs per architecture. Every run used a distinct action key.
+All ten terminal records report successful execution. CAS receipts and stdout
+hashes were verified, and each report collected the same 25 contracts.
+
+| Architecture | Repeat | Workers | Action key |
+| --- | --- | ---: | --- |
+| x86 | 0 | 2 | `7e70a9439a8245850a96867c0386fabc857cf6516da1d3551a8e4935ded5b309` |
+| x86 | 1 | 2 | `7a360efa4b066128582215922308e1a72c0c8013361c2bbcc49fbc15151b21f8` |
+| x86 | 2 | 1 | `2d78dbb5d12ac671a3a80bd1ef7ed9bc02a0bd8fb2d4457554a05d59834a8054` |
+| x86 | 3 | 1 | `1e9e627ab828d142e6282c138bd14cffd015d8e4e0f2535972cc7ec8591a2efb` |
+| x86 | 4 | 1 | `09893793625ee68c5f8cc8a889bcca59ded153e4881114ba94fb59b255250f5e` |
+| ARM | 0 | 2 | `d0161f63d283a4fdb4187b67f601f5d4e3e4a1897767c9468ee5a29d7a866567` |
+| ARM | 1 | 2 | `1508409f525109192c213098dc0d556a39bab15dbc4f88c811c42a5c6565d108` |
+| ARM | 2 | 1 | `b39bb1eceafa8f2e776d7a8870824dfe2e298f72545e74e754060de1f324c526` |
+| ARM | 3 | 1 | `fc7dbd9145b0c811c58e8cb732faff6ef64ac6023e1bdb0fc47d80859ca13c0b` |
+| ARM | 4 | 1 | `f07bfc2a229e7bb943d3007e32fafe7db215cb25bc52286d9ae4d9e5468d5709` |
+
+These runs qualify the final contract suite. Mutation acceptance remains open.
+
 ## Mutation acceptance remains open
 
-Mutation acceptance is still in progress. The current evidence contains 30 valid,
-receipt-backed comparisons: static killed 26, TIA killed 27, and 0 were
+Mutation acceptance is still in progress. The collection at 00:56 UTC contains 33 valid,
+receipt-backed comparisons: static killed 29, TIA killed 30, and 0 were
 static-killed/TIA-survived misses. The required minimum of 100 valid comparisons
 is not yet established.
 
