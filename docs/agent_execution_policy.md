@@ -1,11 +1,17 @@
 # Agent execution through PrismaBuild
 
-Agents and subagents run their tests and computational work through
-PrismaBuild (Rob, 2026-09-05, amended 2026-10-29): targeted tests, full suites,
-GPU jobs, benchmarks, and large or long-running compute. This applies across
-projects and hosts, including work inside containers. The coordinator
-submits; a worker executes after admission. Tests and subprocesses already
-inside an admitted action do not submit themselves recursively.
+Agents and subagents follow Rob's routing policy (2026-09-05, amended
+2026-10-29 and 2026-11-01). Tests that run on free remote compute, BuildBuddy
+(Remote Bazel and remote execution) or GitHub-hosted CI, need not go through
+PrismaBuild. PrismaBuild is reserved for exploratory work (experiments,
+trials, benchmarks, GPU work) and for placing CPU work that runs on fleet
+machines onto the machines with capacity. Work that runs on a fleet machine
+still goes through PrismaBuild; do not run test suites directly on fleet hosts
+outside it. This applies across projects and hosts, including work inside
+containers. The coordinator submits; a worker executes after admission. Tests
+and subprocesses already inside an admitted action do not submit themselves
+recursively. Verify remote runs the same way: read the run's own verdict and
+logs, since an acknowledgement is not a pass.
 
 PrismaBuild is not the CI system. CI runs as GitHub Actions checks on
 GitHub-hosted runners, and pull requests merge through the Mergify queue,
