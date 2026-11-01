@@ -48,8 +48,11 @@ and [target-workflow security guide](https://docs.github.com/en/actions/referenc
 
 To replay a saved API input inside an admitted PrismaBuild action, run
 `python3 tools/ci/check_regression_test.py /path/to/input.json`. The input has
-`pull` metadata and the complete `files` list. Candidate test files include
-`before` and `after` text. Exit 0 accepts, exit 1 rejects missing coverage, and
+`pull` metadata, `current` metadata re-read after the files were gathered, and
+the complete `files` list. A `current` that differs from `pull` in head SHA, base
+SHA, title, body or fix-verdict labels exits 1 with "PR changed while gathering
+evidence"; a missing `current` exits 2. Candidate test files include `before`
+and `after` text. Exit 0 accepts, exit 1 rejects missing coverage, and
 exit 2 rejects invalid input. The JSON verdict names qualifying tests.
 
 Keep an observation table on PRI-8 with PR URL, head SHA, workflow run URL,
