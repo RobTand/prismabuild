@@ -379,8 +379,8 @@ These runs qualify the final contract suite. Mutation acceptance remains open.
 
 ## Mutation acceptance remains open
 
-Mutation acceptance is still in progress. The collection at 00:56 UTC contains 33 valid,
-receipt-backed comparisons: static killed 29, TIA killed 30, and 0 were
+Mutation acceptance is still in progress. The collection at 01:51 UTC contains 53 valid,
+receipt-backed comparisons: static killed 48, TIA killed 49, and 0 were
 static-killed/TIA-survived misses. The required minimum of 100 valid comparisons
 is not yet established.
 
@@ -514,6 +514,16 @@ bounds. The newline-delimited withdrawn-key ledger has SHA-256
 `05dd40125bbeadc6a088608581a8399a72830a528c1e84a5b1812b26948be150`.
 At the pause, 30 valid comparisons supplied 90 completed arms. Two more arms
 completed in an excluded timeout row. Running arms are not counted as complete.
+
+By 01:51 UTC, all 23 V5 rows left running had completed successfully. Together
+with V4, these provide 53 valid comparisons and 159 completed valid arms.
+The 66 withdrawn keys remain unchanged. Each V5 controller part returned 1
+because its manifest includes withdrawn work. This controller status does not
+turn successful action results into failures. There are no new failed actions.
+TIA selected the same number of files as static in 51 comparisons and more
+files in two. The four mutations both selections survived are
+`bench_claim_pass.build_and_poll`, `updater_proof.last_proof`,
+`updater_proof.tool_sha256`, and `admission_shared_io.git_head`.
 
 The exact keys withdrawn for this pause are below. Ordinals refer to the
 frozen 120-mutation sample.
