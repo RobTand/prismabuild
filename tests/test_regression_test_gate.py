@@ -19,7 +19,8 @@ SPEC.loader.exec_module(gate)
 
 def pull(title="fix: repair claim ownership", *, labels=(), count=1, body="Change type: feature"):
     return {"title": title, "labels": [{"name": name} for name in labels],
-            "body": body, "changed_files": count}
+            "body": body, "changed_files": count,
+            "head": {"sha": "head"}, "base": {"sha": "base"}}
 
 
 def test_change(before="", after="def test_claim():\n    assert claim() == 'owned'\n", **fields):
@@ -131,12 +132,12 @@ def test_incomplete_or_api_limited_inventory_is_not_a_pass():
 
 def test_cli_returns_json_and_rejects_invalid_input(tmp_path):
     payload = tmp_path / "input.json"
-    payload.write_text(json.dumps({"pull": pull(), "files": [test_change()]}))
+    payload.write_text(json.dumps({"pull": pull(), "current": pull(), "files": [test_change()]}))
     command = [sys.executable, str(ROOT / "tools/ci/check_regression_test.py"), str(payload)]
     done = subprocess.run(command, capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout)["tests"] == ["tests/test_claim.py::test_claim"]
-    payload.write_text(json.dumps({"pull": pull(), "files": []}))
+    payload.write_text(json.dumps({"pull": pull(), "current": pull(), "files": []}))
     denied = subprocess.run(command, capture_output=True, text=True)
     assert denied.returncode == 1
     assert not json.loads(denied.stdout)["allowed"]
@@ -222,3 +223,167 @@ def test_merge_queue_lookalikes_still_require_change_type(location, field, value
     verdict = gate.check_pull_request(subject, [])
     assert not verdict.allowed
     assert "Declare exactly one Change type:" in verdict.reason
+
+
+def _node_outcome(tmp_path, monkeypatch, github_actions):
+    """Run the workflow adapter helper with no `node` on PATH and report how it ended."""
+    monkeypatch.setenv('PATH', str(tmp_path))
+    if github_actions is None:
+        monkeypatch.delenv('GITHUB_ACTIONS', raising=False)
+    else:
+        monkeypatch.setenv('GITHUB_ACTIONS', github_actions)
+    try:
+        run_regression_workflow_snapshot(tmp_path, [], {})
+    except pytest.skip.Exception:
+        return 'skipped'
+    except pytest.fail.Exception:
+        return 'failed'
+    return 'ran'
+
+
+def test_missing_node_fails_on_github_actions(tmp_path, monkeypatch):
+    assert _node_outcome(tmp_path, monkeypatch, 'true') == 'failed'
+
+
+@pytest.mark.parametrize('github_actions', [None, '', 'false'])
+def test_missing_node_skips_off_github_actions(tmp_path, monkeypatch, github_actions):
+    assert _node_outcome(tmp_path, monkeypatch, github_actions) == 'skipped'
+
+
+def run_regression_workflow_snapshot(tmp_path, labels, current_changes):
+    """Drive the shipped github-script against two deterministic REST snapshots."""
+    import os
+    import shutil
+    import yaml
+    if not shutil.which('node'):
+        # Hosted CI must run these cases: the merge gate does not fail on skips.
+        if os.environ.get('GITHUB_ACTIONS') == 'true':
+            pytest.fail('Node.js is required on GitHub Actions to exercise the workflow adapter')
+        pytest.skip('Node.js unavailable; hosted CI exercises the workflow adapter')
+    workflow = yaml.safe_load((ROOT / '.github/workflows/regression-test.yml').read_text())
+    script = workflow['jobs']['regression-test']['steps'][0]['with']['script']
+    before = {**pull('Add control', labels=labels, count=0),
+              'head': {'sha': 'head'}, 'base': {'sha': 'base'}}
+    current = {**before, **current_changes}
+    payload = tmp_path / 'snapshots.json'
+    payload.write_text(json.dumps({'script': script, 'before': before, 'current': current,
+                                  'helper': (ROOT / 'tools/ci/check_regression_test.py').read_text()}))
+    driver = r'''
+const fs = require('fs');
+const cp = require('child_process');
+const input = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const failures = [], messages = [];
+let reads = 0;
+const github = {
+  rest: {
+    pulls: {get: async () => ({data: reads++ ? input.current : input.before}), listFiles: 'files'},
+    repos: {
+      getContent: async () => ({data: {type: 'file', encoding: 'base64', size: input.helper.length,
+                                      content: Buffer.from(input.helper).toString('base64')}}),
+      compareCommitsWithBasehead: async () => ({data: {merge_base_commit: {sha: 'merge'}}}),
+    },
+  },
+  paginate: async () => [],
+};
+const core = {setFailed: text => failures.push(text), info: text => messages.push(text)};
+const exec = {getExecOutput: async (command, args) => {
+  const result = cp.spawnSync(command, args, {encoding: 'utf8'});
+  if (result.error) throw result.error;
+  return {exitCode: result.status, stdout: result.stdout, stderr: result.stderr};
+}};
+const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+new AsyncFunction('require', 'context', 'github', 'core', 'exec', input.script)(
+  require, {repo: {owner: 'example', repo: 'pb'}, payload: {pull_request: {number: 1}}},
+  github, core, exec).then(() => console.log(JSON.stringify({failures, messages}))).catch(error => {
+    console.error(error); process.exitCode = 1;
+  });
+'''
+    result = subprocess.run(['node', '-e', driver, str(payload)], capture_output=True, text=True,
+                            env={**os.environ, 'RUNNER_TEMP': str(tmp_path)}, timeout=60)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+@pytest.mark.parametrize('label', ['queue', 'queued', 'dequeued', 'tl3-queue'])
+def test_queue_only_label_change_does_not_invalidate_gathered_evidence(tmp_path, label):
+    result = run_regression_workflow_snapshot(tmp_path, [], {'labels': [{'name': label}]})
+    assert result['failures'] == [], 'queue-only change must not invalidate regression evidence'
+
+
+@pytest.mark.parametrize('labels,current', [
+    (['queue', 'bug'], [{'name': 'bug', 'color': 'new'}]),
+    (['bug', 'fix'], [{'name': ' FIX '}, {'name': 'BUG'}]),
+])
+def test_label_order_cosmetics_and_normalisation_do_not_invalidate_evidence(tmp_path, labels, current):
+    # No test diff is present, so a fix verdict must still be rejected for coverage,
+    # rather than incorrectly rejected as a metadata race.
+    result = run_regression_workflow_snapshot(tmp_path, labels, {'labels': current})
+    assert len(result['failures']) == 1
+    assert 'requires an added or modified Python test' in ''.join(result['messages'])
+
+
+@pytest.mark.parametrize('label', sorted(gate._FIX_LABELS))
+@pytest.mark.parametrize('remove', [False, True])
+def test_verdict_label_addition_or_removal_invalidates_gathered_evidence(tmp_path, label, remove):
+    result = run_regression_workflow_snapshot(tmp_path, [label] if remove else [],
+        {'labels': [] if remove else [{'name': label}]})
+    assert result['failures']
+    assert 'PR changed while gathering evidence' in ''.join(result['messages'] + result['failures'])
+
+
+@pytest.mark.parametrize('field,value', [
+    ('head', {'sha': 'new-head'}), ('base', {'sha': 'new-base'}),
+    ('title', 'New title'), ('body', 'Change type: ci'),
+])
+def test_nonlabel_verdict_metadata_changes_still_invalidate_evidence(tmp_path, field, value):
+    result = run_regression_workflow_snapshot(tmp_path, [], {field: value})
+    assert result['failures']
+    assert 'PR changed while gathering evidence' in ''.join(result['messages'] + result['failures'])
+
+
+@pytest.mark.parametrize('field,value', [
+    ('head', {'sha': 'new-head'}), ('base', {'sha': 'new-base'}),
+    ('title', 'New title'), ('body', 'Change type: ci'),
+])
+def test_python_evidence_rejects_nonlabel_verdict_metadata_changes(field, value):
+    before = pull('Add a control')
+    assert gate.regression_evidence_matches(before, {**before, field: value}) is False
+
+
+def write_replay_input(tmp_path, **fields):
+    payload = tmp_path / 'input.json'
+    payload.write_text(json.dumps({'pull': pull('Add a control'), 'current': pull('Add a control'),
+                                  'files': [], **fields}))
+    return [sys.executable, str(ROOT / 'tools/ci/check_regression_test.py'), str(payload)]
+
+
+def test_cli_rejects_replay_when_current_differs_from_pull(tmp_path):
+    command = write_replay_input(tmp_path, current={**pull('Add a control'), 'title': 'Renamed'})
+    done = subprocess.run(command, capture_output=True, text=True)
+    assert done.returncode == 1, done.stderr
+    verdict = json.loads(done.stdout)
+    assert not verdict['allowed']
+    assert 'PR changed while gathering evidence' in verdict['reason']
+
+
+def test_cli_rejects_replay_input_without_current(tmp_path):
+    command = write_replay_input(tmp_path)
+    payload = Path(command[-1])
+    data = json.loads(payload.read_text())
+    del data['current']
+    payload.write_text(json.dumps(data))
+    done = subprocess.run(command, capture_output=True, text=True)
+    assert done.returncode == 2, done.stderr
+    assert not json.loads(done.stdout)['allowed']
+    assert 'invalid' in json.loads(done.stdout)['reason']
+
+
+@pytest.mark.parametrize('labels,current_labels,expected', [
+    ([], ['queue'], True), (['queue', 'bug'], [' BUG '], True),
+    ([], ['fix'], False), (['fix'], [], False),
+])
+def test_python_evidence_uses_the_same_label_semantics_as_fix_classification(labels, current_labels, expected):
+    before = pull('Add a control', labels=labels)
+    current = pull('Add a control', labels=current_labels)
+    assert gate.regression_evidence_matches(before, current) is expected
+    assert gate.is_fix(before) is ('bug' in labels or 'fix' in labels)
