@@ -423,8 +423,9 @@ census, a routing run, a benchmark against a live endpoint -- runs directly,
 including its GPU containers. That is Rob's ruling (2026-09-06, reaffirmed
 2026-09-07: "vllm is exempt. It can't run in prismabuild"), not a claim about
 what a wrapper could technically do -- a bounded action that starts vLLM can
-exit cleanly, and is exempt all the same. Work that does not run vLLM still
-submits, and a running vLLM remains external load for batch admission.
+exit cleanly, and is exempt all the same. Other work that the routing policy
+sends to PrismaBuild (anything on a fleet machine, and exploratory or GPU work)
+still submits, and a running vLLM remains external load for batch admission.
 `docs/agent_execution_policy.md` carries the full ruling.
 
 ## Fleet observation over MCP: `pbmcp.py`
