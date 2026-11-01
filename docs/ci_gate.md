@@ -535,6 +535,22 @@ artifact execution lineage remain unchanged. Fork approval, same-repository
 full-run authentication, permissions and disabled credential persistence also
 stay unchanged. No queue rule or TL3 onboarding condition changes.
 
+
+Qualification for #2536 compared complete head-based and merge-based plans on
+up-to-date PR #2540 in hosted run `41340261043`: all 1,267 selected files,
+reasons, exclusions and population identity matched after removing only SHA
+metadata. A temporary branch from before #2519, head `19a95138`, then passed
+ordinary `pr-gate` without merging main in run `41340306745`, selecting 178 files
+from merge `6f98deef` against its first parent. Switching that same unchanged
+head to an exact-head canary correctly failed the retained handshake in run
+`41340634897`; no setup or shards ran. The temporary PR was closed.
+
+Positive full canary `41340766257`, head `3a94f195`, retained its event head and
+base, covered all 1,267 files on eight x64 and eight arm64 shards, and passed
+with no retries and a clean shadow audit. Its observed workflow-to-gate wall
+time was 294 seconds, including runner pickup. The temporary comparison step
+and canary label were removed after capturing their artifacts.
+
 Selection summaries show counts, reason categories, the first 50 selected
 files and the first 50 exclusions. Long cells are abbreviated. Budget summaries
 show at most 25 warnings. The complete selection remains in `plan.json`, and
