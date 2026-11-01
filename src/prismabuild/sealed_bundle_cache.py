@@ -181,10 +181,10 @@ def _trim_bundle_cache(root: Path, *, reserve_bytes: int = 0, reserve_entries: i
 
 
 @contextmanager
-def _opened_bundle_cache_entry(root: Path, address: str):
+def _opened_bundle_cache_entry(root: Path, address: str, *, bounded_wait: bool = True):
     source, record = None, None
     try:
-        with _bundle_cache_lock(root / ".inventory", nonblocking=True, shared=True) as locked:
+        with _bundle_cache_lock(root / ".inventory", nonblocking=bounded_wait, shared=True) as locked:
             if locked is not None:
                 entry = root / address
                 record = _bundle_cache_record(entry, address)
@@ -205,11 +205,11 @@ def _opened_bundle_cache_entry(root: Path, address: str):
             source.close()
 
 
-def _reuse_bundle_cache(root: Path, address: str, destination: Path) -> bool:
+def _reuse_bundle_cache(root: Path, address: str, destination: Path, *, bounded_wait: bool = True) -> bool:
     """Copy from a pinned cache inode and verify outside the inventory lock."""
     temporary = None
     try:
-        with _opened_bundle_cache_entry(root, address) as opened:
+        with _opened_bundle_cache_entry(root, address, bounded_wait=bounded_wait) as opened:
             if opened is None:
                 return False
             source, record = opened
@@ -236,18 +236,18 @@ def _reuse_bundle_cache(root: Path, address: str, destination: Path) -> bool:
                 pass
 
 
-def _store_bundle_cache(root: Path, address: str, source: Path) -> None:
+def _store_bundle_cache(root: Path, address: str, source: Path, *, bounded_wait: bool = False) -> None:
     temporary, owner = None, None
     try:
         size = source.stat().st_size
         record = {"key": address, "sha256": digests.stream_sha256(source), "bytes": size}
         encoded = digests.sorted_json(record).encode("utf-8")
-        with _opened_bundle_cache_entry(root, address) as opened:
+        with _opened_bundle_cache_entry(root, address, bounded_wait=bounded_wait) as opened:
             if opened is not None:
                 existing, previous = opened
                 if previous == record and digests.stream_sha256(Path(f"/proc/self/fd/{existing.fileno()}")) == record["sha256"]:
                     return
-        with _bundle_cache_lock(root / ".inventory", nonblocking=True) as locked:
+        with _bundle_cache_lock(root / ".inventory", nonblocking=bounded_wait) as locked:
             if locked is None:
                 return
             if size + len(encoded) > MAX_BYTES:
@@ -267,7 +267,7 @@ def _store_bundle_cache(root: Path, address: str, source: Path) -> None:
             (temporary / "digest.json").write_bytes(encoded)
         with (temporary / "bundle").open("wb") as output, source.open("rb") as original:
             shutil.copyfileobj(original, output, length=1 << 20)
-        with _bundle_cache_lock(root / ".inventory", nonblocking=True) as locked:
+        with _bundle_cache_lock(root / ".inventory", nonblocking=bounded_wait) as locked:
             if locked is None:
                 return
             entry = root / address
@@ -312,8 +312,8 @@ def seal_bundle_cached(destination: Path, identity: Mapping[str, object],
         except (OSError, ValueError):
             pass
         with _bundle_cache_flight(root, address, bounded_wait=bounded_wait) as locked:
-            if locked and _reuse_bundle_cache(root, address, destination):
+            if locked and _reuse_bundle_cache(root, address, destination, bounded_wait=bounded_wait):
                 return
             seal()
             if locked and (unchanged is None or unchanged()):
-                _store_bundle_cache(root, address, destination)
+                _store_bundle_cache(root, address, destination, bounded_wait=bounded_wait)

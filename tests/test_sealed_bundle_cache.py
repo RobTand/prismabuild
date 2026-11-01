@@ -658,8 +658,8 @@ def test_hit_copy_releases_inventory_and_survives_eviction(sealing, monkeypatch)
     native_opened = cache_module._opened_bundle_cache_entry
 
     @contextmanager
-    def held_entry(*args):
-        with native_opened(*args) as opened:
+    def held_entry(*args, **kwargs):
+        with native_opened(*args, **kwargs) as opened:
             copying.set()
             release.wait()
             yield opened

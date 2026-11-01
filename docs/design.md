@@ -3992,11 +3992,18 @@ without the member or the ordinary package import boundary.
   the last user removes idle lock files. Dead owners are reaped using only
   cache-owned nonblocking locks. Warm hits need no per-address lock.
   Deadline callers bypass a contended miss lock.
-  Hits open metadata and payload descriptors under a nonblocking shared
-  inventory flock, then release it before copying and verification. Open
+  The first hit probe opens metadata and payload descriptors under a nonblocking
+  shared inventory flock. After taking the address lock, an ordinary caller
+  waits for that shared inventory lock before treating the entry as absent.
+  Both release inventory before copying and verification. Open
   descriptors survive eviction. Four warm deadline readers can all hit.
   Exclusive inventory locking covers only bookkeeping, space reservations,
-  trimming and publication; contention falls back to fresh sealing.
+  trimming and publication. Ordinary fillers wait for inventory reservation
+  and publication while retaining the address lock, so inventory contention
+  cannot discard a completed fill and cause an identical waiter to pack again
+  (#2525). Deadline callers retain nonblocking inventory and address locks,
+  with fresh-seal fallback on contention. A killed owner's flocks are released
+  by the kernel; the existing pending-owner probe reaps its abandoned staging.
   Each hit copies to a private destination-side file, computing one SHA-256
   over the chunks read from the pinned cache descriptor. It compares the copied
   length and digest with the record before atomically installing that same file.
