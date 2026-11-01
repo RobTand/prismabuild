@@ -371,11 +371,13 @@ def tooling_checkout(tmp_path):
     git('add', '.')
     git('commit', '-qm', 'Common tooling')
     base = git('rev-parse', 'HEAD')
+    # pb-history-ok: Switches only between branches created in this temporary fixture repository.
     git('switch', '-qc', 'pr-head')
     (repository / 'pr-change.txt').write_text('PR content stays at its head\n')
     git('add', '.')
     git('commit', '-qm', 'PR change without current target tooling')
     head = git('rev-parse', 'HEAD')
+    # pb-history-ok: Switches only between branches created in this temporary fixture repository.
     git('switch', '-q', 'target')
     return repository, git, base, head
 
@@ -411,8 +413,10 @@ def test_stale_pr_tooling_fails_before_setup_with_merge_main_message(tmp_path, t
         (directory / change).write_text('new target interface or policy\n')
     git('add', '-A')
     git('commit', '-qm', 'New tooling on target')
+    # pb-history-ok: Merges only commits constructed in this temporary fixture repository.
     git('merge', '--no-ff', '-qm', 'Workflow merge commit', 'pr-head')
     workflow_sha = git('rev-parse', 'HEAD')
+    # pb-history-ok: Switches only between branches created in this temporary fixture repository.
     git('switch', '-q', 'pr-head')
     run, output = execute_head_contract(tmp_path, repository, head, workflow_sha)
     assert run.returncode == 1, run.stdout + run.stderr
@@ -426,9 +430,11 @@ def test_unchanged_tooling_accepts_distinct_pr_and_merge_shas(tmp_path, tooling_
     (repository / 'target-change.txt').write_text('Unrelated target change\n')
     git('add', '.')
     git('commit', '-qm', 'Target change outside tooling')
+    # pb-history-ok: Merges only commits constructed in this temporary fixture repository.
     git('merge', '--no-ff', '-qm', 'Workflow merge commit', 'pr-head')
     workflow_sha = git('rev-parse', 'HEAD')
     assert workflow_sha != head
+    # pb-history-ok: Switches only between branches created in this temporary fixture repository.
     git('switch', '-q', 'pr-head')
     run, output = execute_head_contract(tmp_path, repository, head, workflow_sha)
     assert run.returncode == 0, run.stdout + run.stderr
@@ -438,7 +444,9 @@ def test_unchanged_tooling_accepts_distinct_pr_and_merge_shas(tmp_path, tooling_
 def test_unavailable_workflow_commit_is_infrastructure_not_incompatibility(tmp_path, tooling_checkout):
     repository, git, _, head = tooling_checkout
     # Missing immutable commit and an unavailable local remote. No network access.
+    # pb-history-ok: Configures a nonexistent local fixture remote; never reads project history.
     git('remote', 'add', 'origin', str(tmp_path / 'missing-remote'))
+    # pb-history-ok: Switches only between branches created in this temporary fixture repository.
     git('switch', '-q', 'pr-head')
     run, output = execute_head_contract(tmp_path, repository, head, '1' * 40)
     assert run.returncode == 75, run.stdout + run.stderr
@@ -467,11 +475,14 @@ def test_workflow_commit_is_fetched_by_sha_without_changing_pr_checkout(tmp_path
     (repository / 'target-only.txt').write_text('Target content outside gate tooling\n')
     git('add', '.')
     git('commit', '-qm', 'Target advances independently')
+    # pb-history-ok: Merges only commits constructed in this temporary fixture repository.
     git('merge', '--no-ff', '-qm', 'Workflow merge commit', 'pr-head')
     workflow_sha = git('rev-parse', 'HEAD')
     checkout = tmp_path / 'pr-checkout'
+    # pb-history-ok: Clones only the locally generated temporary fixture repository.
     git('clone', '-q', '--no-local', '--single-branch', '--branch', 'pr-head',
         str(repository), str(checkout))
+    # pb-history-ok: Inspects the generated fixture merge commit in its temporary clone.
     absent = subprocess.run(['git', 'cat-file', '-e', workflow_sha], cwd=checkout,
                             capture_output=True, check=False)
     assert absent.returncode != 0
@@ -479,11 +490,13 @@ def test_workflow_commit_is_fetched_by_sha_without_changing_pr_checkout(tmp_path
     assert run.returncode == 0, run.stdout + run.stderr
     assert output == 'compatible=true\n'
     assert git('rev-parse', 'HEAD', cwd=checkout) == head
+    # pb-history-ok: Reads the commit fetched exclusively from the temporary fixture repository.
     assert git('rev-parse', 'FETCH_HEAD', cwd=checkout) == workflow_sha
 
 
 def test_comparison_error_is_not_reported_as_stale_tooling(tmp_path, tooling_checkout):
     repository, git, _, head = tooling_checkout
+    # pb-history-ok: Switches only between branches created in this temporary fixture repository.
     git('switch', '-q', 'pr-head')
     run, output = execute_head_contract(tmp_path, repository, '1' * 40, head)
     assert run.returncode == 75, run.stdout + run.stderr
