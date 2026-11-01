@@ -225,6 +225,31 @@ def test_merge_queue_lookalikes_still_require_change_type(location, field, value
     assert "Declare exactly one Change type:" in verdict.reason
 
 
+def _node_outcome(tmp_path, monkeypatch, github_actions):
+    """Run the workflow adapter helper with no `node` on PATH and report how it ended."""
+    monkeypatch.setenv('PATH', str(tmp_path))
+    if github_actions is None:
+        monkeypatch.delenv('GITHUB_ACTIONS', raising=False)
+    else:
+        monkeypatch.setenv('GITHUB_ACTIONS', github_actions)
+    try:
+        run_regression_workflow_snapshot(tmp_path, [], {})
+    except pytest.skip.Exception:
+        return 'skipped'
+    except pytest.fail.Exception:
+        return 'failed'
+    return 'ran'
+
+
+def test_missing_node_fails_on_github_actions(tmp_path, monkeypatch):
+    assert _node_outcome(tmp_path, monkeypatch, 'true') == 'failed'
+
+
+@pytest.mark.parametrize('github_actions', [None, '', 'false'])
+def test_missing_node_skips_off_github_actions(tmp_path, monkeypatch, github_actions):
+    assert _node_outcome(tmp_path, monkeypatch, github_actions) == 'skipped'
+
+
 def run_regression_workflow_snapshot(tmp_path, labels, current_changes):
     """Drive the shipped github-script against two deterministic REST snapshots."""
     import shutil
