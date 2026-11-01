@@ -27,7 +27,7 @@ def statvfs_prelude(sample):
 
 
 HOST_PRELUDE = ""
-ISOLATED_PIN = ""
+ISOLATED_PIN = statvfs_prelude(AMPLE_SPACE)
 
 
 def isolated_prelude():
