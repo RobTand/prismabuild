@@ -26,6 +26,7 @@ from pathlib import Path
 import signal
 import subprocess
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -638,3 +639,112 @@ SCOPE = ("prismabuild-job" + "a" * 32 + ".slice", 1)
 def test_ownership_needs_owner_nonce_and_the_scope_when_scoped(labels, parent, scope, expected):
     row = {"Config": {"Labels": labels}, "HostConfig": {"CgroupParent": parent}}
     assert _shim_module()._owned_by_this_attempt(row, OWNER, scope, "n") is expected
+
+
+class _CreationRelay:
+    """Drive the real relay/stop with explicit client and daemon events.
+
+    Only OS boundaries are fake. Ownership, discovery, deadline accounting,
+    stop decisions and receipt writing still use the shim implementation.
+    """
+
+    def __init__(self, tmp_path, *, create_after_exit=False, query_times_out=False):
+        self.module = _shim_module()
+        self.tmp_path = tmp_path
+        self.now = 0.0
+        self.events = []
+        self.calls = []
+        self.handlers = {}
+        self.returncode = None
+        self.created = False
+        self.running = False
+        self.create_after_exit = create_after_exit
+        self.query_times_out = query_times_out
+        self.signalled = False
+        self.nonce = "a" * 32
+        self.module.time = SimpleNamespace(
+            monotonic=lambda: self.now, time=lambda: 1700000000 + self.now,
+            sleep=self.advance)
+        self.module.signal = SimpleNamespace(signal=self.arm, Signals=signal.Signals)
+        self.module.subprocess = SimpleNamespace(
+            Popen=lambda *a, **kw: self, run=self.query,
+            TimeoutExpired=subprocess.TimeoutExpired)
+
+    def arm(self, number, handler):
+        previous = self.handlers.get(number)
+        self.handlers[number] = handler
+        return previous
+
+    def poll(self):
+        if not self.signalled:
+            self.signalled = True
+            self.events.append("signal observed before creation")
+            self.handlers[signal.SIGTERM](signal.SIGTERM, None)
+        return self.returncode
+
+    def send_signal(self, number):
+        self.events.append("client exited")
+        self.returncode = -number
+
+    def advance(self, seconds):
+        self.now += seconds
+        if (self.create_after_exit and self.returncode is not None
+                and "empty discovery" in self.events and not self.created):
+            self.events.append("container created")
+            self.created = self.running = True
+
+    def query(self, argv, *, timeout, **kwargs):
+        verb = argv[1]
+        self.calls.append({"verb": verb, "argv": argv[1:]})
+        if verb == "ps":
+            assert self.returncode is not None, "discovery must follow client exit"
+            if self.query_times_out:
+                self.events.append("discovery deadline exhausted")
+                self.now += timeout
+                raise subprocess.TimeoutExpired(argv, timeout)
+            if not self.created:
+                self.events.append("empty discovery")
+            out = CID if self.created else ""
+        elif verb == "inspect":
+            assert self.created and argv[-1] == CID
+            out = json.dumps([{
+                "Config": {"Labels": {"prismabuild.action": OWNER,
+                                       "prismabuild.shim": self.nonce}},
+                "State": {"Running": self.running,
+                          "Status": "running" if self.running else "exited"},
+            }])
+        elif verb == "kill":
+            assert self.created and argv[-1] == CID
+            self.events.append("container stopped")
+            self.running = False
+            out = CID
+        else:
+            raise AssertionError(f"unexpected daemon operation: {argv}")
+        return SimpleNamespace(returncode=0, stdout=out, stderr="")
+
+    def run(self):
+        code = self.module._run_relayed(
+            "fake-docker", ["run", "example:image"], {}, owner=OWNER,
+            scope=None, global_options=[], nonce=self.nonce,
+            cidfile=self.tmp_path / "missing.cid",
+            receipt_path=self.tmp_path / "owner.used.stop-controlled.json")
+        (self.tmp_path / "state.json").write_text(json.dumps({"calls": self.calls}))
+        return code
+
+
+def test_discovery_starvation_reproduces_the_pre_creation_assertion(tmp_path):
+    relay = _CreationRelay(tmp_path, query_times_out=True)
+    assert relay.run() == 125
+    assert relay.events == ["signal observed before creation", "client exited",
+                            "discovery deadline exhausted"]
+    receipt = _receipts(tmp_path)[0]
+    assert receipt["outcome"] == "creation_unresolved"
+
+
+def test_discovery_starvation_reproduces_the_late_creation_assertion(tmp_path):
+    relay = _CreationRelay(tmp_path, create_after_exit=True, query_times_out=True)
+    assert relay.run() == 125
+    assert relay.events == ["signal observed before creation", "client exited",
+                            "discovery deadline exhausted"]
+    receipt = _receipts(tmp_path)[0]
+    assert receipt["container_id"] == CID
