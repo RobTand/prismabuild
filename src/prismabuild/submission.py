@@ -864,7 +864,7 @@ def write_deterministic_bundle(
 
     if git_version:
         sealed_bundle_cache.seal_bundle_cached(bundle, identity, seal,
-            bounded_wait=deadline is not None, unchanged=inputs_unchanged)
+            deadline_caller=deadline is not None, unchanged=inputs_unchanged)
     else:
         seal()
 
