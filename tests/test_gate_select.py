@@ -53,10 +53,10 @@ def selected(result):
     return {row['path'] for row in result['selected']}
 
 
-def test_fast_plus_direct_importers_without_transitive_fanout(tmp_path):
+def test_fast_plus_direct_and_transitive_production_importers(tmp_path):
     result = plan(tree(tmp_path), ['src/prismabuild/pool.py'])
     assert selected(result) == {'tests/test_fast.py', 'tests/test_direct.py',
-                                'tests/test_nested.py'}
+                                'tests/test_nested.py', 'tests/test_indirect.py'}
     reasons = {row['path']: row['reasons'] for row in result['selected']}
     assert 'fast tier' in reasons['tests/test_fast.py']
     assert any('src/prismabuild/pool.py' in reason for reason in reasons['tests/test_direct.py'])
@@ -205,7 +205,8 @@ def test_full_queue_plan_retains_population_and_records_shadow_selection(tmp_pat
     result = plan(root, ['src/prismabuild/pool.py'], mode='full')
     assert len(result['selected']) == result['population']['size'] == 9
     assert {row['path'] for row in result['shadow_selected']} == {
-        'tests/test_fast.py', 'tests/test_direct.py', 'tests/test_nested.py'}
+        'tests/test_fast.py', 'tests/test_direct.py', 'tests/test_nested.py',
+        'tests/test_indirect.py'}
     assert result['mode'] == 'full'
 
 
@@ -324,3 +325,57 @@ def test_environment_lanes_require_a_real_owner_and_capability(tmp_path, owner, 
         select.create_plan(tree(tmp_path), [], durations={'files': {}}, quarantine={
             'environment_lanes': [{'target': 'tests/test_direct.py', 'lane': lane,
                                    'issue': owner, 'reason': 'Requires the broker'}]})
+
+
+@pytest.mark.parametrize('production_import', [
+    'from prismabuild._gpu_submission_policy import _require_gb10_memory_subset',
+    'from ._gpu_submission_policy import _require_gb10_memory_subset',
+    'from . import _gpu_submission_policy',
+])
+def test_private_production_module_reaches_public_importers_and_test_helpers(tmp_path, production_import):
+    root = tree(tmp_path)
+    files = {
+        'src/prismabuild/_gpu_submission_policy.py': 'def _require_gb10_memory_subset(): pass\n',
+        'src/prismabuild/manifest.py': production_import + '\n',
+        'tools/fleet/pbcampaign.py': 'from prismabuild.manifest import load_manifest\n',
+        'tests/gpu_support.py': 'import pbcampaign\n',
+        'tests/test_gpu_policy.py': 'from .gpu_support import manifest\n',
+        'tests/test_public_manifest.py': 'from prismabuild import manifest\n',
+        'tests/test_unrelated.py': 'import unrelated\n',
+    }
+    for name, source in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    result = plan(root, ['src/prismabuild/_gpu_submission_policy.py'])
+    assert selected(result) == {
+        'tests/test_fast.py', 'tests/test_gpu_policy.py', 'tests/test_public_manifest.py'}
+    reasons = {row['path']: row['reasons'] for row in result['selected']}
+    assert any('gpu_support.py' in reason for reason in reasons['tests/test_gpu_policy.py'])
+
+
+def test_production_import_closure_handles_cycles_deleted_modules_and_parent_imports(tmp_path):
+    root = tree(tmp_path)
+    files = {
+        'src/prismabuild/sub/bridge.py': 'from .. import missing\nfrom . import cycle\n',
+        'src/prismabuild/sub/cycle.py': 'from .bridge import caller\n',
+        'src/prismabuild/sub/__init__.py': 'from .bridge import caller\n',
+        'tests/test_cycle.py': 'from prismabuild.sub import cycle\n',
+    }
+    for name, source in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    assert selected(plan(root, ['src/prismabuild/missing.py'])) == {
+        'tests/test_fast.py', 'tests/test_cycle.py'}
+
+
+def test_repository_gpu_policy_private_module_selects_public_campaign_consumer(tmp_path):
+    root = tree(tmp_path)
+    for name in ('src/prismabuild/_gpu_submission_policy.py', 'tools/fleet/pbcampaign.py',
+                 'tests/test_gpu_submission_eligibility_2036.py'):
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((ROOT / name).read_text())
+    assert 'tests/test_gpu_submission_eligibility_2036.py' in selected(
+        plan(root, ['src/prismabuild/_gpu_submission_policy.py']))
