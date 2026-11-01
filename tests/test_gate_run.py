@@ -197,7 +197,7 @@ def test_a_long_file_can_use_both_assigned_workers(tmp_path):
     (root / path).write_text('''from pathlib import Path
 import pytest
 
-@pytest.mark.parametrize('case', range(4))
+@pytest.mark.parametrize('case', range(40))
 def test_case(case, worker_id):
     Path(__file__).with_name('worker-' + str(case)).write_text(worker_id)
 ''')
@@ -205,4 +205,4 @@ def test_case(case, worker_id):
     code = runner.run_plan(plan, root=root, output=root / 'result.json',
                            junit=root / 'junit.xml', workers=2, affinity={0, 1})
     assert code == 0
-    assert len({p.read_text() for p in (root / 'tests').glob('worker-*')}) == 2
+    assert len({(root / 'tests' / ('worker-' + str(case))).read_text() for case in range(4)}) == 2
