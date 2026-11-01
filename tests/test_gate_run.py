@@ -300,7 +300,7 @@ def pytest_generate_tests(metafunc):
         'tests/pkg/sub/__init__.py': '',
         'tests/pkg/sub/test_package.py':
             'from .. import VALUE\ndef test_package(root_value): assert VALUE == 42\n',
-        'tests/test with spaces.py':
+        'tests/test_with spaces.py':
             'def test_spaces(root_value): assert root_value\n',
         'tests/test_é.py':
             'def test_unicode(root_value): assert root_value\n',
@@ -310,7 +310,7 @@ def pytest_generate_tests(metafunc):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(source, encoding='utf-8')
     files = ['tests/nested/test_generated.py', 'tests/pkg/sub/test_package.py',
-             'tests/test with spaces.py', 'tests/test_é.py']
+             'tests/test_with spaces.py', 'tests/test_é.py']
     environment = {**os.environ, 'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1',
                    'PYTHONPATH': str(ROOT / 'tools/ci')}
     environment.pop('GATE_ASSIGNED_FILES', None)
@@ -318,10 +318,10 @@ def pytest_generate_tests(metafunc):
     for mode in ['plain', 'assigned']:
         report = tmp_path / (mode + '.json')
         env = {**environment, 'COLLECTION_REPORT': str(report)}
-        arguments = files
+        arguments = [str(tmp_path)]
         if mode == 'assigned':
             env['GATE_ASSIGNED_FILES'] = json.dumps(files)
-            arguments = ['-p', 'gate_collect', str(tmp_path)]
+            arguments = ['-p', 'gate_collect', *arguments]
         completed = subprocess.run(
             [sys.executable, '-m', 'pytest', '--collect-only', '-q',
              '-c', str(tmp_path / 'pytest.ini'), '--rootdir', str(tmp_path), *arguments],
