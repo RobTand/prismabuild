@@ -64,3 +64,38 @@ def test_package_fallback_failure_propagates_for_no_verdict_classification():
         raise subprocess.CalledProcessError(100, command)
     with pytest.raises(subprocess.CalledProcessError):
         setup.install_bubblewrap(refused)
+
+
+def test_setup_fault_is_no_verdict(tmp_path, monkeypatch, capsys):
+    setup = load('gate_setup')
+    files = tmp_path / 'files.txt'; files.write_text('plain.py\n')
+    def unavailable(*args, **kwargs):
+        raise OSError('injected hosted setup failure')
+    monkeypatch.setattr(setup, 'prepare', unavailable)
+    assert setup.main(['--files-from', str(files)]) == 75
+    assert 'NO_VERDICT: injected hosted setup failure' in capsys.readouterr().out
+
+
+def test_relocation_moves_the_prefix_and_keeps_old_entry_points_valid(tmp_path):
+    import shutil
+    setup = load('gate_setup')
+    prefix, target = tmp_path / 'cache/python', tmp_path / 'usr/python'
+    (prefix / 'bin').mkdir(parents=True)
+    (prefix / 'bin/python').write_bytes(b'interpreter bytes')
+    (prefix / 'bin/pytest').write_text(f'#!{prefix}/bin/python\n')
+    operations = []
+    def execute(command, **kwargs):
+        operations.append(command[1])
+        if command[1] == 'mv':
+            shutil.move(command[2], command[3])
+        elif command[1] == 'ln':
+            Path(command[-1]).symlink_to(command[-2], target_is_directory=True)
+        else:
+            raise AssertionError('unexpected relocation command: ' + repr(command))
+        return SimpleNamespace(returncode=0)
+    setup.relocate_python(prefix, target, execute)
+    assert operations == ['mv', 'ln']
+    assert prefix.is_symlink()
+    assert (target / 'bin/python').read_bytes() == b'interpreter bytes'
+    assert (prefix / 'bin/python').read_bytes() == b'interpreter bytes'
+    assert (target / 'bin/pytest').read_text() == f'#!{prefix}/bin/python\n'
