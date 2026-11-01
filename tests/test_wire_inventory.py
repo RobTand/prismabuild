@@ -14,7 +14,7 @@ from wire_inventory import audit, field_policies
 from rebind_source_reviews import reviewed_sites
 
 
-def test_closed_field_sets_remain_pinned():
+def test_closed_field_sets_remain_pinned(path=None):
     policies = field_policies(ROOT)
     expected = json.loads((ROOT / "tests/compat/field_sets.json").read_bytes())
     assert policies == expected
@@ -203,3 +203,21 @@ def test_pinned_field_guard_does_not_scan_corpus_or_retained_records(tmp_path, m
     monkeypatch.setattr(wire_inventory, 'source_expression', forbidden)
     monkeypatch.setitem(globals(), 'ROOT', tmp_path)
     test_closed_field_sets_remain_pinned()
+
+
+def test_pinned_field_guard_scans_only_requested_source(tmp_path, monkeypatch):
+    import wire_inventory
+
+    expected = _field_policy_tree(tmp_path)
+    pin = tmp_path / 'tests/compat/field_sets.json'
+    pin.parent.mkdir(parents=True)
+    pin.write_text(json.dumps(expected))
+    original = wire_inventory.syntax_tree
+
+    def selected_source(path, snippet):
+        assert path == tmp_path / 'tools/extensionless', "pin case must scan only its source"
+        return original(path, snippet)
+
+    monkeypatch.setattr(wire_inventory, 'syntax_tree', selected_source)
+    monkeypatch.setitem(globals(), 'ROOT', tmp_path)
+    test_closed_field_sets_remain_pinned(path='tools/extensionless')
