@@ -1,11 +1,17 @@
 # Agent execution through PrismaBuild
 
-Agents and subagents run their tests and computational work through
-PrismaBuild (Rob, 2026-09-05, amended 2026-10-29): targeted tests, full suites,
-GPU jobs, benchmarks, and large or long-running compute. This applies across
-projects and hosts, including work inside containers. The coordinator
-submits; a worker executes after admission. Tests and subprocesses already
-inside an admitted action do not submit themselves recursively.
+Agents and subagents follow Rob's routing policy (2026-09-05, amended
+2026-10-29 and 2026-11-01). Tests that run on free remote compute, BuildBuddy
+(Remote Bazel and remote execution) or GitHub-hosted CI, need not go through
+PrismaBuild. PrismaBuild is reserved for exploratory work (experiments,
+trials, benchmarks, GPU work) and for placing CPU work that runs on fleet
+machines onto the machines with capacity. Work that runs on a fleet machine
+still goes through PrismaBuild; do not run test suites directly on fleet hosts
+outside it. This applies across projects and hosts, including work inside
+containers. The coordinator submits; a worker executes after admission. Tests
+and subprocesses already inside an admitted action do not submit themselves
+recursively. Verify remote runs the same way: read the run's own verdict and
+logs, since an acknowledgement is not a pass.
 
 PrismaBuild is not the CI system. CI runs as GitHub Actions checks on
 GitHub-hosted runners, and pull requests merge through the Mergify queue,
@@ -266,7 +272,9 @@ acknowledgement is not a passing test. Record skips and missing tooling. Install
 scoped tooling where required instead of silently skipping qualification.
 
 Read-only inspection, source edits, Git operations and submission commands may
-run on the coordinator; tests run through PrismaBuild. Do not hide work
+run on the coordinator. Tests run through PrismaBuild or on free remote compute
+(BuildBuddy, GitHub-hosted CI), never directly on a fleet host outside
+PrismaBuild. Do not hide work
 requiring admission in SSH commands, shell scripts, containers, inline Python
 or another agent to evade admission. If PrismaBuild
 cannot admit work, diagnose and repair its availability; do not silently fall
@@ -328,7 +336,7 @@ feels like a test or divides into quanta.
 This does not exempt the work *around* it. Non-vLLM GPU jobs, benchmarks, and
 large or long-running compute still require admission, including exports,
 probes or cost stages that merely run on the same box, and so do development
-tests, as the start of this policy says.
+tests that run on fleet machines, as the start of this policy says.
 
 A directly started serve remains **external load for batch admission**. It is
 outside the ledger, so no reservation accounts for the CPU, memory and GPU it
