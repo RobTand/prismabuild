@@ -460,7 +460,7 @@ def test_production_module_and_path_strings_require_a_recognized_loader(tmp_path
     ('TARGET = Path(__file__).parent / "config.py"\nTARGET = Path("/tmp") / "config.py"\n',
      'str(TARGET)', False),
 ])
-def test_production_loader_uses_final_path_without_intermediate_basename_edges(tmp_path, setup, target, inside):
+def test_production_loader_conservatively_includes_external_and_nested_basename_literals(tmp_path, setup, target, inside):
     root = tree(tmp_path)
     (root / 'tools/fleet/config.py').write_text('VALUE = 1\n')
     (root / 'tools/fleet/nested').mkdir()
@@ -468,7 +468,8 @@ def test_production_loader_uses_final_path_without_intermediate_basename_edges(t
     (root / 'tools/fleet/loader.py').write_text(
         'from pathlib import Path\nimport runpy\n' + setup + 'runpy.run_path(' + target + ')\n')
     (root / 'tests/test_loader_consumer.py').write_text('from tools.fleet import loader\n')
-    assert selected(plan(root, ['tools/fleet/config.py'])) == {'tests/test_fast.py'}
+    assert selected(plan(root, ['tools/fleet/config.py'])) == {
+        'tests/test_fast.py', 'tests/test_loader_consumer.py'}
     expected = {'tests/test_fast.py', 'tests/test_loader_consumer.py'} if inside else {'tests/test_fast.py'}
     assert selected(plan(root, ['tools/fleet/nested/config.py'])) == expected
 
@@ -485,7 +486,7 @@ def test_production_loader_uses_final_path_without_intermediate_basename_edges(t
     'def load(flag, directory):\n    path = Path(__file__).parent / "config.py"\n'
     '    if flag:\n        path = Path(directory)\n    runpy.run_path(str(path))\n',
 ])
-def test_production_loader_bindings_are_scoped_ordered_and_conservative(tmp_path, source):
+def test_production_loader_keeps_evidence_with_other_writes_and_uncertain_values(tmp_path, source):
     root = tree(tmp_path)
     (root / 'tools/fleet/config.py').write_text('VALUE = 1\n')
     (root / 'tools/fleet/loader.py').write_text('from pathlib import Path\nimport runpy\n' + source)
@@ -498,3 +499,38 @@ def test_repository_digest_loader_keeps_its_function_local_core_binding():
     path = 'tools/maintenance/diag_811_e1_checkout_cache.py'
     assert 'src/prismabuild/core.py' in select.dependencies(
         (ROOT / path).read_text(), path, production=True)[1]
+
+
+@pytest.mark.parametrize('source', [
+    pytest.param('path = Path("/tmp") / "config.py"\n'
+                 'path, _ = Path(__file__).parent / "config.py", None\n'
+                 'runpy.run_path(str(path))\n', id='unpacking'),
+    pytest.param('path = Path("/tmp") / "config.py"\n'
+                 'for path in [Path(__file__).parent / "config.py"]:\n'
+                 '    runpy.run_path(str(path))\n', id='loop-target'),
+    pytest.param('path = Path("/tmp") / "config.py"\n'
+                 '[runpy.run_path(str(path)) for path in [Path(__file__).parent / "config.py"]]\n',
+                 id='comprehension-target'),
+    pytest.param('path = Path("/tmp") / "config.py"\n'
+                 'with nullcontext(Path(__file__).parent / "config.py") as path:\n'
+                 '    runpy.run_path(str(path))\n', id='with-target'),
+    pytest.param('path = Path("/tmp") / "config.py"\n'
+                 'try:\n    raise LookupError(Path(__file__).parent / "config.py")\n'
+                 'except LookupError as path:\n    runpy.run_path(str(path))\n', id='except-name'),
+    pytest.param('def outer():\n    path = Path(__file__).parent / "config.py"\n'
+                 '    def load():\n        return runpy.run_path(str(path))\n'
+                 '    return load\n', id='closure'),
+    pytest.param('def outer():\n    path = Path(__file__).parent / "config.py"\n'
+                 '    return lambda: runpy.run_path(str(path))\n', id='lambda'),
+    pytest.param('def outer():\n    path = Path(__file__).parent / "config.py"\n'
+                 '    def middle():\n        def load():\n            return runpy.run_path(str(path))\n'
+                 '        return load\n    return middle\n', id='nested-scope'),
+])
+def test_production_loader_literals_survive_untracked_writes_and_enclosing_scopes(tmp_path, source):
+    root = tree(tmp_path)
+    (root / 'tools/fleet/config.py').write_text('VALUE = 1\n')
+    (root / 'tools/fleet/loader.py').write_text(
+        'from pathlib import Path\nfrom contextlib import nullcontext\nimport runpy\n' + source)
+    (root / 'tests/test_loader_consumer.py').write_text('from tools.fleet import loader\n')
+    assert selected(plan(root, ['tools/fleet/config.py'])) == {
+        'tests/test_fast.py', 'tests/test_loader_consumer.py'}
