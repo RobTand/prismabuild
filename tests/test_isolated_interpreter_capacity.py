@@ -1,23 +1,16 @@
-"""Isolated record-compatibility interpreters see a controlled capacity (#2551)."""
+"""How the controlled capacity prelude reaches an isolated interpreter (#2551).
+
+The end-to-end spool case needs bwrap, so it lives with the other sandbox
+cases in test_current_receipt_compat_composition.py.
+"""
 from __future__ import annotations
 
 from pathlib import Path
 import sys
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
-import queue_space_support as support
-from queue_space_host import host_sample
-from record_compat import accepted, invoke, with_prelude
-
-
-@pytest.mark.parametrize("state", ["inodes", "full"])
-def test_a_spool_case_ignores_the_hosts_inodes_and_bytes(state, tmp_path, monkeypatch):
-    monkeypatch.setattr(support, "HOST_PRELUDE", support.statvfs_prelude(host_sample(state)))
-    result = accepted(invoke(ROOT, "spool-record/reservation", tmp_path / "store"))
-    assert result["raw"]
+from record_compat import with_prelude
 
 
 DRIVER = "/support/compat_isolate.py"

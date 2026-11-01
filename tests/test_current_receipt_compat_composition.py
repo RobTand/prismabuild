@@ -10,6 +10,8 @@ import sys
 import pytest
 
 from prismabuild.compatibility_window import WindowError, client_protocol
+import queue_space_support as support
+from queue_space_host import host_sample
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
@@ -22,6 +24,13 @@ def test_current_generation_consumers_keep_the_receipt_document(case, tmp_path):
     golden = next(row for row in rows if row["case"] == case)
     result = invoke(ROOT, case, tmp_path / "store", raw=base64.b64decode(golden["raw"]))
     assert accepted(result)["generation"] == "aaaaaaaaaaaa-100-777777777777"
+
+
+@pytest.mark.parametrize("state", ["inodes", "full"])
+def test_a_spool_case_ignores_the_hosts_inodes_and_bytes(state, tmp_path, monkeypatch):
+    """The isolated interpreter reads the shared sample, not a low simulated host (#2551)."""
+    monkeypatch.setattr(support, "HOST_PRELUDE", support.statvfs_prelude(host_sample(state)))
+    assert accepted(invoke(ROOT, "spool-record/reservation", tmp_path / "store"))["raw"]
 
 
 def test_capability_source_rejects_duplicate_selected_declarations(tmp_path):
