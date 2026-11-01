@@ -392,3 +392,38 @@ def test_owner_filter_cli_roundtrip_recomputes_the_frozen_selection(tmp_path, mo
     with pytest.raises(ValueError, match='snapshot or assignment changed'):
         census.main(['assign', '--root', str(tmp_path), '--manifest', str(manifest),
                      '--index', '0', '--output', str(assigned)])
+
+
+def test_hosted_requirements_pin_the_py_spy_the_pb_runtime_pins():
+    pinned = {line.split('==')[0]: line.split('==')[1].strip()
+              for line in (ROOT / 'tools/ci/gate_requirements.txt').read_text().splitlines() if '==' in line}
+    runtime = json.loads((ROOT / 'tools/maintenance/pb_cpu/x86_64-cp314.json').read_text())
+    packages = {row['name']: row['version'] for row in _runtime_packages(runtime)}
+    assert pinned['py-spy'] == packages['py-spy']
+
+
+def _runtime_packages(node):
+    if isinstance(node, dict):
+        if 'name' in node and 'version' in node:
+            yield node
+        for value in node.values():
+            yield from _runtime_packages(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _runtime_packages(value)
+
+
+def test_workflow_forwards_the_owner_input_and_checks_py_spy_before_sampling():
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/flake-census.yml').read_text())
+    triggers = workflow.get('on', workflow.get(True))
+    assert triggers['workflow_dispatch']['inputs']['quarantine_issue']['default'] == ''
+    plan = next(step for step in workflow['jobs']['plan']['steps'] if step.get('id') == 'plan')
+    assert plan['env']['QUARANTINE_ISSUE'] == '${{ inputs.quarantine_issue }}'
+    assert '--quarantine-issue "$QUARANTINE_ISSUE"' in plan['run']
+    prepare = next(step for step in workflow['jobs']['samples']['steps']
+                   if step.get('name') == 'Prepare hosted runtime for assigned files')
+    lines = [line.strip() for line in prepare['run'].splitlines()]
+    install = next(i for i, line in enumerate(lines) if '-r ../control/tools/ci/gate_requirements.txt' in line)
+    assert lines.index('py-spy --version') > install
+    assert lines.index('py-spy --version') < next(i for i, line in enumerate(lines) if 'gate_setup.py' in line)
