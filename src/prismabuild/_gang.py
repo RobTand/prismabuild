@@ -241,6 +241,17 @@ def teardown(queue, group: str) -> dict | None:
     return record
 
 
+def teardown_filed(queue, group: str) -> bool:
+    """Whether ``group``'s teardown marker is listed; one directory read.
+
+    Listing opens the state directory, which an NFS client revalidates; a
+    by-name read can meet a cached absence of a marker another host filed.
+    Read the marker with :func:`teardown` once this says it is there.
+    """
+    directory = state_dir(queue, group)
+    return directory / "teardown.json" in immutable_files.scan_optional(directory)
+
+
 def elections(queue, group: str, size: int) -> dict[int, dict]:
     found = {}
     for index in range(size):

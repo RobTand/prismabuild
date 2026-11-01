@@ -21792,15 +21792,18 @@ class PoolQueue:
         a sibling whose own heartbeat holds it at that moment is skipped and
         would run on until some box's sweep turn.  Its withdrawal checkpoint
         files the same decision first, through the same exact-member path.
+        It runs every pass, so until a marker is filed it costs one listing.
         """
         if item.get("gang") is None:
             return
         from . import _gang
         try:
             gang = _gang.declaration(item.get("gang"))
-            record = _gang.read_group(self, gang["group"]) if gang else None
-            torn = _gang.teardown(self, record["group"]) if record else None
-            if torn is None:
+            if gang is None or not _gang.teardown_filed(self, gang["group"]):
+                return
+            torn = _gang.teardown(self, gang["group"])
+            record = _gang.read_group(self, gang["group"]) if torn else None
+            if record is None:
                 return
             self._withdraw_gang_member(record, _gang.member(record, item, gang),
                                        reason=str(torn.get("reason")))
