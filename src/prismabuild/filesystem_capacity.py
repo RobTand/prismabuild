@@ -24,3 +24,27 @@ def local_disk_room(path, floor_percent, *, statvfs=None):
             "inode_refusal": (
                 f"free inodes {free_inodes} below {INODE_FLOOR_PERCENT}% floor "
                 f"{floor_inodes} on {path}" if free_inodes < floor_inodes else None)}
+
+
+def queue_space_diagnostic(path):
+    """Cheap quota-aware statvfs observation, for reporting rather than admission.
+
+    f_bavail includes dataset/quota limits exposed by the filesystem. It is an
+    observation, not a reservation or a forecast. Remote quota implementations
+    that do not expose their limit through statvfs need operator monitoring.
+    """
+    try:
+        room = local_disk_room(path, 0)
+    except OSError as exc:
+        return {"state": "unknown", "available_bytes": None, "available_inodes": None,
+                "note": f"queue space unavailable: {type(exc).__name__}"}
+    available = room["free_bytes"]
+    state = "critical" if available < 4 * 1024 ** 3 else "warning" if available < 16 * 1024 ** 3 else "ok"
+    if room["inode_refusal"]:
+        state = "critical"
+    return {"state": state, "available_bytes": available,
+            "available_inodes": room["free_inodes"], "total_inodes": room["size_inodes"],
+            "inode_pressure": bool(room["inode_refusal"]),
+            "warning_bytes": 16 * 1024 ** 3, "critical_bytes": 4 * 1024 ** 3,
+            "note": f"queue space {state}: {available} available bytes; "
+                    f"{room['free_inodes']} available inodes"}
