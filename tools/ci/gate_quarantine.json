@@ -235,6 +235,20 @@
         1997
       ],
       "reason": "The archival-replay capability requires retained runtime inputs absent from the gate image. Archival TMPDIR qualification is tracked by #1997."
+    },
+    {
+      "target": "tests/test_pool_withdrawn_retention_1533.py::test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup",
+      "issue": 2575,
+      "reason": "Intermittent after #2434's requalification: read no withdrawal decision for a gang sibling (TypeError on decision['withdrawn_by']) in merge-queue gate run 41349728979, shard-8-a1, for #2563, which cannot reach the pool. A test race or a production race in gang teardown; remove this entry with the #2575 fix.",
+      "evidence": {
+        "outcomes": {
+          "failed": 1
+        },
+        "source_pr": 2563,
+        "hosted_runs": [
+          "https://github.com/RobTand/prismabuild/actions/runs/41349728979"
+        ]
+      }
     }
   ],
   "cost_exclusions": [],
