@@ -50,3 +50,22 @@ def test_a_prismabuild_run_is_development_evidence_not_the_merge_gate(path: Path
     text = policy_text(path)
     assert "a prismabuild run is development evidence, not the merge gate" in text
     assert "merge only through the mergify queue" in text
+
+
+def test_the_skill_follows_the_amended_routing():
+    # The skill told agents to run fast tests in their worktree, which on a
+    # fleet host bypasses PrismaBuild (Rob's routing policy, amended 2026-11-01).
+    text = policy_text(ROOT / "skills" / "prismabuild" / "SKILL.md")
+    assert "run the fast relevant tests in your worktree" not in text
+    assert "a local run is evidence" not in text
+    assert "free remote compute" in text
+    assert "never run test suites directly on a fleet host outside prismabuild" in text
+
+
+def test_later_passages_keep_the_remote_exception():
+    policy = policy_text(ROOT / "docs" / "agent_execution_policy.md")
+    assert "; tests run through prismabuild." not in policy
+    assert "and so do development tests, as the start of this policy says" not in policy
+    operating = policy_text(ROOT / "docs" / "operating_prismabuild.md")
+    assert "five times per architecture through `pbtest` before handoff" not in operating
+    assert "github-hosted runners of both architectures" in operating
