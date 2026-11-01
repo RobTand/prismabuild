@@ -140,7 +140,9 @@ def test_gang_observes_a_scope_update_that_replaces_a_claim_during_read(
     assert replaced == [path]
 
 
-def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(gang_broker, gang_fleet, monkeypatch, tmp_path):
+@pytest.mark.parametrize("contended", [False, True])
+def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(
+        gang_broker, gang_fleet, monkeypatch, tmp_path, contended):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     group, first, second = _both_claimed(queue, publish, finish, gclaim, members)
     # These are the fixture hosts' CPU indices, not this shard's mask. The
@@ -181,12 +183,36 @@ def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(gang_broke
     snapshots = {key: pool.record_store.value_or_raise(
         queue.records.item(pool.record_store.CLAIMED, key),
     ) for key in (first, second)}
+    # first's heartbeat replaces its lease inside first's transition lock
+    # (write_lease). "contended" holds one such beat while the teardown runs
+    # (#2575). "settled" is first's worker ending, or its second beat after
+    # the teardown: the first may have held the lock through the teardown,
+    # but the second's loop pass ran its withdrawal checkpoint afterwards.
+    lease, replace = queue.records.lease_path(first), queue.records.replace_record_at
+    hold, holding, release = threading.Event(), threading.Event(), threading.Event()
+    torn, settled = threading.Event(), threading.Event()
+    beats_after_teardown = []
+
+    def heartbeat(path, payload):
+        if path == lease and torn.is_set():
+            beats_after_teardown.append(path)
+            if len(beats_after_teardown) >= 2:
+                settled.set()
+        elif path == lease and hold.is_set() and not holding.is_set():
+            holding.set()
+            release.wait(60)
+        return replace(path, payload)
+
+    monkeypatch.setattr(queue.records, "replace_record_at", heartbeat)
 
     def execute(key):
         try:
             outcomes[key] = queue.execute(snapshots[key], containment=True, heartbeat_s=0.05)
         except BaseException as error:
             errors.append(error)
+        finally:
+            if key == first:
+                settled.set()
 
     threads = [threading.Thread(target=execute, args=(key,), name=name)
                for key, name in ((first, "member-zero"), (second, "member-one"))]
@@ -197,11 +223,23 @@ def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(gang_broke
         # Both members are past the real start barrier: their payload processes
         # are launched and still running, not just claimed or barrier-waiting.
         assert all(process.poll() is None for process in launched.values())
+        if contended:
+            hold.set()
+            assert holding.wait(60), errors
         os.write(gates[second][1], b"F")
         threads[1].join(60)
         assert not threads[1].is_alive() and not errors, errors
         queue.finish(second, status=outcomes[second]["status"], detail=outcomes[second],
                      claim_snapshot=snapshots[second])
+        if contended:
+            # The teardown met first's lock held by its own heartbeat and left
+            # the withdrawal undone: the interleaving the gate hit.
+            assert pool.record_store.value_or_raise(
+                queue.records.item(pool.record_store.WITHDRAWN, first),
+            ) is None
+        torn.set()
+        release.set()
+        assert settled.wait(60), errors
         failed = pool.record_store.value_or_raise(
             queue.records.item(pool.record_store.FAILED, second),
         )
@@ -230,6 +268,7 @@ def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(gang_broke
             ) for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.READY)),
         )
     finally:
+        release.set()
         for read_fd, write_fd in gates.values():
             os.close(write_fd)
             os.close(read_fd)
