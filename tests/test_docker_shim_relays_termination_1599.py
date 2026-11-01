@@ -73,9 +73,7 @@ if verb in ("run", "create"):
             key, _, value = argv[i + 1].partition("=")
             labels[key] = value
     mode = os.environ.get("FAKE_MODE", "honor")
-    delay = float(os.environ.get("FAKE_DELAY_START", "0"))
     record(verb=verb, argv=argv)
-    state_path.with_suffix(".client-requested").write_text("1")
     late = os.environ.get("FAKE_LATE_CREATE")
     if late:
         # The client has sent its create request; an independent process (the
@@ -95,8 +93,6 @@ if verb in ("run", "create"):
         pathlib.Path(os.environ["FAKE_STARTED"]).write_text("1")
         time.sleep(60)
         sys.exit(0)
-    if delay:
-        time.sleep(delay)
     data = load()
     data.update(cid=os.environ.get("FAKE_CID", "c" * 64), labels=labels,
                 running=True, killed=False)
@@ -368,11 +364,9 @@ def test_without_a_cidfile_the_attempt_label_finds_the_container(tmp_path):
 
 def test_a_signal_before_the_container_exists_is_unresolved_and_not_a_stop(tmp_path):
     """An empty answer is not proof that no container will appear (a delayed create)."""
-    process = _start(tmp_path, mode="slow", grace="1",
-                     extra={"FAKE_DELAY_START": "30"})
-    _wait_started(tmp_path, marker="state.client-requested")
-    process.send_signal(signal.SIGTERM)
-    assert process.wait(timeout=20) == 125
+    relay = _CreationRelay(tmp_path)
+    assert relay.run() == 125
+    assert relay.events[:2] == ["signal observed before creation", "client exited"]
     assert _calls(tmp_path, "kill") == []
     receipt = _receipts(tmp_path)[0]
     assert receipt["outcome"] == "creation_unresolved"
@@ -383,11 +377,10 @@ def test_a_signal_before_the_container_exists_is_unresolved_and_not_a_stop(tmp_p
 
 def test_a_container_created_after_the_client_is_gone_is_found_and_stopped(tmp_path):
     """An independent daemon request survives the client and creates the container late."""
-    process = _start(tmp_path, mode="ignore", grace="1",
-                     extra={"FAKE_LATE_CREATE": "1.2"})
-    _wait_started(tmp_path)
-    process.send_signal(signal.SIGTERM)
-    code = process.wait(timeout=20)
+    relay = _CreationRelay(tmp_path, create_after_exit=True)
+    code = relay.run()
+    assert relay.events == ["signal observed before creation", "client exited",
+                            "empty discovery", "container created", "container stopped"]
     receipt = _receipts(tmp_path)[0]
     assert receipt["container_id"] == CID
     assert receipt["found_by"] == "label"
@@ -646,9 +639,12 @@ class _CreationRelay:
 
     Only OS boundaries are fake. Ownership, discovery, deadline accounting,
     stop decisions and receipt writing still use the shim implementation.
+    The first empty discovery releases creation, after client exit. Shim waits
+    advance virtual time, so host load cannot consume the discovery window.
     """
 
-    def __init__(self, tmp_path, *, create_after_exit=False, query_times_out=False):
+    def __init__(self, tmp_path, *, create_after_exit=False, query_times_out=False,
+                 client_exit_before_observation=False):
         self.module = _shim_module()
         self.tmp_path = tmp_path
         self.now = 0.0
@@ -661,6 +657,7 @@ class _CreationRelay:
         self.create_after_exit = create_after_exit
         self.query_times_out = query_times_out
         self.signalled = False
+        self.client_exit_before_observation = client_exit_before_observation
         self.nonce = "a" * 32
         self.module.time = SimpleNamespace(
             monotonic=lambda: self.now, time=lambda: 1700000000 + self.now,
@@ -678,6 +675,9 @@ class _CreationRelay:
     def poll(self):
         if not self.signalled:
             self.signalled = True
+            if self.client_exit_before_observation:
+                self.events.append("client exited")
+                self.returncode = -signal.SIGTERM
             self.events.append("signal observed before creation")
             self.handlers[signal.SIGTERM](signal.SIGTERM, None)
         return self.returncode
@@ -699,7 +699,7 @@ class _CreationRelay:
         if verb == "ps":
             assert self.returncode is not None, "discovery must follow client exit"
             if self.query_times_out:
-                self.events.append("discovery deadline exhausted")
+                self.events.append("discovery query timed out")
                 self.now += timeout
                 if self.create_after_exit:
                     self.events.append("container created after query timeout")
@@ -735,21 +735,40 @@ class _CreationRelay:
         return code
 
 
-def test_discovery_starvation_reproduces_the_pre_creation_assertion(tmp_path):
+def test_a_timed_out_discovery_is_unknown_not_an_empty_creation_answer(tmp_path):
     relay = _CreationRelay(tmp_path, query_times_out=True)
     assert relay.run() == 125
     assert relay.events == ["signal observed before creation", "client exited",
-                            "discovery deadline exhausted"]
+                            "discovery query timed out"]
     receipt = _receipts(tmp_path)[0]
-    assert receipt["outcome"] == "creation_unresolved"
+    assert receipt["outcome"] == "unknown"
+    assert receipt["found_by"] == "unreadable"
+    assert receipt["stop_proved"] is False
+    assert _calls(tmp_path, "kill") == []
 
 
-def test_discovery_starvation_reproduces_the_late_creation_assertion(tmp_path):
+def test_a_creation_after_a_timed_out_query_is_not_a_proven_stop(tmp_path):
     relay = _CreationRelay(tmp_path, create_after_exit=True, query_times_out=True)
     assert relay.run() == 125
     assert relay.events == ["signal observed before creation", "client exited",
-                            "discovery deadline exhausted",
+                            "discovery query timed out",
                             "container created after query timeout"]
     assert relay.created and relay.running
     receipt = _receipts(tmp_path)[0]
+    assert receipt["container_id"] is None
+    assert receipt["outcome"] == "unknown"
+    assert receipt["stop_proved"] is False
+    assert _calls(tmp_path, "kill") == []
+
+
+def test_a_signal_observed_as_the_client_exits_still_discovers_late_creation(tmp_path):
+    relay = _CreationRelay(tmp_path, create_after_exit=True,
+                           client_exit_before_observation=True)
+    assert relay.run() == 128 + signal.SIGTERM
+    assert relay.events == ["client exited", "signal observed before creation",
+                            "empty discovery", "container created", "container stopped"]
+    receipt = _receipts(tmp_path)[0]
     assert receipt["container_id"] == CID
+    assert receipt["found_by"] == "label"
+    assert receipt["stop_proved"] is True
+    assert receipt["container_final"]["running"] is False
