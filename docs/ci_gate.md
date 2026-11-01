@@ -139,7 +139,9 @@ on a missing verdict after retry.
 The runner loads `gate_collect.py`, traverses the repository once, and ignores
 unassigned files and directories before importing them. It preserves the assigned
 file order and pytest's file-based xdist scheduling, including shared fixtures,
-deselections and xunit1 file identities. A hosted profile of a 71-file assignment
+deselections and xunit1 file identities. Unusual assigned filenames extend
+pytest patterns individually, preserving normal assertion rewriting and bytecode
+policy for imported production dependencies. A hosted profile of a 71-file assignment
 found about 93,000 directory collections when each file was a separate pytest
 argument. Root imports took only 1.2–1.4 seconds; repeated sibling-directory
 collection accounted for most of the 15–46-second startup. The collector's
