@@ -54,27 +54,38 @@ SANDBOX_TEST_FILES = frozenset({
 })
 # CPU-equivalent cost: four workers times the observed per-slot setup wall time.
 SANDBOX_SETUP_SECONDS = 40.0
+ISOLATE_FILE_SECONDS = 60.0
 
 
 def setup_shards(files: Sequence[str], durations: Mapping[str, float], count: int,
-                 *, unknown_seconds: float, setup_seconds: float = SANDBOX_SETUP_SECONDS) -> list[dict]:
-    """Co-locate namespace fixtures and charge their shared setup only once.
+                 *, unknown_seconds: float, setup_seconds: float = SANDBOX_SETUP_SECONDS,
+                 isolation_seconds: float = ISOLATE_FILE_SECONDS) -> list[dict]:
+    """Group shared setup and isolate long files from collection/fixture work.
 
     The original shards() contract remains unchanged for nightly consumers.
     Setup costs use the same CPU-equivalent seconds as file durations.
     """
-    baseline = shards(files, durations, count, unknown_seconds=unknown_seconds)
-    overhead = _cost(setup_seconds)
+    shards(files, durations, count, unknown_seconds=unknown_seconds)  # Validate the shared contract.
+    overhead, threshold = _cost(setup_seconds), _cost(isolation_seconds)
     sandbox = sorted(set(files) & SANDBOX_TEST_FILES)
-    if not sandbox:
-        return [dict(row, sandbox=False) for row in baseline]
-    representative = sandbox[0]
+    representative = sandbox[0] if sandbox else None
     grouped = [path for path in files if path not in sandbox[1:]]
     costs = dict(durations)
-    costs[representative] = sum(durations.get(path, unknown_seconds) for path in sandbox) + overhead
-    result = shards(grouped, costs, count, unknown_seconds=unknown_seconds)
+    if sandbox:
+        costs[representative] = sum(durations.get(path, unknown_seconds) for path in sandbox) + overhead
+    isolated = sorted((path for path in grouped if costs.get(path, unknown_seconds) >= threshold),
+                      key=lambda path: (-costs.get(path, unknown_seconds), path))[:count - 1]
+    result = [{'index': index, 'files': [path],
+               'estimated_seconds': costs.get(path, unknown_seconds), 'unknown_files': []}
+              for index, path in enumerate(isolated)]
+    remaining = [path for path in grouped if path not in set(isolated)]
+    packed = shards(remaining, costs, count - len(isolated), unknown_seconds=unknown_seconds)
+    for row in packed:
+        row['index'] += len(isolated)
+    result.extend(packed)
     for row in result:
         row['sandbox'] = representative in row['files']
+        row['isolated'] = row['index'] < len(isolated)
         if row['sandbox']:
             row['files'] = sorted([*row['files'], *sandbox[1:]])
         row['unknown_files'] = sorted(path for path in row['files'] if path not in durations)
@@ -140,9 +151,11 @@ def main(argv: list[str] | None = None) -> int:
                                    'files': len(row['files']), 'estimated_seconds': row['estimated_seconds']}
                                   for row in result]}
             if args.setup_aware:
-                output.update(partition='sandbox-v1', setup_seconds=SANDBOX_SETUP_SECONDS)
+                output.update(partition='setup-v2', setup_seconds=SANDBOX_SETUP_SECONDS,
+                              isolation_seconds=ISOLATE_FILE_SECONDS)
                 for item, row in zip(output['include'], result):
                     item['sandbox'] = row['sandbox']
+                    item['isolated'] = row['isolated']
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(output, indent=2) + '\n')
         else:

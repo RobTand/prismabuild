@@ -508,12 +508,12 @@ Startup markers separate the runner's pre-work from pytest startup.
 trial; the remaining 16–46 s before xdist announced nodes belongs to pytest
 startup. This distinction avoids attributing that gap to plan validation.
 
-Within each assigned shard, xdist uses `load` with `--maxschedchunk=1`.
-Files still belong to exactly one shard and retain the same verdict/retry
-boundary. This lets the four CPUs share cases from a long file, instead of
-serializing the entire file on one worker. Longest files are listed first;
-bounded dispatch chunks prevent the initial queue from putting all their
-cases on one CPU. No function-level selection is introduced.
+Within each shard, xdist retains `loadfile`, preserving module/session fixtures
+and wheel-build behavior. The trial of unrestricted case dispatch duplicated
+shared build/audit fixtures, so it was dropped. Files above 60 estimated seconds
+instead get a dedicated shard, up to the existing shard limit minus one. The
+rest retain duration-balanced packing; every file remains selected exactly once.
+This avoids collecting unrelated modules beside the longest serial files.
 
 The 90-second cutoff separates the retained examples well. Applying refreshed
 hosted costs, the 169- and 173-file PR selections estimate 255 and 262 seconds

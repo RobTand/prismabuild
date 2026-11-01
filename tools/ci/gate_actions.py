@@ -93,8 +93,8 @@ def main(argv=None):
         plan = json.loads(args.plan.read_text())
         matrix = json.loads(args.matrix.read_text())
         costs = json.loads(args.durations.read_text())['files']
-        balance = partition.setup_shards if matrix.get('partition') == 'sandbox-v1' else partition.shards
-        options = {'setup_seconds': matrix['setup_seconds']} if matrix.get('partition') == 'sandbox-v1' else {}
+        balance = partition.setup_shards if matrix.get('partition') == 'setup-v2' else partition.shards
+        options = {'setup_seconds': matrix['setup_seconds'], 'isolation_seconds': matrix['isolation_seconds']} if matrix.get('partition') == 'setup-v2' else {}
         assignments = balance([row['path'] for row in plan['selected']], costs,
                               matrix['shards'], unknown_seconds=partition.default_unknown_seconds(costs), **options)
         if (len(matrix['include']) != len(assignments) or
