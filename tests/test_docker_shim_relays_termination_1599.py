@@ -701,6 +701,9 @@ class _CreationRelay:
             if self.query_times_out:
                 self.events.append("discovery deadline exhausted")
                 self.now += timeout
+                if self.create_after_exit:
+                    self.events.append("container created after query timeout")
+                    self.created = self.running = True
                 raise subprocess.TimeoutExpired(argv, timeout)
             if not self.created:
                 self.events.append("empty discovery")
@@ -745,6 +748,8 @@ def test_discovery_starvation_reproduces_the_late_creation_assertion(tmp_path):
     relay = _CreationRelay(tmp_path, create_after_exit=True, query_times_out=True)
     assert relay.run() == 125
     assert relay.events == ["signal observed before creation", "client exited",
-                            "discovery deadline exhausted"]
+                            "discovery deadline exhausted",
+                            "container created after query timeout"]
+    assert relay.created and relay.running
     receipt = _receipts(tmp_path)[0]
     assert receipt["container_id"] == CID
