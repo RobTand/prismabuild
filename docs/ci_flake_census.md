@@ -49,7 +49,8 @@ intermittent node gets one issue with evidence and a proposed
 issue number before it is valid policy. Existing open marker owners suppress
 creation, including issues filed by the nightly. The census never comments on
 an existing owner or closes it. IDs and titles are literal escaped text and
-failure excerpts are indented; no user mentions are emitted.
+failure excerpts are indented; no user mentions are emitted. Quarantine JSON
+and the Bash reproducer preserve exact IDs by escaping mention characters.
 
 ```bash
 gh api -X POST repos/RobTand/prismabuild/actions/workflows/flake-census.yml/dispatches \

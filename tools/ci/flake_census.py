@@ -8,7 +8,6 @@ import json
 import os
 import re
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 
@@ -67,7 +66,7 @@ def classify_samples(samples, repeats, quarantine):
         else:
             status = 'unresolved'
         owners = sorted({entry['issue'] for entry in quarantine
-                         if node == entry['target'] or node.startswith(entry['target'] + '::')})
+                         if node == entry['target'] or node.startswith((entry['target'] + '::', entry['target'] + '['))})
         tests[node] = {'counts': counts, 'status': status, 'owners': owners, 'failures': failures, 'causes': sorted(causes)}
         groups['quarantined' if owners else 'environmental' if causes else status].append(node)
         if owners and status == 'passing':
@@ -111,10 +110,12 @@ def census_issue_plans(result, issues):
         body += ('\n\nProposed tools/ci/gate_quarantine.json entry. Replace the placeholder with '
                  'this issue number and review before applying:\n\n'
                  + '\n'.join('    ' + line for line in json.dumps(proposed, indent=2).replace(chr(64), r'\u0040').splitlines()))
+        # Keep the ID exact while emitting no literal mention in the Bash command.
+        node_argument = "'" + node.replace("'", "'\"'\"'").replace(chr(64), r"'$'\x40''") + "'"
         command = ('python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py '
                    '--checkout <clean-checkout> --python /home/rob/venvs/pb-cpu/bin/python '
-                   '--workers-per-shard 1 --threads-per-shard 1 --mem-gb 4 --priority -10 ' + shlex.quote(node))
-        body += '\n\nReproduce through PrismaBuild at the main SHA above:\n\n    ' + report.safe_text(command) + '\n'
+                   '--workers-per-shard 1 --threads-per-shard 1 --mem-gb 4 --priority -10 ' + node_argument)
+        body += '\n\nReproduce through PrismaBuild in Bash at the main SHA above:\n\n    ' + report.safe_text(command) + '\n'
         plans.append({'title': report.safe_text('[P2] Flake census: ' + node)[:256],
                       'body': body, 'labels': [report.LABEL]})
     return plans
@@ -278,6 +279,7 @@ def main(argv=None):
     except (OSError, ValueError, KeyError, report.ET.ParseError) as error:
         result.update(classify_samples([], manifest['repeats'], manifest['quarantine']), error=str(error))
     result['deferred'], result['shards'] = manifest['deferred'], manifest['include']
+    result['quarantine_snapshot'] = manifest['quarantine']
     api = report.GitHub.from_environment(os.environ['GITHUB_REPOSITORY'])
     issues = api.pages('issues?state=open') if result['complete'] else []
     result['open_owners'] = {node: issue for node, issue in census_owners(issues).items()
