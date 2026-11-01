@@ -31,9 +31,9 @@
 # TL3's pull requests enter the default queue another way: TL3 tests each
 # change through PrismaBuild and reviews it, posts its "TL3 approval" check on
 # the reviewed head, then adds "tl3-queue". That pair replaces "queue" and
-# "pr-gate". TL3 reads the batch draft's checks, not the pull request's own, so
-# a pr-gate condition would leave a failing pull request unqueued without TL3
-# noticing. The batch's full "gate" still has to pass before anything merges.
+# "pr-gate". TL3 follows Mergify's queue check on the head and never reads
+# pr-gate, so a pr-gate condition would leave a failing pull request unqueued
+# without TL3 noticing. The batch's full "gate" still decides every merge.
 # TL3 finds its rule's check by name, so keep "Queue TL3-approved PRs".
 commands_restrictions:
   queue:

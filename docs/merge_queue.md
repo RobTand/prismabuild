@@ -31,13 +31,16 @@ cheap first check, not a substitute.
 
 ## TL3's pull requests
 
-TL3 works issues labelled `tl3` on branches named `prismabuild-<issue>-tl3-<n>`.
-It tests each change through PrismaBuild and reviews it, then posts its
-`TL3 approval` check on the reviewed head and adds the `tl3-queue` label. That
-pair queues the pull request in the default queue in place of `queue` and
-`pr-gate`, because TL3 reads the batch draft's checks rather than the pull
-request's own. The batch's `gate` decides the merge as for every other pull
-request. Don't push to a TL3 branch: TL3 approved that exact head.
+TL3 works issues labelled `tl3` on branches named `prismabuild-<issue>-tl3-<n>`,
+and starts each pull request body with `Refs #<issue>.`, so `issue-link` passes
+as it does for every pull request. TL3 tests each change through PrismaBuild
+and reviews it, then posts its `TL3 approval` check on the reviewed head and
+adds the `tl3-queue` label. That pair queues the pull request in the default
+queue in place of `queue` and `pr-gate`. TL3 follows Mergify's queue check and
+never reads `pr-gate`, so a `pr-gate` condition would leave a failing TL3 pull
+request unqueued without TL3 noticing. The batch's `gate` decides the merge as
+for every other pull request. Don't push to a TL3 branch: TL3 approved that
+exact head.
 
 ## What happens in the queue
 
