@@ -73,6 +73,34 @@
       }
     },
     {
+      "target": "tests/test_a_fresh_tier_loop_announces_before_its_cold_read.py::test_a_hung_read_among_parallel_readers_reads_dead_within_the_bound",
+      "issue": 2035,
+      "reason": "Intermittent wall-clock bound: failed on a hosted pr-gate shard of run 41337112476 for #2531, a gate-tooling change it cannot reach. Timing dependence is #2035's scope. Remove this entry with that fix.",
+      "evidence": {
+        "outcomes": {
+          "failed": 1
+        },
+        "source_pr": 2531,
+        "hosted_runs": [
+          "https://github.com/RobTand/prismabuild/actions/runs/41337112476"
+        ]
+      }
+    },
+    {
+      "target": "tests/test_docker_shim_relays_termination_1599.py::test_a_container_created_after_the_client_is_gone_is_found_and_stopped",
+      "issue": 2518,
+      "reason": "Intermittent, same docker-shim timing family as the #2518 node: failed on a hosted pr-gate shard of run 41337112476 for #2531, a gate-tooling change it cannot reach. Remove this entry with the #2518 fix.",
+      "evidence": {
+        "outcomes": {
+          "failed": 1
+        },
+        "source_pr": 2531,
+        "hosted_runs": [
+          "https://github.com/RobTand/prismabuild/actions/runs/41337112476"
+        ]
+      }
+    },
+    {
       "target": "tests/test_an_owner_waiting_on_its_own_export_is_not_no_progress.py",
       "issue": 2434,
       "source_issues": [
