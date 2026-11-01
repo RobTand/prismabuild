@@ -137,7 +137,7 @@ def file_new_issues(api, plans):
     return filed
 
 
-def census_manifest(root, sha, repeats, shard_count):
+def census_manifest(root, sha, repeats, shard_count, *, quarantine_issue=None):
     root = Path(root)
     if type(repeats) is not int or not 2 <= repeats <= 10:
         raise ValueError('repeats must be an integer from 2 to 10')
@@ -150,7 +150,18 @@ def census_manifest(root, sha, repeats, shard_count):
     plan = nightly.gate_select.create_plan(root, ['.github/workflows/gate.yml'],
         durations=durations, quarantine=policy, mode='full')
     plan.update(base_sha=sha, head_sha=sha)
+    if quarantine_issue is not None:
+        entries = quarantine.get('entries', []) + quarantine.get('cost_exclusions', [])
+        targets = {row['target'].split('::')[0] for row in entries if row['issue'] == quarantine_issue}
+        if type(quarantine_issue) is not int or quarantine_issue <= 0 or not targets:
+            raise ValueError('unknown or invalid quarantine owner')
+        unavailable = targets - {row['path'] for row in plan['selected']}
+        if unavailable:
+            raise ValueError('quarantine owner targets unavailable in hosted census: ' + ', '.join(sorted(unavailable)))
+        plan['selected'] = [row for row in plan['selected'] if row['path'] in targets]
+        plan['shadow_selected'] = [row for row in plan['shadow_selected'] if row['path'] in targets]
     files = [row['path'] for row in plan['selected']]
+    plan['estimate'] = nightly.gate_select.estimate(files, durations)
     partitions = nightly.gate_partition.shards(files, durations['files'], shard_count,
         unknown_seconds=nightly.gate_partition.default_unknown_seconds(durations['files']))
     include = []
@@ -160,6 +171,7 @@ def census_manifest(root, sha, repeats, shard_count):
                 include.append({'index': len(include), 'repeat': repeat, 'architecture': arch,
                     'runner': runner, 'shard': partition['index'], 'files': partition['files']})
     return plan, {'schema': 1, 'sha': sha, 'repeats': repeats, 'shards': len(partitions), 'include': include,
+                  **({'quarantine_issue': quarantine_issue} if quarantine_issue is not None else {}),
                   'quarantine': quarantine.get('entries', []) + quarantine.get('cost_exclusions', []),
                   'deferred': plan['deferred']}
 
@@ -252,6 +264,7 @@ def main(argv=None):
     plan.add_argument('--root', type=Path, required=True)
     plan.add_argument('--repeats', type=int, default=5)
     plan.add_argument('--shards', type=int, default=4)
+    plan.add_argument('--quarantine-issue', type=int, help='repeat only files owned by this quarantine issue')
     plan.add_argument('--output', type=Path, required=True)
     assign = commands.add_parser('assign')
     assign.add_argument('--root', type=Path, required=True)
@@ -268,7 +281,8 @@ def main(argv=None):
     if args.command == 'plan':
         sha = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=args.root,
                              check=True, capture_output=True, text=True).stdout.strip()
-        population, manifest = census_manifest(args.root, sha, args.repeats, args.shards)
+        population, manifest = census_manifest(args.root, sha, args.repeats, args.shards,
+                                               quarantine_issue=args.quarantine_issue)
         args.output.mkdir(parents=True, exist_ok=True)
         (args.output / 'plan.json').write_text(json.dumps(population) + '\n')
         (args.output / 'manifest.json').write_text(json.dumps(manifest) + '\n')
@@ -280,7 +294,8 @@ def main(argv=None):
     if args.command == 'assign':
         sha = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=args.root,
                              check=True, capture_output=True, text=True).stdout.strip()
-        _, recomputed = census_manifest(args.root, sha, manifest['repeats'], manifest['shards'])
+        _, recomputed = census_manifest(args.root, sha, manifest['repeats'], manifest['shards'],
+                                        quarantine_issue=manifest.get('quarantine_issue'))
         if recomputed != manifest:
             raise ValueError('main snapshot or assignment changed')
         row = next(row for row in recomputed['include'] if row['index'] == args.index)
