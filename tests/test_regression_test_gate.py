@@ -222,3 +222,90 @@ def test_merge_queue_lookalikes_still_require_change_type(location, field, value
     verdict = gate.check_pull_request(subject, [])
     assert not verdict.allowed
     assert "Declare exactly one Change type:" in verdict.reason
+
+
+def run_regression_workflow_snapshot(tmp_path, labels, current_changes):
+    """Drive the shipped github-script against two deterministic REST snapshots."""
+    import shutil
+    import yaml
+    assert shutil.which('node'), 'workflow regression proof requires Node.js'
+    workflow = yaml.safe_load((ROOT / '.github/workflows/regression-test.yml').read_text())
+    script = workflow['jobs']['regression-test']['steps'][0]['with']['script']
+    before = {**pull('Add control', labels=labels, count=0),
+              'head': {'sha': 'head'}, 'base': {'sha': 'base'}}
+    current = {**before, **current_changes}
+    payload = tmp_path / 'snapshots.json'
+    payload.write_text(json.dumps({'script': script, 'before': before, 'current': current,
+                                  'helper': (ROOT / 'tools/ci/check_regression_test.py').read_text()}))
+    driver = r'''
+const fs = require('fs');
+const cp = require('child_process');
+const input = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const failures = [], messages = [];
+let reads = 0;
+const github = {
+  rest: {
+    pulls: {get: async () => ({data: reads++ ? input.current : input.before}), listFiles: 'files'},
+    repos: {
+      getContent: async () => ({data: {type: 'file', encoding: 'base64', size: input.helper.length,
+                                      content: Buffer.from(input.helper).toString('base64')}}),
+      compareCommitsWithBasehead: async () => ({data: {merge_base_commit: {sha: 'merge'}}}),
+    },
+  },
+  paginate: async () => [],
+};
+const core = {setFailed: text => failures.push(text), info: text => messages.push(text)};
+const exec = {getExecOutput: async (command, args) => {
+  const result = cp.spawnSync(command, args, {encoding: 'utf8'});
+  if (result.error) throw result.error;
+  return {exitCode: result.status, stdout: result.stdout, stderr: result.stderr};
+}};
+const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+new AsyncFunction('require', 'context', 'github', 'core', 'exec', input.script)(
+  require, {repo: {owner: 'example', repo: 'pb'}, payload: {pull_request: {number: 1}}},
+  github, core, exec).then(() => console.log(JSON.stringify({failures, messages}))).catch(error => {
+    console.error(error); process.exitCode = 1;
+  });
+'''
+    import os
+    result = subprocess.run(['node', '-e', driver, str(payload)], capture_output=True, text=True,
+                            env={**os.environ, 'RUNNER_TEMP': str(tmp_path)}, timeout=60)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+@pytest.mark.parametrize('label', ['queue', 'queued', 'dequeued', 'tl3-queue'])
+def test_queue_only_label_change_does_not_invalidate_gathered_evidence(tmp_path, label):
+    result = run_regression_workflow_snapshot(tmp_path, [], {'labels': [{'name': label}]})
+    assert result['failures'] == [], 'queue-only change must not invalidate regression evidence'
+
+
+@pytest.mark.parametrize('labels,current', [
+    (['queue', 'bug'], [{'name': 'bug', 'color': 'new'}]),
+    (['bug', 'fix'], [{'name': ' FIX '}, {'name': 'BUG'}]),
+])
+def test_label_order_cosmetics_and_normalisation_do_not_invalidate_evidence(tmp_path, labels, current):
+    # No test diff is present, so a fix verdict must still be rejected for coverage,
+    # rather than incorrectly rejected as a metadata race.
+    result = run_regression_workflow_snapshot(tmp_path, labels, {'labels': current})
+    assert len(result['failures']) == 1
+    assert 'requires an added or modified Python test' in ''.join(result['messages'])
+
+
+@pytest.mark.parametrize('label', sorted(gate._FIX_LABELS))
+@pytest.mark.parametrize('remove', [False, True])
+def test_verdict_label_addition_or_removal_invalidates_gathered_evidence(tmp_path, label, remove):
+    result = run_regression_workflow_snapshot(tmp_path, [label] if remove else [],
+        {'labels': [] if remove else [{'name': label}]})
+    assert result['failures']
+    assert 'PR changed while gathering evidence' in ''.join(result['messages'] + result['failures'])
+
+
+@pytest.mark.parametrize('field,value', [
+    ('head', {'sha': 'new-head'}), ('base', {'sha': 'new-base'}),
+    ('title', 'New title'), ('body', 'Change type: ci'),
+])
+def test_nonlabel_verdict_metadata_changes_still_invalidate_evidence(tmp_path, field, value):
+    result = run_regression_workflow_snapshot(tmp_path, [], {field: value})
+    assert result['failures']
+    assert 'PR changed while gathering evidence' in ''.join(result['messages'] + result['failures'])
