@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 
-def resolve(root: Path, mode: str, base: str, head: str) -> dict:
+def gate_revisions(root: Path, mode: str, base: str, head: str) -> dict:
     """Ordinary PRs diff the merge's first parent; full gates keep event refs."""
     if mode not in {'selection', 'full'}:
         raise ValueError('gate mode must be selection or full')
@@ -38,7 +38,7 @@ def main(argv=None):
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        result = resolve(args.root, args.mode, args.base, args.head)
+        result = gate_revisions(args.root, args.mode, args.base, args.head)
         args.output.write_text(json.dumps(result, indent=2) + '\n')
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print('NO_VERDICT: gate revisions unavailable: ' + str(error), file=sys.stderr)

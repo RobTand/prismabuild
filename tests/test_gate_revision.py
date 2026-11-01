@@ -60,7 +60,7 @@ def histories(tmp_path):
 
 def test_pr_selection_uses_merge_first_parent_and_excludes_unrelated_target_changes(histories):
     repository, git, ancestor, target, head, merge = histories
-    result = revision.resolve(repository, 'selection', ancestor, merge)
+    result = revision.gate_revisions(repository, 'selection', ancestor, merge)
     assert result['head_sha'] == merge
     assert result['base_sha'] == target
     assert result['base_source'] == 'merge_first_parent'
@@ -74,7 +74,7 @@ def test_full_gate_retains_exact_draft_head_and_event_base(histories):
     repository, git, ancestor, target, head, merge = histories
     # pb-history-ok: Checks out only the generated fixture draft head, never project history.
     git('switch', '--detach', '-q', head)
-    result = revision.resolve(repository, 'full', ancestor, head)
+    result = revision.gate_revisions(repository, 'full', ancestor, head)
     assert result['base_sha'] == ancestor
     assert result['head_sha'] == head
     assert result['base_source'] == 'pr_event'
@@ -84,7 +84,7 @@ def test_full_gate_retains_exact_draft_head_and_event_base(histories):
 def test_wrong_checkout_cannot_claim_a_plan_for_another_commit(histories):
     repository, _, ancestor, _, head, _ = histories
     with pytest.raises(ValueError, match='checkout'):
-        revision.resolve(repository, 'full', ancestor, head)
+        revision.gate_revisions(repository, 'full', ancestor, head)
 
 
 def test_revision_cli_records_immutable_selection_identity(histories, tmp_path):
@@ -103,7 +103,7 @@ def test_revision_cli_records_immutable_selection_identity(histories, tmp_path):
 def test_full_gate_rejects_an_unavailable_event_base(histories):
     repository, _, _, _, _, merge = histories
     with pytest.raises((ValueError, subprocess.CalledProcessError)):
-        revision.resolve(repository, 'full', '1' * 40, merge)
+        revision.gate_revisions(repository, 'full', '1' * 40, merge)
 
 
 def test_workflow_uses_merge_sha_except_for_authenticated_exact_head_runs():
