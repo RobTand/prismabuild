@@ -479,8 +479,9 @@ in `tools/ci/gate_evidence.json`.
 
 ## Gate speed qualification
 
-The speed round measures three baseline and three revised full-population
-canaries, one at a time, with no overlap with an active merge-queue gate.
+The speed round records three baseline samples and opportunistic revised
+full-population canaries. Each trial starts only when no merge-queue gate is
+active; it never reserves capacity or holds the queue.
 It keeps the population, 16 shards, both hosted architectures, test budgets
 and infrastructure-only retry unchanged. Large PR selections use the same
 balanced shards, with `pr-gate` remaining the required PR check.
