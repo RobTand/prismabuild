@@ -507,3 +507,10 @@ Startup markers separate the runner's pre-work from pytest startup.
 `GATE_PREFLIGHT_START` to `GATE_PYTEST_START` was 5–10 ms in the first fan-out
 trial; the remaining 16–46 s before xdist announced nodes belongs to pytest
 startup. This distinction avoids attributing that gap to plan validation.
+
+Within each assigned shard, xdist uses `load` with `--maxschedchunk=1`.
+Files still belong to exactly one shard and retain the same verdict/retry
+boundary. This lets the four CPUs share cases from a long file, instead of
+serializing the entire file on one worker. Longest files are listed first;
+bounded dispatch chunks prevent the initial queue from putting all their
+cases on one CPU. No function-level selection is introduced.

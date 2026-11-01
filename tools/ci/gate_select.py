@@ -141,7 +141,7 @@ def estimate(files: list[str], durations: dict, workers: int = 5) -> dict:
     if any(isinstance(value, bool) or not isinstance(value, (int, float)) or
            not math.isfinite(value) or value < 0 for value in costs):
         raise ValueError('file durations must be finite nonnegative seconds')
-    # Conservative file-level packing. xdist loadfile never splits a test file.
+    # Conservative file-level packing; execution may spread cases within a file.
     slots = [0.0] * workers
     for cost in sorted(costs, reverse=True):
         heapq.heappush(slots, heapq.heappop(slots) + cost)
