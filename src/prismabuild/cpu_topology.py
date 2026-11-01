@@ -150,18 +150,24 @@ def affinity_restored():
     A pin taken inside lasts only as long as the block.  Restoring only ever
     returns the thread to a mask it already held, so it never escapes an outer
     restriction, and a block that left the mask alone sets nothing.  A
-    platform with no affinity call has nothing to restore.
+    platform with no affinity call has nothing to restore.  Like the pin, the
+    restore is best effort: a cpuset replaced meanwhile can leave none of the
+    inherited CPUs permitted, and the kernel's refusal must not replace the
+    block's own result or exception.
     """
     try:
         inherited = os.sched_getaffinity(0)
     except (AttributeError, OSError):
-        yield
-        return
+        inherited = None
     try:
         yield
     finally:
-        if os.sched_getaffinity(0) != inherited:
-            os.sched_setaffinity(0, inherited)
+        if inherited is not None:
+            try:
+                if os.sched_getaffinity(0) != inherited:
+                    os.sched_setaffinity(0, inherited)
+            except OSError:
+                pass
 
 
 def pin_to_preferred(root: Path = SYSFS_CPU):

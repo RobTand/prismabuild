@@ -170,7 +170,7 @@ def smt_topology(root, cpus):
     (sysfs / "online").write_text(cpu_topology.as_range(cpus) + "\n")
     for function in (cpu_topology.classify, cpu_topology.pin_to_preferred, cpu_topology.inherited_tiers):
         function.__defaults__ = (sysfs,)
-    return cpu_topology.classify(allowed=cpus)[0]
+    return cpus[:half]
 
 
 def run_adapter(root, repository):
