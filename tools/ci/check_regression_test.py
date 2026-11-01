@@ -31,9 +31,18 @@ def is_test_file(filename: str) -> bool:
             and (path.name.startswith("test_") or path.name.endswith("_test.py")))
 
 
+def _verdict_labels(pull: dict) -> set[str]:
+    return {label["name"].strip().lower() for label in pull["labels"]} & _FIX_LABELS
+
+
+def regression_evidence_matches(pull: dict, current: dict) -> bool:
+    return (all(pull[field]["sha"] == current[field]["sha"] for field in ("head", "base"))
+            and all(pull[field] == current[field] for field in ("title", "body"))
+            and _verdict_labels(pull) == _verdict_labels(current))
+
+
 def is_fix(pull: dict) -> bool:
-    labels = {label["name"].strip().lower() for label in pull["labels"]}
-    return bool(_FIX_TITLE.search(pull["title"]) or labels & _FIX_LABELS
+    return bool(_FIX_TITLE.search(pull["title"]) or _verdict_labels(pull)
                 or re.search(r"(?im)^\s*change type:\s*(?:fix|bugfix)\s*$", pull["body"] or ""))
 
 
@@ -143,7 +152,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         data = json.loads(args.input.read_text())
-        pull, files = data["pull"], data["files"]
+        pull, current, files = data["pull"], data["current"], data["files"]
         if not (isinstance(pull["title"], str) and isinstance(pull.get("body"), (str, type(None)))
                 and isinstance(pull["labels"], list) and all(isinstance(x["name"], str) for x in pull["labels"])
                 and type(pull["changed_files"]) is int and pull["changed_files"] >= 0
@@ -151,7 +160,10 @@ def main() -> int:
                     and isinstance(f["status"], str) and type(f["additions"]) is int
                     and f["additions"] >= 0 for f in files)):
             raise ValueError("invalid PR metadata")
-        verdict = check_pull_request(pull, files)
+        if not regression_evidence_matches(pull, current):
+            verdict = Verdict(False, "PR changed while gathering evidence; rerun the check.")
+        else:
+            verdict = check_pull_request(pull, files)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(json.dumps(asdict(Verdict(False, f"Gate input unavailable or invalid: {exc}"))))
         return 2

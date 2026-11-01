@@ -10,7 +10,7 @@ import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
-from prismabuild import pool
+from prismabuild import cpu_topology, pool
 from worker_adapter_fixture import prepare
 
 
@@ -107,6 +107,12 @@ raise SystemExit(run_adapter(Path({str(tmp_path)!r}), repository))
     assert observed == expected, diagnostics
     if verdict == "unknown":
         assert "runtime moved" not in diagnostics
+    if verdict in ("match", "commit-drift"):
+        # The loop served under the fixture's two-thread cores, pinned to one
+        # thread per core, and run_adapter has already checked that the pin
+        # ended with the loop.
+        assert (f"pinned to {cpu_topology.as_range(process['preferred'])} "
+                f"({len(process['preferred'])} of {len(process['affinity'])} cpus)") in diagnostics
     if verdict == "commit-drift":
         drift = json.loads(drifts[0].read_text())
         assert drift["actor"] == "worker_loop"
@@ -135,7 +141,7 @@ raise SystemExit(run_adapter(Path({str(tmp_path)!r}), repository))
         assert len(runs) == 1
         assert runs[0]["scope"] == control["scope_id"]
         assert set(payload["affinity"]) <= set(runs[0]["affinity"])
-        assert set(runs[0]["affinity"]) <= set(process["affinity"])
+        assert set(runs[0]["affinity"]) <= set(process["preferred"])
         terminal = json.loads(queue.records.item_path(pool.record_store.DONE, key).read_text())
         allocation = terminal["cpu_allocation"]
         assert payload["affinity"] == sorted(allocation["preferred"] + allocation["fallback"])

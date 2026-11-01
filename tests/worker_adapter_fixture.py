@@ -1,6 +1,7 @@
 """Actual adapter/core execution through a private broker and kernel service model."""
 from contextlib import contextmanager
 from functools import partial
+from itertools import zip_longest
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,7 @@ import subprocess
 import tempfile
 import threading
 
-from prismabuild import core as pb, pool, resource_scope
+from prismabuild import core as pb, cpu_topology, pool, resource_scope
 import resource_broker
 
 
@@ -148,6 +149,30 @@ Path("result.txt").write_text("real child\\n")
     return queue, cas, action
 
 
+def smt_topology(root, cpus):
+    """Describe the inherited CPUs to the loop as two-thread cores.
+
+    The first half of the sorted mask leads and the second half are their
+    siblings, the shape of a GitHub-hosted runner's four vCPUs.  The loop's
+    pin then narrows the inherited mask on every host with two or more CPUs,
+    not only where the real topology happens to have siblings (#2446).
+    Returns the CPUs the loop will pin to.
+    """
+    cpus = sorted(cpus)
+    half = (len(cpus) + 1) // 2
+    sysfs = root / "sysfs" / "devices" / "system" / "cpu"
+    for lead, sibling in zip_longest(cpus[:half], cpus[half:]):
+        group = [cpu for cpu in (lead, sibling) if cpu is not None]
+        for cpu in group:
+            siblings = sysfs / f"cpu{cpu}" / "topology" / "thread_siblings_list"
+            siblings.parent.mkdir(parents=True)
+            siblings.write_text(",".join(map(str, group)) + "\n")
+    (sysfs / "online").write_text(cpu_topology.as_range(cpus) + "\n")
+    for function in (cpu_topology.classify, cpu_topology.pin_to_preferred, cpu_topology.inherited_tiers):
+        function.__defaults__ = (sysfs,)
+    return cpus[:half]
+
+
 def run_adapter(root, repository):
     import sys
     import worker
@@ -165,7 +190,8 @@ def run_adapter(root, repository):
     role_session.PARKED_ROOT = root / "parked"
     role_session.ROLE_LOCK_ROOT = root / "role-locks"
     affinity = sorted(os.sched_getaffinity(0))
-    (root / "process.json").write_text(json.dumps({"pid": os.getpid(), "affinity": affinity,
+    preferred = smt_topology(root, affinity)
+    (root / "process.json").write_text(json.dumps({"pid": os.getpid(), "affinity": affinity, "preferred": preferred,
         "sources": {name: str(Path(module.__file__).resolve()) for name, module in (
             ("worker", worker), ("worker_loop", worker_loop), ("role_session", role_session),
             ("generation_receipt", generation_receipt), ("pool", pool), ("core", pb))}}))

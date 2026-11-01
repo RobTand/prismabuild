@@ -678,8 +678,13 @@ def main(argv=None, *, on_outcome=None):
     therefore requests shutdown instead of interrupting materialization or
     execution and leaving a lease for the reaper. Action cancellation remains
     the queue withdrawal protocol.
+
+    The loop pins itself to the preferred CPUs while it serves, and every
+    action it launches inherits that pin.  The pin ends when the loop returns:
+    ``worker.main`` runs the loop in its caller's thread, and that caller keeps
+    the mask it was given (#2446).
     """
-    with role_session.stop_requests(signal.SIGTERM) as stop:
+    with role_session.stop_requests(signal.SIGTERM) as stop, cpu_topology.affinity_restored():
         return _run_loop(stop, argv=argv, on_outcome=on_outcome)
 
 

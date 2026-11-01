@@ -3,7 +3,16 @@
 The manual Flake census workflow freezes main's SHA once and collects five
 independent samples per test on each architecture by default. `repeats` accepts
 2 through 10. Every file runs on both `ubuntu-24.04` and `ubuntu-24.04-arm`
-every repeat. Four duration-balanced shards per architecture use the gate's
+every repeat. Set the optional `quarantine_issue` input to a quarantine
+owner number from `tools/ci/gate_quarantine.json` to repeat only that owner's
+target files. It does not check that the issue is still open. Node-level entries select
+their whole file, so sibling nodes also run. The plan rejects unknown owners or
+unavailable target files, freezes the filter in its manifest, and rechecks it in
+every assignment. Classification retains the complete quarantine snapshot.
+For example, `quarantine_issue: '2434'` with `repeats: 5` supplies fresh
+requalification evidence without rerunning unrelated files.
+
+Four duration-balanced shards per architecture use the gate's
 partitioner, hosted setup and runner with four xdist workers each.
 
 The matrix permits at most four simultaneous test jobs. That leaves roughly
@@ -20,6 +29,11 @@ and disk measurements. Missing or interrupted shards contribute missing
 observations to IDs seen in other samples; unavailable file assignments remain
 listed in the artifact when no sample discovered their node IDs. A missing disk
 record marks the report incomplete but preserves valid JUnit observations.
+
+Hosted requirements include pinned `py-spy` for real sampling tests. The census
+installs the control revision's requirements and logs the profiler version while
+the test checkout stays at the frozen main SHA. Branch qualification can therefore
+prove a proposed hosted dependency change against unchanged main tests.
 
 The observed population is the gate's eligible CPU files plus its quarantined
 and cost-excluded tests. They must execute for quarantine retirement evidence.

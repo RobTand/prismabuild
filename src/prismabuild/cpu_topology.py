@@ -25,6 +25,7 @@ is admission, and admission is the ledger's.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import os
 from pathlib import Path
 
@@ -140,6 +141,33 @@ def as_range(cpus) -> str:
     if start is not None:
         out.append(f"{start}-{prev}" if prev > start else f"{start}")
     return ",".join(out)
+
+
+@contextmanager
+def affinity_restored():
+    """Give the calling thread back the affinity it had on entry.
+
+    A pin taken inside lasts only as long as the block.  Restoring only ever
+    returns the thread to a mask it already held, so it never escapes an outer
+    restriction, and a block that left the mask alone sets nothing.  A
+    platform with no affinity call has nothing to restore.  Like the pin, the
+    restore is best effort: a cpuset replaced meanwhile can leave none of the
+    inherited CPUs permitted, and the kernel's refusal must not replace the
+    block's own result or exception.
+    """
+    try:
+        inherited = os.sched_getaffinity(0)
+    except (AttributeError, OSError):
+        inherited = None
+    try:
+        yield
+    finally:
+        if inherited is not None:
+            try:
+                if os.sched_getaffinity(0) != inherited:
+                    os.sched_setaffinity(0, inherited)
+            except OSError:
+                pass
 
 
 def pin_to_preferred(root: Path = SYSFS_CPU):
