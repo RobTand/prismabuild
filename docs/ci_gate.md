@@ -508,25 +508,48 @@ whether to fan out. A small selection uses one x64 shard to avoid duplicating
 setup and coverage; larger selections use both architectures without increasing
 the shard limit. The final check verifies every selected file exactly once.
 
-For pull requests GitHub loads the workflow from the synthetic merge commit,
-while tests and selection use the PR head. Before Python setup or any gate
-script runs, an inline Git check requires every tracked `tools/ci/gate_*` file
-at the head to match that workflow commit, `github.sha`. This includes scripts,
-requirements and policy data, including added, removed and renamed helpers.
-A confirmed difference, or missing required tooling, fails finally with
-"merge origin/main and push again". Retrying that head cannot repair it.
-Unrelated target changes need no merge when the tooling trees still match.
+Ordinary PRs check out the event's immutable synthetic merge commit,
+`github.sha`, in every job. The workflow, tooling, requirements, policy, sources
+and tests therefore share one commit, including for a fork PR on hosted runners.
+Selection compares that merge commit against its first parent, the target tree
+GitHub integrated. An up-to-date PR has the same tree and changed paths as its
+head-based selection. A stale PR automatically tests its integration with the
+target without merging main into its branch first. `revision.json` records the
+resolved base, checkout SHA and base source alongside the plan artifact.
 
-This compatibility check keeps selection, test imports and budget enforcement
-in one PR-head checkout. It avoids loading newer scripts beside older policy
-or helper modules from a second tree. The deliberate tradeoff is that even a
-compatible upstream tooling or data change requires merging main. The same
-check applies to authenticated queue drafts; their integrated heads normally
-already contain target tooling. Authentication, coverage, a1/a2 retries and
-failed-job rerun artifact resolution are unchanged. An unavailable workflow
-commit is fetched by its immutable SHA; fetch or comparison errors return
-`NO_VERDICT`, exit 75, rather than claiming an incompatibility. Other setup and
-planning infrastructure failures retain exit 75 and the infrastructure-only retry.
+The original head pin came from the queue-only gate: a Mergify draft head is
+already the integrated batch SHA. Authenticated queue drafts and same-repository
+`gate-canary` runs still check out exactly that event head and use the event base,
+with unchanged full coverage and shadow selection. Their synthetic GitHub merge
+can contain newer target tooling than the draft head. Only these exact-head
+runs retain the inline `tools/ci/gate_*` compatibility check before Python setup
+or any gate script. A confirmed difference or missing required tooling is a
+final failure asking the draft producer to merge `origin/main` and push again.
+Git fetch/comparison errors remain `NO_VERDICT`, exit 75. Ordinary merge-SHA runs
+skip that redundant handshake.
+
+GitHub reruns retain the original event's `GITHUB_SHA` and `GITHUB_REF`, so all
+jobs, including a1/a2 and failed-job reruns, keep the same immutable checkout
+while main moves. The original plan attempt, population/base/head checks and
+artifact execution lineage remain unchanged. Fork approval, same-repository
+full-run authentication, permissions and disabled credential persistence also
+stay unchanged. No queue rule or TL3 onboarding condition changes.
+
+
+Qualification for #2536 compared complete head-based and merge-based plans on
+up-to-date PR #2540 in hosted run `41340261043`: all 1,267 selected files,
+reasons, exclusions and population identity matched after removing only SHA
+metadata. A temporary branch from before #2519, head `19a95138`, then passed
+ordinary `pr-gate` without merging main in run `41340306745`, selecting 178 files
+from merge `6f98deef` against its first parent. Switching that same unchanged
+head to an exact-head canary correctly failed the retained handshake in run
+`41340634897`; no setup or shards ran. The temporary PR was closed.
+
+Positive full canary `41340766257`, head `3a94f195`, retained its event head and
+base, covered all 1,267 files on eight x64 and eight arm64 shards, and passed
+with no retries and a clean shadow audit. Its observed workflow-to-gate wall
+time was 294 seconds, including runner pickup. The temporary comparison step
+and canary label were removed after capturing their artifacts.
 
 Selection summaries show counts, reason categories, the first 50 selected
 files and the first 50 exclusions. Long cells are abbreviated. Budget summaries
