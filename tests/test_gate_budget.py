@@ -170,3 +170,42 @@ def test_invalid_policy_limits_fail_closed(tmp_path, seconds):
     policy(tmp_path, seconds)
     code, result = budget_run(tmp_path, case('0'))
     assert code == 1 and result['budget']['status'] == 'fail'
+
+
+@pytest.mark.parametrize('pytest_code,overrun,expected_code,expected_verdict', [
+    (0, False, 75, None), (1, False, 1, 'fail'), (0, True, 1, 'fail'),
+])
+def test_warning_write_failure_preserves_definite_failure(tmp_path, monkeypatch,
+                                                        pytest_code, overrun,
+                                                        expected_code, expected_verdict):
+    policy(tmp_path)
+    xml = case('21')
+    if overrun:
+        xml = xml.replace('</testsuite>',
+                          '<testcase file="tests/test_sample.py" classname="tests.test_sample" '
+                          'name="test_overrun" time="31"/></testsuite>')
+    if pytest_code == 1:
+        xml = xml.replace('/></testsuite>', '><failure message="regression"/></testcase></testsuite>')
+    def unavailable(*args):
+        raise OSError('injected warning artifact write failure')
+    monkeypatch.setattr(runner, '_write_budget_warnings', unavailable)
+    code, result = budget_run(tmp_path, xml, pytest_code=pytest_code)
+    assert code == expected_code and result['verdict'] == expected_verdict
+    assert result['budget']['status'] == 'unavailable'
+    assert result['budget']['reason'] == 'injected warning artifact write failure'
+
+
+def test_warning_summary_has_a_bounded_preview_but_junit_keeps_every_warning(tmp_path, monkeypatch):
+    summary = tmp_path / 'summary.md'
+    monkeypatch.setenv('GITHUB_STEP_SUMMARY', str(summary))
+    warnings = [{'nodeid': f'tests/test_cost.py::test_{i:04d}_' + 'x' * 1000,
+                 'seconds': 21, 'budget_seconds': 20} for i in range(2000)]
+    junit = tmp_path / 'junit.xml'
+    junit.write_text('<testsuites><testsuite/></testsuites>')
+    runner._write_budget_warnings(junit, warnings)
+    text = summary.read_text()
+    assert len(text.encode()) < 32 * 1024
+    assert '2000' in text and '1975 more' in text
+    assert 'test_0000_' in text and 'test_1999_' not in text
+    assert 'junit.xml' in text
+    assert 'test_1999_' in junit.read_text()

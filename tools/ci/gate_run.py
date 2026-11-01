@@ -101,12 +101,15 @@ def _write_budget_warnings(junit, warnings):
     if summary:
         with Path(summary).open('a') as handle:
             handle.write('\n## Per-test budget warnings\n\n' +
-                         '\n'.join('- ' + message for message in messages) + '\n')
+                         f'{len(messages)} warnings; complete list in junit.xml and result.json.\n\n' +
+                         '\n'.join('- ' + message[:1000] for message in messages[:25]) + '\n' +
+                         (f'{len(messages) - 25} more warnings in junit.xml.\n' if len(messages) > 25 else ''))
 
 
 def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
              files: list[str] | None = None, workers: int | None = None,
              execute=subprocess.run, affinity=None) -> int:
+    print('GATE_PREFLIGHT_START', flush=True)
     record = {'schema': 'prismabuild.gate_result.v1',
               'population_version': plan.get('population', {}).get('version'),
               'mode': plan.get('mode'), 'base_sha': plan.get('base_sha'), 'head_sha': plan.get('head_sha'), 'files': [], 'verdict': None, 'pytest_exit_code': None}
@@ -117,6 +120,10 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
             raise ValueError('empty gate assignment cannot run pytest')
         if len(files) != len(set(files)) or set(files) - eligible:
             raise ValueError('assignment contains duplicate files or files outside the plan')
+        costs = {row['path']: row.get('estimated_seconds') for row in plan['selected']}
+        known = sorted(value for value in costs.values() if value is not None)
+        unknown = (known[math.ceil(len(known) * .9) - 1] or 1.0) if known else 1.0
+        files = sorted(files, key=lambda path: (-(costs[path] if costs[path] is not None else unknown), path))
         record['files'] = files
         config = _budget_policy(root, plan.get('base_sha'))
         record['budget'] = {'status': 'pending', 'baseline_sha': plan.get('base_sha')}
@@ -131,12 +138,17 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
         # setup-python exports loader overrides; proof capture must see the actual
         # installed interpreter rather than an ambient dynamic-loader override.
         environment = {name: value for name, value in environment.items() if not name.startswith('LD_')}
+        environment['GATE_ASSIGNED_FILES'] = json.dumps(files)
+        environment['PYTHONPATH'] = str(Path(__file__).resolve().parent) + os.pathsep + environment.get('PYTHONPATH', '')
         junit.parent.mkdir(parents=True, exist_ok=True)
-        command = [sys.executable, '-m', 'pytest', '-n', str(workers), '--dist=loadfile',
-                   '-q', '-ra', '--junitxml=' + str(junit), '-o', 'junit_family=xunit1',
+        profile = ['-X', 'importtime'] if os.environ.get('GATE_PROFILE_STARTUP') == '1' else []
+        command = [sys.executable, *profile, '-m', 'pytest', '-n', str(workers), '--dist=loadfile',
+                   '-q', '-ra', '-p', 'gate_collect', '--rootdir=' + str(root), '--junitxml=' + str(junit), '-o', 'junit_family=xunit1',
                    *('--deselect=' + target for target in plan['deselect']
-                     if target.split('::', 1)[0] in files), *files]
+                     if target.split('::', 1)[0] in files), str(root)]
+        print('GATE_PYTEST_START', flush=True)
         result = execute(command, cwd=root, env=environment, check=False)
+        print('GATE_PYTEST_END', flush=True)
         record['pytest_exit_code'] = result.returncode
         record['verdict'] = 'fail' if result.returncode == 1 else None
         try:
