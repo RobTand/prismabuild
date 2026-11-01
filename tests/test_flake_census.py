@@ -179,3 +179,18 @@ def test_proposed_quarantine_entry_preserves_exact_node_without_mentions():
     decoded = json.loads('\n'.join(line.removeprefix('    ') for line in proposal.splitlines()))
     assert decoded['target'] == node
     assert chr(64) + 'person' not in body
+
+
+def test_queue_space_prefix_is_an_environmental_cause_not_a_new_flake_issue():
+    samples = samples_for({arch: [{'new': 'passed'}, {'new': 'failed'}] for arch in ['x64', 'arm64']})
+    for sample in samples:
+        sample['disk'] = {'available_bytes': 13400000000, 'available_inodes': 10000}
+        if sample['repeat'] == 1:
+            sample['tests']['new']['failure'] = ('header\n' * 30
+                + "assert first_line == 'pbrun: queued'\nE pbrun: queue space warning: 13400000000 available bytes; 10000 available inodes")
+    result = dict(census.classify_samples(samples, 2, []), sha='abc', complete=True, run_url='run')
+    assert result['classification']['intermittent'] == []
+    assert result['classification']['environmental'] == ['new']
+    assert result['tests']['new']['causes'] == ['queue_space_warning']
+    assert result['tests']['new']['failures'][0]['disk']['available_bytes'] == 13400000000
+    assert census.census_issue_plans(result, []) == []
