@@ -117,27 +117,42 @@ def classifications(root):
     return result
 
 
+def inventory_metadata(root):
+    """Validate catalogue identities and reviewed disposition declarations."""
+    known = catalogue(root)
+    reviewed = classifications(root)
+    assert not known.keys() & reviewed.keys(), "a kind cannot be qualified and excluded from the window"
+    return known, reviewed
+
+
+def validated_archive(archive):
+    """Validate one retained archive without recursively auditing its sources."""
+    manifest = json.loads(archive.with_suffix("").with_suffix(".json").read_bytes())
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == manifest["archive_sha256"]
+    receipt_name = manifest.get("provenance_file", "RUNTIME_VERSION.json")
+    members = {}
+    with tarfile.open(archive) as contents:
+        for member in contents:
+            path = Path(member.name)
+            assert member.isfile() and not path.is_absolute() and ".." not in path.parts and member.name not in members
+            raw = contents.extractfile(member).read()
+            assert member.name in manifest["files"] or member.name == receipt_name
+            expected = manifest["receipt_sha256"] if member.name == receipt_name else manifest["files"][member.name]
+            assert hashlib.sha256(raw).hexdigest() == expected
+            members[member.name] = raw
+        assert set(manifest["files"]) < members.keys() and len(members) == len(manifest["files"]) + 1
+    return manifest, members
+
+
 def retained_inventory(root):
     for archive in sorted((root / "tests/compat/generations").glob("*.tar.gz")):
-        manifest = json.loads(archive.with_suffix("").with_suffix(".json").read_bytes())
-        assert hashlib.sha256(archive.read_bytes()).hexdigest() == manifest["archive_sha256"]
+        manifest, members = validated_archive(archive)
         with tempfile.TemporaryDirectory(prefix="compat-source-inventory-") as directory:
             destination = Path(directory)
-            receipt_name = manifest.get("provenance_file", "RUNTIME_VERSION.json")
-            with tarfile.open(archive) as contents:
-                names = set()
-                for member in contents:
-                    path = Path(member.name)
-                    assert member.isfile() and not path.is_absolute() and ".." not in path.parts and member.name not in names
-                    names.add(member.name)
-                    raw = contents.extractfile(member).read()
-                    assert member.name in manifest["files"] or member.name == receipt_name
-                    expected = manifest["receipt_sha256"] if member.name == receipt_name else manifest["files"][member.name]
-                    assert hashlib.sha256(raw).hexdigest() == expected
-                    path = destination / path
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(raw)
-                assert set(manifest["files"]) < names and len(names) == len(manifest["files"]) + 1
+            for name, raw in members.items():
+                path = destination / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw)
             rows, _ = audit(destination)
             yield manifest["generation"], manifest["archive_sha256"], rows
 
@@ -367,9 +382,7 @@ def field_policies(root, *, paths=None):
 
 def audit(root, observations=None):
     observations = observations if observations is not None else {}
-    known = catalogue(root)
-    reviewed = classifications(root)
-    assert not known.keys() & reviewed.keys(), "a kind cannot be qualified and excluded from the window"
+    known, reviewed = inventory_metadata(root)
     required_generations = set()
     for name in ("window.json", "prepared.json"):
         path = root / "tests/compat/generations" / name

@@ -13,20 +13,18 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
-from wire_inventory import audit, field_policies, source_paths
+from wire_inventory import audit, field_policies, inventory_metadata, source_paths, validated_archive
 from rebind_source_reviews import reviewed_sites
 
 
 def test_repository_catalogue_and_dispositions_are_consistent():
-    # Red stub: the split guard has no repository metadata validation yet.
-    pass
+    inventory_metadata(ROOT)
 
 
 @pytest.mark.parametrize('archive', sorted((ROOT / 'tests/compat/generations').glob('*.tar.gz')),
                          ids=lambda path: path.name)
 def test_retained_archive_is_intact(archive):
-    # Red stub: archive validation must be independent of the source audit.
-    pass
+    validated_archive(archive)
 
 
 @pytest.mark.parametrize('corruption', ['duplicate', 'overlap', 'empty_reason', 'unknown_disposition', 'catalogue_alias'])
