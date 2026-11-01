@@ -194,3 +194,31 @@ def test_queue_space_prefix_is_an_environmental_cause_not_a_new_flake_issue():
     assert result['tests']['new']['causes'] == ['queue_space_warning']
     assert result['tests']['new']['failures'][0]['disk']['available_bytes'] == 13400000000
     assert census.census_issue_plans(result, []) == []
+
+
+def test_collection_retains_each_shards_own_disk_evidence(tmp_path):
+    entries = []
+    for repeat in range(2):
+        for arch, runner in census.ARCHITECTURES.items():
+            for shard, available in enumerate([13400000000, 42000000000]):
+                index = len(entries)
+                file = f'tests/test_{shard}.py'
+                entries.append(dict(index=index, repeat=repeat, architecture=arch, runner=runner, files=[file]))
+                folder = tmp_path / str(index)
+                folder.mkdir()
+                (folder / 'result.json').write_text(json.dumps(dict(verdict='pass', head_sha='sha',
+                    files=[file], pytest_exit_code=0, budget={'status': 'pass'})))
+                (folder / 'junit.xml').write_text(f'<testsuite><testcase file="{file}" '
+                    f'classname="tests.test_{shard}" name="test_x"/></testsuite>')
+                (folder / 'disk.txt').write_text(f'{available} 10000 /home/rob/pbt17\n')
+    manifest = dict(sha='sha', repeats=2, include=entries)
+    samples = census.collect_census(tmp_path, manifest, 'run')
+    assert len(samples) == 4
+    for sample in samples:
+        for shard, available in enumerate([13400000000, 42000000000]):
+            row = sample['tests'][f'tests/test_{shard}.py::test_x']
+            assert row['disk']['available_bytes'] == available
+            assert row['disk']['tmpdir'] == '/home/rob/pbt17'
+    (tmp_path / '0/disk.txt').unlink()
+    with pytest.raises(OSError):
+        census.collect_census(tmp_path, manifest, 'run')
