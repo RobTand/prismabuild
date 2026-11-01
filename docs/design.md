@@ -20597,6 +20597,57 @@ verified in `requeue-generation/integrated-evidence.json` and
 directory. These component qualifications do not promote staged-read
 deployment or workload-proof axes.
 
+### Publication candidate discovery (#1897, #2167, #2168)
+
+RecordStore owns an advisory publication index separately from canonical
+queue state. PoolQueue publication records candidates after canonical READY
+publication. Index failure cannot undo or fail an already published action.
+Candidates bind the action key, publication timestamp and exact checkout,
+snapshot and publisher metadata. Retries keep that identity; republishing a
+key can retain candidates for multiple generations. Canonical records remain
+the authority for state, publication generation and every filter predicate.
+
+MCP metadata discovery addresses a hashed exact facet or UTC-day pages before
+opening canonical records. Its fixed budgets are 256 candidate entries,
+32 pages and 256 canonical slot reads. Output limits do not expand these
+budgets. Explicit full keys retain direct requested-slot reads. Incomplete
+coverage is visible through `discovery`, `truncated`, `unavailable` and the
+existing response `complete` field. No read-only call creates, backfills or
+repairs the index, and no filtered call silently returns to history scanning.
+
+Legacy queues require explicit reconciliation. The maintenance entrypoint
+`tools/maintenance/reconcile_publication_index.py --queue-root PATH` performs
+bounded steps with a retained iterator, then closes it on completion or stop.
+`--entries-per-step` defaults to 256 and `--max-steps` to 32. Exit 75 means the
+step budget ended before reconciliation finished; restarting replays safely.
+Run maintenance through an admitted action when operating on fleet state.
+Coverage can be sealed only after stable canonical namespace evidence and
+index-directory evidence. Concurrent publication, an interrupted index write,
+unknown filesystem trust, or an unsettled directory clock leaves coverage
+incomplete. Remote filesystem timestamps do not establish complete coverage.
+Index leaves may outlive canonical records; consumers verify canonical slots
+and reject candidates from another publication generation.
+Missing canonical slots are ordinary stale candidates. Indexed inspection reads
+distinguish absence from present but empty, malformed or unreadable records.
+Those invalid slots consume the same read budget and make discovery incomplete,
+including when an in-place write leaves namespace coverage unchanged. Explicit
+key inspection retains its existing permissive read behavior.
+Leaf parsing verifies both the filename identity and membership in the addressed
+facet or UTC-day bucket using the writer's bucket derivation. A parseable leaf
+whose address disagrees with its contents is unreadable index evidence, even
+when an in-place edit preserves all directory coverage stamps. The reader marks
+discovery incomplete and retains readable candidates within the same budgets.
+Only the addressed facet and filename-bound publication time narrow index
+candidates. Secondary facets are evaluated from canonical slots within the
+same 256-read budget, so an in-place secondary-facet edit cannot hide a match
+or establish complete absence. Indexed canonical records use the strict,
+no-follow replaced-leaf reader with an 8 MiB cap. Duplicate keys, nonfinite
+numbers, oversize records and symlinks return Unknown and incomplete discovery.
+
+This index changes inspection cost and diagnostics. It grants no lifecycle,
+admission, residency, cleanup or dev-certification authority. Source inclusion
+does not establish fleet deployment or staged-read requirement satisfaction.
+
 ### Queue-key standing read owner
 
 `record_store.RecordStore(root).standing(key)` owns the queue-key observation
