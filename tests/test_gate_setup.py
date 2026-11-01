@@ -1,0 +1,66 @@
+"""Sandbox setup is charged once and setup failures never become test failures."""
+import importlib.util
+from pathlib import Path
+import subprocess
+from types import SimpleNamespace
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def load(name):
+    spec = importlib.util.spec_from_file_location(name, ROOT / 'tools/ci' / (name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_sandbox_files_share_one_setup_charge_without_losing_coverage():
+    partition = load('gate_partition')
+    files = ['tests/test_record_compatibility.py',
+             'tests/test_current_receipt_compat_composition.py', 'plain-a.py', 'plain-b.py']
+    durations = dict(zip(files, [9, 1, 8, 4]))
+    result = partition.setup_shards(files, durations, 2, unknown_seconds=2,
+                                    setup_seconds=8)
+    assert [row['files'] for row in result] == [sorted(files[:2]), files[2:]]
+    assert [row['estimated_seconds'] for row in result] == [18, 12]
+    assert [row['sandbox'] for row in result] == [True, False]
+    assert partition.setup_shards(list(reversed(files)), durations, 2,
+                                  unknown_seconds=2, setup_seconds=8) == result
+
+
+def test_setup_partition_preserves_unknown_files_and_normal_api():
+    partition = load('gate_partition')
+    files = ['new.py', 'known.py']
+    result = partition.setup_shards(files, {'known.py': 1}, 2,
+                                    unknown_seconds=5, setup_seconds=8)
+    assert result[0]['files'] == ['new.py'] and result[0]['unknown_files'] == ['new.py']
+    assert result[0]['estimated_seconds'] == 5
+    assert not any(row['sandbox'] for row in result)
+    assert partition.shards(files, {'known.py': 1}, 2, unknown_seconds=5) == [
+        {'index': 0, 'files': ['new.py'], 'estimated_seconds': 5.0, 'unknown_files': ['new.py']},
+        {'index': 1, 'files': ['known.py'], 'estimated_seconds': 1.0, 'unknown_files': []}]
+
+
+@pytest.mark.parametrize('failures,expected', [(0, ['install']),
+                                             (1, ['install', 'update', 'install'])])
+def test_package_install_uses_existing_index_before_update(failures, expected):
+    setup = load('gate_setup')
+    commands = []
+    def execute(command, **kwargs):
+        operation = next(word for word in command if word in {'install', 'update'})
+        commands.append(operation)
+        if len(commands) <= failures:
+            raise subprocess.CalledProcessError(100, command)
+        return SimpleNamespace(returncode=0)
+    setup.install_bubblewrap(execute)
+    assert commands == expected
+
+
+def test_package_fallback_failure_propagates_for_no_verdict_classification():
+    setup = load('gate_setup')
+    def refused(command, **kwargs):
+        raise subprocess.CalledProcessError(100, command)
+    with pytest.raises(subprocess.CalledProcessError):
+        setup.install_bubblewrap(refused)
