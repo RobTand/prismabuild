@@ -9,10 +9,11 @@ import subprocess
 import sys
 import threading
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
-from prismabuild import core, sealed_bundle_cache as cache_module, submission
+from prismabuild import _bounded_reader, core, sealed_bundle_cache as cache_module, submission
 from test_pbrun_bundle_determinism import _action_key, _repository
 
 
@@ -746,6 +747,32 @@ def test_timed_inventory_grant_stays_owned_after_the_helper_exits(tmp_path, monk
         waiter.result(timeout=60)
     with cache_module._bundle_cache_lock(inventory, nonblocking=True) as probe:
         assert probe is not None, "caller exit leaked the granted inventory lock"
+
+
+# Worst ordinary inventory wait measured with 16 concurrent 48 MiB fills on
+# dl380g10 at load 52 (PrismaBuild action 2f2ac9d2..., #2525). Expiring at or
+# below it would repack an address another caller is about to publish.
+_MEASURED_WORST_INVENTORY_WAIT_S = 1.5
+
+
+def test_ordinary_inventory_budget_outlasts_measured_contention(tmp_path, monkeypatch):
+    readings = iter((0.0,))
+    monkeypatch.setattr(_bounded_reader, "time", SimpleNamespace(
+        monotonic=lambda: next(readings, _MEASURED_WORST_INVENTORY_WAIT_S)))
+    native, holder = subprocess.run, ExitStack()
+
+    def helper_after_measured_wait(args, **kwargs):
+        assert kwargs["timeout"] > 0, "measured bookkeeping contention exhausted the inventory budget"
+        holder.close()
+        return native(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", helper_after_measured_wait)
+    try:
+        holder.enter_context(cache_module._bundle_cache_lock(tmp_path / ".inventory"))
+        with cache_module._bundle_inventory_lock(tmp_path, bounded_wait=False) as owned:
+            assert owned is not None
+    finally:
+        holder.close()
 
 
 def test_distinct_addresses_with_one_prefix_never_serialize(tmp_path, monkeypatch):
