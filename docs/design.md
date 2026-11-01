@@ -4002,7 +4002,8 @@ without the member or the ordinary package import boundary.
   A one-second budget expired inside that contention and repacked bundles.
   Ten seconds is over six times the worst measured wait, and it is under a
   quarter of a 36-46 s bundle pack, which is the most a stopped owner can add.
-  Both release inventory before copying and verification. Open
+  A nonpositive budget expires at once. The first probe and the ordinary
+  re-read both release inventory before copying and verification. Open
   descriptors survive eviction. Four warm deadline readers can all hit.
   Exclusive inventory locking covers only bookkeeping, space reservations,
   trimming and publication. Ordinary fillers wait for inventory reservation
@@ -4016,9 +4017,10 @@ without the member or the ordinary package import boundary.
   in flock on the inherited inventory descriptor. Subprocess timeout owns
   killing and reaping it; successful acquisition remains held by the parent's
   open file description. Fast uncontended probes spawn no helper, and no
-  polling loop or signal handler is added. Deadline callers retain nonblocking inventory and address locks,
-  with fresh-seal fallback on contention. A killed owner's flocks are released
-  by the kernel; the existing pending-owner probe reaps its abandoned staging.
+  polling loop or signal handler is added. Deadline callers retain nonblocking
+  inventory and address locks, with fresh-seal fallback on contention. A
+  killed owner's flocks are released by the kernel; the existing
+  pending-owner probe reaps its abandoned staging.
   Each hit copies to a private destination-side file, computing one SHA-256
   over the chunks read from the pinned cache descriptor. It compares the copied
   length and digest with the record before atomically installing that same file.
