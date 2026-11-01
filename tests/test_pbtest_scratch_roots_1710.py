@@ -65,13 +65,14 @@ def test_real_failed_shard_registers_root_and_expires_without_later_shard(
     result = _shard(checkout, scratch, base)
     assert result.returncode == 1, result.stdout + result.stderr
     root = base if basetemp else scratch
-    assert list(root.rglob("marker"))
+    assert bool(list(root.rglob("marker"))) == basetemp
     entry, = registry.iterdir()
     assert entry.is_symlink() and entry.readlink() == root
     assert entry.name.startswith("basetemp-" if basetemp else "tmpdir-")
     assert roots.sweep_pbtest_roots(owned_tree.reap_dead_trees) == [(entry.name, [], None)]
     reports = roots.sweep_pbtest_roots(_future_reap)
-    assert reports[0][1] and reports[0][2] is None
+    assert bool(reports[0][1]) == basetemp
+    assert reports[0][2] is None
     assert root.exists() and list(root.iterdir()) == []
 
 

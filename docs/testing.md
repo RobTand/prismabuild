@@ -10,6 +10,24 @@ From a task checkout, run the tier that matches the change:
 
 The commands use the published PrismaBuild `pbtest.py`. PB selects shard membership, placement, and concurrency. Each CPU shard reserves one CPU and four GiB RAM, except the two-CPU lane below. Each GPU shard reserves one CPU, eight GiB host RAM and two GiB GPU memory. Native threads are one per worker, and validation runs at priority -10.
 
+Pytest scratch must stay outside the Git checkout. Published pbtest already
+uses a short private `TMPDIR/pb-<suffix>/pytest`; omit `--basetemp` for normal
+runs. The default directory is removed on handled success or failure. An
+explicit pbtest `--basetemp` keeps its existing placement and retention rules.
+
+For native raw pytest submitted with pbrun or pbcampaign, run
+`python /mnt/shared/prismabuild-fleet/repo/tools/pytest_action.py <pytest args>`
+inside the action. Python launchers can use
+`with prismabuild.pytest_temp.pytest_basetemp() as base:` and pass
+`--basetemp=<base>` to pytest. The helper removes its private directory in
+`finally` without moving compiler/cache `TMPDIR`. Killed processes use the
+existing registered owner-lock expiry path. A short external root leaves room
+for broker socket names under Linux's 108-byte AF_UNIX limit. Scratch inside a
+checkout also makes Git discover the enclosing repository. Root container
+runners already use a private in-container base with `docker --rm`.
+The new helper and carried cleanup behavior require the next runtime
+publication; a source merge does not update workers.
+
 The default worker Python paths are `/home/rob/venvs/pb-cpu/bin/python` and `/home/rob/venvs/pq-cu130/bin/python`. Pass `--python /absolute/worker/python` for another qualified pbtest environment. The root lane uses its profile's exact interpreter. No coordinator installation is needed.
 
 Run `python3 tools/verify.py TIER --plan` to inspect each lane's file population and command without execution. Fast, GPU and two-CPU membership lives in `tools/verify.py`. The root lane reads its files from `tests/proof_execution.json` and `tests/receipt_execution.json`. The one-CPU integration lane is the complement. New CPU tests therefore enter a tier automatically. Removing a declared test refuses the gate instead of silently reducing coverage, and so does declaring one file in two lanes.

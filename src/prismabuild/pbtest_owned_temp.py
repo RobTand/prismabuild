@@ -130,21 +130,13 @@ def _pb_run_and_clean_attempt_base(_pb_run):
     return _pb_code
 """
 
-#: The worker-only source every shard runs before anything else (#1542). It
-#: gives the attempt its own pytest base temp under the sealed ``TMPDIR``:
-#: ``<tmpdir>/pb-<mkdtemp suffix>/pytest``, beside the attempt's owner lock
-#: (``owned_tree``). An explicit sealed ``--basetemp`` keeps its own
-#: namespace; this default never touches it. After pytest exits 0 the
-#: worker removes this attempt's directory, read-only test directories
-#: included. Any other ending keeps it for diagnosis, as
-#: ``tmp_path_retention_policy=failed`` does, and starts its retention
-#: clock (a SIGKILL starts it when a later attempt first finds the lock
-#: free); a later attempt in the same ``TMPDIR`` reaps it
-#: ``owned_tree.RETENTION_S`` after that. ``TMPDIR`` itself is the sealed
-#: scratch placement and the compiler cache context; it is never removed.
+#: Default shards retain the short external TMPDIR/pb-<suffix>/pytest layout.
+#: Handled endings remove scratch, including failed tests (#2449). Killed
+#: owners still use the registered, lock-proven recovery path (#1710).
 ATTEMPT_TEMP_PROGRAM = """\
 import os as _pb_os
 import re as _pb_re
+import signal as _pb_signal
 import sys as _pb_sys
 import tempfile as _pb_tempfile
 
@@ -188,14 +180,20 @@ if (_pb_tmpdir and _pb_key and "/" not in _pb_key
 
 
     def _pb_run_and_clean_attempt_base(_pb_run):
-        _pb_code = _pb_run()
+        def _pb_terminated(signum, frame):
+            raise SystemExit(128 + signum)
+
+        _pb_previous = _pb_signal.signal(_pb_signal.SIGTERM, _pb_terminated)
         try:
-            _pb_owned_tree["release_owned_tree"](
-                _pb_parent, _pb_name, _pb_lock, remove=int(_pb_code) == 0)
-        except OSError as _pb_exc:
-            print("pbtest: attempt base temp kept for expiry: " + str(_pb_exc),
-                  file=_pb_sys.stderr)
-        return _pb_code
+            return _pb_run()
+        finally:
+            _pb_signal.signal(_pb_signal.SIGTERM, _pb_previous)
+            try:
+                _pb_owned_tree["release_owned_tree"](
+                    _pb_parent, _pb_name, _pb_lock, remove=True)
+            except OSError as _pb_exc:
+                print("pbtest: attempt base temp kept for expiry: " + str(_pb_exc),
+                      file=_pb_sys.stderr)
 
 
 """
