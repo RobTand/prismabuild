@@ -66,6 +66,13 @@ python tools/ci/gate_run.py --plan plan.json --files-from assigned.txt --workers
   --result result.json --junitxml junit.xml
 ```
 
+The gate's optional `--setup-aware` partition groups the two sandbox files and
+charges 40 CPU-equivalent seconds for their shared setup. Groups costing at
+least 60 seconds get their own shard, while at least one shard remains for
+short files. This prevents a long file from waiting behind unrelated collection
+and fixture work. The shared nightly `shards(...)` interface retains its
+original longest-processing-time algorithm.
+
 Each shard recomputes its assignment from the same population, duration table
 and shard count. No test-file list passes through matrix entries. Coverage is
 never truncated to meet a time budget. Two ten-shard trials took 6m20s and 6m21s from workflow start to the final
@@ -128,6 +135,17 @@ first runner. A JUnit failure or error is final even if pytest then exits 2
 or 3, or its timing evidence is incomplete. The final `gate` job fails on
 explicit failure evidence from either attempt, even if the other passed, or
 on a missing verdict after retry.
+
+The runner loads `gate_collect.py`, traverses the repository once, and ignores
+unassigned files and directories before importing them. It preserves the assigned
+file order and pytest's file-based xdist scheduling, including shared fixtures,
+deselections and xunit1 file identities. A hosted profile of a 71-file assignment
+found about 93,000 directory collections when each file was a separate pytest
+argument. Root imports took only 1.2–1.4 seconds; repeated sibling-directory
+collection accounted for most of the 15–46-second startup. The collector's
+regression counts directory visits and refuses import of an unassigned file.
+Splitting individual test cases across workers was trialled and rejected because
+it duplicated shared build fixtures; the gate retains `--dist=loadfile`.
 
 Artifacts are separated by workflow attempt and shard/attempt index to avoid
 stale evidence on reruns. Plans include base/head SHAs, population version,
