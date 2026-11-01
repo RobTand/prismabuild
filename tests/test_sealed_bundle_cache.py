@@ -701,6 +701,44 @@ control.send(("finished", snapshot["input"]["sha256"]))
             control.close()
 
 
+def test_timed_inventory_grant_stays_owned_after_the_helper_exits(tmp_path, monkeypatch):
+    reached, release, acquired, finished = (threading.Event() for _ in range(4))
+    inventory = tmp_path / ".inventory"
+    native = subprocess.run
+
+    def release_before_lock_helper_runs(args, **kwargs):
+        assert kwargs["timeout"] is not None
+        reached.set()
+        assert release.wait(60), "test did not release inventory"
+        return native(args, **kwargs)
+
+    def take_inventory():
+        with cache_module._bundle_inventory_lock(tmp_path, bounded_wait=False) as owned:
+            assert owned is not None
+            acquired.set()
+            assert finished.wait(60), "test did not release the granted lock"
+
+    monkeypatch.setattr(subprocess, "run", release_before_lock_helper_runs)
+    holder = ExitStack()
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        holder.enter_context(cache_module._bundle_cache_lock(inventory))
+        waiter = workers.submit(take_inventory)
+        try:
+            assert reached.wait(60), "contended acquisition did not enter the timed helper"
+            holder.close()
+            release.set()
+            assert acquired.wait(60), "timed acquisition did not adopt the released lock"
+            with cache_module._bundle_cache_lock(inventory, nonblocking=True) as probe:
+                assert probe is None, "helper exit released the caller's inventory lock"
+        finally:
+            holder.close()
+            release.set()
+            finished.set()
+        waiter.result(timeout=60)
+    with cache_module._bundle_cache_lock(inventory, nonblocking=True) as probe:
+        assert probe is not None, "caller exit leaked the granted inventory lock"
+
+
 def test_distinct_addresses_with_one_prefix_never_serialize(tmp_path, monkeypatch):
     cache = tmp_path / "cache"
     monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", str(cache))

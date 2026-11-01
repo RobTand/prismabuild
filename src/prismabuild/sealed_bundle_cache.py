@@ -91,7 +91,7 @@ def _bundle_cache_lock(path: Path, *, nonblocking: bool = False, shared: bool = 
             # inherited open file description; subprocess owns its timeout and
             # reaping. Success leaves the lock on our fd, timeout closes it.
             try:
-                subprocess.run([sys.executable, "-c",
+                subprocess.run([sys.executable, "-I", "-c",
                     "import fcntl,sys; fcntl.flock(int(sys.argv[1]), int(sys.argv[2]))",
                     str(fd), str(mode)], pass_fds=(fd,), stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True,
