@@ -206,3 +206,33 @@ def test_case(case, worker_id):
                            junit=root / 'junit.xml', workers=2, affinity={0, 1})
     assert code == 0
     assert len({(root / 'tests' / ('worker-' + str(case))).read_text() for case in range(4)}) == 1
+
+
+def test_collection_scans_a_directory_once_and_imports_only_assigned_files(tmp_path):
+    root = tmp_path
+    (root / 'tests').mkdir()
+    (root / 'pyproject.toml').write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')
+    (root / 'conftest.py').write_text('''from pathlib import Path
+
+def pytest_collectstart(collector):
+    if collector.path.name == 'tests':
+        with Path(__file__).with_name('directory-visits').open('a') as output:
+            output.write('visit\\n')
+''')
+    for name in ['long', 'short']:
+        (root / f'tests/test_{name}.py').write_text(f'''from pathlib import Path
+
+def test_case():
+    with Path(__file__).parents[1].joinpath('order').open('a') as output:
+        output.write('{name}\\n')
+''')
+    (root / 'tests/test_unassigned.py').write_text('raise AssertionError("unassigned file was imported")\n')
+    files = ['tests/test_short.py', 'tests/test_long.py']
+    plan = {'selected': [{'path': files[0], 'estimated_seconds': 1},
+                         {'path': files[1], 'estimated_seconds': 20}], 'deselect': []}
+    code = runner.run_plan(plan, root=root, output=root / 'result.json',
+                           junit=root / 'junit.xml', workers=1, affinity={0})
+    assert code == 0
+    assert (root / 'directory-visits').read_text().splitlines() == ['visit']
+    assert (root / 'order').read_text().splitlines() == ['long', 'short']
+    assert {case.get('file') for case in ET.parse(root / 'junit.xml').iter('testcase')} == set(files)
