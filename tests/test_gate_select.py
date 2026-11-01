@@ -613,3 +613,25 @@ def test_literal_keyword_dynamic_imports_reach_production_consumers(tmp_path, so
     (root / 'src/prismabuild/pool.py').write_text(source)
     assert selected(plan(root, ['src/prismabuild/private.py'])) == {
         'tests/test_fast.py', 'tests/test_direct.py', 'tests/test_nested.py', 'tests/test_indirect.py'}
+
+
+@pytest.mark.parametrize('source', [
+    pytest.param('directory, filename = Path(__file__).parent / "nested", "config.py"\n'
+                 'runpy.run_path(str(directory / filename))\n', id='unpacking'),
+    pytest.param('for directory, filename in [(Path(__file__).parent / "nested", "config.py")]:\n'
+                 '    runpy.run_path(str(directory / filename))\n', id='loop'),
+    pytest.param('[runpy.run_path(str(directory / filename))\n'
+                 ' for directory, filename in [(Path(__file__).parent / "nested", "config.py")]]\n',
+                 id='comprehension'),
+    pytest.param('with nullcontext((Path(__file__).parent / "nested", "config.py")) as (directory, filename):\n'
+                 '    runpy.run_path(str(directory / filename))\n', id='with'),
+])
+def test_production_loader_keeps_split_components_in_compound_bindings(tmp_path, source):
+    root = tree(tmp_path)
+    (root / 'tools/fleet/nested').mkdir()
+    (root / 'tools/fleet/nested/config.py').write_text('VALUE = 1\n')
+    (root / 'tools/fleet/loader.py').write_text(
+        'from pathlib import Path\nfrom contextlib import nullcontext\nimport runpy\n' + source)
+    (root / 'tests/test_loader_consumer.py').write_text('from tools.fleet import loader\n')
+    assert selected(plan(root, ['tools/fleet/nested/config.py'])) == {
+        'tests/test_fast.py', 'tests/test_loader_consumer.py'}
