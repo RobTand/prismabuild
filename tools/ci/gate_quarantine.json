@@ -515,18 +515,6 @@
       }
     },
     {
-      "target": "tests/test_worker_adapter_requires_known_receipts.py::test_public_adapter_requires_a_known_pair[real-contained-child-match]",
-      "reason": "Deterministic hosted four-CPU topology exposes a changed adapter caller affinity at worker_adapter_fixture.py:183; not established as flaky.",
-      "issue": 2446,
-      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
-    },
-    {
-      "target": "tests/test_worker_adapter_requires_known_receipts.py::test_public_adapter_requires_a_known_pair[loop-commit-drift]",
-      "reason": "Deterministic hosted four-CPU topology exposes a changed adapter caller affinity at worker_adapter_fixture.py:183; not established as flaky.",
-      "issue": 2446,
-      "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
-    },
-    {
       "target": "tests/test_compat_bundle_cache_isolation.py",
       "issue": 2435,
       "reason": "All three collected cases are the inventory-proven bundle-cache flakes already owned by #2435; whole-file exclusion prevents a zero-case assignment from making the shadow audit inconclusive.",
