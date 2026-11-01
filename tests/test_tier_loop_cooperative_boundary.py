@@ -44,6 +44,7 @@ def scope(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "RUNTIME_VERSION", published)
     args = SimpleNamespace(pool_root=str(tmp_path / "queue"), source_pool=None,
                            interval_s=1.0, once=True)
+    monkeypatch.setattr(tier_loop, "CYCLE_INTERVAL_S", args.interval_s)
     events = []
 
     class Records:
