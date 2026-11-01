@@ -1,11 +1,12 @@
 # Hosted Actions merge gate
 
-Ordinary PRs run `pr-gate` on GitHub-hosted `ubuntu-24.04`, selecting tests by
-evidence. Mergify batch drafts run the full eligible population when the head
+Ordinary PRs select tests by evidence, then use the same duration-balanced
+execution and retry path as the full gate. The final `pr-gate` check aggregates
+the complete selection. Mergify batch drafts run the full eligible population when the head
 branch starts `mergify/merge-queue/`, the PR author is login `mergify[bot]` with
 id 37929162, and the head repository is this repository. A same-repository PR
 with the `gate-canary` label also runs the full gate, without duplicating the
-single-job PR selection run. No CI job uses the fleet.
+PR selection run. No CI job uses the fleet.
 Mergify requires `pr-gate` to queue and the final job `gate` to merge, enforced
 by the batched queue configuration merged in #2453. Full queue coverage
 depends on `gate` succeeding on authenticated batch SHAs, not on a check of
@@ -15,10 +16,9 @@ The full plan records a shadow selection while coverage stays full. The full
 matrix defaults to sixteen shards, alternating `ubuntu-24.04` and `ubuntu-24.04-arm`.
 Workflow reruns swap the architectures by shard index, so qualification exercises
 each file on both architectures.
-`GATE_RUNNERS` is the workflow's single list of test destinations. The small
-label-resolution job bootstraps on hosted x64; test jobs use its outputs,
-and `matrix --runners` receives that same list. Changing test destinations
-requires one edit to `GATE_RUNNERS`.
+`GATE_RUNNERS` is the workflow's single list of test destinations. Control
+jobs bootstrap on hosted x64; `matrix --runners` receives that list. Changing
+test destinations requires one edit to `GATE_RUNNERS`.
 `GATE_SHARDS` is the single workflow setting for the full shard count. The
 lead sizes Mergify parallel checks so shard count times concurrent batches
 stays near the account's 20 hosted Linux jobs.
@@ -453,5 +453,28 @@ in `tools/ci/gate_evidence.json`.
 The speed round measures three baseline and three revised full-population
 canaries, one at a time, with no overlap with an active merge-queue gate.
 It keeps the population, 16 shards, both hosted architectures, test budgets
-and infrastructure-only retry unchanged. Large PR selections will use the
-same balanced shards, with `pr-gate` remaining the required PR check.
+and infrastructure-only retry unchanged. Large PR selections use the same
+balanced shards, with `pr-gate` remaining the required PR check.
+
+`GATE_PR_SINGLE_SECONDS` sets the one-slot cutoff, initially 90 estimated
+seconds at four workers. Above it, selections use the full gate's shard
+limit. Missing files use the inventory p90 rather than zero when choosing
+whether to fan out. A small selection uses one x64 shard to avoid duplicating
+setup and coverage; larger selections use both architectures without increasing
+the shard limit. The final check verifies every selected file exactly once.
+
+A head without required gate tooling fails before dependency setup, with
+instructions to merge `origin/main`. That is a final failure because retrying
+the same incompatible head cannot repair it. Setup and planning infrastructure
+failures retain exit 75 and the infrastructure-only retry.
+
+Selection summaries show counts, reason categories, the first 50 selected
+files and the first 50 exclusions. Long cells are abbreviated. Budget summaries
+show at most 25 warnings. The complete selection remains in `plan.json`, and
+the complete warning list remains in `result.json` and JUnit. These bounded
+previews leave headroom below GitHub's 1 MiB step-summary limit.
+
+Whole-population triggers discover filenames without building an unused import
+and helper graph. Shadow coverage is still the complete population. Shards
+start long files first so short files can fill the remaining workers while a
+long file finishes. Neither optimization removes or retries a test.
