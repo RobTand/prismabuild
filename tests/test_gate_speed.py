@@ -37,14 +37,14 @@ def test_selection_summary_is_bounded_and_links_complete_artifact():
 @pytest.mark.parametrize('seconds,count', [(360, 1), (360.01, 16), (4800, 16)])
 def test_pr_selection_uses_one_shard_only_below_the_wall_time_threshold(seconds, count):
     partition = load('gate_partition')
-    files = ['slow.py', 'fast.py']
-    assert partition.selection_shard_count(files, {'slow.py': seconds, 'fast.py': 0}, 16,
+    files = ['slow.py', *[f'fast_{i}.py' for i in range(15)]]
+    assert partition.selection_shard_count(files, {'slow.py': seconds, **{path: 0 for path in files[1:]}}, 16,
                                             workers=4, single_shard_seconds=90) == count
 
 
 def test_unknown_pr_files_are_not_free_when_deciding_to_fan_out():
     partition = load('gate_partition')
-    assert partition.selection_shard_count(['new.py'], {'known.py': 400}, 16,
+    assert partition.selection_shard_count([f'new_{i}.py' for i in range(16)], {'known.py': 400}, 16,
                                             workers=4, single_shard_seconds=90) == 16
 
 
