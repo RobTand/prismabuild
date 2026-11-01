@@ -102,7 +102,7 @@ def test_invalid_candidate_does_not_mutate_source_or_build(tmp_path, monkeypatch
     monkeypatch.setattr(release.subprocess, "run", original)
     assert environments
     assert all("GITHUB_TOKEN" not in environment and "PYTHONPATH" not in environment for environment in environments)
-    assert subprocess.check_output(["git", "-C", str(source), "tag"]) == b""
+    assert subprocess.check_output(["git", "-C", str(source), "tag"]) == b""  # pb-history-ok: lists tags of the test's own temporary source repository
     assert subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"]) == b""
 
 
