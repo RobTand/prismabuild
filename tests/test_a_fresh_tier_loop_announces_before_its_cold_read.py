@@ -163,7 +163,7 @@ class _Slow:
                     self.reads += 1
                 if name == self.hang_name:
                     self.hung.set()
-                    self.release.wait(60.0)
+                    assert self.release.wait(60.0), "the hung receipt was not released"
                 delay(self.read_s)
             return real(path, *args, **kwargs)
 
@@ -469,7 +469,7 @@ def test_a_hung_read_among_parallel_readers_reads_dead_within_the_bound(
     """
 
     queue, stage = leg._fixture_queue(tmp_path, 5)
-    clock = Clock(now=time.time())
+    clock = Clock(now=1000.0)
     clock.install(monkeypatch, scope="pool")
     receipts = tier_loop.ReceiptCache()
     liveness = tier_loop.Liveness(interval_s=INTERVAL_S)
@@ -484,10 +484,39 @@ def test_a_hung_read_among_parallel_readers_reads_dead_within_the_bound(
     slow = _Slow(monkeypatch, delay=lambda _seconds: None)
     _file_cold_receipts(queue, count=20)
     slow.hang_name = f"{PREFIX}0010.json"
-    worker = threading.Thread(target=run_cycle, daemon=True)
+    taking_hung = threading.Event()
+    native_executor = kept_reads.ThreadPoolExecutor
+
+    class ObservedExecutor(native_executor):
+        def submit(self, fn, *args, **kwargs):
+            future = super().submit(fn, *args, **kwargs)
+            if any(entry.name == slow.hang_name for entry in args[0]):
+                native_result = future.result
+
+                def result(timeout=None):
+                    # _entry_reads has finished its checkpoint and is taking
+                    # this result. It cannot checkpoint again until the hung
+                    # read is released, regardless of worker scheduling.
+                    taking_hung.set()
+                    return native_result(timeout)
+
+                future.result = result
+            return future
+
+    monkeypatch.setattr(kept_reads, "ThreadPoolExecutor", ObservedExecutor)
+    errors = []
+
+    def background_cycle():
+        try:
+            run_cycle()
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=background_cycle, daemon=True)
     worker.start()
     try:
-        assert slow.hung.wait(60.0), "the hung read never started"
+        assert slow.hung.wait(60), "the hung read never started"
+        assert taking_hung.wait(60), "consumer never reached the hung result"
         path = queue.records.tier_record_path(TIER)
         announced = path.read_bytes()
         assert queue._tier_loop_alive(TIER, now=clock.now)[0]
@@ -501,6 +530,7 @@ def test_a_hung_read_among_parallel_readers_reads_dead_within_the_bound(
         slow.release.set()
         worker.join(60.0)
     assert not worker.is_alive()
+    assert not errors, errors
     # The other readers ran: every cold receipt was read, the hung one last.
     assert slow.reads == 20, slow.reads
 
