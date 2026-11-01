@@ -1,6 +1,7 @@
 """Collect an exact gate assignment with one traversal of each directory."""
 from __future__ import annotations
 
+from fnmatch import fnmatch
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -36,4 +37,9 @@ def pytest_configure(config):
             raise ValueError('an assigned test file is missing')
     except (KeyError, ValueError, TypeError) as error:
         raise pytest.UsageError('invalid gate collection assignment: ' + str(error)) from error
+    # Match explicit unusual filenames without assertion-rewriting every imported
+    # production dependency, which would change Python's bytecode policy.
+    for filename in sorted({Path(path).name for path in files}):
+        if not any(fnmatch(filename, pattern) for pattern in config.getini('python_files')):
+            config.addinivalue_line('python_files', filename)
     config.pluginmanager.register(GateCollection(root, files), 'gate-assigned-collection')
