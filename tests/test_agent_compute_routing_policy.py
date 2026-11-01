@@ -13,12 +13,18 @@ def policy_text(path: Path) -> str:
 
 
 @pytest.mark.parametrize("path", POLICIES, ids=["agents", "execution-policy"])
-def test_agents_route_their_tests_through_prismabuild(path: Path):
-    # Rob's routing policy (2026-09-05), amended 2026-10-29: development
-    # tests and trials still go through PrismaBuild; only CI does not.
+def test_remote_tests_may_skip_prismabuild_but_fleet_work_may_not(path: Path):
+    # Rob's routing policy (2026-09-05), amended 2026-10-29 and 2026-11-01:
+    # tests on free remote compute need no PrismaBuild; fleet machines still do.
     text = policy_text(path)
-    assert "agents and subagents run their tests and computational work through prismabuild" in text
-    assert "gpu jobs, benchmarks, and large or long-running compute" in text
+    assert "amended 2026-10-29 and 2026-11-01" in text
+    assert "tests that run on free remote compute" in text
+    assert "buildbuddy" in text and "github-hosted ci" in text
+    assert "reserved for exploratory work" in text
+    assert "work that runs on a fleet machine still goes through prismabuild" in text
+    assert "do not run test suites directly on fleet hosts outside it" in text
+    assert "read the run's own verdict and logs" in text
+    assert "agents and subagents run their tests and computational work through prismabuild" not in text
     assert "run the fast relevant tests in your worktree" not in text
     assert "a local run is evidence" not in text
     # The coordinator may inspect, edit, use Git and submit; it runs no tests.
