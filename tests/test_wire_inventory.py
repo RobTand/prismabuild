@@ -35,7 +35,8 @@ def test_repository_metadata_guard_rejects_corruption(tmp_path, monkeypatch, cor
     (package / 'record_kinds.py').write_text(catalogue_source)
     metadata = tmp_path / 'tests/compat/dispositions.jsonl'
     metadata.parent.mkdir(parents=True)
-    row = dict(wire_id='example.control.v1', disposition='operator_control', reason='stdout only')
+    row = dict(wire_id='example.control.v1', disposition='operator_control', reason='stdout only',
+               witnesses={key: [] for key in ('occurrences', 'schema_builders', 'reader_checks')})
     metadata.write_text(json.dumps(row) + '\n')
     monkeypatch.setitem(globals(), 'ROOT', tmp_path)
     test_repository_catalogue_and_dispositions_are_consistent()
@@ -88,11 +89,167 @@ def test_archive_guard_rejects_corruption(tmp_path, corruption):
         if corruption == 'missing_member':
             members.pop(0)
         else:
-            members.append({'unexpected_member': ('extra', b'new'), 'duplicate_member': members[0],
-                            'unsafe_path': ('../escape', b'bad'), 'non_file': ('link', b'')}[corruption])
+            name, raw = {'unexpected_member': ('extra', b'new'), 'duplicate_member': members[0],
+                         'unsafe_path': ('../escape', b'bad'), 'non_file': ('link', payload)}[corruption]
+            members.append((name, raw))
+            if corruption in ('unsafe_path', 'non_file'):
+                manifest['files'][name] = hashlib.sha256(raw).hexdigest()
         write_archive()
     with pytest.raises(AssertionError):
         test_retained_archive_is_intact(archive)
+
+
+def _rejected(check):
+    try:
+        check()
+    except (AssertionError, ValueError, KeyError, StopIteration, TypeError):
+        return True
+    return False
+
+
+@pytest.mark.parametrize('corruption', ['generation', 'generation_list', 'capture_json', 'current_case',
+                                      'historical_generation', 'unknown_absence', 'ineligible_absence',
+                                      'witness_occurrences', 'witness_schema_builders', 'witness_reader_checks'])
+def test_metadata_guard_covers_audit_documents(tmp_path, monkeypatch, corruption):
+    package = tmp_path / 'src/prismabuild'
+    package.mkdir(parents=True)
+    declaration = 'RecordKind(name="qualified", wire_id="example.qualified.v1", older_participant_absence=True)\n'
+    catalogue = package / 'record_kinds.py'
+    catalogue.write_text(declaration)
+    compat = tmp_path / 'tests/compat'
+    generations = compat / 'generations'
+    generations.mkdir(parents=True)
+    descriptor = generations / 'window.json'
+    descriptor.write_text('{"generations": [{"generation": "fixture"}]}')
+    current = compat / 'goldens.jsonl'
+    current.write_text('{"case": "qualified/fixture"}\n')
+    historical = compat / 'historical.jsonl'
+    historical.write_text('{"case": "qualified/fixture", "generation": "fixture"}\n')
+    absent = compat / 'absent-inputs.jsonl'
+    absent.write_text('{"case": "qualified/fixture", "generation": "fixture"}\n')
+    disposition = dict(wire_id='example.control.v1', reason='stdout only', disposition='operator_control',
+                       witnesses={key: [] for key in ('occurrences', 'schema_builders', 'reader_checks')})
+    reviewed = compat / 'dispositions.jsonl'
+    reviewed.write_text(json.dumps(disposition) + '\n')
+    monkeypatch.setitem(globals(), 'ROOT', tmp_path)
+    test_repository_catalogue_and_dispositions_are_consistent()
+    if corruption == 'generation':
+        descriptor.write_text('{"generations": [{}]}')
+    elif corruption == 'generation_list':
+        descriptor.write_text('{}')
+    elif corruption == 'capture_json':
+        current.write_text('{broken\n')
+    elif corruption == 'current_case':
+        current.write_text('{}\n')
+    elif corruption == 'historical_generation':
+        historical.write_text('{"case": "qualified/fixture"}\n')
+    elif corruption == 'unknown_absence':
+        absent.write_text('{"case": "unknown/fixture", "generation": "fixture"}\n')
+    elif corruption == 'ineligible_absence':
+        catalogue.write_text(declaration.replace('True', 'False'))
+    else:
+        del disposition['witnesses'][corruption.removeprefix('witness_')]
+        reviewed.write_text(json.dumps(disposition) + '\n')
+    assert _rejected(test_repository_catalogue_and_dispositions_are_consistent), corruption
+
+
+def _source_audit(root):
+    # Red stub for the bounded source-index validator.
+    return None
+
+
+@pytest.fixture(scope='module')
+def repository_source_index():
+    return _source_audit(ROOT)
+
+
+@pytest.mark.parametrize('path', list(source_paths(ROOT)))
+def test_source_file_preserves_audit_assertions(path, repository_source_index):
+    # Red stub: source assertions currently run only for production pin cases.
+    pass
+
+
+@pytest.mark.parametrize('wire', ['prismaquant.prismabuild.action.v1', 'buffered-sequential-write-fdatasync-read.v1',
+                                'contiguous-residency-exact-cover.v1', 'repeated-shake256-block.v1'])
+@pytest.mark.parametrize('form', ['literal', 'imported', 'embedded'])
+def test_source_guard_rejects_forbidden_constructors(tmp_path, monkeypatch, wire, form):
+    package = tmp_path / 'src/prismabuild'
+    package.mkdir(parents=True)
+    (package / 'owner.py').write_text('SCHEMA = ' + repr(wire) + '\n')
+    source = 'def write():\n    return {"schema": ' + repr(wire) + '}\n'
+    if form == 'imported':
+        source = 'from .owner import SCHEMA\ndef write():\n    return dict(schema=SCHEMA)\n'
+    elif form == 'embedded':
+        source = 'SCRIPT = ' + repr(source) + '\n'
+    (package / 'builder.py').write_text(source)
+    monkeypatch.setitem(globals(), 'ROOT', tmp_path)
+    assert _rejected(lambda: test_source_file_preserves_audit_assertions(
+        'src/prismabuild/builder.py', _source_audit(tmp_path))), (wire, form)
+
+
+def test_source_guard_rejects_changed_test_source(tmp_path, monkeypatch):
+    source = tmp_path / 'tests/test_fixture.py'
+    source.parent.mkdir()
+    source.write_text('VALUE = 1\n')
+    index = _source_audit(tmp_path)
+    monkeypatch.setitem(globals(), 'ROOT', tmp_path)
+    test_source_file_preserves_audit_assertions('tests/test_fixture.py', index)
+    source.write_text('VALUE = 2\n')
+    assert _rejected(lambda: test_source_file_preserves_audit_assertions('tests/test_fixture.py', index))
+
+
+def _write_source_archive(root, files):
+    archive = root / 'fixture.tar.gz'
+    receipt = b'{}'
+    with tarfile.open(archive, 'w:gz') as contents:
+        for name, raw in {**files, 'RUNTIME_VERSION.json': receipt}.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(raw)
+            contents.addfile(member, io.BytesIO(raw))
+    manifest = dict(generation='fixture', archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
+                    receipt_sha256=hashlib.sha256(receipt).hexdigest(),
+                    files={name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()})
+    archive.with_suffix('').with_suffix('.json').write_text(json.dumps(manifest))
+    return archive
+
+
+@pytest.fixture(scope='module')
+def retained_source_indexes(tmp_path_factory):
+    # Red stub: retained contents are currently checked only for byte integrity.
+    return lambda archive: None
+
+
+def _retained_source_paths():
+    for archive in sorted((ROOT / 'tests/compat/generations').glob('*.tar.gz')):
+        manifest = json.loads(archive.with_suffix('').with_suffix('.json').read_bytes())
+        for path in sorted(manifest['files']):
+            if path.split('/')[0] in ('src', 'tools', 'tests', 'fleet') and Path(path).suffix in ('.py', '', '.sh'):
+                yield archive, path
+
+
+@pytest.mark.parametrize('archive,path', list(_retained_source_paths()),
+                         ids=lambda value: value.name if isinstance(value, Path) else value)
+def test_retained_source_preserves_audit_assertions(archive, path, retained_source_indexes):
+    pass
+
+
+@pytest.mark.parametrize('wire', ['prismaquant.prismabuild.action.v1', 'buffered-sequential-write-fdatasync-read.v1',
+                                'contiguous-residency-exact-cover.v1', 'repeated-shake256-block.v1'])
+def test_retained_source_guard_rejects_forbidden_constructors(tmp_path, retained_source_indexes, wire):
+    path = 'src/prismabuild/builder.py'
+    archive = _write_source_archive(tmp_path, {path: ('def write():\n    return {"schema": ' + repr(wire) + '}\n').encode()})
+    test_retained_archive_is_intact(archive)
+    assert _rejected(lambda: test_retained_source_preserves_audit_assertions(archive, path, retained_source_indexes))
+
+
+def test_retained_source_guard_rejects_changes_after_indexing(tmp_path, retained_source_indexes):
+    path = 'src/prismabuild/builder.py'
+    archive = _write_source_archive(tmp_path, {path: b'VALUE = 1\n'})
+    loaded = retained_source_indexes(archive)
+    if loaded is not None:
+        root, _ = loaded
+        (root / path).write_text('VALUE = 2\n')
+    assert _rejected(lambda: test_retained_source_preserves_audit_assertions(archive, path, retained_source_indexes))
 
 
 def _field_policy_paths(root):
