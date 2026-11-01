@@ -20,7 +20,7 @@ PATH_SPEC = importlib.util.spec_from_file_location('gate_paths', Path(__file__).
 gate_paths = importlib.util.module_from_spec(PATH_SPEC)
 PATH_SPEC.loader.exec_module(gate_paths)
 
-POLICY = 'direct-imports-bound-paths-helper-closure-v2'
+POLICY = 'production-imports-bound-paths-helper-closure-v3'
 
 
 def load_gate_json(path: Path) -> dict:
@@ -91,7 +91,7 @@ def dependencies(source: str, path: str = '') -> tuple[set[str], set[str]]:
             elif isinstance(node, ast.ImportFrom):
                 prefix = node.module or ''
                 if node.level and path:
-                    package = list(PurePosixPath(path).parent.parts)
+                    package = list(PurePosixPath(path.removeprefix('src/')).parent.parts)
                     package = package[:len(package) - node.level + 1]
                     prefix = '.'.join([*package, *([prefix] if prefix else [])])
                 if prefix:
@@ -106,10 +106,38 @@ def dependencies(source: str, path: str = '') -> tuple[set[str], set[str]]:
 
 def dependency_index(root: Path) -> dict[str, tuple[set[str], set[str]]]:
     return {path.relative_to(root).as_posix(): dependencies(path.read_text(), path.relative_to(root).as_posix())
-            for path in sorted((root / 'tests').rglob('*.py'))}
+            for directory in ('tests', 'src/prismabuild', 'tools')
+            for path in sorted((root / directory).rglob('*.py'))}
+
+
+def production_import_closure(index: dict, changed: list[str]) -> set[str]:
+    """Follow reverse production imports before selecting tests and their helpers."""
+    production = {path for path in index if not path.startswith('tests/')}
+    seeds = {path for path in changed if path.endswith('.py') and
+             path.startswith(('src/prismabuild/', 'tools/'))}
+    aliases: dict[str, set[str]] = {}
+    for path in production | seeds:
+        for alias in module_names(path):
+            aliases.setdefault(alias, set()).add(path)
+    reverse: dict[str, set[str]] = {}
+    for path in production:
+        for dependency in index[path][0]:
+            parts = dependency.split('.')
+            for end in range(1, len(parts) + 1):
+                for target in aliases.get('.'.join(parts[:end]), ()):
+                    reverse.setdefault(target, set()).add(path)
+    affected = set(seeds)
+    pending = list(seeds)
+    while pending:
+        for importer in reverse.get(pending.pop(), ()):
+            if importer not in affected:
+                affected.add(importer)
+                pending.append(importer)
+    return affected
 
 
 def helper_importers(index: dict, changed: list[str], existing: dict | None = None) -> dict[str, set[str]]:
+    index = {path: value for path, value in index.items() if path.startswith('tests/')}
     targets_to_index = {name for name in changed if name.startswith('tests/') and name.endswith('.py')}
     targets_to_index = (set(index) | targets_to_index) if existing is None else targets_to_index - index.keys()
     if not targets_to_index:
@@ -175,7 +203,7 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
     index = dependency_index(root) if index is None else index
     if mode not in {'selection', 'full'}:
         raise ValueError('mode must be selection or full')
-    all_tests = {path for path in index if Path(path).name.startswith('test_')}
+    all_tests = {path for path in index if path.startswith('tests/') and Path(path).name.startswith('test_')}
     fast, other_lanes = tier_declarations(root)
     if fast - all_tests:
         raise ValueError(f'fast tier names missing files: {sorted(fast - all_tests)}')
@@ -190,7 +218,10 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
                  'tests/proof_execution.json', 'tests/receipt_execution.json', '.github/workflows/gate.yml'} or
         path.startswith(('tools/ci/gate_', 'tests/test_gate_')))
     reasons: dict[str, list[str]] = {}
+    affected = set(changed) | production_import_closure(index, changed)
     for name, (imports, paths) in index.items():
+        if not name.startswith('tests/'):
+            continue
         why = []
         if name in fast:
             why.append('fast tier')
@@ -198,11 +229,11 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
             why.append('whole population: ' + ', '.join(triggers))
         if name in changed:
             why.append('changed test file')
-        for path in sorted(set(changed)):
+        for path in sorted(affected):
             modules = module_names(path) if not path.startswith('tests/') else set()
             if modules and any(dependency == module or dependency.startswith(module + '.')
                                for dependency in imports for module in modules):
-                why.append('direct import: ' + path)
+                why.append(('direct import: ' if path in changed else 'production import: ') + path)
             elif gate_paths.matches(path, paths):
                 why.append('literal path reference: ' + path)
         if why:
