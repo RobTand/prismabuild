@@ -1,9 +1,8 @@
-"""Each pbtest attempt owns its base temp; success removes it (#1542).
+"""Default pbtest scratch is private and removed on handled endings (#2449).
 
-A passing shard leaves no ``pytest-N`` or attempt base temp under its
-``TMPDIR``. A failing shard keeps the failed test's ``tmp_path``. An
-explicit sealed ``--basetemp`` keeps its existing meaning, and the
-compiler ``TMPDIR`` stays sealed.
+Passing and failing default shards leave no attempt base temp under their
+``TMPDIR``. An explicit sealed ``--basetemp`` keeps its existing meaning,
+and compiler ``TMPDIR`` stays sealed.
 """
 from __future__ import annotations
 
@@ -113,33 +112,18 @@ def test_a_passing_shard_removes_its_attempt_base_temp(tmp_path):
         path.relative_to(scratch).as_posix() for path in scratch.rglob("*"))
 
 
-def test_a_failing_shard_keeps_the_failed_tests_tmp_path(tmp_path):
+def test_success_preserves_unowned_scratch(tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    checkout = _checkout(tmp_path, "assert False, 'kept for diagnosis'")
-    result = _run(checkout, scratch)
-    assert result.returncode == 1, result.stdout + result.stderr
-    markers = list(scratch.rglob("marker"))
-    assert markers, "the failed test's tmp_path is gone"
-    assert all(marker.read_text() == "x" for marker in markers)
-
-
-def test_success_removes_only_its_directory_and_keeps_failed_attempts(tmp_path):
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    checkout = _checkout(tmp_path, "assert False, 'kept for diagnosis'")
-    for _ in range(2):
-        result = _run(checkout, scratch)
-        assert result.returncode == 1, result.stdout + result.stderr
-    retained = set(scratch.iterdir())
-    assert len(retained) == 2
-    markers = set(scratch.rglob("marker"))
-    assert len(markers) == 2
-    (checkout / "tests" / "test_one.py").write_text("def test_one():\n    assert True\n")
+    unowned = scratch / "compiler-cache"
+    unowned.mkdir()
+    sentinel = unowned / "sentinel"
+    sentinel.write_text("keep")
+    checkout = _checkout(tmp_path, "assert True")
     result = _run(checkout, scratch)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert set(scratch.iterdir()) == retained
-    assert all(marker.read_text() == "x" for marker in markers)
+    assert list(scratch.iterdir()) == [unowned]
+    assert sentinel.read_text() == "keep"
 
 
 def test_an_explicit_basetemp_keeps_its_meaning_and_the_compiler_tmpdir(tmp_path, monkeypatch):
@@ -257,3 +241,13 @@ def test_real_shard_binds_socket_and_cleans_its_base_temp(tmp_path, workers, sho
     path = Path(json.loads((checkout / "socket-path.json").read_text()))
     base = path.parent.parent.parent if workers > 1 else path.parent.parent
     assert not base.parent.exists(), str(base.parent)
+
+
+def test_default_failed_attempt_is_removed_2449(tmp_path):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    checkout = _checkout(tmp_path, "assert False, 'expected fixture failure'")
+    result = _run(checkout, scratch)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "1 failed" in result.stdout
+    assert list(scratch.iterdir()) == [], "failed default attempt retained pytest scratch"
