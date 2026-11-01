@@ -125,6 +125,35 @@ jobs:
             output.write('matrix=' + json.dumps({'include': matrix['include']}, separators=(',', ':')) + '\n')
             output.write('shards=' + str(matrix['shards']) + '\n')
         PYTHON
+    - name: Temporary proof of up-to-date selection equivalence
+      if: ${{ github.head_ref == 'prismabuild-2536-pr-gate-merge-commit' && env.GATE_MODE == 'selection' }}
+      env:
+        PR_SOURCE_HEAD: ${{ github.event.pull_request.head.sha }}
+        PR_SOURCE_BASE: ${{ github.event.pull_request.base.sha }}
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        proof="$RUNNER_TEMP/gate-head-selection-proof"
+        git diff --exit-code "$PR_SOURCE_HEAD" "$GATE_HEAD" --
+        git worktree add --detach "$proof" "$PR_SOURCE_HEAD"
+        python "$proof/tools/ci/gate_select.py" --root "$proof" --base "$PR_SOURCE_BASE" --head "$PR_SOURCE_HEAD" \
+          --mode selection --output "$GITHUB_WORKSPACE/gate-artifacts/head-selection.json"
+        git worktree remove "$proof"
+        python - <<'PYTHON'
+        import json, os
+        from pathlib import Path
+        current = json.loads(Path('gate-artifacts/plan.json').read_text())
+        prior = json.loads(Path('gate-artifacts/head-selection.json').read_text())
+        for plan in (current, prior):
+            plan.pop('base_sha')
+            plan.pop('head_sha')
+        assert current == prior, 'Selection changed for an up-to-date real PR'
+        result = {'identical': True, 'selected_files': len(current['selected']),
+                  'population_version': current['population']['version'],
+                  'pr_head': os.environ['PR_SOURCE_HEAD'], 'merge_head': os.environ['GATE_HEAD']}
+        Path('gate-artifacts/selection-equivalence.json').write_text(json.dumps(result, indent=2) + '\n')
+        print('SELECTION_EQUIVALENCE: ' + json.dumps(result))
+        PYTHON
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
         name: gate-plan-${{ github.run_attempt }}
