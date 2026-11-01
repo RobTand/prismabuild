@@ -230,7 +230,7 @@ def test_reproducer_preserves_literal_node_id_without_mentions_or_shell_expansio
     result = dict(census.classify_samples(samples_for({arch: [{node: 'passed'}, {node: 'failed'}]
         for arch in ['x64', 'arm64']}), 2, []), sha='abc', complete=True, run_url='run')
     body = census.census_issue_plans(result, [])[0]['body']
-    command = body.split('main SHA above:\n\n    ', 1)[1].strip()
+    command = body.split('main SHA above:\n\n    ', 1)[1].strip().replace('<clean-checkout>', '/clean-checkout')
     assert chr(64) + 'owner' not in command
     # Parse the proposed command as arguments without running pbtest itself.
     parsed = subprocess.run(['bash', '-c', 'set -- ' + command + '; printf "%s" "${!#}"'],
