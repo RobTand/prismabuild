@@ -2164,7 +2164,7 @@ Two rows, one wanting a GPU and one that must not have one:
         "env": {"PYTHONPATH": "src"}
       },
       {
-        "argv": ["/usr/bin/python3", "-m", "pytest", "-q", "tests"],
+        "argv": ["/usr/bin/python3", "/mnt/shared/prismabuild-fleet/repo/tools/pytest_action.py", "-q", "tests"],
         "cwd": "/home/rob/mypkg",
         "demand": {"cpu": 8, "mem_gb": 16},
         "tags": ["x86"]
@@ -2374,19 +2374,22 @@ Only `tmp_path` is removed per test. A directory made with `tmp_path_factory.mkt
 and the directory of any failing test, lasts as long as the session's base temporary
 directory. Without `--basetemp` each attempt owns its base temp (#1542):
 `<tmpdir>/pb-<mkdtemp suffix>/pytest`, where `tmpdir` is the
-default `/home/rob/tmp` or the `--tmpdir` directory when one is given.
+sealed `TMPDIR` from the worker profile, or the `--tmpdir` directory when
+one is given.
 `mkdtemp` creates each directory exclusively with mode 0700. It retries name
 collisions; it does not truncate an action key or an attempt identity.
 The standard eight-character suffix leaves an 86-byte socket path under
 `/home/rob/tmp`, with `popen-gw0`, a 30-character test name plus its counter,
 and a 12-character file name (#1709).
-After pytest exits 0 the worker removes that attempt's directory, including
-any read-only directory a test left in it. Any other ending (a failure, a
-deadline, SIGKILL, OOM) keeps the directory, as the failed-only retention
-policy does, for 24 hours (`owned_tree.RETENTION_S`) after the attempt ended;
-a killed attempt's 24 hours start when a reaper first finds it dead.
-A later attempt in the same `TMPDIR`, or the owning worker supervisor,
-then removes it, a few per pass.
+After pytest returns, fails, raises, or handles SIGTERM/KeyboardInterrupt, the
+worker removes the default attempt directory, including read-only directories
+(#2449). Test logs and terminal records retain failure diagnostics; default test
+scratch is disposable. SIGKILL and OOM cannot unwind Python, so those attempts
+still use lock-proven recovery after the 24-hour retention window
+(`owned_tree.RETENTION_S`). A killed attempt's clock starts when a reaper first
+finds it dead. A later attempt in the same `TMPDIR`, or the owning supervisor,
+removes expired scratch a few trees per pass. Removal errors also retain the
+owned tree for this recovery path.
 Liveness is the attempt's owner lock, `pb-owner.lock`, which the shard holds
 for its whole life, never the directory's age, so a long shard is never
 reaped. Only directories that carry PrismaBuild's lock for this host are
@@ -2408,6 +2411,33 @@ discovers them. Legacy attempts without owner locks still require operator
 custody. A source merge does not deploy this sweep or report real space freed.
 pytest itself removes no `--basetemp` at the end of a session: it deletes and
 recreates the directory at the start of the next session that uses that path.
+
+For raw pytest through `pbrun` or `pbcampaign`, use the published
+`/mnt/shared/prismabuild-fleet/repo/tools/pytest_action.py` inside the admitted
+action instead of `python -m pytest`. It accepts pytest arguments and supplies
+`--basetemp <TMPDIR>/pb-<suffix>/pytest`. Python launchers can use
+`prismabuild.pytest_temp.pytest_basetemp()` around their invocation. Both remove
+the private attempt in `finally`, preserve compiler/cache `TMPDIR`, and
+register owner locks for killed-process recovery. They refuse a root inside a
+Git checkout. Use a short external `TMPDIR`, such as the worker's configured
+scratch root. Long roots can still exceed Linux's 108-byte AF_UNIX address
+limit after pytest adds its test and xdist directories.
+
+This is a caller convention, not automatic detection of arbitrary commands.
+The worker reconstructs environments from sealed values; `TMPDIR` also places
+compiler caches and declared scratch. Replacing it for every action would
+change those contracts. Docker neither forwards nor mounts a host `TMPDIR`
+automatically. Container pytest must use a short private in-container base and
+remove the container. PB's root runners already combine
+`--basetemp=/var/lib/pb-proof-qualification` with `docker --rm`.
+Never put pytest scratch inside the source checkout: Git repository discovery
+then reaches the enclosing repository, and nested paths break broker sockets.
+The `tools/verify.py` native lanes already delegate to pbtest.
+
+These helper and carried-shard changes reach the fleet only with the next
+runtime publication. Default pbtest action keys change because the carried
+cleanup program changes. No publication or fleet service change is part of
+this fix.
 
 `--basetemp root` seals a separate scratch root for pytest's own temporary
 files (#1469), so selecting real test scratch no longer moves the process

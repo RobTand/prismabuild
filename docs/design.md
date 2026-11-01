@@ -2941,12 +2941,26 @@ No action key or attempt identity is truncated to create this namespace.
 The attempt directory is an owned tree (see "Owned trees" below). It holds
 the owner lock `pb-owner.lock` beside `pytest`, and the plugin roster that
 `pbtest_outcomes` writes for xdist workers, so a killed shard leaves nothing
-directly in `TMPDIR`. Exit 0 removes the attempt directory, read-only test
-directories included. Any other ending keeps it for diagnosis and starts its
-24-hour retention clock; a later attempt or owning worker supervisor then removes it.
-A sealed `--basetemp` attempt `<root>/<key>/<attempt>` follows the same rule
-under its root, and exit 0 also removes the key directory it empties. The
-sealed root and `TMPDIR` themselves are never removed or changed.
+directly in `TMPDIR`. Every handled ending removes the default attempt
+directory in `finally`, including failures and read-only test directories
+(#2449). SIGTERM unwinds that cleanup; SIGKILL/OOM and removal failures still
+use the existing 24-hour lock-proven recovery path.
+An explicit sealed `--basetemp` attempt `<root>/<key>/<attempt>` retains its
+existing rule: exit 0 removes its leaf and the key directory it empties,
+while failures retain it for recovery. The sealed root and `TMPDIR` are never
+removed or changed.
+
+Raw native pytest callers use `pytest_temp.pytest_basetemp` or the published
+`pytest_action.py` helper, which owns the same short external layout and
+recovery registration. The five native maintenance launchers use that context.
+This caller convention preserves sealed compiler/cache and scratch-lifetime
+contracts instead of rebasing every action's `TMPDIR` in pool/core. In
+particular, Docker requires its own explicit mounts/environment; the root
+runners use a private in-container base and `--rm`. Checkout-relative scratch
+is unsuitable because Git finds the enclosing repository and socket paths
+exceed AF_UNIX limits. There is no automatic rewrite of arbitrary pbrun or
+pbcampaign commands. Publication is required for the new helper and carried
+cleanup program; default shard action keys change with that program.
 
 `--pytest-args '["--pbtest-trace"]'` opts into interrupted-shard diagnostics
 (#1455, Refs #1421). The existing outcome controller flushes one
@@ -3166,10 +3180,10 @@ space-freed measurement on real scratch.
   alone would reap live work.
 - **Retention is a clock in the lock.** The owner writes
   `prismabuild owner lock v1 host=<hostname>` and a `running` line. An owner
-  that ends but keeps its tree (a failed shard), or the first reaper to find
+  that ends but keeps its tree (an explicit-basetemp failed shard), or the first reaper to find
   the lock free, truncates `running` away, and that write's mtime starts the
   clock. The tree goes `owned_tree.RETENTION_S` (24 hours) later, so a failed
-  or killed attempt stays a full day after it ended, however long it ran. A
+  or killed retained attempt stays a full day after it ended, however long it ran. A
   removal that cannot finish keeps the lock and restarts the clock, so it is
   retried a window later.
 - **Trees are reaped where they are made, and the work is bounded.** Each new

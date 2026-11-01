@@ -20,6 +20,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild.digest_primitives import raw_sha256
+from prismabuild.pytest_temp import pytest_basetemp
 
 
 def _load(stop, ready):
@@ -81,9 +82,11 @@ def main():
                                        PYTEST_ADDOPTS="")
                     load_before = os.getloadavg()
                     started = time.monotonic() if args.baseline_ref else None
-                    result = subprocess.run(command, cwd=tree, env=environment,
-                                            text=True, stdout=subprocess.PIPE,
-                                            stderr=subprocess.STDOUT)
+                    with pytest_basetemp() as base:
+                        command.append(f"--basetemp={base}")
+                        result = subprocess.run(command, cwd=tree, env=environment,
+                                                text=True, stdout=subprocess.PIPE,
+                                                stderr=subprocess.STDOUT)
                     seconds = time.monotonic() - started if started is not None else None
                     log = evidence / f"{label}-{repeat}.log"
                     with log.open("w") as output:
