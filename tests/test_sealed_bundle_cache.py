@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import subprocess
@@ -493,6 +494,113 @@ print(snapshot["input"]["sha256"])
             if child.poll() is None:
                 child.kill()
             child.wait()
+
+
+@pytest.mark.parametrize("stage", ("read", "reserve", "publish"))
+def test_inventory_contention_does_not_duplicate_a_waiting_fill(sealing, tmp_path, stage):
+    checkout, cache, packs, seal = sealing
+    if stage == "read":
+        seal()
+    else:
+        cache.mkdir(mode=0o700)
+    marker = tmp_path / "packs"
+    script = r'''
+import json, os, subprocess, sys
+from contextlib import contextmanager
+from multiprocessing.connection import Connection
+from pathlib import Path
+from prismabuild import core, sealed_bundle_cache as cache, submission
+checkout, store, marker, stage, role = sys.argv[1:6]
+control = Connection(int(sys.argv[6]))
+os.statvfs = lambda path: os.statvfs_result(tuple(json.loads(sys.argv[7])))
+run, lock = subprocess.run, cache._bundle_cache_lock
+def observed(args, **kwargs):
+    if "pack-objects" in args:
+        fd = os.open(marker, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        os.write(fd, b"pack\n")
+        os.close(fd)
+    return run(args, **kwargs)
+subprocess.run = observed
+counts = {False: 0, True: 0}
+@contextmanager
+def gated(path, *, nonblocking=False, shared=False):
+    if role == "first" and path.name == ".inventory":
+        counts[shared] += 1
+        selected = ((stage == "read" and shared and counts[shared] == 2)
+                    or (not shared and counts[shared] == {"reserve": 2, "publish": 3}.get(stage)))
+        if selected:
+            control.send("ready")
+            assert control.recv() == "held"
+            # Capture an actual contended probe before the parent releases it.
+            # A nonblocking call must retain that miss; a blocking call retries.
+            with lock(path, nonblocking=True, shared=shared) as probe:
+                assert probe is None
+                control.send("contended")
+                assert control.recv() == "release"
+                if nonblocking:
+                    yield None
+                    return
+    if role == "waiter" and path.name.startswith(".lock-"):
+        with lock(path, nonblocking=True, shared=shared) as probe:
+            assert probe is None, "first filler must still own the address"
+        control.send("waiting")
+    with lock(path, nonblocking=nonblocking, shared=shared) as locked:
+        yield locked
+cache._bundle_cache_lock = gated
+snapshot = submission.snapshot_checkout(Path(checkout), cas=core.PrismaBuildCAS(Path(store)))
+print(snapshot["input"]["sha256"])
+'''
+    children, controls = [], []
+
+    def start(role):
+        parent, child = multiprocessing.Pipe()
+        controls.append(parent)
+        try:
+            process = subprocess.Popen([sys.executable, "-c", script, str(checkout),
+                str(tmp_path / ("cas-" + role)), str(marker), stage, role,
+                str(child.fileno()), json.dumps(_AMPLE_VFS)], pass_fds=(child.fileno(),),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                env={**os.environ, "PYTHONPATH": str(Path(submission.__file__).resolve().parents[1])})
+            children.append(process)
+        finally:
+            child.close()
+        return parent
+
+    def expect(control, message):
+        assert control.poll(90), "cache child did not reach " + message
+        assert control.recv() == message
+
+    inventory = ExitStack()
+    try:
+        if stage == "read":
+            inventory.enter_context(cache_module._bundle_cache_lock(cache / ".inventory"))
+        first = start("first")
+        expect(first, "ready")
+        if stage != "read":
+            inventory.enter_context(cache_module._bundle_cache_lock(cache / ".inventory"))
+        first.send("held")
+        expect(first, "contended")
+        waiter = start("waiter")
+        expect(waiter, "waiting")
+        inventory.close()
+        first.send("release")
+        digests = []
+        for child in children:
+            stdout, stderr = child.communicate(timeout=90)
+            assert child.returncode == 0, stderr
+            digests.append(stdout.strip())
+        assert len(set(digests)) == 1
+        assert ["pack"] * len(packs) + marker.read_text().splitlines() == ["pack"]
+        assert seal()[0]["input"]["sha256"] == digests[0]
+        assert len(list(cache.glob("*/bundle"))) == 1
+    finally:
+        inventory.close()
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.wait()
+        for control in controls:
+            control.close()
 
 
 def test_distinct_addresses_with_one_prefix_never_serialize(tmp_path, monkeypatch):
