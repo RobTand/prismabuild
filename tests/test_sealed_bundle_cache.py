@@ -1,6 +1,7 @@
 """Repeated seals reuse verified bytes without changing snapshot identity."""
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
+import fcntl
 import json
 import multiprocessing
 import os
@@ -759,12 +760,15 @@ def test_ordinary_inventory_budget_outlasts_measured_contention(tmp_path, monkey
     readings = iter((0.0,))
     monkeypatch.setattr(_bounded_reader, "time", SimpleNamespace(
         monotonic=lambda: next(readings, _MEASURED_WORST_INVENTORY_WAIT_S)))
-    native, holder = subprocess.run, ExitStack()
+    holder = ExitStack()
 
     def helper_after_measured_wait(args, **kwargs):
         assert kwargs["timeout"] > 0, "measured bookkeeping contention exhausted the inventory budget"
         holder.close()
-        return native(args, **kwargs)
+        # Take the freed lock on the inherited descriptor as the helper would,
+        # without an interpreter start-up racing a real timeout.
+        fcntl.flock(int(args[-2]), int(args[-1]))
+        return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(subprocess, "run", helper_after_measured_wait)
     try:
