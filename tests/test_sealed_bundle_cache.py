@@ -691,7 +691,13 @@ control.send(("finished", snapshot["input"]["sha256"]))
                 assert child.returncode == 0, stderr
             assert len(set(digests)) == 2
             assert sorted(marker.read_text().splitlines()) == ["left", "right"]
-            assert not list(cache.glob("*/bundle"))
+            assert not [entry for entry in cache.iterdir() if not entry.name.startswith(".")]
+            assert len(list(cache.glob(".pending-*"))) == (2 if stage == "publish" else 0)
+        # Expired publication leaves dead-owner staging while inventory is held.
+        # The next ordinary inventory pass must reap it after the holder leaves.
+        with cache_module._bundle_cache_lock(cache / ".inventory"):
+            assert cache_module._bundle_cache_inventory(cache) == ([], 0, 0)
+        assert not list(cache.glob(".pending-*"))
     finally:
         for child in children:
             if child.poll() is None:
