@@ -8,10 +8,13 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Mapping
 
 from . import digest_primitives as digests, local_scratch
+from ._bounded_reader import Deadline
 
 
 def _default_bundle_cache_root() -> Path:
@@ -26,7 +29,15 @@ def _default_bundle_cache_root() -> Path:
 CACHE_ROOT = _default_bundle_cache_root()
 MAX_ENTRIES = 128
 MAX_BYTES = 2 * 1024**3
+# Ordinary callers' budget for each inventory acquisition. Sixteen concurrent
+# 48 MiB fills on a loaded host waited up to 1.5 s (#2525); expiring inside
+# that repacks a bundle (36-46 s). Ten seconds caps what a stopped owner costs.
+INVENTORY_WAIT_S = 10.0
 _ADDRESS = re.compile(r"[0-9a-f]{64}")
+
+
+class _InventoryUnavailable(Exception):
+    """Stop cache work after inventory contention exhausts its budget."""
 
 
 @contextmanager
@@ -65,21 +76,49 @@ def _bundle_cache_session():
 
 
 @contextmanager
-def _bundle_cache_lock(path: Path, *, nonblocking: bool = False, shared: bool = False):
+def _bundle_cache_lock(path: Path, *, nonblocking: bool = False, shared: bool = False,
+                       deadline: Deadline | None = None):
     fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
             raise ValueError("cache lock is not an owned regular file")
+        mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
         try:
-            fcntl.flock(fd, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
-                        | (fcntl.LOCK_NB if nonblocking else 0))
+            fcntl.flock(fd, mode | (fcntl.LOCK_NB if nonblocking or deadline is not None else 0))
         except BlockingIOError:
-            yield None
-        else:
-            yield fd
+            if nonblocking:
+                yield None
+                return
+            # flock has no timed acquisition. A disposable child blocks on the
+            # inherited open file description; subprocess owns its timeout and
+            # reaping. Success leaves the lock on our fd, timeout closes it.
+            # Deadline reports a nonpositive budget as None: no wait at all.
+            remaining = deadline.remaining()
+            if remaining is None or remaining <= 0:
+                raise _InventoryUnavailable
+            try:
+                subprocess.run([sys.executable, "-I", "-c",
+                    "import fcntl,sys; fcntl.flock(int(sys.argv[1]), int(sys.argv[2]))",
+                    str(fd), str(mode)], pass_fds=(fd,), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True,
+                    timeout=remaining)
+            except subprocess.TimeoutExpired as exc:
+                raise _InventoryUnavailable from exc
+            except subprocess.CalledProcessError as exc:
+                raise OSError("cache inventory lock helper failed") from exc
+        yield fd
     finally:
         os.close(fd)
+
+
+@contextmanager
+def _bundle_inventory_lock(root: Path, *, nonblocking: bool, shared: bool = False):
+    """Ordinary callers wait up to INVENTORY_WAIT_S; nonblocking ones never wait."""
+    deadline = None if nonblocking else Deadline(INVENTORY_WAIT_S)
+    with _bundle_cache_lock(root / ".inventory", nonblocking=nonblocking,
+                            shared=shared, deadline=deadline) as locked:
+        yield locked
 
 
 def _bundle_lock_is_named(fd: int, path: Path) -> bool:
@@ -99,18 +138,18 @@ def _remove_idle_bundle_flight(root: Path, address: str) -> None:
 
 
 @contextmanager
-def _bundle_cache_flight(root: Path, address: str, *, bounded_wait: bool):
+def _bundle_cache_flight(root: Path, address: str, *, nonblocking: bool):
     """Pin the address lock's inode until every owner and waiter has left."""
     pin = root / f".pin-{address}"
     for _ in range(3):
         held = ExitStack()
         try:
-            guard = held.enter_context(_bundle_cache_lock(pin, shared=True, nonblocking=bounded_wait))
+            guard = held.enter_context(_bundle_cache_lock(pin, shared=True, nonblocking=nonblocking))
             if guard is not None and not _bundle_lock_is_named(guard, pin):
                 held.close()
                 continue
             locked = (held.enter_context(_bundle_cache_lock(root / f".lock-{address}",
-                        nonblocking=bounded_wait)) if guard is not None else None)
+                        nonblocking=nonblocking)) if guard is not None else None)
         except (OSError, ValueError):
             held.close()
             yield False
@@ -181,10 +220,10 @@ def _trim_bundle_cache(root: Path, *, reserve_bytes: int = 0, reserve_entries: i
 
 
 @contextmanager
-def _opened_bundle_cache_entry(root: Path, address: str):
+def _opened_bundle_cache_entry(root: Path, address: str, *, nonblocking: bool):
     source, record = None, None
     try:
-        with _bundle_cache_lock(root / ".inventory", nonblocking=True, shared=True) as locked:
+        with _bundle_inventory_lock(root, nonblocking=nonblocking, shared=True) as locked:
             if locked is not None:
                 entry = root / address
                 record = _bundle_cache_record(entry, address)
@@ -205,11 +244,11 @@ def _opened_bundle_cache_entry(root: Path, address: str):
             source.close()
 
 
-def _reuse_bundle_cache(root: Path, address: str, destination: Path) -> bool:
+def _reuse_bundle_cache(root: Path, address: str, destination: Path, *, nonblocking: bool) -> bool:
     """Copy from a pinned cache inode and verify outside the inventory lock."""
     temporary = None
     try:
-        with _opened_bundle_cache_entry(root, address) as opened:
+        with _opened_bundle_cache_entry(root, address, nonblocking=nonblocking) as opened:
             if opened is None:
                 return False
             source, record = opened
@@ -236,18 +275,18 @@ def _reuse_bundle_cache(root: Path, address: str, destination: Path) -> bool:
                 pass
 
 
-def _store_bundle_cache(root: Path, address: str, source: Path) -> None:
+def _store_bundle_cache(root: Path, address: str, source: Path, *, nonblocking: bool) -> None:
     temporary, owner = None, None
     try:
         size = source.stat().st_size
         record = {"key": address, "sha256": digests.stream_sha256(source), "bytes": size}
         encoded = digests.sorted_json(record).encode("utf-8")
-        with _opened_bundle_cache_entry(root, address) as opened:
+        with _opened_bundle_cache_entry(root, address, nonblocking=nonblocking) as opened:
             if opened is not None:
                 existing, previous = opened
                 if previous == record and digests.stream_sha256(Path(f"/proc/self/fd/{existing.fileno()}")) == record["sha256"]:
                     return
-        with _bundle_cache_lock(root / ".inventory", nonblocking=True) as locked:
+        with _bundle_inventory_lock(root, nonblocking=nonblocking) as locked:
             if locked is None:
                 return
             if size + len(encoded) > MAX_BYTES:
@@ -267,7 +306,7 @@ def _store_bundle_cache(root: Path, address: str, source: Path) -> None:
             (temporary / "digest.json").write_bytes(encoded)
         with (temporary / "bundle").open("wb") as output, source.open("rb") as original:
             shutil.copyfileobj(original, output, length=1 << 20)
-        with _bundle_cache_lock(root / ".inventory", nonblocking=True) as locked:
+        with _bundle_inventory_lock(root, nonblocking=nonblocking) as locked:
             if locked is None:
                 return
             entry = root / address
@@ -291,7 +330,7 @@ def _store_bundle_cache(root: Path, address: str, source: Path) -> None:
 
 
 def seal_bundle_cached(destination: Path, identity: Mapping[str, object],
-                       seal: Callable[[], None], *, bounded_wait: bool = False,
+                       seal: Callable[[], None], *, deadline_caller: bool = False,
                        unchanged: Callable[[], bool] | None = None) -> None:
     """Reuse a digest-verified bundle, or invoke the unchanged sealer once."""
     try:
@@ -300,7 +339,7 @@ def seal_bundle_cached(destination: Path, identity: Mapping[str, object],
         seal()
         return
     with _bundle_cache_session() as root:
-        if root is not None and _reuse_bundle_cache(root, address, destination):
+        if root is not None and _reuse_bundle_cache(root, address, destination, nonblocking=True):
             return
         if root is None:
             seal()
@@ -311,9 +350,15 @@ def seal_bundle_cached(destination: Path, identity: Mapping[str, object],
                     _trim_bundle_cache(root)
         except (OSError, ValueError):
             pass
-        with _bundle_cache_flight(root, address, bounded_wait=bounded_wait) as locked:
-            if locked and _reuse_bundle_cache(root, address, destination):
-                return
-            seal()
-            if locked and (unchanged is None or unchanged()):
-                _store_bundle_cache(root, address, destination)
+        sealed = False
+        try:
+            with _bundle_cache_flight(root, address, nonblocking=deadline_caller) as locked:
+                if locked and _reuse_bundle_cache(root, address, destination, nonblocking=deadline_caller):
+                    return
+                seal()
+                sealed = True
+                if locked and (unchanged is None or unchanged()):
+                    _store_bundle_cache(root, address, destination, nonblocking=deadline_caller)
+        except _InventoryUnavailable:
+            if not sealed:
+                seal()

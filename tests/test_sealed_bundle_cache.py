@@ -1,17 +1,20 @@
 """Repeated seals reuse verified bytes without changing snapshot identity."""
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
+import fcntl
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import subprocess
 import sys
 import threading
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
-from prismabuild import core, sealed_bundle_cache as cache_module, submission
+from prismabuild import _bounded_reader, core, sealed_bundle_cache as cache_module, submission
 from test_pbrun_bundle_determinism import _action_key, _repository
 
 
@@ -495,6 +498,298 @@ print(snapshot["input"]["sha256"])
             child.wait()
 
 
+@pytest.mark.parametrize("stage", ("read", "reserve", "publish"))
+def test_inventory_contention_does_not_duplicate_a_waiting_fill(sealing, tmp_path, stage):
+    checkout, cache, packs, seal = sealing
+    if stage == "read":
+        seal()
+    else:
+        cache.mkdir(mode=0o700)
+    marker = tmp_path / "packs"
+    marker.touch()
+    script = r'''
+import json, os, subprocess, sys
+from contextlib import contextmanager
+from multiprocessing.connection import Connection
+from pathlib import Path
+from prismabuild import core, sealed_bundle_cache as cache, submission
+checkout, store, marker, stage, role = sys.argv[1:6]
+control = Connection(int(sys.argv[6]))
+os.statvfs = lambda path: os.statvfs_result(tuple(json.loads(sys.argv[7])))
+run, lock = subprocess.run, cache._bundle_cache_lock
+def observed(args, **kwargs):
+    if "pack-objects" in args:
+        fd = os.open(marker, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        os.write(fd, b"pack\n")
+        os.close(fd)
+    return run(args, **kwargs)
+subprocess.run = observed
+counts = {False: 0, True: 0}
+@contextmanager
+def gated(path, *, nonblocking=False, shared=False, **kwargs):
+    if role == "first" and path.name == ".inventory":
+        counts[shared] += 1
+        selected = ((stage == "read" and shared and counts[shared] == 2)
+                    or (not shared and counts[shared] == {"reserve": 2, "publish": 3}.get(stage)))
+        if selected:
+            control.send("ready")
+            assert control.recv() == "held"
+            # Capture an actual contended probe before the parent releases it.
+            # A nonblocking call must retain that miss; a blocking call retries.
+            with lock(path, nonblocking=True, shared=shared) as probe:
+                assert probe is None
+                control.send("contended")
+                assert control.recv() == "release"
+                if nonblocking:
+                    yield None
+                    return
+    if role == "waiter" and path.name.startswith(".lock-"):
+        with lock(path, nonblocking=True, shared=shared) as probe:
+            assert probe is None, "first filler must still own the address"
+        control.send("waiting")
+    with lock(path, nonblocking=nonblocking, shared=shared, **kwargs) as locked:
+        yield locked
+cache._bundle_cache_lock = gated
+snapshot = submission.snapshot_checkout(Path(checkout), cas=core.PrismaBuildCAS(Path(store)))
+print(snapshot["input"]["sha256"])
+'''
+    children, controls = [], []
+
+    def start(role):
+        parent, child = multiprocessing.Pipe()
+        controls.append(parent)
+        try:
+            process = subprocess.Popen([sys.executable, "-c", script, str(checkout),
+                str(tmp_path / ("cas-" + role)), str(marker), stage, role,
+                str(child.fileno()), json.dumps(_AMPLE_VFS)], pass_fds=(child.fileno(),),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                env={**os.environ, "PYTHONPATH": str(Path(submission.__file__).resolve().parents[1])})
+            children.append(process)
+        finally:
+            child.close()
+        return parent
+
+    def expect(control, message):
+        assert control.poll(90), "cache child did not reach " + message
+        assert control.recv() == message
+
+    inventory = ExitStack()
+    try:
+        if stage == "read":
+            inventory.enter_context(cache_module._bundle_cache_lock(cache / ".inventory"))
+        first = start("first")
+        expect(first, "ready")
+        if stage != "read":
+            inventory.enter_context(cache_module._bundle_cache_lock(cache / ".inventory"))
+        first.send("held")
+        expect(first, "contended")
+        waiter = start("waiter")
+        expect(waiter, "waiting")
+        inventory.close()
+        first.send("release")
+        digests = []
+        for child in children:
+            stdout, stderr = child.communicate(timeout=90)
+            assert child.returncode == 0, stderr
+            digests.append(stdout.strip())
+        assert len(set(digests)) == 1
+        assert ["pack"] * len(packs) + marker.read_text().splitlines() == ["pack"]
+        assert seal()[0]["input"]["sha256"] == digests[0]
+        assert len(list(cache.glob("*/bundle"))) == 1
+    finally:
+        inventory.close()
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.wait()
+        for control in controls:
+            control.close()
+
+
+@pytest.mark.parametrize("stage", ("read", "reserve", "publish"))
+def test_stuck_inventory_falls_back_for_distinct_ordinary_callers(sealing, tmp_path, stage):
+    checkout, cache, _, _ = sealing
+    cache.mkdir(mode=0o700)
+    marker = tmp_path / "packs"
+    script = r'''
+import json, os, subprocess, sys
+from contextlib import contextmanager
+from multiprocessing.connection import Connection
+from pathlib import Path
+from types import SimpleNamespace
+from prismabuild import core, _bounded_reader, sealed_bundle_cache as cache, submission
+checkout, store, marker, stage, role = sys.argv[1:6]
+control = Connection(int(sys.argv[6]))
+os.statvfs = lambda path: os.statvfs_result(tuple(json.loads(sys.argv[7])))
+clock = [0.0]
+_bounded_reader.time = SimpleNamespace(monotonic=lambda: clock[0])
+run, lock = subprocess.run, cache._bundle_cache_lock
+def observed(args, **kwargs):
+    if "pack-objects" in args:
+        fd = os.open(marker, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        os.write(fd, (role + "\n").encode())
+        os.close(fd)
+    return run(args, **kwargs)
+subprocess.run = observed
+counts = {False: 0, True: 0}
+@contextmanager
+def gated(path, *, nonblocking=False, shared=False, **kwargs):
+    if path.name == ".inventory":
+        counts[shared] += 1
+        selected = ((stage == "read" and shared and counts[shared] == 2)
+                    or (not shared and counts[shared] == {"reserve": 2, "publish": 3}.get(stage)))
+        if selected:
+            control.send("ready")
+            assert control.recv() == "held"
+            with lock(path, nonblocking=True, shared=shared) as probe:
+                assert probe is None, "parent must still own inventory"
+            if kwargs.get("deadline") is None:
+                control.send("unbounded")
+                control.recv()  # Parent diagnoses the unbounded call, then kills us.
+                raise AssertionError("unbounded inventory wait was released")
+            control.send("bounded")
+            assert control.recv() == "expire"
+            clock[0] += 1000000
+    with lock(path, nonblocking=nonblocking, shared=shared, **kwargs) as locked:
+        yield locked
+cache._bundle_cache_lock = gated
+snapshot = submission.snapshot_checkout(Path(checkout), cas=core.PrismaBuildCAS(Path(store)),
+                                        stamp_name="caller", stamp_payload=role)
+control.send(("finished", snapshot["input"]["sha256"]))
+'''
+    controls, children = [], []
+    try:
+        for role in ("left", "right"):
+            parent, child = multiprocessing.Pipe()
+            controls.append(parent)
+            try:
+                process = subprocess.Popen([sys.executable, "-c", script, str(checkout),
+                    str(tmp_path / ("cas-" + role)), str(marker), stage, role,
+                    str(child.fileno()), json.dumps(_AMPLE_VFS)], pass_fds=(child.fileno(),),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    env={**os.environ, "PYTHONPATH": str(Path(submission.__file__).resolve().parents[1])})
+                children.append(process)
+            finally:
+                child.close()
+        for control in controls:
+            assert control.poll(90), "caller did not reach inventory checkpoint"
+            assert control.recv() == "ready"
+        with cache_module._bundle_cache_lock(cache / ".inventory"):
+            for control in controls:
+                control.send("held")
+            for control in controls:
+                assert control.poll(90), "caller did not report its inventory wait"
+                assert control.recv() == "bounded", "ordinary caller entered an unbounded inventory wait"
+            for control in controls:
+                control.send("expire")
+            digests = []
+            for control in controls:
+                assert control.poll(90), "ordinary caller did not finish while inventory remained held"
+                result, digest = control.recv()
+                assert result == "finished"
+                digests.append(digest)
+            for child in children:
+                _, stderr = child.communicate(timeout=90)
+                assert child.returncode == 0, stderr
+            assert len(set(digests)) == 2
+            assert sorted(marker.read_text().splitlines()) == ["left", "right"]
+            assert not [entry for entry in cache.iterdir() if not entry.name.startswith(".")]
+            assert len(list(cache.glob(".pending-*"))) == (2 if stage == "publish" else 0)
+        # Expired publication leaves dead-owner staging while inventory is held.
+        # The next ordinary inventory pass must reap it after the holder leaves.
+        with cache_module._bundle_cache_lock(cache / ".inventory"):
+            assert cache_module._bundle_cache_inventory(cache) == ([], 0, 0)
+        assert not list(cache.glob(".pending-*"))
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.communicate(timeout=90)
+        for control in controls:
+            control.close()
+
+
+def test_timed_inventory_grant_stays_owned_after_the_helper_exits(tmp_path, monkeypatch):
+    reached, release, acquired, finished = (threading.Event() for _ in range(4))
+    inventory = tmp_path / ".inventory"
+    native = subprocess.run
+
+    def release_before_lock_helper_runs(args, **kwargs):
+        assert kwargs["timeout"] is not None
+        reached.set()
+        assert release.wait(60), "test did not release inventory"
+        return native(args, **kwargs)
+
+    def take_inventory():
+        with cache_module._bundle_inventory_lock(tmp_path, nonblocking=False) as owned:
+            assert owned is not None
+            acquired.set()
+            assert finished.wait(60), "test did not release the granted lock"
+
+    # The grant, not the budget, is under test: helper start-up time on a
+    # loaded host must not expire the acquisition.
+    monkeypatch.setattr(cache_module, "INVENTORY_WAIT_S", 3600.0)
+    monkeypatch.setattr(subprocess, "run", release_before_lock_helper_runs)
+    holder = ExitStack()
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        holder.enter_context(cache_module._bundle_cache_lock(inventory))
+        waiter = workers.submit(take_inventory)
+        try:
+            assert reached.wait(60), "contended acquisition did not enter the timed helper"
+            holder.close()
+            release.set()
+            assert acquired.wait(60), "timed acquisition did not adopt the released lock"
+            with cache_module._bundle_cache_lock(inventory, nonblocking=True) as probe:
+                assert probe is None, "helper exit released the caller's inventory lock"
+        finally:
+            holder.close()
+            release.set()
+            finished.set()
+        waiter.result(timeout=60)
+    with cache_module._bundle_cache_lock(inventory, nonblocking=True) as probe:
+        assert probe is not None, "caller exit leaked the granted inventory lock"
+
+
+# Worst ordinary inventory wait measured with 16 concurrent 48 MiB fills on
+# dl380g10 at load 52 (PrismaBuild action 2f2ac9d2..., #2525). Expiring at or
+# below it would repack an address another caller is about to publish.
+_MEASURED_WORST_INVENTORY_WAIT_S = 1.5
+
+
+def test_ordinary_inventory_budget_outlasts_measured_contention(tmp_path, monkeypatch):
+    readings = iter((0.0,))
+    monkeypatch.setattr(_bounded_reader, "time", SimpleNamespace(
+        monotonic=lambda: next(readings, _MEASURED_WORST_INVENTORY_WAIT_S)))
+    holder = ExitStack()
+
+    def helper_after_measured_wait(args, **kwargs):
+        assert kwargs["timeout"] > 0, "measured bookkeeping contention exhausted the inventory budget"
+        holder.close()
+        # Take the freed lock on the inherited descriptor as the helper would,
+        # without an interpreter start-up racing a real timeout.
+        fcntl.flock(int(args[-2]), int(args[-1]))
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(subprocess, "run", helper_after_measured_wait)
+    try:
+        holder.enter_context(cache_module._bundle_cache_lock(tmp_path / ".inventory"))
+        with cache_module._bundle_inventory_lock(tmp_path, nonblocking=False) as owned:
+            assert owned is not None
+    finally:
+        holder.close()
+
+
+@pytest.mark.parametrize("budget", (0.0, -1.0))
+def test_nonpositive_inventory_budget_expires_at_once(tmp_path, monkeypatch, budget):
+    # Deadline treats a nonpositive budget as unbounded; for inventory it
+    # must mean no wait, never an unbounded one or a crash.
+    monkeypatch.setattr(cache_module, "INVENTORY_WAIT_S", budget)
+    with cache_module._bundle_cache_lock(tmp_path / ".inventory"):
+        with pytest.raises(cache_module._InventoryUnavailable):
+            with cache_module._bundle_inventory_lock(tmp_path, nonblocking=False):
+                pytest.fail("held inventory was granted")
+
+
 def test_distinct_addresses_with_one_prefix_never_serialize(tmp_path, monkeypatch):
     cache = tmp_path / "cache"
     monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", str(cache))
@@ -549,8 +844,8 @@ def test_hit_copy_releases_inventory_and_survives_eviction(sealing, monkeypatch)
     native_opened = cache_module._opened_bundle_cache_entry
 
     @contextmanager
-    def held_entry(*args):
-        with native_opened(*args) as opened:
+    def held_entry(*args, **kwargs):
+        with native_opened(*args, **kwargs) as opened:
             copying.set()
             release.wait()
             yield opened
@@ -602,6 +897,77 @@ seal_bundle_cached(Path(sys.argv[1]), {"dead": True}, lambda: os._exit(0))
     assert not list(cache.glob(".pin-*")) and not list(cache.glob(".lock-*"))
 
 
+def test_dead_filler_is_reaped_and_the_same_address_can_recover(sealing, tmp_path):
+    checkout, cache, packs, seal = sealing
+    parent, control = multiprocessing.Pipe()
+    script = r'''
+import json, os, shutil, sys
+from multiprocessing.connection import Connection
+from pathlib import Path
+from prismabuild import core, submission
+control = Connection(int(sys.argv[3]))
+os.statvfs = lambda path: os.statvfs_result(tuple(json.loads(sys.argv[4])))
+native = shutil.copyfileobj
+def stalled(source, destination, length=0):
+    name = getattr(destination, "name", None)
+    if isinstance(name, (str, Path)) and Path(name).name == "bundle":
+        control.send("staged")
+        control.recv()
+    return native(source, destination, length)
+shutil.copyfileobj = stalled
+submission.snapshot_checkout(Path(sys.argv[1]), cas=core.PrismaBuildCAS(Path(sys.argv[2])))
+'''
+    child = subprocess.Popen([sys.executable, "-c", script, str(checkout),
+        str(tmp_path / "dead-cas"), str(control.fileno()), json.dumps(_AMPLE_VFS)],
+        pass_fds=(control.fileno(),), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env={**os.environ, "PYTHONPATH": str(Path(submission.__file__).resolve().parents[1])})
+    control.close()
+    try:
+        assert parent.poll(90), "filler did not publish its reservation"
+        assert parent.recv() == "staged"
+        assert len(list(cache.glob(".pending-*"))) == 1
+    finally:
+        child.kill()
+        child.communicate(timeout=90)
+        parent.close()
+    expected = seal()
+    assert seal() == expected and len(packs) == 1
+    assert not list(cache.glob(".pending-*"))
+    assert not list(cache.glob(".pin-*")) and not list(cache.glob(".lock-*"))
+
+
+def test_deadline_caller_bypasses_a_stuck_cold_filler(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", str(tmp_path / "cache"))
+    entered, release = threading.Event(), threading.Event()
+    first, bounded, later = (tmp_path / name for name in ("first", "bounded", "later"))
+    calls = []
+
+    def stalled():
+        calls.append("first")
+        entered.set()
+        release.wait()
+        first.write_bytes(b"same bundle")
+
+    def fresh():
+        calls.append("bounded")
+        bounded.write_bytes(b"same bundle")
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        original = workers.submit(cache_module.seal_bundle_cached, first, {"stuck": True}, stalled)
+        try:
+            assert entered.wait(90)
+            deadline = workers.submit(cache_module.seal_bundle_cached, bounded, {"stuck": True},
+                                      fresh, deadline_caller=True)
+            deadline.result(timeout=90)
+            assert bounded.read_bytes() == b"same bundle"
+        finally:
+            release.set()
+        original.result(timeout=90)
+    cache_module.seal_bundle_cached(later, {"stuck": True}, lambda: pytest.fail("completed fill was lost"))
+    assert later.read_bytes() == first.read_bytes() == b"same bundle"
+    assert calls == ["first", "bounded"]
+
+
 def test_failed_fill_is_removed_under_inventory_and_can_recover(sealing, monkeypatch):
     _, cache, packs, seal = sealing
     native_copy, native_remove = shutil.copyfileobj, shutil.rmtree
@@ -634,7 +1000,7 @@ def test_caller_deadline_bypasses_a_contended_cache_lock(sealing, monkeypatch, w
     _, cache, packs, seal = sealing
     expected = seal()[1]
     address = next(cache.glob("*/bundle")).parent.name
-    lock = (cache_module._bundle_cache_flight(cache, address, bounded_wait=False) if which_lock == "address"
+    lock = (cache_module._bundle_cache_flight(cache, address, nonblocking=False) if which_lock == "address"
             else cache_module._bundle_cache_lock(cache / ".inventory"))
     monkeypatch.setattr(core, "git_deadline_timeout", lambda deadline: None)
     with lock:

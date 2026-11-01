@@ -3992,11 +3992,35 @@ without the member or the ordinary package import boundary.
   the last user removes idle lock files. Dead owners are reaped using only
   cache-owned nonblocking locks. Warm hits need no per-address lock.
   Deadline callers bypass a contended miss lock.
-  Hits open metadata and payload descriptors under a nonblocking shared
-  inventory flock, then release it before copying and verification. Open
+  The first hit probe opens metadata and payload descriptors under a nonblocking
+  shared inventory flock. After taking the address lock, an ordinary caller
+  waits for that shared inventory lock before treating the entry as absent,
+  with a ten-second acquisition budget using the existing monotonic Deadline.
+  Bookkeeping holds are not always brief: with sixteen concurrent 48 MiB fills
+  on dl380g10 at load 52, one reservation held inventory for 1.41 s, and
+  ordinary waits reached 1.50 s. A single publication alone held it for 0.89 s.
+  A one-second budget expired inside that contention and repacked bundles.
+  Ten seconds is over six times the worst measured wait, and it is under a
+  quarter of a 36-46 s bundle pack, which is the most a stopped owner can add.
+  A nonpositive budget expires at once. The first probe and the ordinary
+  re-read both release inventory before copying and verification. Open
   descriptors survive eviction. Four warm deadline readers can all hit.
   Exclusive inventory locking covers only bookkeeping, space reservations,
-  trimming and publication; contention falls back to fresh sealing.
+  trimming and publication. Ordinary fillers wait for inventory reservation
+  and publication while retaining the address lock, each with that same
+  acquisition bound, so ordinary short contention still coalesces fills
+  (#2525). An expired acquisition ends cache work for that call: a caller
+  that has not packed seals fresh once; an already packed caller keeps its
+  completed output without retrying storage or packing again. A stopped live
+  inventory owner cannot make every address wait indefinitely. Only a
+  contended timed acquisition launches a disposable interpreter which blocks
+  in flock on the inherited inventory descriptor. Subprocess timeout owns
+  killing and reaping it; successful acquisition remains held by the parent's
+  open file description. Fast uncontended probes spawn no helper, and no
+  polling loop or signal handler is added. Deadline callers retain nonblocking
+  inventory and address locks, with fresh-seal fallback on contention. A
+  killed owner's flocks are released by the kernel; the existing
+  pending-owner probe reaps its abandoned staging.
   Each hit copies to a private destination-side file, computing one SHA-256
   over the chunks read from the pinned cache descriptor. It compares the copied
   length and digest with the record before atomically installing that same file.
