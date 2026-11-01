@@ -4341,6 +4341,43 @@
     "unresolved": "{key for key in index if not key.startswith('_')}"
   },
   {
+    "path": "tools/ci/full_suite_workflow.py",
+    "owner": "collect_shards",
+    "unresolved": "{node.split('::', 1)[0] for node in rows}"
+  },
+  {
+    "path": "tools/ci/gate_partition.py",
+    "owner": "setup_shards",
+    "unresolved": "path"
+  },
+  {
+    "path": "tools/ci/gate_run.py",
+    "owner": "_budget_timings",
+    "unresolved": "observed"
+  },
+  {
+    "path": "tools/ci/gate_run.py",
+    "owner": "run_plan",
+    "unresolved": "eligible"
+  },
+  {
+    "path": "tools/ci/gate_select.py",
+    "owner": "changed_files",
+    "fields": [
+      ""
+    ]
+  },
+  {
+    "path": "tools/ci/gate_select.py",
+    "owner": "estimate",
+    "unresolved": "values.keys()"
+  },
+  {
+    "path": "tools/ci/gate_shadow.py",
+    "owner": "audit",
+    "unresolved": "full"
+  },
+  {
     "path": "tools/ci/issue_link.py",
     "owner": "batch_members",
     "unresolved": "[i for i, line in enumerate(lines) if line.startswith('pull_requests:')]",
@@ -4350,6 +4387,28 @@
     "path": "tools/ci/release_dry_run.py",
     "owner": "validate_wheel",
     "unresolved": "{row[0] for row in rows}"
+  },
+  {
+    "path": "tools/ci/tia_diff.py",
+    "owner": "analyze_changes",
+    "fields": [
+      ""
+    ]
+  },
+  {
+    "path": "tools/ci/tia_evaluate.py",
+    "owner": "run_mutation.collection_killed",
+    "unresolved": "baseline_bad"
+  },
+  {
+    "path": "tools/ci/tia_evaluate.py",
+    "owner": "run_mutation.killed",
+    "unresolved": "baseline_bad"
+  },
+  {
+    "path": "tools/ci/tia_select.py",
+    "owner": "plan",
+    "unresolved": "recorded"
   },
   {
     "path": "tools/duplication_inventory.py",
