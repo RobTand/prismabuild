@@ -21,7 +21,7 @@ PATH_SPEC = importlib.util.spec_from_file_location('gate_paths', Path(__file__).
 gate_paths = importlib.util.module_from_spec(PATH_SPEC)
 PATH_SPEC.loader.exec_module(gate_paths)
 
-POLICY = 'production-loads-bound-paths-helper-closure-v4'
+POLICY = 'production-loads-compound-paths-helper-closure-v5'
 
 
 def load_gate_json(path: Path) -> dict:
@@ -75,66 +75,94 @@ def module_names(path: str) -> set[str]:
 
 def production_loads(tree: ast.AST, path: str) -> tuple[set[str], set[str]]:
     """Recognize literal dynamic imports and resolvable Python path loaders."""
-    aliases = {'__import__': '__import__'}
+    aliases = {'__import__': {'__import__'}}
     assignments: dict[str, list[ast.AST]] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for name in node.names:
-                aliases[name.asname or name.name.split('.')[0]] = name.name if name.asname else name.name.split('.')[0]
+                aliases.setdefault(name.asname or name.name.split('.')[0], set()).add(
+                    name.name if name.asname else name.name.split('.')[0])
         elif isinstance(node, ast.ImportFrom) and not node.level:
             for name in node.names:
-                aliases[name.asname or name.name] = f'{node.module}.{name.name}'
-        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
-                if isinstance(target, ast.Name):
-                    assignments.setdefault(target.id, []).append(node)
+                aliases.setdefault(name.asname or name.name, set()).add(f'{node.module}.{name.name}')
+        evidence = []
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            evidence = [node]
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            evidence = [ast.copy_location(ast.Assign(targets=[node.target], value=node.iter), node.target)]
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            evidence = [ast.copy_location(ast.Assign(targets=[item.optional_vars], value=item.context_expr),
+                                          item.optional_vars)
+                        for item in node.items if item.optional_vars is not None]
+        # Index every written name, retaining the whole value as literal evidence.
+        # This deliberately does not infer tuple elements or execution order.
+        for assignment in evidence:
+            for target in assignment.targets if isinstance(assignment, ast.Assign) else [assignment.target]:
+                for binding in ast.walk(target):
+                    if isinstance(binding, ast.Name) and isinstance(binding.ctx, ast.Store):
+                        assignments.setdefault(binding.id, []).append(assignment)
     modules, paths = set(), set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         name = gate_paths.dotted(node.func)
         first, _, tail = name.partition('.')
-        name = aliases.get(first, '') + ('.' + tail if tail else '')
-        if name in {'importlib.import_module', '__import__'} and node.args:
-            target = node.args[0]
-            if isinstance(target, ast.Constant) and isinstance(target.value, str):
-                module = target.value
-                if module.startswith('.') and name == 'importlib.import_module':
-                    package = next((item.value for item in node.keywords if item.arg == 'package'),
-                                   node.args[1] if len(node.args) > 1 else None)
-                    if not isinstance(package, ast.Constant) or not isinstance(package.value, str):
-                        continue
-                    parts = package.value.split('.')
-                    level = len(module) - len(module.lstrip('.'))
-                    module = '.'.join(parts[:len(parts) - level + 1] + [module.lstrip('.')]).rstrip('.')
-                modules.add(module)
-        slots = {'importlib.util.spec_from_file_location': (1, 'location'),
-                 'importlib.machinery.SourceFileLoader': (1, 'path'),
-                 'importlib.machinery.SourcelessFileLoader': (1, 'path'),
-                 'runpy.run_path': (0, 'path_name')}
-        if name not in slots:
-            continue
-        position, keyword = slots[name]
-        target = next((item.value for item in node.keywords if item.arg == keyword),
-                      node.args[position] if len(node.args) > position else None)
-        if target is None:
-            continue
-        # Keep intermediate loader path literals conservatively: even a basename
-        # joined to /tmp may select a same-named repository file. Accuracy wins.
-        pending = [child.id for child in ast.walk(target) if isinstance(child, ast.Name)]
-        seen, bindings = set(), set()
-        while pending:
-            variable = pending.pop()
-            if variable in seen:
+        # Scopes may reuse an alias; none of its imported meanings may erase another.
+        for meaning in sorted(aliases.get(first, ())):
+            name = meaning + ('.' + tail if tail else '')
+            if name in {'importlib.import_module', '__import__'}:
+                target = next((item.value for item in node.keywords if item.arg == 'name'),
+                              node.args[0] if node.args else None)
+                if isinstance(target, ast.Constant) and isinstance(target.value, str):
+                    module = target.value
+                    if module.startswith('.') and name == 'importlib.import_module':
+                        package = next((item.value for item in node.keywords if item.arg == 'package'),
+                                       node.args[1] if len(node.args) > 1 else None)
+                        if not isinstance(package, ast.Constant) or not isinstance(package.value, str):
+                            continue
+                        parts = package.value.split('.')
+                        level = len(module) - len(module.lstrip('.'))
+                        module = '.'.join(parts[:len(parts) - level + 1] + [module.lstrip('.')]).rstrip('.')
+                    modules.add(module)
+            slots = {'importlib.util.spec_from_file_location': (1, 'location'),
+                     'importlib.machinery.SourceFileLoader': (1, 'path'),
+                     'importlib.machinery.SourcelessFileLoader': (1, 'path'),
+                     'runpy.run_path': (0, 'path_name')}
+            if name not in slots:
                 continue
-            seen.add(variable)
-            for assignment in assignments.get(variable, ()):
-                if assignment.value is not None:
-                    bindings.add(assignment)
-                    pending.extend(child.id for child in ast.walk(assignment.value) if isinstance(child, ast.Name))
-        evidence = ast.Module(body=[*sorted(bindings, key=lambda item: item.lineno), ast.Expr(value=target)],
-                              type_ignores=[])
-        paths.update(gate_paths.references(evidence, path))
+            position, keyword = slots[name]
+            target = next((item.value for item in node.keywords if item.arg == keyword),
+                          node.args[position] if len(node.args) > position else None)
+            if target is None:
+                continue
+            # Keep intermediate loader path literals conservatively: even a basename
+            # joined to /tmp may select a same-named repository file. Accuracy wins.
+            pending = [child.id for child in ast.walk(target) if isinstance(child, ast.Name)]
+            seen, bindings = set(), set()
+            while pending:
+                variable = pending.pop()
+                if variable in seen:
+                    continue
+                seen.add(variable)
+                for assignment in assignments.get(variable, ()):
+                    if assignment.value is not None:
+                        bindings.add(assignment)
+                        pending.extend(child.id for child in ast.walk(assignment.value) if isinstance(child, ast.Name))
+            evidence = ast.Module(body=[*sorted(bindings, key=lambda item: item.lineno), ast.Expr(value=target)],
+                                  type_ignores=[])
+            references = gate_paths.references(evidence, path)
+            if any(not isinstance(binding, ast.Name)
+                   for assignment in bindings
+                   for binding in (assignment.targets if isinstance(assignment, ast.Assign)
+                                   else [assignment.target])):
+                # Compound bindings can split directory and filename literals. Keep
+                # descendants and filename tails rather than lose their combinations.
+                references.update(reference.rstrip('/') + '/**'
+                                  for reference in tuple(references)
+                                  if '**' not in reference and not reference.endswith('.py'))
+                references.update('**/' + PurePosixPath(reference).name
+                                  for reference in tuple(references) if reference.endswith('.py'))
+            paths.update(references)
     return modules, paths
 
 
@@ -189,7 +217,12 @@ def production_import_closure(index: dict, changed: list[str]) -> set[str]:
             aliases.setdefault(alias, set()).add(path)
     reverse: dict[str, set[str]] = {}
     for path in production:
-        for target in index[path][1] & (production | seeds):
+        references = index[path][1]
+        targets = references & (production | seeds)
+        patterns = {reference for reference in references if '**' in reference}
+        if patterns:
+            targets.update(target for target in production | seeds if gate_paths.matches(target, patterns))
+        for target in targets:
             reverse.setdefault(target, set()).add(path)
         for dependency in index[path][0]:
             parts = dependency.split('.')
