@@ -182,3 +182,108 @@ def test_a_superseded_run_stops_its_jobs():
     assert workflow['concurrency']['cancel-in-progress'] is True
     conditions = {name: str(job.get('if', '')) for name, job in workflow['jobs'].items()}
     assert [name for name, condition in conditions.items() if 'always()' in condition] == []
+
+
+def save_workflow_result(tmp_path, index, verdict='pass', attempt=1, workflow_attempt=1):
+    import json
+    save_result(tmp_path, index, verdict, attempt)
+    directory = tmp_path / 'artifacts' / f'run-7-a{attempt}-{index}'
+    directory.joinpath('workflow-attempt.json').write_text(json.dumps(
+        {'plan_attempt': 1, 'workflow_attempt': workflow_attempt}))
+
+
+def test_failed_job_rerun_reuses_successful_shards_from_its_plan(tmp_path):
+    import json
+    arguments = cli_fixture(tmp_path)
+    save_workflow_result(tmp_path, 0)
+    save_workflow_result(tmp_path, 1, workflow_attempt=2)
+    run = cli('finish', *arguments, '--plan-attempt', '1', '--workflow-attempt', '2')
+    assert run.returncode == 0, run.stdout + run.stderr
+    result = json.loads((tmp_path / 'output.json').read_text())
+    assert result['workflow_attempts'] == {'0': {'1': 1}, '1': {'1': 2}}
+    assert result['missing_indices'] == []
+
+
+@pytest.mark.parametrize('old_retry', ['pass', 'fail'])
+def test_new_first_attempt_invalidates_a_previous_workflow_retry(tmp_path, old_retry):
+    import json
+    arguments = cli_fixture(tmp_path)
+    save_workflow_result(tmp_path, 0, None, workflow_attempt=2)
+    save_workflow_result(tmp_path, 0, old_retry, attempt=2)
+    save_workflow_result(tmp_path, 1)
+    run = cli('finish', *arguments, '--plan-attempt', '1', '--workflow-attempt', '2')
+    assert run.returncode == 75, run.stdout + run.stderr
+    result = json.loads((tmp_path / 'output.json').read_text())
+    assert result['missing_indices'] == [0]
+    assert result['workflow_attempts']['0'] == {'1': 2}
+    retry = cli('retries', *arguments, '--plan-attempt', '1', '--workflow-attempt', '2')
+    assert retry.returncode == 0, retry.stdout + retry.stderr
+    assert [row['index'] for row in json.loads((tmp_path / 'output.json').read_text())['include']] == [0]
+
+
+def test_manual_rerun_of_only_the_retry_can_complete_the_original_first_attempt(tmp_path):
+    arguments = cli_fixture(tmp_path)
+    save_workflow_result(tmp_path, 0, None)
+    save_workflow_result(tmp_path, 0, attempt=2, workflow_attempt=2)
+    save_workflow_result(tmp_path, 1)
+    run = cli('finish', *arguments, '--plan-attempt', '1', '--workflow-attempt', '2')
+    assert run.returncode == 0, run.stdout + run.stderr
+
+
+def test_explicit_failure_in_the_current_shard_generation_remains_final(tmp_path):
+    arguments = cli_fixture(tmp_path)
+    save_workflow_result(tmp_path, 0, workflow_attempt=2)
+    save_workflow_result(tmp_path, 0, 'fail', attempt=2, workflow_attempt=2)
+    save_workflow_result(tmp_path, 1)
+    run = cli('finish', *arguments, '--plan-attempt', '1', '--workflow-attempt', '2')
+    assert run.returncode == 1, run.stdout + run.stderr
+    assert 'GATE_TEST_FAILURE' in run.stdout
+
+
+@pytest.mark.parametrize('plan_attempt,workflow_attempt', [(2, 2), (1, 0), (1, 3)])
+def test_result_provenance_outside_the_plan_or_current_workflow_is_not_coverage(
+        tmp_path, plan_attempt, workflow_attempt):
+    import json
+    arguments = cli_fixture(tmp_path)
+    save_workflow_result(tmp_path, 0, workflow_attempt=workflow_attempt)
+    save_workflow_result(tmp_path, 1, workflow_attempt=workflow_attempt)
+    run = cli('finish', *arguments, '--plan-attempt', str(plan_attempt), '--workflow-attempt', '2')
+    assert run.returncode == 75, run.stdout + run.stderr
+    result = json.loads((tmp_path / 'output.json').read_text())
+    assert result['missing_indices'] == [0, 1]
+
+
+def test_result_without_a_workflow_marker_cannot_reuse_an_old_verdict(tmp_path):
+    arguments = cli_fixture(tmp_path)
+    save_result(tmp_path, 0)
+    save_result(tmp_path, 1)
+    run = cli('finish', *arguments, '--plan-attempt', '1', '--workflow-attempt', '2')
+    assert run.returncode == 75, run.stdout + run.stderr
+
+
+def test_gate_artifacts_follow_the_plan_job_across_failed_job_reruns():
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/gate.yml').read_text())
+    jobs = workflow['jobs']
+    assert jobs['plan']['outputs']['artifact_attempt'] == '${{ github.run_attempt }}'
+    for name in ['shards', 'retry-shards', 'retry-plan', 'pr-gate', 'gate']:
+        job = jobs[name]
+        downloads = [step['with']['name'] for step in job['steps']
+                     if 'download-artifact@' in step.get('uses', '') and 'name' in step['with']]
+        assert downloads == ['gate-plan-${{ needs.plan.outputs.artifact_attempt }}']
+        for step in job['steps']:
+            if 'pattern' in step.get('with', {}):
+                assert 'needs.plan.outputs.artifact_attempt' in step['with']['pattern']
+            if 'gate_actions.py' in step.get('run', ''):
+                assert '--plan-attempt' in step['run']
+                assert '--workflow-attempt' in step['run']
+    for name in ['shards', 'retry-shards']:
+        upload = next(step for step in jobs[name]['steps']
+                      if 'upload-artifact@' in step.get('uses', ''))
+        assert upload['with']['overwrite'] is True
+        assert 'needs.plan.outputs.artifact_attempt' in upload['with']['name']
+        assert 'workflow-attempt.json' in upload['with']['path']
+        stamp = next(step for step in jobs[name]['steps']
+                     if 'workflow-attempt.json' in step.get('run', ''))
+        assert stamp['if'] == 'always()'
+        assert 'github.run_attempt' in str(stamp)
