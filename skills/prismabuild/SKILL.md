@@ -5,12 +5,15 @@ description: Submit computational work -- GPU jobs, benchmarks, builds and large
 
 # PrismaBuild execution
 
-PrismaBuild admission is for computational work: GPU jobs, benchmarks, and
-large or long-running compute; verify terminal records and CAS receipts.
+PrismaBuild admission is for exploratory work (experiments, trials,
+benchmarks, GPU work) and for placing CPU work that runs on fleet machines onto
+the machines with capacity; verify terminal records and CAS receipts.
 PrismaBuild is not the CI system. CI and integration tests run as GitHub checks
-in the Mergify merge queue on the integrated SHA. While developing, run the
-fast relevant tests in your worktree; a local run is evidence, not the merge
-gate. Merge only through the Mergify queue and never bypass required checks,
+in the Mergify merge queue on the integrated SHA. While developing, run tests
+on free remote compute (BuildBuddy or GitHub-hosted CI) or through PrismaBuild,
+and never run test suites directly on a fleet host outside PrismaBuild (Rob,
+amended 2026-11-01). A development run is evidence, not the merge gate: read
+its own verdict and logs. Merge only through the Mergify queue and never bypass required checks,
 reviews or branch protections; if a required check cannot run yet, leave the
 PR approved and report it.
 
@@ -65,9 +68,9 @@ and executes that snapshot on an eligible worker. `--cwd` belongs to pbrun;
 `--checkout` belongs to pbtest. Inspect the published tool's `--help` for
 options rather than inventing aliases.
 
-Example of a large or long-running CPU suite that needs fleet compute, sized
-for eight processes and eight GiB total (fast relevant tests run in your
-worktree instead):
+Example of a CPU suite placed on fleet compute, sized for eight processes and
+eight GiB total (tests may instead run on free remote compute, BuildBuddy or
+GitHub-hosted CI, but never directly on a fleet host outside PrismaBuild):
 
 ```bash
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
@@ -420,8 +423,9 @@ census, a routing run, a benchmark against a live endpoint -- runs directly,
 including its GPU containers. That is Rob's ruling (2026-09-06, reaffirmed
 2026-09-07: "vllm is exempt. It can't run in prismabuild"), not a claim about
 what a wrapper could technically do -- a bounded action that starts vLLM can
-exit cleanly, and is exempt all the same. Work that does not run vLLM still
-submits, and a running vLLM remains external load for batch admission.
+exit cleanly, and is exempt all the same. Other work that the routing policy
+sends to PrismaBuild (anything on a fleet machine, and exploratory or GPU work)
+still submits, and a running vLLM remains external load for batch admission.
 `docs/agent_execution_policy.md` carries the full ruling.
 
 ## Fleet observation over MCP: `pbmcp.py`

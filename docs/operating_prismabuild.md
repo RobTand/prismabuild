@@ -1071,9 +1071,11 @@ Ready items are ordered by priority band first, then by admission denials
 priority-0 item, and because a claim walks that order and a withhold ends the
 pass, nothing at a negative priority is considered until every item above it
 has been tried. That is what makes `-10` mean "only when nothing else wants
-the box". Agent self-validation -- test shards, the receipt for a PR, a re-run
-to confirm a fix -- submits there (`pbtest.py --priority -10`, `pbrun.py
---priority -10`) and cannot displace campaign work in the queue.
+the box". Agent self-validation that uses fleet compute -- test shards, the
+receipt for a PR, a re-run to confirm a fix -- submits at that priority
+(`pbtest.py --priority -10`, `pbrun.py --priority -10`) and cannot displace
+campaign work in the queue. Self-validation on free remote compute (BuildBuddy
+or GitHub-hosted CI) needs no PrismaBuild submission.
 
 Restartable background work can also yield the box. When a foreground item
 (priority >= 0) is denied admission and one background holder on that box is running whose tokens,
@@ -1358,8 +1360,9 @@ to 54 watches including its optional root and per-file inode watches; additional
 groups share that root. Heartbeat-only traffic adds no ring entries. The current
 4096 ring/128 connection caps are unchanged; joint W6/W7 measured baselines and
 both CPU-arm guards/record compatibility evidence remain required before limits
-or deployment can be accepted. Fast worktree checks are development evidence,
-not the Mergify integrated-SHA merge gate.
+or deployment can be accepted. Development checks, run through PrismaBuild on
+fleet hosts or on free remote compute, are development evidence, not the
+Mergify integrated-SHA merge gate.
 
 No gang consumer is enabled by this source change. W6's distinct topic adapters,
 complete required topic publication, TL approval, #1881 evidence, independent
@@ -2810,9 +2813,12 @@ A shard that fails for timing or ordering reasons blocks work it has nothing
 to do with. Every new or changed test follows the
 [test quality rules](contributing.md#test-quality--rob-2026-10-24-2249). They
 cover determinism, assertions that can fail, and repairing a flaky test. A
-flaky-test fix must pass each touched file five times per architecture through
-`pbtest` before handoff. At least two of those runs use `--workers-per-shard 2`,
-and varied `--pytest-args` keep the result cache from serving them.
+flaky-test fix must pass each touched file five times per architecture before
+handoff, either through `pbtest` on the fleet or on free remote compute
+(BuildBuddy, or GitHub-hosted runners of both architectures), per Rob's routing
+policy amended 2026-11-01. At least two of those
+runs use two xdist workers (`--workers-per-shard 2` under `pbtest`); under
+`pbtest`, varied `--pytest-args` keep the result cache from serving them.
 
 ### Choose the project's test environment
 
