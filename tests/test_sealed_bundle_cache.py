@@ -724,6 +724,9 @@ def test_timed_inventory_grant_stays_owned_after_the_helper_exits(tmp_path, monk
             acquired.set()
             assert finished.wait(60), "test did not release the granted lock"
 
+    # The grant, not the budget, is under test: helper start-up time on a
+    # loaded host must not expire the acquisition.
+    monkeypatch.setattr(cache_module, "INVENTORY_WAIT_S", 3600.0)
     monkeypatch.setattr(subprocess, "run", release_before_lock_helper_runs)
     holder = ExitStack()
     with ThreadPoolExecutor(max_workers=1) as workers:
