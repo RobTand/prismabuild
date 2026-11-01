@@ -10,13 +10,19 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
-from wire_inventory import audit, field_policies
+from wire_inventory import audit, field_policies, source_paths
 from rebind_source_reviews import reviewed_sites
 
 
-def test_closed_field_sets_remain_pinned(path=None):
-    policies = field_policies(ROOT)
-    expected = json.loads((ROOT / "tests/compat/field_sets.json").read_bytes())
+def _field_policy_paths(root):
+    pinned = json.loads((root / "tests/compat/field_sets.json").read_bytes())
+    return sorted(set(source_paths(root, include_tests=False)) | {row['path'] for row in pinned})
+
+
+@pytest.mark.parametrize('path', _field_policy_paths(ROOT))
+def test_closed_field_sets_remain_pinned(path):
+    policies = field_policies(ROOT, paths=[path])
+    expected = [row for row in json.loads((ROOT / "tests/compat/field_sets.json").read_bytes()) if row['path'] == path]
     assert policies == expected
 
 
@@ -180,6 +186,8 @@ def test_field_policy_findings_are_characterized(tmp_path):
     _, policies = audit(tmp_path)
     assert policies == expected
     assert field_policies(tmp_path) == expected
+    assert [row for path in sorted(source_paths(tmp_path, include_tests=False))
+            for row in field_policies(tmp_path, paths=[path])] == expected
 
 
 def test_pinned_field_guard_does_not_scan_corpus_or_retained_records(tmp_path, monkeypatch):
@@ -202,7 +210,8 @@ def test_pinned_field_guard_does_not_scan_corpus_or_retained_records(tmp_path, m
     monkeypatch.setattr(wire_inventory, 'retained_inventory', forbidden)
     monkeypatch.setattr(wire_inventory, 'source_expression', forbidden)
     monkeypatch.setitem(globals(), 'ROOT', tmp_path)
-    test_closed_field_sets_remain_pinned()
+    for path in _field_policy_paths(tmp_path):
+        test_closed_field_sets_remain_pinned(path)
 
 
 def test_pinned_field_guard_scans_only_requested_source(tmp_path, monkeypatch):
@@ -221,3 +230,20 @@ def test_pinned_field_guard_scans_only_requested_source(tmp_path, monkeypatch):
     monkeypatch.setattr(wire_inventory, 'syntax_tree', selected_source)
     monkeypatch.setitem(globals(), 'ROOT', tmp_path)
     test_closed_field_sets_remain_pinned(path='tools/extensionless')
+
+
+@pytest.mark.parametrize('change', ['added', 'removed'])
+def test_pin_cases_detect_added_and_removed_sources(tmp_path, monkeypatch, change):
+    expected = _field_policy_tree(tmp_path)
+    pin = tmp_path / 'tests/compat/field_sets.json'
+    pin.parent.mkdir(parents=True)
+    pin.write_text(json.dumps(expected))
+    path = 'tools/new.py' if change == 'added' else 'tools/extensionless'
+    if change == 'added':
+        (tmp_path / path).write_text("FIELDS = {'new'}\n")
+    else:
+        (tmp_path / path).unlink()
+    monkeypatch.setitem(globals(), 'ROOT', tmp_path)
+    assert path in _field_policy_paths(tmp_path)
+    with pytest.raises(AssertionError):
+        test_closed_field_sets_remain_pinned(path)

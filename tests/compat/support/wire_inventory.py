@@ -53,27 +53,35 @@ def syntax_tree(path, snippet):
         return ast.parse(sanitized), True
 
 
-def sources(root, observations, *, include_tests=True):
+def source_paths(root, *, include_tests=True):
     for base in ("src", "tools", "tests", "fleet"):
         if base == "tests" and not include_tests:
             continue
         for path in sorted((root / base).rglob("*")):
-            if not path.is_file() or path.suffix not in (".py", "", ".sh"):
+            if path.is_file() and path.suffix in (".py", "", ".sh"):
+                yield str(path.relative_to(root))
+
+
+def sources(root, observations, *, include_tests=True, paths=None):
+    paths = source_paths(root, include_tests=include_tests) if paths is None else paths
+    for name in paths:
+        path = root / name
+        if not path.is_file():
+            continue
+        raw = path.read_bytes()
+        for block, snippet, line in source_units(path, raw):
+            source = {"path": str(path.relative_to(root)), "sha256": hashlib.sha256(raw).hexdigest(),
+                      "block": block, "line_start": line}
+            try:
+                tree, template = syntax_tree(path, snippet)
+            except (SyntaxError, UnicodeError) as error:
+                observations["unparsed_sources"].append({**source, "reason": type(error).__name__,
+                    "python_suffix": path.suffix == ".py", "contains_wire_schema": b"schema" in snippet
+                        and bool(re.search(rb"[A-Za-z][\w.-]+\.v\d+", snippet))})
                 continue
-            raw = path.read_bytes()
-            for block, snippet, line in source_units(path, raw):
-                source = {"path": str(path.relative_to(root)), "sha256": hashlib.sha256(raw).hexdigest(),
-                          "block": block, "line_start": line}
-                try:
-                    tree, template = syntax_tree(path, snippet)
-                except (SyntaxError, UnicodeError) as error:
-                    observations["unparsed_sources"].append({**source, "reason": type(error).__name__,
-                        "python_suffix": path.suffix == ".py", "contains_wire_schema": b"schema" in snippet
-                            and bool(re.search(rb"[A-Za-z][\w.-]+\.v\d+", snippet))})
-                    continue
-                observations["parsed_sources"].append(source)
-                source["shell_template"] = template
-                yield source, tree
+            observations["parsed_sources"].append(source)
+            source["shell_template"] = template
+            yield source, tree
 
 
 def catalogue(root):
@@ -159,11 +167,11 @@ def source_expression(node, source):
     return ast.unparse(node)
 
 
-def _source_inventory(root, observations, known, *, include_tests=True, include_records=True):
+def _source_inventory(root, observations, known, *, include_tests=True, include_records=True, paths=None):
     observations.update({key: [] for key in ("parsed_sources", "unparsed_sources", "unresolved_schema_builders", "serialization_sites")})
     wire_ids = {row["name"]: wire for wire, row in known.items()}
     constants, imports, exports = {}, {}, {}
-    for unit, tree in sources(root, observations, include_tests=include_tests):
+    for unit, tree in sources(root, observations, include_tests=include_tests, paths=paths):
         path = unit["path"]
         module = module_name(path)
         local, aliases = {}, {}
@@ -352,9 +360,9 @@ def _source_inventory(root, observations, known, *, include_tests=True, include_
     return rows, sorted(policies, key=lambda row: (row["path"], row["owner"], json.dumps(row, sort_keys=True)))
 
 
-def field_policies(root):
+def field_policies(root, *, paths=None):
     """Discover every production policy without auditing corpus record captures."""
-    return _source_inventory(root, {}, catalogue(root), include_tests=False, include_records=False)[1]
+    return _source_inventory(root, {}, catalogue(root), include_tests=False, include_records=False, paths=paths)[1]
 
 
 def audit(root, observations=None):
