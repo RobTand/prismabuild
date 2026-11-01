@@ -168,3 +168,14 @@ def test_an_unlabeled_open_marker_owner_also_suppresses_creation():
         for arch in ['x64', 'arm64']}), 2, []), sha='abc', complete=True, run_url='run')
     issue = {'number': 8, 'body': census.report.marker('x'), 'labels': []}
     assert census.census_issue_plans(result, [issue]) == []
+
+
+def test_proposed_quarantine_entry_preserves_exact_node_without_mentions():
+    node = 'tests/a.py::test_x[' + chr(64) + 'person]'
+    result = dict(census.classify_samples(samples_for({arch: [{node: 'passed'}, {node: 'failed'}]
+        for arch in ['x64', 'arm64']}), 2, []), sha='abc', complete=True, run_url='run')
+    body = census.census_issue_plans(result, [])[0]['body']
+    proposal = body.split('before applying:\n\n', 1)[1].split('\n\nReproduce', 1)[0]
+    decoded = json.loads('\n'.join(line.removeprefix('    ') for line in proposal.splitlines()))
+    assert decoded['target'] == node
+    assert chr(64) + 'person' not in body
