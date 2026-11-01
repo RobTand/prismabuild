@@ -21785,6 +21785,28 @@ class PoolQueue:
             self.withdraw(key, reason=f"gang teardown: {reason}",
                           by=f"gang:{record['group']}", expected_claim=claimed)
 
+    def _withdraw_if_gang_torn_down(self, item: Mapping[str, object]) -> None:
+        """A running member of a torn-down gang files its own withdrawal (#2575).
+
+        The teardown's writer never waits for a sibling's transition lock, so
+        a sibling whose own heartbeat holds it at that moment is skipped and
+        would run on until some box's sweep turn.  Its withdrawal checkpoint
+        files the same decision first, through the same exact-member path.
+        """
+        if item.get("gang") is None:
+            return
+        from . import _gang
+        try:
+            gang = _gang.declaration(item.get("gang"))
+            record = _gang.read_group(self, gang["group"]) if gang else None
+            torn = _gang.teardown(self, record["group"]) if record else None
+            if torn is None:
+                return
+            self._withdraw_gang_member(record, _gang.member(record, item, gang),
+                                       reason=str(torn.get("reason")))
+        except (_gang.GangContractError, PoolContractError, OSError, pb.PrismaBuildError):
+            return  # the sweep still finishes it
+
     def _gang_teardown_withdraw(self, item: Mapping[str, object] | None, *,
                                 reason: str, by: str,
                                 exclude: Container[str] = ()) -> None:
@@ -23517,6 +23539,7 @@ class PoolQueue:
                     # box cannot signal anything on this one, so this poll is what
                     # makes the verb correct from anywhere -- at a cost of at most
                     # one heartbeat, and none at all when the operator is here.
+                    self._withdraw_if_gang_torn_down(item)
                     if self.withdrawal_covers(item) is not None:
                         if scope is not None:
                             scope.terminate_owned("withdrawn")

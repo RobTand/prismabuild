@@ -6337,9 +6337,12 @@ Per member host, inside the ordinary claim pass:
    once. The writer withdraws the other members through the ordinary withdrawal
    path. The census stops fencing for a torn-down gang. `sweep_gangs`, on the
    orphan-passes schedule, retries withdrawal of both READY and CLAIMED
-   members until each exact publication ends. Immediate teardown and sweep
-   cancellation recheck the member's group and publication under its transition
-   lock. A covered claim is never retargeted to a queued successor. Running
+   members until each exact publication ends. The writer skips a member whose
+   transition lock is busy, for example during that member's own heartbeat, so a
+   running member also checks for the teardown marker at each withdrawal
+   checkpoint and files its own `gang:<group>` withdrawal (#2575). Immediate
+   teardown, sweep and checkpoint cancellation recheck the member's group and
+   publication under its transition lock. A covered claim is never retargeted to a queued successor. Running
    members retain their tokens until the ordinary worker containment and ending
    path completes. Pruning requires positive terminal evidence for every exact
    member publication; another generation's ending is not sufficient. Missing
