@@ -263,7 +263,8 @@ def test_regular_dependency_bytecode():
     assert code == 0
 
 
-def test_assigned_collection_node_ids_match_plain_pytest(tmp_path):
+@pytest.mark.parametrize('workers', [0, 2], ids=['serial', 'xdist'])
+def test_assigned_collection_node_ids_match_plain_pytest(tmp_path, workers):
     import subprocess
     import sys
 
@@ -280,8 +281,10 @@ def root_value(request):
 
 
 def pytest_collection_finish(session):
-    Path(os.environ['COLLECTION_REPORT']).write_text(
-        json.dumps(sorted(item.nodeid for item in session.items)))
+    report = Path(os.environ['COLLECTION_REPORT'])
+    if hasattr(session.config, 'workerinput'):
+        report = report.with_name(report.stem + '-' + session.config.workerinput['workerid'] + '.json')
+    report.write_text(json.dumps(sorted(item.nodeid for item in session.items)))
 """,
         'tests/nested/conftest.py': """import pytest
 
@@ -317,19 +320,31 @@ def pytest_generate_tests(metafunc):
     for name in ('GATE_ASSIGNED_FILES', 'PYTEST_ADDOPTS', 'PYTEST_PLUGINS'):
         environment.pop(name, None)
     collected = []
+    worker_collections = []
     for mode in ['plain', 'assigned']:
         report = tmp_path / (mode + '.json')
         env = {**environment, 'COLLECTION_REPORT': str(report)}
-        arguments = [str(tmp_path)]
+        arguments = ['--collect-only', str(tmp_path)]
         if mode == 'assigned':
             env['GATE_ASSIGNED_FILES'] = json.dumps(files)
             arguments = ['-p', 'gate_collect', *arguments]
+            if workers:
+                arguments = ['-p', 'gate_collect', '-p', 'xdist.plugin',
+                             '-n', str(workers), '--dist=loadfile', str(tmp_path)]
         completed = subprocess.run(
-            [sys.executable, '-m', 'pytest', '--collect-only', '-q',
+            [sys.executable, '-m', 'pytest', '-q',
              '-c', str(tmp_path / 'pytest.ini'), '--rootdir', str(tmp_path), *arguments],
             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
         assert completed.returncode == 0, completed.stdout + completed.stderr
-        collected.append(json.loads(report.read_text()))
+        if mode == 'assigned' and workers:
+            worker_collections = [json.loads(path.read_text())
+                                  for path in sorted(tmp_path.glob('assigned-gw*.json'))]
+            assert len(worker_collections) == workers
+            collected.append(sorted({node for nodes in worker_collections for node in nodes}))
+        else:
+            collected.append(json.loads(report.read_text()))
     plain, assigned = collected
     assert len(plain) == 14
     assert assigned == plain
+    for nodes in worker_collections:
+        assert nodes == plain
