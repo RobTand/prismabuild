@@ -446,7 +446,14 @@ jobs:
         set -Eeuo pipefail
         trap 'echo "NO_VERDICT: full probe setup failed"; exit 75' ERR
         python tools/ci/gate_setup.py --files-from gate-artifacts/probe-files.txt
-        python tools/ci/gate_run.py --plan gate-artifacts/plan.json --files-from gate-artifacts/probe-files.txt --workers 4 --result gate-artifacts/probe-full.json --junitxml gate-artifacts/probe-full.xml
+        /usr/local/pb-gate-python/bin/python tools/ci/gate_run.py --plan gate-artifacts/plan.json --files-from gate-artifacts/probe-files.txt --workers 4 --result gate-artifacts/probe-full.json --junitxml gate-artifacts/probe-full.xml
+    - name: Profile collection for one representative shard
+      run: |
+        set -Eeuo pipefail
+        python3 tools/ci/gate_partition.py shard --setup-aware --files-from gate-artifacts/population.txt --durations tools/ci/gate_durations.json --shards "$GATE_SHARDS" --index 0 --output-files gate-artifacts/probe-startup-files.txt
+        mapfile -t files < gate-artifacts/probe-startup-files.txt
+        /usr/local/pb-gate-python/bin/python -m cProfile -o gate-artifacts/probe-startup.pstats -m pytest --collect-only -q "${files[@]}"
+        /usr/local/pb-gate-python/bin/python -c "import pstats; pstats.Stats('gate-artifacts/probe-startup.pstats').sort_stats('cumulative').print_stats(35)"
     - if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
