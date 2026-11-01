@@ -55,6 +55,8 @@ import tokenize
 from typing import NamedTuple
 import unicodedata
 
+import pytest
+
 
 TIMING_KINDS = frozenset({"sleep", "wait", "join", "get", "put", "communicate", "run", "settimeout"})
 
@@ -470,8 +472,7 @@ def parse_timing_allowlist(contents):
     return entries
 
 
-def validate_timing_allowlist(counts, contents):
-    entries = parse_timing_allowlist(contents)
+def _validate_timing_entries(counts, entries):
     errors = []
     for key in sorted(counts.keys() | entries.keys()):
         found = counts.get(key, 0)
@@ -487,13 +488,37 @@ def validate_timing_allowlist(counts, contents):
         raise ValueError("\n".join(errors))
 
 
-def test_repository_has_no_unallowlisted_timing_calls(capsys):
-    repository = Path(__file__).resolve().parents[1]
-    scan = scan_timing_tests(repository)
-    validate_timing_allowlist(scan.findings,
-                              (repository / "tests/timing_allowlist.txt").read_text(encoding="utf-8"))
-    with capsys.disabled():
-        print(f"timing-prefilter: files={scan.files} parsed={scan.files - scan.skipped} skipped={scan.skipped}")
+def validate_timing_allowlist(counts, contents):
+    _validate_timing_entries(counts, parse_timing_allowlist(contents))
+
+
+def timing_guard_paths(repository, entries):
+    """Collect sources and deleted allowlisted paths without reading Python."""
+    return sorted({path.relative_to(repository).as_posix()
+                   for path in (repository / "tests").rglob("*.py")}
+                  | {key.path for key in entries})
+
+
+TIMING_REPOSITORY = Path(__file__).resolve().parents[1]
+_TIMING_ALLOWLIST = parse_timing_allowlist(
+    (TIMING_REPOSITORY / "tests/timing_allowlist.txt").read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="module")
+def timing_allowlist():
+    return _TIMING_ALLOWLIST
+
+
+@pytest.mark.parametrize("relative", timing_guard_paths(TIMING_REPOSITORY, _TIMING_ALLOWLIST))
+def test_file_has_no_unallowlisted_timing_calls(relative, timing_allowlist):
+    path = TIMING_REPOSITORY / relative
+    counts = Counter()
+    if path.exists():
+        source = path.read_text(encoding="utf-8")
+        if timing_source_needs_ast(source):
+            counts = scan_timing_source(source, relative)
+    entries = {key: value for key, value in timing_allowlist.items() if key.path == relative}
+    _validate_timing_entries(counts, entries)
 
 
 POSITIVE_TIMING_CASES = [
