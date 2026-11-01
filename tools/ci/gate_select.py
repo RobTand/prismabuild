@@ -21,7 +21,7 @@ PATH_SPEC = importlib.util.spec_from_file_location('gate_paths', Path(__file__).
 gate_paths = importlib.util.module_from_spec(PATH_SPEC)
 PATH_SPEC.loader.exec_module(gate_paths)
 
-POLICY = 'production-loads-bound-paths-helper-closure-v4'
+POLICY = 'production-loads-compound-paths-helper-closure-v5'
 
 
 def load_gate_json(path: Path) -> dict:
@@ -150,7 +150,19 @@ def production_loads(tree: ast.AST, path: str) -> tuple[set[str], set[str]]:
                         pending.extend(child.id for child in ast.walk(assignment.value) if isinstance(child, ast.Name))
             evidence = ast.Module(body=[*sorted(bindings, key=lambda item: item.lineno), ast.Expr(value=target)],
                                   type_ignores=[])
-            paths.update(gate_paths.references(evidence, path))
+            references = gate_paths.references(evidence, path)
+            if any(not isinstance(binding, ast.Name)
+                   for assignment in bindings
+                   for binding in (assignment.targets if isinstance(assignment, ast.Assign)
+                                   else [assignment.target])):
+                # Compound bindings can split directory and filename literals. Keep
+                # descendants and filename tails rather than lose their combinations.
+                references.update(reference.rstrip('/') + '/**'
+                                  for reference in tuple(references)
+                                  if '**' not in reference and not reference.endswith('.py'))
+                references.update('**/' + PurePosixPath(reference).name
+                                  for reference in tuple(references) if reference.endswith('.py'))
+            paths.update(references)
     return modules, paths
 
 
