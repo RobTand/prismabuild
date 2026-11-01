@@ -392,9 +392,9 @@ selection accuracy.
 | `with_name` | 199 | 105 |
 | `with_suffix` | 49 | 33 |
 
-## Hosted qualification timings
+## Initial hosted qualification timings
 
-The three final-population samples below each run all 1,245 eligible files.
+The three initial final-population samples below each run all 1,245 eligible files.
 They passed without infrastructure retries or test failures. No test above
 60 seconds was observed in retained JUnit, including root/capability diagnostics. Full-run wall
 measures workflow start to completion of the final `gate`; pickup measures
@@ -504,8 +504,9 @@ previews leave headroom below GitHub's 1 MiB step-summary limit.
 
 Whole-population triggers discover filenames without building an unused import
 and helper graph. Shadow coverage is still the complete population. Shards
-start long files first so short files can fill the remaining workers while a
-long file finishes. Neither optimization removes or retries a test.
+order collection by estimated file duration. xdist retains file-based dispatch,
+and the longest files are isolated as described below. Neither optimization
+removes or retries a test.
 
 The gate's optional `--setup-aware` partition keeps the two real namespace
 fixtures together and charges their shared setup once. The shared nightly
