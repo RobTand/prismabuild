@@ -94,6 +94,14 @@ jobs:
         set -Eeuo pipefail
         python -m pip install --retries 3 --timeout 30 -r tools/ci/gate_requirements.txt
         python tools/ci/gate_setup.py --files-from ../census-output/assigned.txt
+    - name: Record free disk under this sample's TMPDIR
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        echo "CENSUS_TMPDIR=$TMPDIR"
+        df -B1 --output=avail,iavail "$TMPDIR" | tee census-output/df.txt
+        read -r available inodes < <(tail -n 1 census-output/df.txt)
+        printf '%s %s %s\n' "$available" "$inodes" "$TMPDIR" | tee census-output/disk.txt
     - name: Record this independent sample without retrying test failures
       working-directory: population
       shell: bash

@@ -27,6 +27,14 @@ Skipped or absent tests never count as passes. Quarantined nodes retain all
 counts but do not file issues; a node passing every sample on both architectures
 is a retirement candidate for its named owner, not automatically unquarantined.
 
+Before tests, each shard logs free bytes and inodes under its actual `TMPDIR`
+using `df -B1`. The artifact and summary keep the measurement with architecture,
+repeat and shard, so disk-dependent failures can be compared across runners.
+Failures containing the queue-space-warning prefix are grouped as the known
+environmental cause tracked by #2508 through #2514. The classifier scans the
+whole failure text, including lines beyond its bounded excerpt, and suppresses
+individual filings for that cause. Existing open owners also suppress filings.
+
 The job summary lists findings and counts. The `flake-census-results` artifact
 contains every observed node, counts, failure excerpts, sample URLs, population
 SHA, runner evidence and filing decisions. Raw JUnit and runner records are

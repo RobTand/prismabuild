@@ -6,6 +6,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -30,10 +31,10 @@ def classify_samples(samples, repeats, quarantine):
             raise ValueError('duplicate or unexpected census sample identity')
         observed[arch, repeat] = sample
     groups = {key: [] for key in ('intermittent', 'deterministic_failure', 'architecture_difference',
-              'passing', 'unresolved', 'quarantined', 'ready_for_retirement')}
+              'passing', 'unresolved', 'quarantined', 'ready_for_retirement', 'environmental')}
     tests = {}
     for node in sorted({node for sample in samples for node in sample['tests']}):
-        counts, failures = {}, []
+        counts, failures, causes = {}, [], set()
         for arch in ARCHITECTURES:
             count = dict.fromkeys(('passed', 'failed', 'skipped', 'missing'), 0)
             for repeat in range(repeats):
@@ -44,9 +45,15 @@ def classify_samples(samples, repeats, quarantine):
                     raise ValueError('unexpected test outcome')
                 count[outcome] += 1
                 if outcome == 'failed':
+                    warning = re.search(r'pbrun: queue space warning: [0-9]+ available bytes; [0-9]+ available inodes', row['failure'])
+                    excerpt = '\n'.join(row['failure'].splitlines()[:20])[:4000]
+                    if warning:
+                        causes.add('queue_space_warning')
+                        if warning.group() not in excerpt:
+                            excerpt += '\n...\n' + warning.group()
                     failures.append({'architecture': arch, 'repeat': repeat,
-                        'excerpt': '\n'.join(row['failure'].splitlines()[:20])[:4000],
-                        'run_url': sample['run_url']})
+                        'excerpt': excerpt,
+                        'run_url': sample['run_url'], 'disk': row.get('disk', sample.get('disk'))})
             counts[arch] = count
         values = list(counts.values())
         if any(c['passed'] and c['failed'] for c in values):
@@ -61,11 +68,14 @@ def classify_samples(samples, repeats, quarantine):
             status = 'unresolved'
         owners = sorted({entry['issue'] for entry in quarantine
                          if node == entry['target'] or node.startswith(entry['target'] + '::')})
-        tests[node] = {'counts': counts, 'status': status, 'owners': owners, 'failures': failures}
-        groups['quarantined' if owners else status].append(node)
+        tests[node] = {'counts': counts, 'status': status, 'owners': owners, 'failures': failures, 'causes': sorted(causes)}
+        groups['quarantined' if owners else 'environmental' if causes else status].append(node)
         if owners and status == 'passing':
             groups['ready_for_retirement'].append(node)
-    return {'repeats': repeats, 'tests': tests, 'classification': groups}
+    return {'repeats': repeats, 'tests': tests, 'classification': groups,
+            'disk_samples': [disk for sample in samples for disk in sample.get('disk_samples', [])],
+            'environmental_causes': {'queue_space_warning': {'issues': list(range(2508, 2515)),
+                'description': 'Queue filesystem below 16 GiB prints a warning before the queued line.'}}}
 
 
 def census_owners(issues):
@@ -100,7 +110,7 @@ def census_issue_plans(result, issues):
                 + '\n'.join('    ' + report.safe_text(line) for line in failure['excerpt'].splitlines()))
         body += ('\n\nProposed tools/ci/gate_quarantine.json entry. Replace the placeholder with '
                  'this issue number and review before applying:\n\n'
-                 + '\n'.join('    ' + report.safe_text(line) for line in json.dumps(proposed, indent=2).splitlines()))
+                 + '\n'.join('    ' + line for line in json.dumps(proposed, indent=2).replace(chr(64), r'\u0040').splitlines()))
         command = ('python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py '
                    '--checkout <clean-checkout> --python /home/rob/venvs/pb-cpu/bin/python '
                    '--workers-per-shard 1 --threads-per-shard 1 --mem-gb 4 --priority -10 ' + shlex.quote(node))
@@ -163,7 +173,16 @@ def collect_census(directory, manifest, run_url, artifact_prefix=''):
         source = dict(entry, index=artifact_prefix + str(entry['index']))
         tests = nightly.collect_shards(directory, {'sha': manifest['sha'], 'include': [source]})
         key = (entry['architecture'], entry['repeat'])
-        sample = samples.setdefault(key, {'architecture': key[0], 'repeat': key[1], 'tests': {}, 'run_url': run_url})
+        sample = samples.setdefault(key, {'architecture': key[0], 'repeat': key[1], 'tests': {},
+            'run_url': run_url, 'disk_samples': []})
+        available, inodes, tmpdir = (directory / str(source['index']) / 'disk.txt').read_text().strip().split(maxsplit=2)
+        disk = {'available_bytes': int(available), 'available_inodes': int(inodes), 'tmpdir': tmpdir,
+                'architecture': key[0], 'repeat': key[1], 'shard': entry['index'], 'run_url': run_url}
+        if disk['available_bytes'] < 0 or disk['available_inodes'] < 0 or not tmpdir.startswith('/'):
+            raise ValueError('invalid shard disk evidence')
+        sample['disk_samples'].append(disk)
+        for row in tests.values():
+            row['disk'] = disk
         if sample['tests'].keys() & tests.keys():
             raise ValueError('duplicate tests across census shards')
         sample['tests'].update(tests)
@@ -179,6 +198,17 @@ def census_summary(result):
              '', 'Full counts, excerpts and sample URLs are in the flake-census-results artifact.', '']
     if result.get('error'):
         lines += ['Incomplete: ' + report.literal_report_text(result['error']), '']
+    if result['disk_samples']:
+        lines += ['## Runner disk under TMPDIR before tests', '',
+                  '| Architecture | Repeat | Shard | Available bytes | Available inodes | TMPDIR |',
+                  '| --- | --- | --- | --- | --- | --- |']
+        for disk in result['disk_samples']:
+            lines.append(f"| {disk['architecture']} | {disk['repeat'] + 1} | {disk['shard']} | "
+                         f"{disk['available_bytes']} | {disk['available_inodes']} | "
+                         + report.literal_report_text(disk['tmpdir']) + ' |')
+        lines.append('')
+    lines += ['Queue-space-warning failures share the environmental cause tracked in #2508 through #2514. '
+              'They do not create individual census issues.', '']
     for group, nodes in result['classification'].items():
         lines.append(f'## {group}: {len(nodes)}')
         # Bound GitHub's summary independently of suite size.
@@ -187,7 +217,11 @@ def census_summary(result):
                 row = result['tests'][node]
                 counts = '; '.join(f"{arch} {c['passed']}P/{c['failed']}F/{c['skipped']}S/{c['missing']}M"
                                    for arch, c in row['counts'].items())
-                lines.append('- ' + report.literal_report_text(node) + ': ' + counts)
+                owner = result.get('open_owners', {}).get(node)
+                details = ('; open owner #' + str(owner)) if owner else ''
+                if row['causes']:
+                    details += '; cause: ' + ', '.join(row['causes'])
+                lines.append('- ' + report.literal_report_text(node) + ': ' + counts + details)
             if len(nodes) > 40:
                 lines.append(f'{len(nodes) - 40} more in the artifact.')
         lines.append('')
@@ -246,6 +280,8 @@ def main(argv=None):
     result['deferred'], result['shards'] = manifest['deferred'], manifest['include']
     api = report.GitHub.from_environment(os.environ['GITHUB_REPOSITORY'])
     issues = api.pages('issues?state=open') if result['complete'] else []
+    result['open_owners'] = {node: issue for node, issue in census_owners(issues).items()
+                             if node in result.get('tests', {})}
     plans = census_issue_plans(result, issues)
     result['plans'] = plans
     result['filed'] = file_new_issues(api, plans) if not args.dry_run else []
