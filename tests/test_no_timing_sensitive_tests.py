@@ -1028,3 +1028,58 @@ def test_fixture_tree_timing_findings_are_characterized(tmp_path):
     with pytest.raises(ValueError) as caught:
         validate_timing_allowlist(scan.findings, contents)
     assert str(caught.value).splitlines() == CHARACTERIZED_TIMING_ERRORS
+
+
+def test_timing_guard_collection_only_lists_paths(tmp_path, monkeypatch):
+    contents = _timing_guard_characterization_tree(tmp_path)
+    entries = parse_timing_allowlist(contents)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("collection must not read or parse Python source")
+
+    monkeypatch.setattr(Path, "read_text", forbidden)
+    monkeypatch.setitem(globals(), "scan_timing_source", forbidden)
+    paths = globals().get("timing_guard_paths")
+    assert callable(paths), "guard needs per-file collection without source analysis"
+    assert paths(tmp_path, entries) == [
+        "tests/deleted.py", "tests/support/allowed.py", "tests/test_clean.py",
+        "tests/test_unlisted.py", "tests/test_violations.py",
+    ]
+
+
+def test_file_guard_reads_only_the_named_source(tmp_path, monkeypatch):
+    contents = _timing_guard_characterization_tree(tmp_path)
+    entries = parse_timing_allowlist(contents)
+    parsed = []
+    native_scan = scan_timing_source
+
+    def record_scan(source, relative):
+        parsed.append(relative)
+        return native_scan(source, relative)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("a file test must not enumerate or scan the repository")
+
+    monkeypatch.setitem(globals(), "TIMING_REPOSITORY", tmp_path)
+    monkeypatch.setitem(globals(), "scan_timing_source", record_scan)
+    monkeypatch.setitem(globals(), "scan_timing_tests", forbidden)
+    monkeypatch.setattr(Path, "rglob", forbidden)
+    check = globals().get("test_file_has_no_unallowlisted_timing_calls")
+    assert callable(check), "guard needs one independently scheduled test per file"
+    check("tests/support/allowed.py", entries)
+    assert parsed == ["tests/support/allowed.py"]
+
+
+def test_distributed_guard_preserves_characterized_findings(tmp_path, monkeypatch):
+    contents = _timing_guard_characterization_tree(tmp_path)
+    entries = parse_timing_allowlist(contents)
+    monkeypatch.setitem(globals(), "TIMING_REPOSITORY", tmp_path)
+    check = globals().get("test_file_has_no_unallowlisted_timing_calls")
+    assert callable(check), "guard needs per-file validation with stale-entry checks"
+    errors = []
+    for relative in timing_guard_paths(tmp_path, entries):
+        try:
+            check(relative, entries)
+        except ValueError as exc:
+            errors.extend(str(exc).splitlines())
+    assert sorted(errors) == CHARACTERIZED_TIMING_ERRORS
