@@ -55,8 +55,6 @@ import tokenize
 from typing import NamedTuple
 import unicodedata
 
-import pytest
-
 
 TIMING_KINDS = frozenset({"sleep", "wait", "join", "get", "put", "communicate", "run", "settimeout"})
 
@@ -500,16 +498,17 @@ def timing_guard_paths(repository, entries):
 
 
 TIMING_REPOSITORY = Path(__file__).resolve().parents[1]
-_TIMING_ALLOWLIST = parse_timing_allowlist(
-    (TIMING_REPOSITORY / "tests/timing_allowlist.txt").read_text(encoding="utf-8"))
 
 
-@pytest.fixture(scope="module")
-def timing_allowlist():
-    return _TIMING_ALLOWLIST
+def pytest_generate_tests(metafunc):
+    if metafunc.function is test_file_has_no_unallowlisted_timing_calls:
+        entries = parse_timing_allowlist(
+            (TIMING_REPOSITORY / "tests/timing_allowlist.txt").read_text(encoding="utf-8"))
+        paths = timing_guard_paths(TIMING_REPOSITORY, entries)
+        metafunc.parametrize(("relative", "timing_allowlist"),
+                             [(relative, entries) for relative in paths], ids=paths)
 
 
-@pytest.mark.parametrize("relative", timing_guard_paths(TIMING_REPOSITORY, _TIMING_ALLOWLIST))
 def test_file_has_no_unallowlisted_timing_calls(relative, timing_allowlist):
     path = TIMING_REPOSITORY / relative
     counts = Counter()
