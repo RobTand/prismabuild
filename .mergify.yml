@@ -1,39 +1,64 @@
-# Mergify merge queue for PrismaBuild. Tracking: #2406 (Paperclip PRI-1056).
+# Mergify merge queue for PrismaBuild. Tracking: #2428.
 #
-# One serial slot, one pull request per check and no retries. With these
-# settings Mergify checks a queued pull request in place: it merges main into
-# the pull request branch, waits for the required checks on that integrated
-# head, then merges. No draft queue pull request is created, so the branch
-# naming rule keeps applying to the real pull request.
+# CI runs as GitHub Actions checks on GitHub-hosted runners (Rob, 2026-10-31);
+# they are free for this public repository and put no load on the fleet.
+# Two steps:
+# - Every pull request push runs "pr-gate", which selects tests by evidence
+#   from the pull request's changes. A pull request needs it, and
+#   "issue-link", to enter the queue.
+# - Each batch is tested on a draft pull request that Mergify opens on a
+#   mergify/merge-queue/ branch. There "gate" runs the full gate population on
+#   the integrated SHA, split across hosted runners of both architectures. It
+#   must pass before Mergify merges the batch.
 #
-# The queue and merge conditions are the branch protection required checks,
-# which Mergify injects. Review policy is unchanged. Nothing is queued
-# automatically: comment "@mergifyio queue" on a pull request to queue it.
-# A pull request labelled "release" goes to the release queue and is served
-# ahead of the default queue.
+# Add the "queue" label to queue a pull request and remove it to dequeue. A
+# pull request that also carries "release" goes to the release queue, which is
+# served first. When a batch's draft passes, Mergify merges the batch's
+# original pull requests. Merging them (rather than the draft) keeps branch
+# protection's "require a pull request" rule without a bypass actor.
+#
+# Batches grow from one pull request toward seven when the queue backs up, and
+# two batches are tested at once. The gate runs the full population whatever
+# the batch size, so bigger batches cost no more CI. A failed batch is split to
+# find the pull request that broke it. The gate itself reruns a shard that
+# ended without a test verdict; a test failure is never retried, so
+# max_checks_retries stays 0.
 merge_queue:
   mode: serial
-  max_parallel_checks: 1
+  max_parallel_checks: 2
   reset_on_external_merge: always
   status_comments: outcomes
   queue_controls_comment: false
+  queued_label: queued
+  dequeued_label: dequeued
 
 queue_rules:
   - name: release
     queue_conditions:
       - base = main
+      - label = queue
       - label = release
+      - -draft
+      - check-success = pr-gate
+    merge_conditions:
+      - check-success = gate
     merge_method: merge
-    update_method: merge
     batch_size: 1
     max_checks_retries: 0
     checks_timeout: 30 minutes
   - name: default
     queue_conditions:
       - base = main
+      - label = queue
+      - -draft
+      - check-success = pr-gate
+    merge_conditions:
+      - check-success = gate
     merge_method: merge
-    update_method: merge
-    batch_size: 1
+    batch_size:
+      min: 1
+      max: 7
+    batch_max_wait_time: 2 minutes
     max_checks_retries: 0
     checks_timeout: 30 minutes
 
@@ -42,3 +67,12 @@ priority_rules:
     conditions:
       - label = release
     priority: high
+
+pull_request_rules:
+  - name: queue pull requests labelled "queue"
+    conditions:
+      - base = main
+      - label = queue
+      - -draft
+    actions:
+      queue:

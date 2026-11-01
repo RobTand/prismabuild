@@ -146,3 +146,22 @@ def test_policy_failure_before_pytest_is_final_and_never_retried():
                   budget={'status': 'fail', 'reason': 'budgets may not grow'}),
         1: record('b.py')}})
     assert result['exit_code'] == 1 and result['retry_indices'] == []
+
+
+@pytest.mark.parametrize('code', [1, 2, 3])
+@pytest.mark.parametrize('failed_attempt', [1, 2])
+def test_failure_evidence_from_either_attempt_overrides_a_passing_attempt(code, failed_attempt):
+    attempts = {1: {0: record('a.py'), 1: record('b.py')}, 2: {0: record('a.py')}}
+    attempts[failed_attempt][0] = record('a.py', 'fail', pytest_exit_code=code)
+    result = actions.assess_attempts(PLAN, ASSIGNMENTS, attempts)
+    assert result['exit_code'] == 1
+    assert result['failed_indices'] == [0]
+    assert result['retry_indices'] == []
+    assert result['effective_attempts'][0] == failed_attempt
+
+
+def test_canary_label_changes_re_evaluate_gate_workflow():
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/gate.yml').read_text())
+    assert {'opened', 'synchronize', 'reopened', 'labeled', 'unlabeled'} <= set(
+        workflow['on']['pull_request']['types'])

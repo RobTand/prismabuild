@@ -198,7 +198,7 @@ Two rows, one wanting a GPU and one that must not have one::
         "env": {"PYTHONPATH": "src"}
       },
       {
-        "argv": ["/usr/bin/python3", "-m", "pytest", "-q", "tests"],
+        "argv": ["/usr/bin/python3", "/mnt/shared/prismabuild-fleet/repo/tools/pytest_action.py", "-q", "tests"],
         "cwd": "/home/rob/mypkg",
         "demand": {"cpu": 8, "mem_gb": 16},
         "tags": ["x86"]

@@ -9,6 +9,7 @@ import pytest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from prismabuild.digest_primitives import raw_sha256
+from prismabuild.pytest_temp import pytest_basetemp
 
 
 class Roster:
@@ -21,8 +22,8 @@ class Roster:
 def main():
     roster = Roster()
     output = io.StringIO()
-    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-        code = pytest.main(["--collect-only", "-q", *(sys.argv[1:] or ["tests"])], plugins=[roster])
+    with pytest_basetemp() as base, contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+        code = pytest.main(["--collect-only", "-q", f"--basetemp={base}", *(sys.argv[1:] or ["tests"])], plugins=[roster])
     raw = json.dumps(roster.nodes, separators=(",", ":")).encode()
     print(json.dumps({"returncode": int(code), "native": len(roster.nodes),
         "whole_files": len({node.split("::")[0] for node in roster.nodes}),

@@ -114,9 +114,20 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
                      if target.split('::', 1)[0] in files), *files]
         result = execute(command, cwd=root, env=environment, check=False)
         record['pytest_exit_code'] = result.returncode
-        if result.returncode not in {0, 1}:
-            raise RuntimeError(f'pytest exited {result.returncode}, without a complete test verdict')
-        record['verdict'] = 'pass' if result.returncode == 0 else 'fail'
+        record['verdict'] = 'fail' if result.returncode == 1 else None
+        try:
+            # Preserve a recorded failure even if pytest subsequently interrupts
+            # or leaves a truncated report during an internal error.
+            for _, element in ET.iterparse(junit):
+                if element.tag in {'failure', 'error'}:
+                    record['verdict'] = 'fail'
+        except (OSError, ET.ParseError) as error:
+            if record['verdict'] != 'fail':
+                raise RuntimeError('JUnit verdict unavailable: ' + str(error)) from error
+        if record['verdict'] != 'fail':
+            if result.returncode != 0:
+                raise RuntimeError(f'pytest exited {result.returncode}, without a complete test verdict')
+            record['verdict'] = 'pass'
         try:
             overruns = _budget_timings(junit, files, config)
             record['budget'].update(status='fail' if overruns else 'pass', overruns=overruns)
@@ -128,7 +139,7 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
         except (OSError, ValueError, ET.ParseError) as error:
             record['budget'].update(status='unavailable', reason=str(error))
             # A definite test failure remains final even if timing evidence is lost.
-            if result.returncode == 0:
+            if record['verdict'] != 'fail':
                 record['verdict'] = None
                 raise RuntimeError(str(error)) from error
         code = 0 if record['verdict'] == 'pass' else 1

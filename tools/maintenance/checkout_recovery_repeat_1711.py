@@ -17,6 +17,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 from prismabuild.digest_primitives import raw_sha256
+from prismabuild.pytest_temp import pytest_basetemp
 
 
 SELECTORS = (
@@ -69,7 +70,9 @@ def main() -> int:
             f"{TEST_PATH}::{name}" for name in SELECTORS], f"--junitxml={junit}"]
         if arguments.workers:
             command[3:3] = ["-n", str(arguments.workers)]
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        with pytest_basetemp() as base:
+            command.append(f"--basetemp={base}")
+            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         with stdout.open("wb") as target:
             target.write(result.stdout)
             target.flush()

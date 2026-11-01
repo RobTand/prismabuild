@@ -32,11 +32,11 @@ def _verdict(plan, files, record):
     verdict = record.get('verdict')
     if not isinstance(verdict, str):
         return None
-    return verdict if (verdict, code) in {('pass', 0), ('fail', 1)} else None
+    return verdict if verdict == 'fail' or (verdict, code) == ('pass', 0) else None
 
 
 def assess_attempts(plan, assignments, attempts):
-    """Return retry indices and the final verdict, preserving the first test verdict."""
+    """Return retry indices and the final verdict, preserving any test failure."""
     indices = [row['index'] for row in assignments]
     assigned = Counter(path for row in assignments for path in row['files'])
     selected = [row['path'] for row in plan['selected']]
@@ -47,10 +47,13 @@ def assess_attempts(plan, assignments, attempts):
     for row in assignments:
         index, files = row['index'], row['files']
         first = _verdict(plan, files, attempts.get(1, {}).get(index))
+        second = _verdict(plan, files, attempts.get(2, {}).get(index))
         if first is None:
             retry.append(index)
-            verdict = _verdict(plan, files, attempts.get(2, {}).get(index))
-            attempt = 2
+        if 'fail' in (first, second):
+            verdict, attempt = 'fail', 1 if first == 'fail' else 2
+        elif first is None:
+            verdict, attempt = second, 2
         else:
             verdict, attempt = first, 1
         if verdict is None:

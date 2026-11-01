@@ -18,19 +18,22 @@ Two fixes, and each alone keeps the consumer waiting:
 2. Receipts are read by a bounded pool of readers, so a cold read costs
    (receipts / readers) x latency, not receipts x latency.
 
-The terms are scaled so the test runs in seconds on a real clock:
+The liveness terms are scaled:
 ``pool.OFFER_TIMEOUT_S`` (``L``) is 8 s and ``pool.HEARTBEAT_S`` (``P``) is
 2 s.  The reader's bound travels in the landing record
 (``tier_loop_liveness_s``), so PQ's reader applies the scaled bound too.
-Every read of a cold receipt sleeps ``READ_S``; serially the read takes
-``COLD_RECEIPTS * READ_S`` = 12 s, past ``L``.
+Each cold receipt costs ``READ_S``; serially the read takes
+``COLD_RECEIPTS * READ_S`` = 12 s, past ``L``. The serial and hung-read
+controls advance a logical clock. The two parallel acceptance cases retain
+their real reader threads and delays.
 
 The consumer is R12 on the whole stage, waiting on its advance leg
 (``chain-032``), as in ``test_a_wait_on_a_deferred_leg_counts_while_the_tier
-_loop_lives``.  It polls PQ's ``landing_verdict`` (restated in
+_loop_lives``.  The parallel cases poll PQ's ``landing_verdict`` (restated in
 ``test_a_leg_past_the_horizon_is_waited_for_not_clocked``) and PB's
 ``PoolQueue._tier_loop_alive`` on its own thread while the fresh loop runs
-its first cycle.
+its first cycle. The serial logical-clock case polls synchronously between
+clock advances.
 
 Every fixture is a temp queue and a temp stage root; nothing touches a real
 ``/stage``, ``/ram`` or the live queue.
@@ -42,6 +45,7 @@ from pathlib import Path
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -55,6 +59,7 @@ from prismabuild import pool  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from kept_read_clock import after_paths
+from fleet_world import Clock
 
 import test_a_leg_past_the_horizon_is_waited_for_not_clocked as leg  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
@@ -141,7 +146,7 @@ class _Slow:
     """``pool.record_store.read_document``, with every cold receipt's read costing ``READ_S``."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, *,
-                 read_s: float = READ_S) -> None:
+                 read_s: float = READ_S, delay=time.sleep) -> None:
         self.lock = threading.Lock()
         self.reads = 0
         self.read_s = read_s
@@ -159,7 +164,7 @@ class _Slow:
                 if name == self.hang_name:
                     self.hung.set()
                     self.release.wait(60.0)
-                time.sleep(self.read_s)
+                delay(self.read_s)
             return real(path, *args, **kwargs)
 
         monkeypatch.setattr(pool.record_store, '_read_json', read)
@@ -191,11 +196,14 @@ def _replaced_loop(tmp_path: Path):
     return queue, stage, capacity, consumer
 
 
-def _first_cycle(queue, stage, capacity, consumer: _Consumer
-                 ) -> dict[str, object]:
+def _first_cycle(queue, stage, capacity, consumer: _Consumer, *,
+                 background_consumer: bool = True) -> dict[str, object]:
     """The fresh loop's start and first cycle, with the consumer polling."""
 
-    consumer.start()
+    if background_consumer:
+        consumer.start()
+    else:
+        consumer.poll()
     started = time.monotonic()
     try:
         receipts, liveness = _fresh_loop(queue)
@@ -205,8 +213,9 @@ def _first_cycle(queue, stage, capacity, consumer: _Consumer
                             TIER: _tier_record(stage, gib=capacity)},
                         liveness=liveness)
     finally:
-        consumer.halt.set()
-        consumer.join(30.0)
+        if background_consumer:
+            consumer.halt.set()
+            consumer.join(30.0)
     consumer.poll()
     assert consumer.error is None, repr(consumer.error)
     return {"wall_s": round(time.monotonic() - started, 3),
@@ -252,15 +261,83 @@ def test_adoption_alone_keeps_the_consumer_waiting_through_a_serial_read(
     """Fix 1 on its own: the read stays serial and outlasts ``L``."""
 
     monkeypatch.setattr(tier_loop, "RECEIPT_READERS", 1, raising=False)
+    clock = Clock(now=time.time())
+    clock.install(monkeypatch, scope="pool")
+    clock_module = SimpleNamespace(**vars(time))
+    clock_module.time = clock_module.monotonic = clock_module.perf_counter = (
+        lambda: clock.now)
+    for module in (tier_loop, leg, sys.modules[__name__]):
+        monkeypatch.setattr(module, "time", clock_module)
     queue, stage, capacity, consumer = _replaced_loop(tmp_path)
-    slow = _Slow(monkeypatch)
+
+    def finish_read(seconds):
+        clock.advance(seconds)
+        consumer.poll()
+
+    slow = _Slow(monkeypatch, delay=finish_read)
     _file_cold_receipts(queue)
 
-    line = _first_cycle(queue, stage, capacity, consumer)
+    line = _first_cycle(queue, stage, capacity, consumer,
+                        background_consumer=False)
 
     assert slow.reads == COLD_RECEIPTS, slow.reads
     assert float(line["receipts_s"] or 0.0) > BOUND_S, line
     _assert_never_refused(consumer, line, "adoption-alone")
+
+
+
+def test_serial_read_cannot_resume_a_poll_with_an_old_announcement(
+        tmp_path, monkeypatch, scaled):
+    """Pause a real poll between its announcement read and clock read."""
+
+    paused, resume, polled = (threading.Event() for _ in range(3))
+    native_consumer = _Consumer
+    native_advance = Clock.advance
+    reader_code = leg.reader_tier_age.__code__
+    beginning = [None]
+
+    class PausedConsumer(native_consumer):
+        def start(self):
+            super().start()
+            assert paused.wait(60), "background poll did not read its announcement"
+
+        def run(self):
+            def pause(frame, event, _argument):
+                if (not paused.is_set() and event == "line"
+                        and frame.f_code is reader_code
+                        and "announced" in frame.f_locals):
+                    paused.set()
+                    assert resume.wait(60), "logical clock never released the poll"
+                return pause
+
+            sys.settrace(pause)
+            try:
+                super().run()
+            finally:
+                sys.settrace(None)
+
+        def poll(self):
+            result = super().poll()
+            if threading.current_thread() is self:
+                polled.set()
+            return result
+
+    def advance(clock, seconds):
+        if beginning[0] is None:
+            beginning[0] = clock.now
+        value = native_advance(clock, seconds)
+        if paused.is_set() and value - beginning[0] >= BOUND_S + 1:
+            resume.set()
+            assert polled.wait(60), "resumed poll did not finish"
+        return value
+
+    monkeypatch.setattr(sys.modules[__name__], "_Consumer", PausedConsumer)
+    monkeypatch.setattr(Clock, "advance", advance)
+    try:
+        test_adoption_alone_keeps_the_consumer_waiting_through_a_serial_read(
+            tmp_path, monkeypatch, scaled)
+    finally:
+        resume.set()
 
 
 def test_parallel_reads_alone_keep_the_consumer_waiting(
@@ -392,6 +469,8 @@ def test_a_hung_read_among_parallel_readers_reads_dead_within_the_bound(
     """
 
     queue, stage = leg._fixture_queue(tmp_path, 5)
+    clock = Clock(now=time.time())
+    clock.install(monkeypatch, scope="pool")
     receipts = tier_loop.ReceiptCache()
     liveness = tier_loop.Liveness(interval_s=INTERVAL_S)
 
@@ -402,28 +481,26 @@ def test_a_hung_read_among_parallel_readers_reads_dead_within_the_bound(
                         liveness=liveness)
 
     run_cycle()
-    slow = _Slow(monkeypatch, read_s=0.01)
+    slow = _Slow(monkeypatch, delay=lambda _seconds: None)
     _file_cold_receipts(queue, count=20)
     slow.hang_name = f"{PREFIX}0010.json"
     worker = threading.Thread(target=run_cycle, daemon=True)
     worker.start()
     try:
-        assert slow.hung.wait(30.0), "the hung read never started"
-        hung_at = time.time()
-        dead_at = None
-        while time.time() - hung_at <= BOUND_S + POLL_S + 2.0:
-            alive, _age = queue._tier_loop_alive(TIER, now=time.time())
-            if not alive:
-                dead_at = time.time()
-                break
-            time.sleep(0.05)
-        still_hung = worker.is_alive()
+        assert slow.hung.wait(60.0), "the hung read never started"
+        path = queue.records.tier_record_path(TIER)
+        announced = path.read_bytes()
+        assert queue._tier_loop_alive(TIER, now=clock.now)[0]
+        clock.advance(BOUND_S)
+        assert queue._tier_loop_alive(TIER, now=clock.now)[0]
+        clock.advance(POLL_S)
+        assert not queue._tier_loop_alive(TIER, now=clock.now)[0]
+        assert path.read_bytes() == announced
+        assert worker.is_alive()
     finally:
         slow.release.set()
         worker.join(60.0)
-    assert still_hung
-    assert dead_at is not None, "a hung read kept the record alive"
-    assert dead_at - hung_at <= BOUND_S + POLL_S, dead_at - hung_at
+    assert not worker.is_alive()
     # The other readers ran: every cold receipt was read, the hung one last.
     assert slow.reads == 20, slow.reads
 
