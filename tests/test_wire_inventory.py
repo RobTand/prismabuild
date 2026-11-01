@@ -232,14 +232,17 @@ def test_pinned_field_guard_scans_only_requested_source(tmp_path, monkeypatch):
     test_closed_field_sets_remain_pinned(path='tools/extensionless')
 
 
-@pytest.mark.parametrize('change', ['added', 'removed'])
+@pytest.mark.parametrize('change', ['added', 'removed', 'reordered'])
 def test_pin_cases_detect_added_and_removed_sources(tmp_path, monkeypatch, change):
     expected = _field_policy_tree(tmp_path)
     pin = tmp_path / 'tests/compat/field_sets.json'
     pin.parent.mkdir(parents=True)
     pin.write_text(json.dumps(expected))
     path = 'tools/new.py' if change == 'added' else 'tools/extensionless'
-    if change == 'added':
+    if change == 'reordered':
+        pin.write_text(json.dumps(expected[::-1]))
+        path = expected[-1]['path']
+    elif change == 'added':
         (tmp_path / path).write_text("NEW_FIELDS = {'new'}\n")
     else:
         (tmp_path / path).unlink()
