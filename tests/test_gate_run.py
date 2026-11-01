@@ -164,3 +164,22 @@ def test_infrastructure_exit_with_only_passing_junit_can_retry(tmp_path, code):
         execute=execute, affinity={1})
     assert result == 75
     assert json.loads((tmp_path / 'output').read_text())['verdict'] is None
+
+
+def test_long_files_start_first_without_changing_assigned_coverage(tmp_path):
+    files = ['tests/test_a_short.py', 'tests/test_b_medium.py', 'tests/test_z_long.py']
+    observed = []
+    def execute(command, **kwargs):
+        observed.extend(command[-3:])
+        (tmp_path / 'junit.xml').write_text('<testsuites>' + ''.join(
+            f'<testcase file="{path}" classname="{path[:-3].replace("/", ".")}" '
+            'name="test_value" time="1"/>' for path in files) + '</testsuites>')
+        return SimpleNamespace(returncode=0)
+    code = runner.run_plan({'selected': [
+        {'path': files[0], 'estimated_seconds': 1},
+        {'path': files[1], 'estimated_seconds': 5},
+        {'path': files[2], 'estimated_seconds': 90}], 'deselect': []},
+        files=files, root=tmp_path, output=tmp_path / 'output', junit=tmp_path / 'junit.xml',
+        execute=execute, affinity={1, 2})
+    assert code == 0
+    assert observed == ['tests/test_z_long.py', 'tests/test_b_medium.py', 'tests/test_a_short.py']
