@@ -12,7 +12,10 @@ from types import SimpleNamespace
 
 
 def git(root, *args):
-    env = {**os.environ, "GIT_AUTHOR_DATE": "2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2000-01-01T00:00:00Z",
+    # Inherited Git identity variables override the repository's configured fixture identity.
+    env = {**os.environ, "GIT_AUTHOR_NAME": "Compatibility fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+           "GIT_COMMITTER_NAME": "Compatibility fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+           "GIT_AUTHOR_DATE": "2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2000-01-01T00:00:00Z",
            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
     return subprocess.check_output(["git", "-C", str(root), *args], env=env, stderr=subprocess.PIPE).decode().strip()
 
