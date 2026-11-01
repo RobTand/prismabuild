@@ -53,8 +53,10 @@ def syntax_tree(path, snippet):
         return ast.parse(sanitized), True
 
 
-def sources(root, observations):
+def sources(root, observations, *, include_tests=True):
     for base in ("src", "tools", "tests", "fleet"):
+        if base == "tests" and not include_tests:
+            continue
         for path in sorted((root / base).rglob("*")):
             if not path.is_file() or path.suffix not in (".py", "", ".sh"):
                 continue
@@ -157,36 +159,11 @@ def source_expression(node, source):
     return ast.unparse(node)
 
 
-def audit(root, observations=None):
-    observations = observations if observations is not None else {}
+def _source_inventory(root, observations, known, *, include_tests=True):
     observations.update({key: [] for key in ("parsed_sources", "unparsed_sources", "unresolved_schema_builders", "serialization_sites")})
-    known = catalogue(root)
-    reviewed = classifications(root)
-    assert not known.keys() & reviewed.keys(), "a kind cannot be qualified and excluded from the window"
-    required_generations = set()
-    for name in ("window.json", "prepared.json"):
-        path = root / "tests/compat/generations" / name
-        if path.exists():
-            document = json.loads(path.read_bytes())
-            required_generations.update(row["generation"] for row in
-                                        (document["generations"] if isinstance(document, dict) else document))
-    captured = {"current": set(), "historical": defaultdict(set), "absent_inputs": defaultdict(set)}
-    for path in (root / "tests/compat").glob("*.jsonl"):
-        if not path.name.startswith(("goldens", "historical", "absent-inputs", "absent-participants")):
-            continue
-        for line in path.read_text().splitlines():
-            item = json.loads(line)
-            if path.name.startswith("goldens"):
-                captured["current"].add(item["case"])
-            elif path.name.startswith(("absent-inputs", "absent-participants")):
-                kind = next(row for row in known.values() if row["name"] == item["case"].split("/")[0])
-                assert kind.get("older_participant_absence") or (kind.get("caller_input") and kind.get("older_input_absence") and not kind["writers"])
-                captured["absent_inputs"][item["generation"]].add(item["case"])
-            else:
-                captured["historical"][item["generation"]].add(item["case"])
     wire_ids = {row["name"]: wire for wire, row in known.items()}
     constants, imports, exports = {}, {}, {}
-    for unit, tree in sources(root, observations):
+    for unit, tree in sources(root, observations, include_tests=include_tests):
         path = unit["path"]
         module = module_name(path)
         local, aliases = {}, {}
@@ -368,6 +345,42 @@ def audit(root, observations=None):
 
         walk(tree, "<module>" if source_file["block"] is None else
              ("<shell-json@" if source_file["shell_template"] else "<shell-python@") + source_file["block"] + ">")
+    policies = [row for row in policies if production(row["path"])]
+    return rows, sorted(policies, key=lambda row: (row["path"], row["owner"], json.dumps(row, sort_keys=True)))
+
+
+def field_policies(root):
+    """Discover every production policy without auditing corpus record captures."""
+    return _source_inventory(root, {}, catalogue(root), include_tests=False)[1]
+
+
+def audit(root, observations=None):
+    observations = observations if observations is not None else {}
+    known = catalogue(root)
+    reviewed = classifications(root)
+    assert not known.keys() & reviewed.keys(), "a kind cannot be qualified and excluded from the window"
+    required_generations = set()
+    for name in ("window.json", "prepared.json"):
+        path = root / "tests/compat/generations" / name
+        if path.exists():
+            document = json.loads(path.read_bytes())
+            required_generations.update(row["generation"] for row in
+                                        (document["generations"] if isinstance(document, dict) else document))
+    captured = {"current": set(), "historical": defaultdict(set), "absent_inputs": defaultdict(set)}
+    for path in (root / "tests/compat").glob("*.jsonl"):
+        if not path.name.startswith(("goldens", "historical", "absent-inputs", "absent-participants")):
+            continue
+        for line in path.read_text().splitlines():
+            item = json.loads(line)
+            if path.name.startswith("goldens"):
+                captured["current"].add(item["case"])
+            elif path.name.startswith(("absent-inputs", "absent-participants")):
+                kind = next(row for row in known.values() if row["name"] == item["case"].split("/")[0])
+                assert kind.get("older_participant_absence") or (kind.get("caller_input") and kind.get("older_input_absence") and not kind["writers"])
+                captured["absent_inputs"][item["generation"]].add(item["case"])
+            else:
+                captured["historical"][item["generation"]].add(item["case"])
+    rows, policies = _source_inventory(root, observations, known)
     for base in ("src", "tools", "tests"):
         for path in sorted((root / base).rglob("*.json")):
             try:
@@ -454,8 +467,7 @@ def audit(root, observations=None):
     for category in observations.values():
         for row in category:
             row["scope"] = "production" if production(row["path"]) else "test_or_corpus_control"
-    policies = [row for row in policies if production(row["path"])]
-    return result, sorted(policies, key=lambda row: (row["path"], row["owner"], json.dumps(row, sort_keys=True)))
+    return result, policies
 
 
 def main():

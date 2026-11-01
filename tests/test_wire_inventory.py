@@ -10,12 +10,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
-from wire_inventory import audit
+from wire_inventory import audit, field_policies
 from rebind_source_reviews import reviewed_sites
 
 
 def test_closed_field_sets_remain_pinned():
-    _, policies = audit(ROOT)
+    policies = field_policies(ROOT)
     expected = json.loads((ROOT / "tests/compat/field_sets.json").read_bytes())
     assert policies == expected
 
@@ -178,6 +178,7 @@ def test_field_policy_findings_are_characterized(tmp_path):
     expected = _field_policy_tree(tmp_path)
     _, policies = audit(tmp_path)
     assert policies == expected
+    assert field_policies(tmp_path) == expected
 
 
 def test_pinned_field_guard_does_not_scan_corpus_or_retained_records(tmp_path, monkeypatch):
