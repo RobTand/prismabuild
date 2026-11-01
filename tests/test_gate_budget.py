@@ -14,6 +14,11 @@ runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
 
 
+@pytest.fixture(autouse=True)
+def isolate_job_summary(monkeypatch):
+    monkeypatch.delenv('GITHUB_STEP_SUMMARY', raising=False)
+
+
 def policy(root, seconds=20, slow=None):
     target = root / 'tools/ci/gate_budget.json'
     target.parent.mkdir(parents=True, exist_ok=True)
