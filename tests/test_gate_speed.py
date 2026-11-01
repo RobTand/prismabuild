@@ -38,7 +38,7 @@ def test_selection_summary_is_bounded_and_links_complete_artifact():
 def test_pr_selection_uses_one_shard_only_below_the_wall_time_threshold(seconds, count):
     partition = load('gate_partition')
     files = ['slow.py', *[f'fast_{i}.py' for i in range(15)]]
-    assert partition.selection_shard_count(files, {'slow.py': seconds, **{path: 0 for path in files[1:]}}, 16,
+    assert partition.selection_shard_count(files, dict.fromkeys(files, seconds / len(files)), 16,
                                             workers=4, single_shard_seconds=90) == count
 
 
@@ -71,3 +71,11 @@ def test_old_pr_head_is_a_final_failure_before_dependency_setup(tmp_path):
     assert 'merge origin/main' in result.stdout
     assert 'compatible=false' in output.read_text()
     assert 'NO_VERDICT' not in result.stdout
+
+
+def test_pr_shard_count_uses_file_packing_and_avoids_empty_shards():
+    partition = load('gate_partition')
+    assert partition.selection_shard_count(['long.py', 'small.py'],
+        {'long.py': 100, 'small.py': 1}, 16, workers=4, single_shard_seconds=90) == 2
+    assert partition.selection_shard_count(['long.py', 'zero.py'],
+        {'long.py': 400, 'zero.py': 0}, 16, workers=4, single_shard_seconds=90) == 1
