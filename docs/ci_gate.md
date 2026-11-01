@@ -549,3 +549,82 @@ example estimates 1,089 seconds. All fan out. FAST alone has 24 files and a
 4.8-second estimate, so it stays on one x64 job. A 90-second estimate leaves
 setup, planning and aggregation headroom below the full gate's observed wall.
 It is a scheduling estimate, not a cutoff on coverage or an execution deadline.
+
+
+## Speed-round measurements
+
+The final-configuration trial is [41267195546](https://github.com/RobTand/prismabuild/actions/runs/41267195546), head `baa99b84`: 1,256 files, 19,656 passes, 104 skips and one test failure. All sixteen shards started within six seconds. Workflow start to final verdict was 226 seconds, with no retry. The timing audit passed on x64 in 16.224 seconds after isolation, versus 33.509 seconds beside other shard work in trial 41266469261. No test exceeded 60 seconds.
+
+The final verdict correctly remained red on `tests/test_pbwait.py::test_prefix_resolution_bounds_a_private_blocked_pool_scan`: it observed an empty marker under its 0.05-second reader bound, consistent with termination during `write_text`. Its existing timing-debt owner is open issue #2035. This speed change does not edit, exclude or retry that test. A clean hosted verdict remains pending that independent failure; this run provides timing evidence, not a clean qualification.
+
+Per the lead's opportunistic-trial policy, a wall sample is eligible only when all sixteen `started_at` timestamps span at most about 30 seconds. Phase observations remain useful with queue overlap. The three before samples have p50 409 and nearest-rank p90 487 seconds. Sample 1 includes a pending interval behind a superseded run; sample 2 passed pytest but failed the old cost enforcement. Configuration changes and VM variation prevent treating these as an isolated benchmark. Stable after-change p50/p90 belong to real queue runs after merge; three clean canaries are not a prerequisite for review.
+
+Earlier failed trials are retained: 41262943816 exposed the repaired root-owner/helper-name issues; 41264307352 rejected unrestricted case dispatch; 41265889404 exposed bytecode-policy and hook-name collisions; 41266469261 passed pytest but exposed the timing-audit contention. Trial 41263467098 passed `gate`; a temporary diagnostic job separately failed on its same-step Python path. All temporary probe jobs are removed.
+
+| Trial / attempt | Final check | Wall s | 16-shard start spread s | Wall eligible | Pickup min/median/max s |
+| --- | --- | ---: | ---: | --- | --- |
+| 41260080645 a1 | success | 487.0 | 3.0 | yes | 2.0/3.5/5.0 |
+| 41260080645 a2 | failure | 409.0 | 4.0 | yes | 3.0/5.0/7.0 |
+| 41260080645 a3 | success | 321.0 | 12.0 | yes | 3.0/4.5/15.0 |
+| 41262943816 a1 | failure | 354.0 | 3.0 | yes | 2.0/4.0/5.0 |
+| 41263467098 a1 | success | 285.0 | 8.0 | yes | 2.0/4.0/10.0 |
+| 41264307352 a1 | failure | 261.0 | 13.0 | yes | 7.0/10.5/20.0 |
+| 41265889404 a1 | failure | 216.0 | 14.0 | yes | 2.0/4.0/16.0 |
+| 41266469261 a1 | failure | 196.0 | 12.0 | yes | 2.0/3.5/14.0 |
+| 41267195546 a1 | failure | 226.0 | 6.0 | yes | 2.0/4.5/8.0 |
+
+Each phase cell is min/median/max seconds across eight architecture jobs. Setup excludes the test step. The test step includes pytest startup. Before conditional setup, package installation, apt and Python relocation share one step.
+
+| Trial / attempt | Arch | Setup before test step | Install step | Assigned setup | Pre-xdist | Test step |
+| --- | --- | --- | --- | --- | --- | --- |
+| 41260080645 a1 | x64 | 49.0/60.0/98.0 | 36.0/47.5/86.0 | unavailable | 20.9/38.6/43.6 | 73.0/112.5/137.0 |
+| 41260080645 a1 | arm64 | 52.0/59.0/71.0 | 42.0/47.5/59.0 | unavailable | 15.0/15.5/16.4 | 61.0/69.5/134.0 |
+| 41260080645 a2 | x64 | 49.0/60.5/113.0 | 37.0/47.0/101.0 | unavailable | 19.9/27.5/44.4 | 72.0/114.5/209.0 |
+| 41260080645 a2 | arm64 | 47.0/59.5/76.0 | 35.0/47.5/65.0 | unavailable | 15.3/15.8/16.9 | 57.0/65.0/81.0 |
+| 41260080645 a3 | x64 | 53.0/58.0/68.0 | 38.0/45.0/55.0 | unavailable | 26.0/42.2/43.3 | 72.0/121.5/139.0 |
+| 41260080645 a3 | arm64 | 53.0/60.0/78.0 | 41.0/50.0/65.0 | unavailable | 14.6/16.0/16.4 | 66.0/71.0/159.0 |
+| 41262943816 a1 | x64 | 16.0/20.0/24.0 | 3.0/4.5/5.0 | 0.0/0.0/7.0 | 27.2/39.9/45.8 | 106.0/119.5/175.0 |
+| 41262943816 a1 | arm64 | 14.0/16.0/19.0 | 3.0/4.0/5.0 | 0.0/0.0/1.0 | 15.7/16.8/18.1 | 66.0/71.0/130.0 |
+| 41263467098 a1 | x64 | 15.0/18.5/21.0 | 3.0/4.0/5.0 | 0.0/0.0/0.0 | 21.2/30.7/43.1 | 77.0/99.5/215.0 |
+| 41263467098 a1 | arm64 | 13.0/16.0/22.0 | 3.0/4.0/5.0 | 0.0/0.0/8.0 | 14.8/16.2/17.8 | 61.0/73.0/129.0 |
+| 41264307352 a1 | x64 | 16.0/20.0/22.0 | 4.0/4.0/5.0 | 0.0/0.0/1.0 | 21.7/37.6/46.8 | 84.0/113.0/144.0 |
+| 41264307352 a1 | arm64 | 14.0/15.5/27.0 | 3.0/4.0/5.0 | 0.0/0.0/11.0 | 15.7/17.2/20.2 | 57.0/68.0/84.0 |
+| 41265889404 a1 | x64 | 16.0/18.0/19.0 | 3.0/5.0/5.0 | 0.0/0.0/0.0 | 6.2/13.7/20.3 | 51.0/112.5/149.0 |
+| 41265889404 a1 | arm64 | 12.0/14.5/20.0 | 3.0/3.5/5.0 | 0.0/0.0/7.0 | 5.0/10.0/11.5 | 41.0/73.5/110.0 |
+| 41266469261 a1 | x64 | 12.0/19.0/20.0 | 2.0/4.0/5.0 | 0.0/0.0/1.0 | 2.6/11.9/16.6 | 50.0/105.5/127.0 |
+| 41266469261 a1 | arm64 | 14.0/16.0/22.0 | 3.0/4.0/5.0 | 0.0/0.0/8.0 | 2.8/8.1/9.5 | 38.0/75.0/111.0 |
+| 41267195546 a1 | x64 | 13.0/15.5/21.0 | 3.0/4.0/5.0 | 0.0/0.0/1.0 | 2.8/11.9/19.4 | 20.0/104.0/162.0 |
+| 41267195546 a1 | arm64 | 13.0/16.0/29.0 | 3.0/4.0/5.0 | 0.0/0.0/13.0 | 2.4/8.1/8.6 | 35.0/82.5/97.0 |
+
+Per-shard cells are job seconds / pickup seconds.
+
+| Shard | a1 |
+| --- | ---: |
+| 0 | arm64 117 / 4 |
+| 1 | x64 120 / 8 |
+| 2 | arm64 74 / 5 |
+| 3 | x64 57 / 2 |
+| 4 | arm64 52 / 5 |
+| 5 | x64 41 / 3 |
+| 6 | arm64 103 / 5 |
+| 7 | x64 124 / 3 |
+| 8 | arm64 109 / 5 |
+| 9 | x64 182 / 2 |
+| 10 | arm64 101 / 5 |
+| 11 | x64 157 / 2 |
+| 12 | arm64 96 / 5 |
+| 13 | x64 95 / 2 |
+| 14 | arm64 106 / 5 |
+| 15 | x64 154 / 2 |
+
+## Single-job and fan-out test times
+
+| Run | Common cases | p50 s | p90 s | p99 s | >20 s | Timing guard s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 41259310026:1 | 19515 | 0.096 | 0.65 | 2.598 | 14 | 28.976 |
+| 41260354001:1 | 19515 | 0.062 | 0.576 | 2.222 | 5 | 17.35 |
+| 41267195546:1 | 19515 | 0.037 | 0.395 | 2.152 | 2 | 16.224 |
+
+These are matched passing node identities, not all outcomes. The full fan-out mixes architectures. For the identical 9,586-case x64 subset, the two single-job runs and the final fan-out have p50/p90/p99 0.100/0.678/2.670, 0.066/0.612/2.125 and 0.046/0.502/2.454 seconds. Sources and VM load differ; this is observational evidence, not an isolated architecture benchmark.
+
+The planning profile is PrismaBuild action `78a123c1d4346f105dc77cb318970707e05f50904b570c3b655514fdceadb700`, with verified terminal exit 0 and CAS receipt `8c387a9c43992803d7d55ef9f3e4a103f3b31a903d12b077a82f71b52f51db6e`. On that x64 development worker, cProfile recorded 0.175 seconds for the whole-population trigger fast path and 90.155 instrumented seconds for an ordinary `pool.py` shadow plan. Dependency extraction used 58.863 seconds and helper matching 30.376 seconds. Profiler overhead and worker hardware make these unsuitable as hosted wall estimates. Ordinary dependency traversal remains expensive and is left unchanged for the separate #2472 owner.
