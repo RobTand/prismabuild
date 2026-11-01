@@ -67,14 +67,14 @@ def test_duplicate_or_unexpected_sample_identity_is_refused(samples):
 
 
 def test_issue_proposal_is_literal_mention_free_and_skips_existing_owner():
-    node = 'tests/a.py::test_x[![image](https://bad.invalid) <b> `tick` @person]'
+    node = 'tests/a.py::test_x[![image](https://bad.invalid) <b> `tick` ' + chr(64) + 'person]'
     samples = samples_for({arch: [{node: 'passed'}, {node: 'failed'}] for arch in ['x64', 'arm64']})
     result = dict(census.classify_samples(samples, 2, []), sha='abc', complete=True, run_url='https://example/run')
     plans = census.census_issue_plans(result, [])
     assert len(plans) == 1
     body = plans[0]['body']
     assert body.startswith(census.report.marker(node) + '\n\n')
-    assert '@person' not in body
+    assert chr(64) + 'person' not in body
     assert '\\!\\[image\\]' in body
     assert '&lt;b&gt;' in body
     assert '\\`tick\\`' in body
@@ -144,3 +144,27 @@ def test_plan_uses_shared_partition_and_covers_both_architectures_every_repeat(t
             assert [r['files'] for r in rows] == [['tests/test_a.py'], ['tests/test_b.py']]
     assert plan['deselect'] == []
     assert [r['path'] for r in plan['selected']] == ['tests/test_a.py', 'tests/test_b.py']
+
+
+def test_workflow_freezes_main_and_limits_capacity_and_write_permissions():
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/flake-census.yml').read_text())
+    triggers = workflow.get('on', workflow.get(True))
+    assert triggers['workflow_dispatch']['inputs']['repeats']['default'] == 5
+    assert workflow['permissions'] == {'contents': 'read'}
+    assert workflow['concurrency'] == {'group': 'full-suite-main', 'cancel-in-progress': False}
+    samples = workflow['jobs']['samples']
+    assert samples['strategy']['max-parallel'] == 4
+    assert samples['strategy']['fail-fast'] is False
+    checkouts = [step for step in samples['steps'] if step.get('uses', '').startswith('actions/checkout') ]
+    assert checkouts[1]['with']['ref'] == '${{ needs.plan.outputs.sha }}'
+    assert 'issues' not in samples.get('permissions', {})
+    assert workflow['jobs']['report']['permissions']['issues'] == 'write'
+    assert workflow['jobs']['report']['if'] == 'always()'
+
+
+def test_an_unlabeled_open_marker_owner_also_suppresses_creation():
+    result = dict(census.classify_samples(samples_for({arch: [{'x': 'passed'}, {'x': 'failed'}]
+        for arch in ['x64', 'arm64']}), 2, []), sha='abc', complete=True, run_url='run')
+    issue = {'number': 8, 'body': census.report.marker('x'), 'labels': []}
+    assert census.census_issue_plans(result, [issue]) == []
