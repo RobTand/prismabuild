@@ -342,3 +342,119 @@ def test_inherited_job_copies_do_not_supply_coverage_for_a_full_rerun(tmp_path):
         save_workflow_result(tmp_path, i)
     run = cli('finish', *arguments)
     assert run.returncode == 75, run.stdout + run.stderr
+
+
+@pytest.fixture
+def tooling_checkout(tmp_path):
+    """A PR checkout and a separate target branch, with real Git objects."""
+    import os
+    import shutil
+    import subprocess
+
+    repository = tmp_path / 'repository'
+    repository.mkdir()
+    environment = dict(os.environ, GIT_AUTHOR_NAME='Gate fixture',
+                       GIT_AUTHOR_EMAIL='gate@example.invalid',
+                       GIT_COMMITTER_NAME='Gate fixture',
+                       GIT_COMMITTER_EMAIL='gate@example.invalid')
+
+    def git(*arguments, cwd=repository):
+        return subprocess.run(['git', *arguments], cwd=cwd, env=environment,
+                              text=True, capture_output=True, check=True).stdout.strip()
+
+    git('init', '-q', '-b', 'target')
+    directory = repository / 'tools/ci'
+    directory.mkdir(parents=True)
+    for source in (ROOT / 'tools/ci').glob('gate_*'):
+        if source.is_file():
+            shutil.copyfile(source, directory / source.name)
+    git('add', '.')
+    git('commit', '-qm', 'Common tooling')
+    base = git('rev-parse', 'HEAD')
+    git('switch', '-qc', 'pr-head')
+    (repository / 'pr-change.txt').write_text('PR content stays at its head\n')
+    git('add', '.')
+    git('commit', '-qm', 'PR change without current target tooling')
+    head = git('rev-parse', 'HEAD')
+    git('switch', '-q', 'target')
+    return repository, git, base, head
+
+
+def execute_head_contract(tmp_path, checkout, head, workflow_sha):
+    import os
+    import subprocess
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/gate.yml').read_text())
+    step = next(step for step in workflow['jobs']['plan']['steps']
+                if step.get('id') == 'head-contract')
+    output = tmp_path / 'head-contract-output'
+    result = subprocess.run(['bash', '-c', step['run']], cwd=checkout,
+                            env=dict(os.environ, GATE_HEAD=head,
+                                     GATE_WORKFLOW_SHA=workflow_sha,
+                                     GITHUB_OUTPUT=str(output)),
+                            text=True, capture_output=True, check=False)
+    return result, output.read_text() if output.exists() else ''
+
+
+@pytest.mark.parametrize('change', [
+    'gate_actions.py', 'gate_select.py', 'gate_requirements.txt',
+    'gate_budget.json', 'gate_new_helper.py', 'remove', 'rename',
+])
+def test_stale_pr_tooling_fails_before_setup_with_merge_main_message(tmp_path, tooling_checkout, change):
+    repository, git, _, head = tooling_checkout
+    directory = repository / 'tools/ci'
+    if change == 'remove':
+        (directory / 'gate_shadow.py').unlink()
+    elif change == 'rename':
+        (directory / 'gate_shadow.py').rename(directory / 'gate_shadow_new.py')
+    else:
+        (directory / change).write_text('new target interface or policy\n')
+    git('add', '-A')
+    git('commit', '-qm', 'New tooling on target')
+    git('merge', '--no-ff', '-qm', 'Workflow merge commit', 'pr-head')
+    workflow_sha = git('rev-parse', 'HEAD')
+    git('switch', '-q', 'pr-head')
+    run, output = execute_head_contract(tmp_path, repository, head, workflow_sha)
+    assert run.returncode == 1, run.stdout + run.stderr
+    assert output == 'compatible=false\n'
+    assert 'merge origin/main and push again' in run.stdout
+    assert 'NO_VERDICT' not in run.stdout
+
+
+def test_unchanged_tooling_accepts_distinct_pr_and_merge_shas(tmp_path, tooling_checkout):
+    repository, git, _, head = tooling_checkout
+    (repository / 'target-change.txt').write_text('Unrelated target change\n')
+    git('add', '.')
+    git('commit', '-qm', 'Target change outside tooling')
+    git('merge', '--no-ff', '-qm', 'Workflow merge commit', 'pr-head')
+    workflow_sha = git('rev-parse', 'HEAD')
+    assert workflow_sha != head
+    git('switch', '-q', 'pr-head')
+    run, output = execute_head_contract(tmp_path, repository, head, workflow_sha)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert output == 'compatible=true\n'
+
+
+def test_unavailable_workflow_commit_is_infrastructure_not_incompatibility(tmp_path, tooling_checkout):
+    repository, git, _, head = tooling_checkout
+    # Missing immutable commit and an unavailable local remote. No network access.
+    git('remote', 'add', 'origin', str(tmp_path / 'missing-remote'))
+    git('switch', '-q', 'pr-head')
+    run, output = execute_head_contract(tmp_path, repository, head, '1' * 40)
+    assert run.returncode == 75, run.stdout + run.stderr
+    assert 'compatible=false' not in output
+    assert 'NO_VERDICT' in run.stdout
+
+
+def test_tooling_handshake_runs_before_python_setup_and_binds_workflow_commit():
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/gate.yml').read_text())
+    assert workflow['env'].get('GATE_WORKFLOW_SHA') == '${{ github.sha }}'
+    steps = workflow['jobs']['plan']['steps']
+    contract_index = next(i for i, step in enumerate(steps) if step.get('id') == 'head-contract')
+    setup_index = next(i for i, step in enumerate(steps) if 'setup-python@' in step.get('uses', ''))
+    assert contract_index < setup_index
+    for name in ['pr-gate', 'gate']:
+        step = workflow['jobs'][name]['steps'][0]
+        assert 'HEAD_COMPATIBLE' in step['run']
+        assert 'merge origin/main and push again' in step['run']
