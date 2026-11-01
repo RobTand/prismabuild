@@ -18,6 +18,7 @@ synthetic and the queue is this test's own.
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 from functools import partial
 import json
@@ -50,6 +51,8 @@ class _CallingThread:
     def __init__(self, affinity) -> None:
         self.affinity = affinity
         self.applied: list[set[int]] = []
+        #: The mask the thread held each time the loop read the queue.
+        self.serving: list[set[int]] = []
 
     def get(self, _pid):
         if isinstance(self.affinity, BaseException):
@@ -59,6 +62,15 @@ class _CallingThread:
     def set(self, _pid, mask) -> None:
         self.affinity = set(mask)
         self.applied.append(set(mask))
+
+
+class _ReplacedCpuset(_CallingThread):
+    """A cpuset replaced mid-run: no inherited CPU is permitted any more."""
+
+    def set(self, pid, mask) -> None:
+        if self.applied:
+            raise OSError(errno.EINVAL, "Invalid argument")
+        super().set(pid, mask)
 
 
 class _Ledger:
@@ -106,6 +118,7 @@ def _offer(module, argv: list[str], *, affinity, cpu_count: int = 80,
         def ready_items(self) -> list:
             # The loop discovers the candidate list before it publishes or
             # admits; this double stands in for an empty queue.
+            thread.serving.append(set(thread.affinity))
             return []
 
         def serve_once(self, **_kwargs):
@@ -192,6 +205,18 @@ def test_the_pinned_path_still_offers_what_it_pinned() -> None:
     assert offer["cpu"] == 3
 
 
+def _two_thread_cores(tmp_path) -> Path:
+    """Four CPUs as two cores with two threads each: 0 and 1 lead."""
+
+    root = tmp_path / "devices" / "system" / "cpu"
+    for cpu in range(4):
+        siblings = root / f"cpu{cpu}" / "topology" / "thread_siblings_list"
+        siblings.parent.mkdir(parents=True)
+        siblings.write_text(f"{cpu % 2},{cpu % 2 + 2}\n")
+    (root / "online").write_text("0-3\n")
+    return root
+
+
 def test_the_loop_returns_its_caller_the_affinity_it_inherited(tmp_path) -> None:
     """The pin lasts as long as the loop, not as long as its caller (#2446).
 
@@ -202,20 +227,34 @@ def test_the_loop_returns_its_caller_the_affinity_it_inherited(tmp_path) -> None
     caller on half of the mask it was given.
     """
 
-    root = tmp_path / "devices" / "system" / "cpu"
-    for cpu in range(4):
-        siblings = root / f"cpu{cpu}" / "topology" / "thread_siblings_list"
-        siblings.parent.mkdir(parents=True)
-        siblings.write_text(f"{cpu % 2},{cpu % 2 + 2}\n")
-    (root / "online").write_text("0-3\n")
     thread = _CallingThread({0, 1, 2, 3})
 
-    offer = _offer(_worker_loop(), BASE, affinity=thread, topology=root)
+    offer = _offer(_worker_loop(), BASE, affinity=thread, topology=_two_thread_cores(tmp_path))
 
-    assert thread.applied[0] == {0, 1}, "the loop did not pin while it served"
+    assert thread.serving and all(mask == {0, 1} for mask in thread.serving), (
+        "the loop did not serve pinned")
     assert offer["cpu"] == 2
-    assert thread.affinity == {0, 1, 2, 3}, (
+    assert thread.applied == [{0, 1}, {0, 1, 2, 3}], (
         "the loop's pin outlived the loop and narrowed its caller")
+    assert thread.affinity == {0, 1, 2, 3}
+
+
+def test_a_restore_the_kernel_refuses_does_not_replace_the_loops_outcome(tmp_path) -> None:
+    """Giving the mask back is best effort, like taking the pin.
+
+    A cpuset replaced while the loop ran can leave none of the inherited CPUs
+    permitted, and the kernel then refuses the restore with EINVAL.  The loop
+    already finished; its return code, and the one-shot outcome ``worker.main``
+    prints after it, must stand.
+    """
+
+    thread = _ReplacedCpuset({0, 1, 2, 3})
+
+    offer = _offer(_worker_loop(), BASE, affinity=thread, topology=_two_thread_cores(tmp_path))
+
+    assert offer["cpu"] == 2
+    assert thread.applied == [{0, 1}]
+    assert thread.affinity == {0, 1}
 
 
 def test_a_platform_with_no_affinity_call_falls_back_to_the_machine_count(
