@@ -450,3 +450,24 @@ def test_production_module_and_path_strings_require_a_recognized_loader(tmp_path
         'store("prismabuild.private")\n')
     assert selected(plan(root, ['tools/fleet/pbtest_outcomes.py', 'src/prismabuild/private.py'])) == {
         'tests/test_fast.py'}
+
+
+@pytest.mark.parametrize('setup,target,inside', [
+    ('', 'str(Path("/tmp") / "config.py")', False),
+    ('DIRECTORY = Path("/tmp")\nTARGET = DIRECTORY / "config.py"\n', 'str(TARGET)', False),
+    ('DIRECTORY = Path(__file__).parent / "nested"\nTARGET = DIRECTORY / "config.py"\n',
+     'str(TARGET)', True),
+    ('TARGET = Path(__file__).parent / "config.py"\nTARGET = Path("/tmp") / "config.py"\n',
+     'str(TARGET)', False),
+])
+def test_production_loader_uses_final_path_without_intermediate_basename_edges(tmp_path, setup, target, inside):
+    root = tree(tmp_path)
+    (root / 'tools/fleet/config.py').write_text('VALUE = 1\n')
+    (root / 'tools/fleet/nested').mkdir()
+    (root / 'tools/fleet/nested/config.py').write_text('VALUE = 2\n')
+    (root / 'tools/fleet/loader.py').write_text(
+        'from pathlib import Path\nimport runpy\n' + setup + 'runpy.run_path(' + target + ')\n')
+    (root / 'tests/test_loader_consumer.py').write_text('from tools.fleet import loader\n')
+    assert selected(plan(root, ['tools/fleet/config.py'])) == {'tests/test_fast.py'}
+    expected = {'tests/test_fast.py', 'tests/test_loader_consumer.py'} if inside else {'tests/test_fast.py'}
+    assert selected(plan(root, ['tools/fleet/nested/config.py'])) == expected
