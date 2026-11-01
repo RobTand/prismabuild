@@ -6,7 +6,10 @@ the complete selection. Mergify batch drafts run the full eligible population wh
 branch starts `mergify/merge-queue/`, the PR author is login `mergify[bot]` with
 id 37929162, and the head repository is this repository. A same-repository PR
 with the `gate-canary` label also runs the full gate, without duplicating the
-PR selection run. No CI job uses the fleet.
+PR selection run. The label takes effect on the next push or reopen:
+label changes don't trigger the workflow, because Mergify's own `queued` and
+`dequeued` labels would otherwise rerun `pr-gate` on queued pull requests. No CI
+job uses the fleet.
 Mergify requires `pr-gate` to queue and the final job `gate` to merge, enforced
 by the batched queue configuration merged in #2453. Full queue coverage
 depends on `gate` succeeding on authenticated batch SHAs, not on a check of
