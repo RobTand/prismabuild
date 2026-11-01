@@ -150,3 +150,53 @@ def test_stale_source_review_retains_discovery_and_still_refuses(tmp_path, stale
     assert (output / "inventory.jsonl").is_file()
     assert (output / "field_sets.json").is_file()
     assert metadata.read_bytes() == original
+
+def _field_policy_tree(root):
+    sources = {
+        'src/prismabuild/plain.py': "ALLOWED_FIELDS = {'schema', 'value'}\ndef check(row):\n    required = {'schema'}\n    if set(row) != required: raise ValueError('fields')\n",
+        'tools/embedded.py': "SCRIPT = \"def check(row):\\n    fields = {'embedded'}\\n    if set(row) != fields: raise ValueError('fields')\\n# schema\\n\"\n",
+        'tools/extensionless': "def check(row):\n    optional = {'extra'}\n    return row\n",
+        'fleet/check.sh': "python3 <<'PYTHON'\ndef check(row):\n    allowed = {'shell'}\n    return row\nPYTHON\n",
+        'tests/ignored.py': "TEST_FIELDS = {'control'}\n",
+    }
+    for name, source in sources.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    return [
+        {'path': 'fleet/check.sh', 'owner': '<shell-python@2>.check', 'fields': ['shell'], 'binding': 'allowed'},
+        {'path': 'src/prismabuild/plain.py', 'owner': '<module>', 'fields': ['schema', 'value'], 'binding': 'ALLOWED_FIELDS'},
+        {'path': 'src/prismabuild/plain.py', 'owner': 'check', 'fields': ['schema'], 'binding': 'required'},
+        {'path': 'src/prismabuild/plain.py', 'owner': 'check', 'fields': ['schema']},
+        {'path': 'tools/embedded.py', 'owner': '<module>:embedded.check', 'fields': ['embedded'], 'binding': 'fields'},
+        {'path': 'tools/embedded.py', 'owner': '<module>:embedded.check', 'fields': ['embedded']},
+        {'path': 'tools/extensionless', 'owner': 'check', 'fields': ['extra'], 'binding': 'optional'},
+    ]
+
+
+def test_field_policy_findings_are_characterized(tmp_path):
+    expected = _field_policy_tree(tmp_path)
+    _, policies = audit(tmp_path)
+    assert policies == expected
+
+
+def test_pinned_field_guard_does_not_scan_corpus_or_retained_records(tmp_path, monkeypatch):
+    import wire_inventory
+
+    expected = _field_policy_tree(tmp_path)
+    pin = tmp_path / 'tests/compat/field_sets.json'
+    pin.parent.mkdir(parents=True)
+    pin.write_text(json.dumps(expected))
+    original = wire_inventory.syntax_tree
+
+    def policy_source(path, snippet):
+        assert b'TEST_FIELDS' not in snippet, "field guard must not parse test-only source"
+        return original(path, snippet)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("field guard must not audit retained record generations")
+
+    monkeypatch.setattr(wire_inventory, 'syntax_tree', policy_source)
+    monkeypatch.setattr(wire_inventory, 'retained_inventory', forbidden)
+    monkeypatch.setitem(globals(), 'ROOT', tmp_path)
+    test_closed_field_sets_remain_pinned()
