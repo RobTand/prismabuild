@@ -162,9 +162,18 @@ def test_direct_execution_deadline_still_governs_after_a_profile_window(
     sleeps = []
 
     class ExpiredClock:
-        @staticmethod
-        def monotonic():
-            return 101.0
+        """Past the explicit deadline; a sleep moves it, so grace periods end."""
+
+        now = 101.0
+
+        @classmethod
+        def monotonic(cls):
+            return cls.now
+
+        @classmethod
+        def sleep(cls, seconds):
+            sleeps.append(seconds)
+            cls.now += seconds
 
     def settled_only_after_a_sleep(process, pgid):
         # Pin the interleaving: the profiler leader has exited while the
