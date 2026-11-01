@@ -57,6 +57,7 @@ def test_the_skill_follows_the_amended_routing():
     # fleet host bypasses PrismaBuild (Rob's routing policy, amended 2026-11-01).
     text = policy_text(ROOT / "skills" / "prismabuild" / "SKILL.md")
     assert "run the fast relevant tests in your worktree" not in text
+    assert "tests run in your worktree" not in text
     assert "a local run is evidence" not in text
     assert "free remote compute" in text
     assert "never run test suites directly on a fleet host outside prismabuild" in text
@@ -69,3 +70,4 @@ def test_later_passages_keep_the_remote_exception():
     operating = policy_text(ROOT / "docs" / "operating_prismabuild.md")
     assert "five times per architecture through `pbtest` before handoff" not in operating
     assert "github-hosted runners of both architectures" in operating
+    assert "buildbuddy" in operating
