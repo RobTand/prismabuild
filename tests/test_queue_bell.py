@@ -59,29 +59,19 @@ def test_real_rename_after_now_is_delivered_even_before_wait(bell, before_wait, 
                and event["key"] == KEY for event in reply["events"])
 
 
-def _consume_through(bell, monkeypatch, directory, key, write):
-    consumed = threading.Event()
-    watch = bell.service.watch
-    consume = watch.consume
-
-    def acknowledge(data, ring):
-        offset, found = 0, False
-        while offset < len(data):
-            wd, mask, _, length = queue_notifier.EVENT_HEADER.unpack_from(data, offset)
-            start = offset + queue_notifier.EVENT_HEADER.size
-            name = os.fsdecode(data[start:start + length].split(b"\0", 1)[0])
-            offset = start + length
-            found |= (watch.directories.get(wd) == Path(directory)
-                      and name == f"{key}.json"
-                      and bool(mask & (queue_bell_events.IN_CLOSE_WRITE | queue_bell_events.IN_MOVED_TO)))
-        consume(data, ring)
-        if found:
-            consumed.set()
-
-    with monkeypatch.context() as patch:
-        patch.setattr(watch, "consume", acknowledge)
-        write()
-        assert consumed.wait(60), "inotify did not consume the publication"
+def _consume_through(bell, directory, write):
+    ring = bell.service.ring
+    cursor = queue_bell.Cursor.parse("{epoch}:{seq}".format(**ring.now()))
+    write()
+    # A later rename is an ordered barrier for every earlier close-write.
+    # Waiting only for the target's create hint could leave its close-write
+    # queued, falsely satisfying a subsequent removal-wakeup assertion.
+    marker = "f" * 64
+    _rename_bell_record(bell.root, directory, marker)
+    reply = ring.wait(cursor, {directory}, {marker}, 60)
+    assert any(event["key"] == marker and event["dir"] == directory
+               and event["seq"] > cursor.seq for event in reply["events"]), (
+                   "inotify did not consume the publication barrier")
 
 
 def test_publication_acknowledges_an_already_bound_consumer(bell, monkeypatch):
@@ -114,7 +104,7 @@ def test_publication_acknowledges_an_already_bound_consumer(bell, monkeypatch):
             release.set()
             assert consumed.wait(60), "production did not consume the publication"
 
-        _consume_through(bell, monkeypatch, "done", KEY, publish_then_release_consumer)
+        _consume_through(bell, "done", publish_then_release_consumer)
     finally:
         release.set()
     assert consumed.is_set()
@@ -141,7 +131,7 @@ def test_filters_and_timeout_ignore_other_keys_dirs_and_temporary_files(bell, mo
     _rename_bell_record(bell.root, key="b" * 64)
     (bell.root / "done" / ".hidden.json").write_text("{}")
     # This later event acknowledges consumption of all the preceding names.
-    _consume_through(bell, monkeypatch, "failed", "c" * 64,
+    _consume_through(bell, "failed",
                      lambda: _rename_bell_record(bell.root, "failed", "c" * 64))
     clock = [0.0]
 
@@ -626,7 +616,7 @@ def test_namespace_entry_changes_wake_waiters(bell, mutation, monkeypatch):
     source = bell.root / "source"
     source.write_text("{}")
     if mutation != "hardlink":
-        _consume_through(bell, monkeypatch, "done", KEY, lambda: path.write_text("{}"))
+        _consume_through(bell, "done", lambda: path.write_text("{}"))
     ring = bell.service.ring
     cursor = queue_bell.Cursor.parse("{epoch}:{seq}".format(**ring.now()))
     subscribed = threading.Event()

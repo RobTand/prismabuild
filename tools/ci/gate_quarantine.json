@@ -56,23 +56,6 @@
       }
     },
     {
-      "target": "tests/test_queue_bell.py::test_namespace_entry_changes_wake_waiters[rename-out]",
-      "issue": 2484,
-      "reason": "Intermittent: waited the full 60 s with 'inotify did not consume the publication' on shard 0 of merge-queue gate run 41267910346, unrelated to the change under test; passed in the other recent queue gates. The cause, a test race or a lost wakeup in the bell, is under investigation in #2484. Remove this entry with that fix.",
-      "evidence": {
-        "outcomes": {
-          "passed": 3,
-          "failed": 1
-        },
-        "hosted_runs": [
-          "https://github.com/RobTand/prismabuild/actions/runs/41267910346",
-          "https://github.com/RobTand/prismabuild/actions/runs/41263788184",
-          "https://github.com/RobTand/prismabuild/actions/runs/41264576986",
-          "https://github.com/RobTand/prismabuild/actions/runs/41264693316"
-        ]
-      }
-    },
-    {
       "target": "tests/test_a_fresh_tier_loop_announces_before_its_cold_read.py::test_a_hung_read_among_parallel_readers_reads_dead_within_the_bound",
       "issue": 2035,
       "reason": "Intermittent wall-clock bound: failed on a hosted pr-gate shard of run 41337112476 for #2531, a gate-tooling change it cannot reach. Timing dependence is #2035's scope. Remove this entry with that fix.",
