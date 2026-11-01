@@ -45,7 +45,8 @@ def test_completed_pytest_writes_a_final_verdict(tmp_path, code, verdict):
     command, kwargs = calls[0]
     assert command[command.index('-n') + 1] == '5'
     assert '--deselect=tests/test_one.py::test_bad' in command
-    assert command[-1] == 'tests/test_one.py'
+    assert json.loads(kwargs['env']['GATE_ASSIGNED_FILES']) == ['tests/test_one.py']
+    assert command[-1] == str(tmp_path)
     assert kwargs['env']['PRISMABUILD_TEST_TIMEOUT_S'] == '300'
     assert kwargs['env']['OMP_NUM_THREADS'] == kwargs['env']['OPENBLAS_NUM_THREADS'] == '1'
 
@@ -164,3 +165,99 @@ def test_infrastructure_exit_with_only_passing_junit_can_retry(tmp_path, code):
         execute=execute, affinity={1})
     assert result == 75
     assert json.loads((tmp_path / 'output').read_text())['verdict'] is None
+
+
+def test_long_files_start_first_without_changing_assigned_coverage(tmp_path):
+    files = ['tests/test_a_short.py', 'tests/test_b_medium.py', 'tests/test_z_long.py']
+    observed = []
+    def execute(command, **kwargs):
+        observed.extend(json.loads(kwargs['env']['GATE_ASSIGNED_FILES']))
+        (tmp_path / 'junit.xml').write_text('<testsuites>' + ''.join(
+            f'<testcase file="{path}" classname="{path[:-3].replace("/", ".")}" '
+            'name="test_value" time="1"/>' for path in files) + '</testsuites>')
+        return SimpleNamespace(returncode=0)
+    code = runner.run_plan({'selected': [
+        {'path': files[0], 'estimated_seconds': 1},
+        {'path': files[1], 'estimated_seconds': 5},
+        {'path': files[2], 'estimated_seconds': 90}], 'deselect': []},
+        files=files, root=tmp_path, output=tmp_path / 'output', junit=tmp_path / 'junit.xml',
+        execute=execute, affinity={1, 2})
+    assert code == 0
+    assert observed == ['tests/test_z_long.py', 'tests/test_b_medium.py', 'tests/test_a_short.py']
+
+
+def test_a_file_stays_on_one_worker_to_preserve_shared_fixtures(tmp_path):
+    """Shared build and audit fixtures must not be duplicated across workers."""
+    import json
+    root = tmp_path / 'project'
+    (root / 'tests').mkdir(parents=True)
+    (root / 'tools/ci').mkdir(parents=True)
+    (root / 'tools/ci/gate_budget.json').write_text(json.dumps({'seconds': 20, 'slow': {}}))
+    (root / 'pyproject.toml').write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')
+    path = 'tests/test_parallel_file.py'
+    (root / path).write_text('''from pathlib import Path
+import pytest
+
+@pytest.mark.parametrize('case', range(4))
+def test_case(case, worker_id):
+    Path(__file__).with_name('worker-' + str(case)).write_text(worker_id)
+''')
+    plan = {'selected': [{'path': path, 'estimated_seconds': 100}], 'deselect': []}
+    code = runner.run_plan(plan, root=root, output=root / 'result.json',
+                           junit=root / 'junit.xml', workers=2, affinity={0, 1})
+    assert code == 0
+    assert len({(root / 'tests' / ('worker-' + str(case))).read_text() for case in range(4)}) == 1
+
+
+def test_collection_scans_a_directory_once_and_imports_only_assigned_files(tmp_path):
+    root = tmp_path
+    (root / 'tests').mkdir()
+    (root / 'pyproject.toml').write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')
+    (root / 'conftest.py').write_text('''from pathlib import Path
+
+def pytest_collectstart(collector):
+    if collector.path.name == 'tests':
+        with Path(__file__).with_name('directory-visits').open('a') as output:
+            output.write('visit\\n')
+''')
+    for name in ['long', 'short']:
+        (root / f'tests/test_{name}.py').write_text(f'''from pathlib import Path
+
+def test_case():
+    with Path(__file__).parents[1].joinpath('order').open('a') as output:
+        output.write('{name}\\n')
+''')
+    (root / 'tests/test_unassigned.py').write_text('raise AssertionError("unassigned file was imported")\n')
+    files = ['tests/test_short.py', 'tests/test_long.py']
+    plan = {'selected': [{'path': files[0], 'estimated_seconds': 1},
+                         {'path': files[1], 'estimated_seconds': 20}], 'deselect': []}
+    code = runner.run_plan(plan, root=root, output=root / 'result.json',
+                           junit=root / 'junit.xml', workers=1, affinity={0})
+    assert code == 0
+    assert (root / 'directory-visits').read_text().splitlines() == ['visit']
+    assert (root / 'order').read_text().splitlines() == ['long', 'short']
+    assert {case.get('file') for case in ET.parse(root / 'junit.xml').iter('testcase')} == set(files)
+
+
+def test_assigned_collection_preserves_imported_dependency_bytecode(tmp_path):
+    root = tmp_path
+    (root / 'tests').mkdir()
+    (root / 'pytest.ini').write_text('[pytest]\n')
+    (root / 'gate_fixture_dependency.py').write_text('VALUE = 42\n')
+    filename = 'tests/test_assigned.py'
+    (root / filename).write_text('''import importlib.util
+from pathlib import Path
+import sys
+
+
+def test_regular_dependency_bytecode():
+    sys.dont_write_bytecode = False
+    sys.pycache_prefix = None
+    import gate_fixture_dependency
+    assert gate_fixture_dependency.VALUE == 42
+    assert Path(importlib.util.cache_from_source(gate_fixture_dependency.__file__)).is_file()
+''')
+    code = runner.run_plan({'selected': [{'path': filename}], 'deselect': []},
+                           root=root, output=root / 'result.json', junit=root / 'junit.xml',
+                           workers=1, affinity={0})
+    assert code == 0
