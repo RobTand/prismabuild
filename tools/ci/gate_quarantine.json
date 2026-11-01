@@ -3,6 +3,22 @@
   "status": "inventory-based exclusions; historical entries remain provisional pending hosted qualification",
   "entries": [
     {
+      "target": "tests/test_pbwait.py::test_prefix_resolution_bounds_a_private_blocked_pool_scan",
+      "issue": 2035,
+      "reason": "Intermittent failure at line 123 ('' != 'entered'). Review of #2479 found that the test's 0.05-second bound lets the reader stop between truncating and writing its marker, so a slow hosted runner can observe an empty marker. Failed on shard 9 of hosted gate run 41267195546; passed in 41266469261 and 41260080645 attempt 3. Its timing-allowlist entry already names #2035. Remove this entry with the fix for #2035.",
+      "evidence": {
+        "outcomes": {
+          "passed": 2,
+          "failed": 1
+        },
+        "hosted_runs": [
+          "https://github.com/RobTand/prismabuild/actions/runs/41267195546",
+          "https://github.com/RobTand/prismabuild/actions/runs/41266469261",
+          "https://github.com/RobTand/prismabuild/actions/runs/41260080645"
+        ]
+      }
+    },
+    {
       "target": "tests/test_qualify_scratch_lifetime.py::test_launcher_exit_after_pin_never_signals_replacement",
       "issue": 2434,
       "source_issues": [
