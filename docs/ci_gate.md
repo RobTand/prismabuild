@@ -68,8 +68,7 @@ python tools/ci/gate_run.py --plan plan.json --files-from assigned.txt --workers
 
 The gate's optional `--setup-aware` partition groups the two sandbox files and
 charges 40 CPU-equivalent seconds for their shared setup. Groups costing at
-least 60 seconds and the measured CPU-sensitive timing audit get their own
-shards, while at least one shard remains for
+least 60 seconds get their own shards, while at least one shard remains for
 short files. This prevents a long file from waiting behind unrelated collection
 and fixture work. The shared nightly `shards(...)` interface retains its
 original longest-processing-time algorithm.
