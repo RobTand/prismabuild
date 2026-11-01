@@ -101,7 +101,9 @@ def _write_budget_warnings(junit, warnings):
     if summary:
         with Path(summary).open('a') as handle:
             handle.write('\n## Per-test budget warnings\n\n' +
-                         '\n'.join('- ' + message for message in messages) + '\n')
+                         f'{len(messages)} warnings; complete list in junit.xml and result.json.\n\n' +
+                         '\n'.join('- ' + message[:1000] for message in messages[:25]) + '\n' +
+                         (f'{len(messages) - 25} more warnings in junit.xml.\n' if len(messages) > 25 else ''))
 
 
 def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
@@ -117,6 +119,10 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
             raise ValueError('empty gate assignment cannot run pytest')
         if len(files) != len(set(files)) or set(files) - eligible:
             raise ValueError('assignment contains duplicate files or files outside the plan')
+        costs = {row['path']: row.get('estimated_seconds') for row in plan['selected']}
+        known = sorted(value for value in costs.values() if value is not None)
+        unknown = (known[math.ceil(len(known) * .9) - 1] or 1.0) if known else 1.0
+        files = sorted(files, key=lambda path: (-(costs[path] if costs[path] is not None else unknown), path))
         record['files'] = files
         config = _budget_policy(root, plan.get('base_sha'))
         record['budget'] = {'status': 'pending', 'baseline_sha': plan.get('base_sha')}

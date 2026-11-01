@@ -44,6 +44,23 @@ def shards(files: Sequence[str], durations: Mapping[str, float], count: int,
     return result
 
 
+
+def selection_shard_count(files: Sequence[str], durations: Mapping[str, float], maximum: int,
+                          *, workers: int, single_shard_seconds: float) -> int:
+    """Keep small PRs on one slot; larger selections share the full gate matrix."""
+    unknown = default_unknown_seconds(durations)
+    # Reuse partition validation so an unknown file or invalid cost cannot be free.
+    packed = shards(files, durations, workers, unknown_seconds=unknown)
+    wall = max(row['estimated_seconds'] for row in packed)
+    useful = sum(durations.get(path, unknown) > 0 for path in files)
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError('workers must be a positive integer')
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1:
+        raise ValueError('maximum must be a positive integer')
+    threshold = _cost(single_shard_seconds)
+    return 1 if wall <= threshold else min(maximum, max(1, useful))
+
+
 def main(argv: list[str] | None = None) -> int:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument('--files-from', type=Path, required=True)
@@ -54,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest='command', required=True)
     matrix = commands.add_parser('matrix', parents=[common])
     matrix.add_argument('--runners', required=True)
+    matrix.add_argument('--single-shard-seconds', type=float, help='selection only: keep cheap work in one job')
+    matrix.add_argument('--workers', type=int, default=4)
     matrix.add_argument('--output', type=Path, required=True)
     shard = commands.add_parser('shard', parents=[common])
     shard.add_argument('--index', type=int, required=True)
@@ -67,6 +86,9 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(durations, dict):
             raise ValueError('duration files must be a mapping')
         unknown = default_unknown_seconds(durations) if args.unknown_seconds is None else args.unknown_seconds
+        if args.command == 'matrix' and args.single_shard_seconds is not None:
+            args.shards = selection_shard_count(files, durations, args.shards, workers=args.workers,
+                                                single_shard_seconds=args.single_shard_seconds)
         result = shards(files, durations, args.shards, unknown_seconds=unknown)
         if args.command == 'matrix':
             runners = [name.strip() for name in args.runners.split(',')]
