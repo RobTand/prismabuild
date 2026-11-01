@@ -710,6 +710,77 @@ seal_bundle_cached(Path(sys.argv[1]), {"dead": True}, lambda: os._exit(0))
     assert not list(cache.glob(".pin-*")) and not list(cache.glob(".lock-*"))
 
 
+def test_dead_filler_is_reaped_and_the_same_address_can_recover(sealing, tmp_path):
+    checkout, cache, packs, seal = sealing
+    parent, control = multiprocessing.Pipe()
+    script = r'''
+import json, os, shutil, sys
+from multiprocessing.connection import Connection
+from pathlib import Path
+from prismabuild import core, submission
+control = Connection(int(sys.argv[3]))
+os.statvfs = lambda path: os.statvfs_result(tuple(json.loads(sys.argv[4])))
+native = shutil.copyfileobj
+def stalled(source, destination, length=0):
+    name = getattr(destination, "name", None)
+    if isinstance(name, (str, Path)) and Path(name).name == "bundle":
+        control.send("staged")
+        control.recv()
+    return native(source, destination, length)
+shutil.copyfileobj = stalled
+submission.snapshot_checkout(Path(sys.argv[1]), cas=core.PrismaBuildCAS(Path(sys.argv[2])))
+'''
+    child = subprocess.Popen([sys.executable, "-c", script, str(checkout),
+        str(tmp_path / "dead-cas"), str(control.fileno()), json.dumps(_AMPLE_VFS)],
+        pass_fds=(control.fileno(),), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env={**os.environ, "PYTHONPATH": str(Path(submission.__file__).resolve().parents[1])})
+    control.close()
+    try:
+        assert parent.poll(90), "filler did not publish its reservation"
+        assert parent.recv() == "staged"
+        assert len(list(cache.glob(".pending-*"))) == 1
+    finally:
+        child.kill()
+        child.communicate(timeout=90)
+        parent.close()
+    expected = seal()
+    assert seal() == expected and len(packs) == 1
+    assert not list(cache.glob(".pending-*"))
+    assert not list(cache.glob(".pin-*")) and not list(cache.glob(".lock-*"))
+
+
+def test_deadline_caller_bypasses_a_stuck_cold_filler(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", str(tmp_path / "cache"))
+    entered, release = threading.Event(), threading.Event()
+    first, bounded, later = (tmp_path / name for name in ("first", "bounded", "later"))
+    calls = []
+
+    def stalled():
+        calls.append("first")
+        entered.set()
+        release.wait()
+        first.write_bytes(b"same bundle")
+
+    def fresh():
+        calls.append("bounded")
+        bounded.write_bytes(b"same bundle")
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        original = workers.submit(cache_module.seal_bundle_cached, first, {"stuck": True}, stalled)
+        try:
+            assert entered.wait(90)
+            deadline = workers.submit(cache_module.seal_bundle_cached, bounded, {"stuck": True},
+                                      fresh, bounded_wait=True)
+            deadline.result(timeout=90)
+            assert bounded.read_bytes() == b"same bundle"
+        finally:
+            release.set()
+        original.result(timeout=90)
+    cache_module.seal_bundle_cached(later, {"stuck": True}, lambda: pytest.fail("completed fill was lost"))
+    assert later.read_bytes() == first.read_bytes() == b"same bundle"
+    assert calls == ["first", "bounded"]
+
+
 def test_failed_fill_is_removed_under_inventory_and_can_recover(sealing, monkeypatch):
     _, cache, packs, seal = sealing
     native_copy, native_remove = shutil.copyfileobj, shutil.rmtree
