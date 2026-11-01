@@ -1,8 +1,5 @@
 name: Flake census
 'on':
-  push:
-    branches: [prismabuild-2428-flake-census]
-    paths: [.github/workflows/flake-census.yml]
   workflow_dispatch:
     inputs:
       repeats:
@@ -48,7 +45,7 @@ jobs:
         persist-credentials: false
     - id: plan
       env:
-        REPEATS: ${{ inputs.repeats || 3 }}
+        REPEATS: ${{ inputs.repeats || 5 }}
       run: >-
         python3 -I control/tools/ci/flake_census.py plan --root population
         --repeats "$REPEATS" --shards "$CENSUS_SHARDS" --output census-plan
