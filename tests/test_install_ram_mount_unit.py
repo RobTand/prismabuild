@@ -40,12 +40,10 @@ EXPECTED = (
 ).encode("ascii")
 
 
-@pytest.fixture
-def generation(tmp_path):
+def _materialize_generation(root):
     """Materialize actual publisher members, including the real validator."""
     import publish_runtime
 
-    root = tmp_path / "generation"
     manifest = publish_runtime._publication_manifest()
     assert SCRIPT in publish_runtime.FLEET_SCRIPTS
     required = [f"{base}/{name}" for base in ("tools", "tools/fleet")
@@ -60,6 +58,11 @@ def generation(tmp_path):
         shutil.copyfile(source, target)
         assert hashlib.sha256(target.read_bytes()).hexdigest() == manifest[name]
     return root
+
+
+@pytest.fixture
+def generation(tmp_path):
+    return _materialize_generation(tmp_path / "generation")
 
 
 def _arguments(generation, mode="--render"):
@@ -623,9 +626,15 @@ RAM_FREE = {"0": 13 * 1024, "1": 987 * 1024}
 RAM_SHMEM = {"0": 765 * 1024, "1": 21 * 1024}
 
 
-@pytest.fixture
-def rendered_ram_options(generation):
+@pytest.fixture(scope="module")
+def rendered_ram_options(tmp_path_factory):
+    generation = _materialize_generation(
+        tmp_path_factory.mktemp("ram-render") / "generation")
+    rendered = {}
+
     def render(spelling):
+        if spelling in rendered:
+            return rendered[spelling]
         arguments = _arguments(generation)
         arguments[arguments.index("--size-bytes") + 1] = str(256 * RAM_GIB)
         before = _snapshot(generation.parent)
@@ -645,6 +654,7 @@ def rendered_ram_options(generation):
             f"uid={UID}", f"gid={GID}", "mode=0755",
         ]
         assert _snapshot(generation.parent) == before
+        rendered[spelling] = options
         return options
 
     return render

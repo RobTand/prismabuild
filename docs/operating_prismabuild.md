@@ -1211,6 +1211,27 @@ native threads per process; admission cannot infer those needs from argv.
 
 ## Wait, detach, and give up
 
+When a terminal carries `supersedes_terminal`, `pbwait --json` and `--endings`
+include an optional `superseded` object. `pbstatus` includes the same summary
+on job and ending rows, with a readable note in its tables. The summary names
+the earlier state, status, attempts and `finished_unix`, plus `returncode` when
+available. A failed generation with a real nonzero return code followed by a
+success is `flaky_rerun`; lease-loss-like history without a return code is
+`infrastructure_rerun`. Other cases remain unclassified. The display reads at
+most the single named archive, with bounded bytes and time; missing or invalid
+history cannot change the current verdict. It never expands attempt history or
+follows older supersessions. Rows without supersession keep their existing shape.
+Archive readers stay owned by the client, outside immutable-verification children.
+`pbstatus` reads archives inside its existing bounded census reader rather than
+spawning a nested child; that reader's existing parent owns any abandonment. Other census callers project
+only the retained summary unless they provide an archive reader under their own
+budget, so shared census reads never start implicit archive grandchildren.
+A retained reader emits its identity on stderr and fences subsequent archive reads
+across rows and observations until a nonblocking own-child reap confirms its exit.
+An invalid ownership identity retains its raw evidence and fences archive reads
+for the remaining client lifetime. These diagnostics do not replace the current
+execution or CAS verdict; an unavailable archive remains unclassified.
+
 Pool waits use the queue-host bell when available (#1894), without CLI changes.
 The waiter reads a cursor, checks the record, then long-polls for that key's
 outcome-input changes, including nested publication endings, withdrawals,
@@ -2143,7 +2164,7 @@ Two rows, one wanting a GPU and one that must not have one:
         "env": {"PYTHONPATH": "src"}
       },
       {
-        "argv": ["/usr/bin/python3", "-m", "pytest", "-q", "tests"],
+        "argv": ["/usr/bin/python3", "/mnt/shared/prismabuild-fleet/repo/tools/pytest_action.py", "-q", "tests"],
         "cwd": "/home/rob/mypkg",
         "demand": {"cpu": 8, "mem_gb": 16},
         "tags": ["x86"]
@@ -2353,19 +2374,22 @@ Only `tmp_path` is removed per test. A directory made with `tmp_path_factory.mkt
 and the directory of any failing test, lasts as long as the session's base temporary
 directory. Without `--basetemp` each attempt owns its base temp (#1542):
 `<tmpdir>/pb-<mkdtemp suffix>/pytest`, where `tmpdir` is the
-default `/home/rob/tmp` or the `--tmpdir` directory when one is given.
+sealed `TMPDIR` from the worker profile, or the `--tmpdir` directory when
+one is given.
 `mkdtemp` creates each directory exclusively with mode 0700. It retries name
 collisions; it does not truncate an action key or an attempt identity.
 The standard eight-character suffix leaves an 86-byte socket path under
 `/home/rob/tmp`, with `popen-gw0`, a 30-character test name plus its counter,
 and a 12-character file name (#1709).
-After pytest exits 0 the worker removes that attempt's directory, including
-any read-only directory a test left in it. Any other ending (a failure, a
-deadline, SIGKILL, OOM) keeps the directory, as the failed-only retention
-policy does, for 24 hours (`owned_tree.RETENTION_S`) after the attempt ended;
-a killed attempt's 24 hours start when a reaper first finds it dead.
-A later attempt in the same `TMPDIR`, or the owning worker supervisor,
-then removes it, a few per pass.
+After pytest returns, fails, raises, or handles SIGTERM/KeyboardInterrupt, the
+worker removes the default attempt directory, including read-only directories
+(#2449). Test logs and terminal records retain failure diagnostics; default test
+scratch is disposable. SIGKILL and OOM cannot unwind Python, so those attempts
+still use lock-proven recovery after the 24-hour retention window
+(`owned_tree.RETENTION_S`). A killed attempt's clock starts when a reaper first
+finds it dead. A later attempt in the same `TMPDIR`, or the owning supervisor,
+removes expired scratch a few trees per pass. Removal errors also retain the
+owned tree for this recovery path.
 Liveness is the attempt's owner lock, `pb-owner.lock`, which the shard holds
 for its whole life, never the directory's age, so a long shard is never
 reaped. Only directories that carry PrismaBuild's lock for this host are
@@ -2387,6 +2411,33 @@ discovers them. Legacy attempts without owner locks still require operator
 custody. A source merge does not deploy this sweep or report real space freed.
 pytest itself removes no `--basetemp` at the end of a session: it deletes and
 recreates the directory at the start of the next session that uses that path.
+
+For raw pytest through `pbrun` or `pbcampaign`, use the published
+`/mnt/shared/prismabuild-fleet/repo/tools/pytest_action.py` inside the admitted
+action instead of `python -m pytest`. It accepts pytest arguments and supplies
+`--basetemp <TMPDIR>/pb-<suffix>/pytest`. Python launchers can use
+`prismabuild.pytest_temp.pytest_basetemp()` around their invocation. Both remove
+the private attempt in `finally`, preserve compiler/cache `TMPDIR`, and
+register owner locks for killed-process recovery. They refuse a root inside a
+Git checkout. Use a short external `TMPDIR`, such as the worker's configured
+scratch root. Long roots can still exceed Linux's 108-byte AF_UNIX address
+limit after pytest adds its test and xdist directories.
+
+This is a caller convention, not automatic detection of arbitrary commands.
+The worker reconstructs environments from sealed values; `TMPDIR` also places
+compiler caches and declared scratch. Replacing it for every action would
+change those contracts. Docker neither forwards nor mounts a host `TMPDIR`
+automatically. Container pytest must use a short private in-container base and
+remove the container. PB's root runners already combine
+`--basetemp=/var/lib/pb-proof-qualification` with `docker --rm`.
+Never put pytest scratch inside the source checkout: Git repository discovery
+then reaches the enclosing repository, and nested paths break broker sockets.
+The `tools/verify.py` native lanes already delegate to pbtest.
+
+These helper and carried-shard changes reach the fleet only with the next
+runtime publication. Default pbtest action keys change because the carried
+cleanup program changes. No publication or fleet service change is part of
+this fix.
 
 `--basetemp root` seals a separate scratch root for pytest's own temporary
 files (#1469), so selecting real test scratch no longer moves the process
@@ -2740,6 +2791,46 @@ and varied `--pytest-args` keep the result cache from serving them.
 
 `pb-cpu` is the PrismaBuild infrastructure test environment. Its presence on a
 worker does not mean that arbitrary project dependencies are installed there.
+The reviewed definitions are
+`tools/maintenance/pb_cpu/x86_64-cp314.json`
+for dl380g10's CPython 3.14 and
+`tools/maintenance/pb_cpu/aarch64-cp312.json`
+for sparky and sparklina's CPython 3.12 over `/usr/bin/python3`.
+Each definition records exact distribution versions, including local versions
+such as `torch==2.11.0+cpu`, wheel SHA-256 hashes, and each package's purpose.
+PB's runtime remains stdlib-only.
+
+The declared shared test dependencies include pytest, pytest-xdist, PyYAML,
+CPU torch, jsonschema 4.26.0, numpy, scipy, compressed-tensors, transformers,
+safetensors, and their pinned dependencies. CPU torch and jsonschema support
+Tessera's rung-allowability tests. Compressed-tensors supports PrismaQuant's
+autouse fixtures. The definitions also retain the captured environment's
+tooling, with a reason beside each pin. Their presence does not qualify every
+served project's test suite or GPU execution.
+
+Run `tools/maintenance/pb_cpu.py --python /absolute/interpreter check` through PB to
+compare a named interpreter with its host-class definition. The command prints
+JSON and exits 1 for missing, extra, duplicate, or different distributions,
+including a different `+cpu` suffix. It exits 2 for inspection or build errors.
+`--python /absolute/base/interpreter build /new/destination` creates a fresh
+venv, installs the hashed wheels without resolving new dependencies, and runs
+the same comparison. The destination must not exist. The tool reads protected
+live environment directories from `pb_cpu_live_roots` in the checkout's fleet
+roster, `tools/fleet/fleet_boxes.json`. Keep this nonempty list in sync with
+every live deployment, including relocated or renamed environments. Builds
+refuse any listed root or descendant, including through symlink aliases, before
+creating directories or running installers. Missing, empty, unreadable, or
+invalid protection configuration refuses the build. `check` does not need this
+configuration and never installs.
+
+To change `pb-cpu`, review changes to the appropriate definition, including
+package purposes and wheel hashes. Preserve each host class's Python minor
+version. Build into a new directory through PB and qualify both PB tests and
+the affected projects' tests there. Re-provision a shared environment only
+while no `pb-cpu` user is running. Applying the ARM definition's jsonschema
+addition to live Sparks is a separate operations step after review. Never
+install dependencies into a shared venv from a running test action.
+
 For project CPU tests, use an interpreter qualified against that project's
 current dependency and runtime pins. Resolve its absolute path on eligible
 workers before submitting. The path below is illustrative, not a qualified

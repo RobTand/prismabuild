@@ -23,8 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import pool  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
-#: More receipts than any bound a pricing read may open.
-HISTORY = 5000
+#: Two old receipts exceed the one-open allowance for a new receipt.
+HISTORY = 2
 
 
 def _key(index: int) -> str:
