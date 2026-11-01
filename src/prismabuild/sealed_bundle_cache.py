@@ -93,12 +93,16 @@ def _bundle_cache_lock(path: Path, *, nonblocking: bool = False, shared: bool = 
             # flock has no timed acquisition. A disposable child blocks on the
             # inherited open file description; subprocess owns its timeout and
             # reaping. Success leaves the lock on our fd, timeout closes it.
+            # Deadline reports a nonpositive budget as None: no wait at all.
+            remaining = deadline.remaining()
+            if remaining is None or remaining <= 0:
+                raise _InventoryUnavailable
             try:
                 subprocess.run([sys.executable, "-I", "-c",
                     "import fcntl,sys; fcntl.flock(int(sys.argv[1]), int(sys.argv[2]))",
                     str(fd), str(mode)], pass_fds=(fd,), stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True,
-                    timeout=max(0.0, deadline.remaining()))
+                    timeout=remaining)
             except subprocess.TimeoutExpired as exc:
                 raise _InventoryUnavailable from exc
             except subprocess.CalledProcessError as exc:
