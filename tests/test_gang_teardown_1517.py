@@ -12,7 +12,7 @@ import pytest
 from test_gang_reservation_1517 import HOSTS, _busy_both, gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
-from prismabuild import _gang, pool
+from prismabuild import _gang, immutable_files, pool
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
@@ -45,6 +45,25 @@ def test_a_member_failure_tears_the_gang_down_and_releases_its_fences(gang_fleet
     # Its fences no longer hold lower-priority work off sparky.
     refill = publish("after-teardown", priority=-10, timeout_s=None, cpu=1, gpu=0, mem_gb=1)
     assert gclaim("sparky") == refill, denial(refill, "sparky")
+
+
+def test_a_running_members_checkpoint_lists_once_until_its_gang_is_torn_down(gang_fleet, monkeypatch):
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    group, first, second = _both_claimed(queue, publish, finish, gclaim, members)
+    claimed = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, first))
+    reads, listings = [], []
+    read, scan = _gang._gang_read, immutable_files.scan_optional
+    monkeypatch.setattr(_gang, "_gang_read", lambda path, **kwargs: reads.append(path) or read(path, **kwargs))
+    monkeypatch.setattr(immutable_files, "scan_optional", lambda directory: listings.append(directory) or scan(directory))
+    # The withdrawal checkpoint runs every pass on the shared mount (#2575):
+    # with no marker filed it costs one listing of the gang's state and no read.
+    queue._withdraw_if_gang_torn_down(claimed)
+    assert (reads, listings) == ([], [_gang.state_dir(queue, group)])
+    assert queue.withdrawal_covers(claimed) is None
+    assert _gang.tear_down(queue, group, reason="sibling failed", by=second, now=clock.now)
+    queue._withdraw_if_gang_torn_down(claimed)
+    decision = pool.record_store.value_or_raise(queue.records.item(pool.record_store.WITHDRAWN, first))
+    assert decision["withdrawn_by"] == "gang:" + group
 
 
 def test_withdrawing_a_waiting_member_withdraws_the_gang_and_releases_both_hosts(gang_fleet):
