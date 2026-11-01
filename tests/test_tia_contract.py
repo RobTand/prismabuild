@@ -542,9 +542,16 @@ def test_shared_generator_records_normal_and_exception_resumptions(tmp_path):
 def test_population_deselection_uses_pytest_prefix_semantics(tmp_path, monkeypatch):
     from types import SimpleNamespace
     mod = load_tia_module('tia_population')
-    monkeypatch.chdir(ROOT)
-    monkeypatch.setenv('PB_TIA_GATE_DIR', 'tools/ci')
     prefix = 'tests/test_progress_reporting_boundaries.py::test_completion_samples_the_final_report_before_removing_it'
+    gate = tmp_path / 'gate'
+    gate.mkdir()
+    # gate_select.py finds gate_paths.py beside it and the repository two levels up its resolved path.
+    for name in ('gate_select.py', 'gate_paths.py'):
+        (gate / name).symlink_to(ROOT / 'tools/ci' / name)
+    (gate / 'gate_quarantine.json').write_text(json.dumps({'entries': [
+        {'target': prefix, 'issue': 1, 'reason': 'prefix semantics fixture'}]}))
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setenv('PB_TIA_GATE_DIR', str(gate))
     removed = []
     config = SimpleNamespace(hook=SimpleNamespace(pytest_deselected=lambda *, items: removed.extend(items)))
     items = [SimpleNamespace(nodeid=prefix + '[False]'), SimpleNamespace(nodeid=prefix + '[True]'),
