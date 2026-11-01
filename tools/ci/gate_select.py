@@ -219,6 +219,11 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
         path.startswith(('tools/ci/gate_', 'tests/test_gate_')))
     reasons: dict[str, list[str]] = {}
     affected = set(changed) | production_import_closure(index, changed)
+    import_targets: dict[str, set[str]] = {}
+    for path in affected:
+        if not path.startswith('tests/'):
+            for module in module_names(path):
+                import_targets.setdefault(module, set()).add(path)
     for name, (imports, paths) in index.items():
         if not name.startswith('tests/'):
             continue
@@ -229,12 +234,19 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
             why.append('whole population: ' + ', '.join(triggers))
         if name in changed:
             why.append('changed test file')
-        for path in sorted(affected):
-            modules = module_names(path) if not path.startswith('tests/') else set()
-            if modules and any(dependency == module or dependency.startswith(module + '.')
-                               for dependency in imports for module in modules):
+        imported = set()
+        for dependency in imports:
+            parts = dependency.split('.')
+            for end in range(1, len(parts) + 1):
+                imported.update(import_targets.get('.'.join(parts[:end]), ()))
+        referenced = affected & paths
+        patterns = {path for path in paths if '**' in path}
+        if patterns:
+            referenced.update(path for path in affected if gate_paths.matches(path, patterns))
+        for path in sorted(imported | referenced):
+            if path in imported:
                 why.append(('direct import: ' if path in changed else 'production import: ') + path)
-            elif gate_paths.matches(path, paths):
+            else:
                 why.append('literal path reference: ' + path)
         if why:
             reasons[name] = why
