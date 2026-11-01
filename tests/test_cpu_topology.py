@@ -7,6 +7,8 @@ has (heterogeneous *and* SMT), which no amount of running it here would cover.
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import cpu_topology as topo  # noqa: E402
 
@@ -135,3 +137,15 @@ def test_capacity_fluctuations_within_classes_do_not_reorder_tokens(tmp_path):
     (root / 'cpu0' / 'cpu_capacity').write_text('515')
     (root / 'cpu2' / 'cpu_capacity').write_text('1024')
     assert topo.classify(root) == before == ([2, 3], [0, 1])
+
+
+def test_restoring_without_an_affinity_call_leaves_a_body_error_alone(monkeypatch):
+    # The probe's own failure is not part of an error raised by the block.
+    def unavailable(_pid):
+        raise AttributeError("no sched_getaffinity")
+
+    monkeypatch.setattr(topo.os, "sched_getaffinity", unavailable)
+    with pytest.raises(ValueError) as raised:
+        with topo.affinity_restored():
+            raise ValueError("from the block")
+    assert raised.value.__context__ is None
