@@ -8,6 +8,8 @@ import sys
 
 import pytest
 
+from queue_space_support import QUEUE_SPACE_BOOTSTRAP
+
 from prismabuild import action_client as client, client_channel as channel, core, pool, slurm_lane
 from test_verified_action_result import (
     _finish, _no_outer_launch_identity, _publish_result, _standard_action,
@@ -45,6 +47,7 @@ submit_core.publish_consumer_row = lambda q, *args, **kwargs: (
 fd = sys.argv[sys.argv.index('--client-events-fd') + 1]
 sys.argv = ['pbrun.py', '--client-events-fd', fd, '--wait-s', '0', '--transport', 'pool',
     *(['--detach'] if mode == 'cached' else []), '--', '/bin/echo', 'hello']
+""" + QUEUE_SPACE_BOOTSTRAP + r"""
 raise SystemExit(pbrun.main())
 """
 

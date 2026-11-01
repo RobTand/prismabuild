@@ -8,8 +8,6 @@ import os
 from pathlib import Path
 import types
 
-import pytest
-
 
 def install_host_space(state):
     from prismabuild import filesystem_capacity
