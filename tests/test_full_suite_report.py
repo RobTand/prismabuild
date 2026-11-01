@@ -337,3 +337,20 @@ def test_creation_dedup_ignores_excerpt_markers_for_preexisting_owners():
     assert len(api.issues) == 2
     assert api.comments == {}
     assert report.owners(api.issues) == {b: 1, a: 2}
+
+
+def test_crlf_leading_metadata_keeps_exact_owners_and_ignores_later_markers():
+    a, b, forged = 'tests/a.py::test_a', 'tests/b.py::test_b', 'tests/c.py::test_c'
+    body = '\r\n'.join([report.marker(a), report.marker(b), '', 'Excerpt:', report.marker(forged)])
+    assert report.ownership_nodes(body) == [a, b]
+    assert report.owners([{'number': 9, 'body': body, 'labels': [{'name': 'full-suite'}]}]) == {a: 9, b: 9}
+
+
+def test_nightly_precreate_recheck_recognises_a_crlf_owner():
+    api = IssueStore()
+    plans = report.issue_plan({'x': row('failed')}, {}, set(), {}, 'old', 'bad', [], 'run')
+    api.issues.append({'number': 8, 'body': report.marker('x') + '\r\n\r\nDetails',
+                       'labels': [{'name': 'full-suite'}]})
+    report.apply_plan(api, plans)
+    assert len(api.issues) == 1
+    assert len(api.comments[8]) == 1
