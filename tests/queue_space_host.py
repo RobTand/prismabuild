@@ -20,7 +20,10 @@ def install_host_space(state):
     import queue_space_support
 
     sample = host_sample(state)
-    # Isolated record-compatibility interpreters see the same simulated host.
+    # Isolated record-compatibility interpreters get this host as a layer under
+    # the shared ample pin (queue_space_support.ISOLATED_PIN), which runs after
+    # it: the simulated host reaches them, then the pin overrides it, as the
+    # shared fixture overrides the simulated host in the pytest process.
     queue_space_support.HOST_PRELUDE = queue_space_support.statvfs_prelude(sample)
     read_room = filesystem_capacity.local_disk_room
     host_statvfs = filesystem_capacity.os.statvfs

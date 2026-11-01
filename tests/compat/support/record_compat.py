@@ -109,7 +109,10 @@ runpy.run_path(driver, run_name="__main__")
 def isolated_prelude():
     """Capacity observation the test harness gives every isolated interpreter.
 
-    Empty outside the test suite, where ``queue_space_support`` is not importable.
+    The switch is implicit: ``queue_space_support`` lives in ``tests/``, which the
+    test suite's ``conftest.py`` puts on ``sys.path``. Outside the suite (capture,
+    adoption and profile tools) it is not importable, the prelude is empty and the
+    command is left byte-identical. Any other import failure is raised.
     """
     try:
         from queue_space_support import isolated_prelude as prelude
@@ -397,7 +400,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
     if namespace:
         command = namespace + ["--"] + command
     try:
-        process = subprocess.run(command, input=json.dumps(request),
+        process = subprocess.run(with_prelude(command, isolated_prelude()), input=json.dumps(request),
                                  text=True, env=environment,
                                  capture_output=True, timeout=45)
     except (OSError, subprocess.TimeoutExpired) as exc:
