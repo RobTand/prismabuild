@@ -97,6 +97,8 @@ def test_unchanged_maps_and_names_do_not_hide_changed_authoritative_identity(
             return info
         fields = list(info)
         fields[1] += 1
+        while (info.st_dev, fields[1]) in selected:
+            fields[1] += 1
         return os.stat_result(fields)
 
     _intercept_mapping_stat(monkeypatch, process, changed)
