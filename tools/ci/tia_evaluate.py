@@ -255,6 +255,7 @@ def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Pat
         if key.startswith('PB_TIA_') or key == 'PYTEST_PLUGINS':
             env.pop(key, None)
     command = [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', '-p', 'tia_completion',
+               '--rootdir=' + str(root),
                '--junitxml=' + str(xml),
                *['--deselect=' + node for node in deselect], *files]
     start = time.monotonic()

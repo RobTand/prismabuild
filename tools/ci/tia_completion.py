@@ -1,7 +1,11 @@
 """Write explicit collection and execution evidence for one evaluation arm."""
-import json
 import os
 from pathlib import Path
+
+try:
+    from .tia_bytes import sorted_json
+except ImportError:
+    from tia_bytes import sorted_json
 
 _COLLECTED = None
 _FINISHED = set()
@@ -36,7 +40,7 @@ def pytest_tia_completion_sessionfinish(session, exitstatus):
               'collected': _COLLECTED, 'finished': sorted(_FINISHED),
               'collection_errors': sorted(_COLLECTION_ERRORS), 'interruption': _INTERRUPTION}
     temporary = destination.with_suffix('.tmp')
-    temporary.write_text(json.dumps(record, sort_keys=True) + '\n')
+    temporary.write_text(sorted_json(record) + '\n')
     temporary.replace(destination)
 
 
