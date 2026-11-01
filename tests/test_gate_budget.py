@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -46,13 +47,55 @@ def commit_target(tmp_path):
 
 def test_overrun_is_a_final_failure_even_when_pytest_passed(tmp_path, capsys):
     policy(tmp_path)
-    code, result = budget_run(tmp_path, case())
+    code, result = budget_run(tmp_path, case('30.001'))
     assert code == 1
     assert result['verdict'] == 'fail' and result['pytest_exit_code'] == 0
     assert result['budget']['status'] == 'fail'
     assert result['budget']['overruns'] == [
-        {'nodeid': 'tests/test_sample.py::test_cost', 'seconds': 21.0, 'budget_seconds': 20}]
+        {'nodeid': 'tests/test_sample.py::test_cost', 'seconds': 30.001, 'budget_seconds': 20}]
     assert 'tests/test_sample.py::test_cost' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('seconds', ['20.527', '30'])
+def test_within_tolerance_passes_with_visible_warning(tmp_path, monkeypatch, capsys, seconds):
+    policy(tmp_path)
+    summary = tmp_path / 'summary.md'
+    summary.write_text('Existing job summary\n')
+    monkeypatch.setenv('GITHUB_STEP_SUMMARY', str(summary))
+    xml = case(seconds).replace('</testsuite>', '<system-out>existing output</system-out></testsuite>')
+    code, result = budget_run(tmp_path, xml)
+    assert code == 0 and result['verdict'] == 'pass'
+    assert result['budget']['overruns'] == []
+    assert result['budget']['warnings'] == [
+        {'nodeid': 'tests/test_sample.py::test_cost', 'seconds': float(seconds), 'budget_seconds': 20}]
+    warning = 'tests/test_sample.py::test_cost'
+    assert warning in capsys.readouterr().out
+    assert summary.read_text().startswith('Existing job summary\n')
+    assert warning in summary.read_text() and 'warning' in summary.read_text().lower()
+    tree = ET.parse(tmp_path / 'junit.xml')
+    output = '\n'.join(node.text or '' for node in tree.iter('system-out'))
+    assert 'existing output' in output and warning in output and 'BUDGET_WARNING' in output
+    testcase = next(tree.iter('testcase'))
+    assert testcase.get('file') == 'tests/test_sample.py' and testcase.get('time') == seconds
+    assert testcase.find('failure') is None and testcase.find('error') is None
+
+
+@pytest.mark.parametrize('seconds,expected', [('63', 0), ('63.001', 1)])
+def test_tolerance_uses_the_precise_slow_exception(tmp_path, seconds, expected):
+    nodeid = 'tests/test_sample.py::TestCosts::test_cost[a.b]'
+    policy(tmp_path, slow={nodeid: 42})
+    code, result = budget_run(tmp_path, case(seconds, classname='tests.test_sample.TestCosts',
+                                          name='test_cost[a.b]'))
+    assert code == expected
+    rows = result['budget']['warnings' if expected == 0 else 'overruns']
+    assert rows == [{'nodeid': nodeid, 'seconds': float(seconds), 'budget_seconds': 42}]
+
+
+def test_at_policy_limit_needs_no_warning(tmp_path):
+    policy(tmp_path)
+    code, result = budget_run(tmp_path, case('20'))
+    assert code == 0 and result['budget']['warnings'] == []
+    assert not list(ET.parse(tmp_path / 'junit.xml').iter('system-out'))
 
 
 @pytest.mark.parametrize('seconds,slow', [
