@@ -454,22 +454,6 @@
       "reason": "The archival-replay capability requires retained runtime inputs absent from the gate image. Archival TMPDIR qualification is tracked by #1997."
     },
     {
-      "target": "tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned",
-      "issue": 2436,
-      "reason": "Failed in all three inventory repeats at 22e9d752; PR #2422 is a candidate repair.",
-      "evidence": {
-        "source_commit": "22e9d75298608078c91d331a646f6446352577f6",
-        "outcomes": {
-          "failed": 3
-        },
-        "action_keys": [
-          "e04bdecf4113a7a86081326703358fe8df3901a630075b129e936dffbd903249",
-          "4d782f428f08fe3aaca8fb9caccf0aa4b183f38317c9016ed6eb01c57f996030",
-          "e2ffd364b6ee1fbc737850fd97b1b999e9854f75a84b7af5113fd2db1eb7e4bc"
-        ]
-      }
-    },
-    {
       "target": "tests/test_a_shared_mount_row_without_a_data_manifest_is_warned_or_refused.py::test_require_data_manifest_refuses_a_logical_requests_common_before_it_is_cut",
       "issue": 2437,
       "reason": "Failed in all three inventory repeats at 22e9d752; logical-plan fixture or contract needs diagnosis.",
