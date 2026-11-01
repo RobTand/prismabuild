@@ -471,3 +471,30 @@ def test_production_loader_uses_final_path_without_intermediate_basename_edges(t
     assert selected(plan(root, ['tools/fleet/config.py'])) == {'tests/test_fast.py'}
     expected = {'tests/test_fast.py', 'tests/test_loader_consumer.py'} if inside else {'tests/test_fast.py'}
     assert selected(plan(root, ['tools/fleet/nested/config.py'])) == expected
+
+
+@pytest.mark.parametrize('source', [
+    'def load():\n    path = Path(__file__).parent / "config.py"\n'
+    '    runpy.run_path(str(path))\n'
+    'def unrelated(entry):\n    path = Path(entry.path)\n',
+    'path = Path(__file__).parent / "config.py"\n'
+    'runpy.run_path(str(path))\npath = Path("/tmp") / "config.py"\n',
+    'def load(directory):\n    runpy.run_path(str(Path(directory) / "config.py"))\n',
+    'def load(directory):\n    path = Path(directory) / "config.py"\n'
+    '    runpy.run_path(str(path))\n',
+    'def load(flag, directory):\n    path = Path(__file__).parent / "config.py"\n'
+    '    if flag:\n        path = Path(directory)\n    runpy.run_path(str(path))\n',
+])
+def test_production_loader_bindings_are_scoped_ordered_and_conservative(tmp_path, source):
+    root = tree(tmp_path)
+    (root / 'tools/fleet/config.py').write_text('VALUE = 1\n')
+    (root / 'tools/fleet/loader.py').write_text('from pathlib import Path\nimport runpy\n' + source)
+    (root / 'tests/test_loader_consumer.py').write_text('from tools.fleet import loader\n')
+    assert selected(plan(root, ['tools/fleet/config.py'])) == {
+        'tests/test_fast.py', 'tests/test_loader_consumer.py'}
+
+
+def test_repository_digest_loader_keeps_its_function_local_core_binding():
+    path = 'tools/maintenance/diag_811_e1_checkout_cache.py'
+    assert 'src/prismabuild/core.py' in select.dependencies(
+        (ROOT / path).read_text(), path, production=True)[1]
