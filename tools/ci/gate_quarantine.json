@@ -454,6 +454,20 @@
       "reason": "The archival-replay capability requires retained runtime inputs absent from the gate image. Archival TMPDIR qualification is tracked by #1997."
     },
     {
+      "target": "tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned",
+      "issue": 2516,
+      "reason": "Passes since #2515 reconciled the pins, but took 62.462 s on a hosted gate shard against the 30 s limit, and the shrink-only budget cannot add an exception. Returns to the gate when the audit fits the budget (#2516).",
+      "evidence": {
+        "outcomes": {
+          "passed": 1,
+          "failed_budget": 1
+        },
+        "hosted_runs": [
+          "https://github.com/RobTand/prismabuild/actions/runs/41331895355"
+        ]
+      }
+    },
+    {
       "target": "tests/test_a_shared_mount_row_without_a_data_manifest_is_warned_or_refused.py::test_require_data_manifest_refuses_a_logical_requests_common_before_it_is_cut",
       "issue": 2437,
       "reason": "Failed in all three inventory repeats at 22e9d752; logical-plan fixture or contract needs diagnosis.",
