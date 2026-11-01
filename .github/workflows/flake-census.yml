@@ -6,6 +6,10 @@ name: Flake census
         description: Independent samples per architecture, from 2 to 10
         type: number
         default: 5
+      quarantine_issue:
+        description: Optional quarantine issue number; repeat its complete target files only
+        type: string
+        default: ''
       dry_run:
         description: Classify and publish artifacts without filing issues
         type: boolean
@@ -46,9 +50,14 @@ jobs:
     - id: plan
       env:
         REPEATS: ${{ inputs.repeats || 5 }}
-      run: >-
-        python3 -I control/tools/ci/flake_census.py plan --root population
-        --repeats "$REPEATS" --shards "$CENSUS_SHARDS" --output census-plan
+        QUARANTINE_ISSUE: ${{ inputs.quarantine_issue }}
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        args=()
+        if [ -n "$QUARANTINE_ISSUE" ]; then args+=(--quarantine-issue "$QUARANTINE_ISSUE"); fi
+        python3 -I control/tools/ci/flake_census.py plan --root population \
+          --repeats "$REPEATS" --shards "$CENSUS_SHARDS" --output census-plan "${args[@]}"
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
         name: census-plan-${{ github.run_attempt }}
@@ -78,7 +87,7 @@ jobs:
       with:
         python-version: '3.14'
         cache: pip
-        cache-dependency-path: population/tools/ci/gate_requirements.txt
+        cache-dependency-path: control/tools/ci/gate_requirements.txt
     - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
       with:
         name: census-plan-${{ github.run_attempt }}
@@ -92,7 +101,8 @@ jobs:
       working-directory: population
       run: |
         set -Eeuo pipefail
-        python -m pip install --retries 3 --timeout 30 -r tools/ci/gate_requirements.txt
+        python -m pip install --retries 3 --timeout 30 -r ../control/tools/ci/gate_requirements.txt
+        py-spy --version
         python tools/ci/gate_setup.py --files-from ../census-output/assigned.txt
     - name: Record free disk under this sample's TMPDIR
       shell: bash

@@ -324,3 +324,110 @@ def test_crlf_owner_suppresses_census_precreate_recheck():
     api.issues.append({'number': 8, 'body': census.report.marker('x') + '\r\n\r\nDetails', 'labels': []})
     assert census.file_new_issues(api, plans) == []
     assert len(api.issues) == 1
+
+
+def owner_filter_checkout(tmp_path, monkeypatch):
+    tests = tmp_path / 'tests'
+    tests.mkdir()
+    for name in ['a', 'b', 'c']:
+        (tests / f'test_{name}.py').write_text('def test_ok():\n    assert True\n')
+    ci = tmp_path / 'tools/ci'
+    ci.mkdir(parents=True)
+    (ci / 'gate_durations.json').write_text(json.dumps({'files': {
+        'tests/test_a.py': 7, 'tests/test_b.py': 9, 'tests/test_c.py': 3}}))
+    (ci / 'gate_quarantine.json').write_text(json.dumps({'entries': [
+        {'target': 'tests/test_a.py::test_ok', 'issue': 2434, 'reason': 'qualify'},
+        {'target': 'tests/test_b.py', 'issue': 999, 'reason': 'other owner'}],
+        'cost_exclusions': [{'target': 'tests/test_c.py', 'issue': 2434, 'reason': 'qualify'}]}))
+    monkeypatch.setattr(census.nightly.gate_select, 'tier_declarations', lambda root: (set(), {}))
+    return ci
+
+
+def test_owner_filter_runs_all_target_files_and_keeps_other_owners_out(tmp_path, monkeypatch):
+    owner_filter_checkout(tmp_path, monkeypatch)
+    plan, manifest = census.census_manifest(tmp_path, 'sha', 5, 4, quarantine_issue=2434)
+    assert [row['path'] for row in plan['selected']] == ['tests/test_a.py', 'tests/test_c.py']
+    assert manifest['quarantine_issue'] == 2434
+    assert manifest['shards'] == 2
+    for arch in ['x64', 'arm64']:
+        for repeat in range(5):
+            assignments = [r['files'] for r in manifest['include']
+                           if r['architecture'] == arch and r['repeat'] == repeat]
+            assert assignments == [['tests/test_a.py'], ['tests/test_c.py']]
+    assert len(manifest['quarantine']) == 3
+
+
+@pytest.mark.parametrize('issue', [0, -1, 12345])
+def test_owner_filter_rejects_invalid_or_unknown_owners(tmp_path, monkeypatch, issue):
+    owner_filter_checkout(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match='quarantine owner'):
+        census.census_manifest(tmp_path, 'sha', 5, 4, quarantine_issue=issue)
+
+
+def test_owner_filter_does_not_silently_drop_an_unavailable_target(tmp_path, monkeypatch):
+    ci = owner_filter_checkout(tmp_path, monkeypatch)
+    quarantine = json.loads((ci / 'gate_quarantine.json').read_text())
+    quarantine['entries'].append({'target': 'tests/missing.py', 'issue': 2434, 'reason': 'missing'})
+    (ci / 'gate_quarantine.json').write_text(json.dumps(quarantine))
+    with pytest.raises(ValueError, match='tests/missing.py'):
+        census.census_manifest(tmp_path, 'sha', 5, 4, quarantine_issue=2434)
+
+
+def test_owner_filter_cli_roundtrip_recomputes_the_frozen_selection(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    owner_filter_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(census.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout='sha\n'))
+    monkeypatch.setenv('GITHUB_OUTPUT', str(tmp_path / 'github-output'))
+    output = tmp_path / 'plan'
+    assert census.main(['plan', '--root', str(tmp_path), '--repeats', '5', '--shards', '4',
+                        '--quarantine-issue', '2434', '--output', str(output)]) == 0
+    manifest = output / 'manifest.json'
+    assigned = tmp_path / 'assigned.txt'
+    assert census.main(['assign', '--root', str(tmp_path), '--manifest', str(manifest),
+                        '--index', '0', '--output', str(assigned)]) == 0
+    assert assigned.read_text() == 'tests/test_a.py\n'
+    changed = json.loads(manifest.read_text())
+    changed['quarantine_issue'] = 999
+    manifest.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match='snapshot or assignment changed'):
+        census.main(['assign', '--root', str(tmp_path), '--manifest', str(manifest),
+                     '--index', '0', '--output', str(assigned)])
+
+
+def test_hosted_requirements_pin_the_py_spy_every_pb_runtime_manifest_pins():
+    pinned = {line.split('==')[0]: line.split('==')[1].strip()
+              for line in (ROOT / 'tools/ci/gate_requirements.txt').read_text().splitlines() if '==' in line}
+    versions = {}
+    for manifest in sorted((ROOT / 'tools/maintenance/pb_cpu').glob('*.json')):
+        packages = {row['name']: row['version'] for row in _runtime_packages(json.loads(manifest.read_text()))}
+        if 'py-spy' in packages:
+            versions[manifest.name] = packages['py-spy']
+    # The aarch64 runtime manifest lists no py-spy; hosted arm64 installs the pinned wheel with pip.
+    assert versions and set(versions.values()) == {pinned['py-spy']}
+
+
+def _runtime_packages(node):
+    if isinstance(node, dict):
+        if 'name' in node and 'version' in node:
+            yield node
+        for value in node.values():
+            yield from _runtime_packages(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _runtime_packages(value)
+
+
+def test_workflow_forwards_the_owner_input_and_checks_py_spy_before_sampling():
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/flake-census.yml').read_text())
+    triggers = workflow.get('on', workflow.get(True))
+    assert triggers['workflow_dispatch']['inputs']['quarantine_issue']['default'] == ''
+    plan = next(step for step in workflow['jobs']['plan']['steps'] if step.get('id') == 'plan')
+    assert plan['env']['QUARANTINE_ISSUE'] == '${{ inputs.quarantine_issue }}'
+    assert '--quarantine-issue "$QUARANTINE_ISSUE"' in plan['run']
+    prepare = next(step for step in workflow['jobs']['samples']['steps']
+                   if step.get('name') == 'Prepare hosted runtime for assigned files')
+    lines = [line.strip() for line in prepare['run'].splitlines()]
+    install = next(i for i, line in enumerate(lines) if '-r ../control/tools/ci/gate_requirements.txt' in line)
+    assert lines.index('py-spy --version') > install
+    assert lines.index('py-spy --version') < next(i for i, line in enumerate(lines) if 'gate_setup.py' in line)
