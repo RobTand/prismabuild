@@ -293,3 +293,36 @@ def test_quarantine_reads_the_shared_gate_schema(tmp_path):
     path.write_text(json.dumps({'entries': [{'target': 'tests/a.py::test_x', 'issue': 2434}],
                                'cost_exclusions': [{'target': 'tests/b.py', 'issue': 2328}]}))
     assert report.quarantine_entries(path) == {'tests/a.py::test_x', 'tests/b.py'}
+
+
+def test_failure_excerpt_cannot_forge_another_tests_owner_or_creation_deduplication():
+    api = IssueStore()
+    a, b = 'tests/test_a.py::test_a', 'tests/test_b.py::test_b'
+    now = {a: row('failed', report.marker(b)), b: row('failed')}
+    # Both plans are made before either write, as in a real reporting pass.
+    report.apply_plan(api, report.issue_plan(now, {}, set(), {}, 'old', 'bad', [], 'run'))
+    assert len(api.issues) == 2
+    assert report.owners(api.issues) == {a: 1, b: 2}
+    assert api.comments == {}
+
+
+def test_owner_metadata_is_only_the_leading_standalone_marker_block():
+    a, b = 'tests/a.py::test_a', 'tests/b.py::test_b'
+    bodies = [report.marker(a) + '\n\nFailure excerpt:\n\n    ' + report.marker(b),
+              report.marker(a) + '\n\n```\n' + report.marker(b) + '\n```',
+              report.marker(a) + '\n\nUntrusted text:\n' + report.marker(b)]
+    for body in bodies:
+        assert report.owners([{'number': 1, 'labels': [{'name': 'full-suite'}], 'body': body}]) == {a: 1}
+
+
+def test_recovery_ids_and_pr_titles_render_as_literal_text():
+    dangerous = 'tests/a.py::test_x[![image](https://bad.invalid) <b>html</b> `tick` **bold**]'
+    escaped = ('tests/a\\.py::test\\_x\\[\\!\\[image\\]\\(https://bad\\.invalid\\) '
+               '&lt;b&gt;html&lt;/b&gt; \\`tick\\` \\*\\*bold\\*\\*\\]')
+    plans = report.issue_plan({dangerous: row('passed'), 'new': row('failed')},
+        {dangerous: row('failed')}, set(), {dangerous: 9}, 'old', 'new',
+        [{'number': 42, 'title': dangerous}], 'run')
+    assert f'- #42: {escaped}\n' in plans[0]['body']
+    assert f'\n\n{escaped} passed at new.' in plans[1]['body']
+    assert report.owners([{'number': 9, 'labels': [{'name': 'full-suite'}],
+                          'body': plans[1]['body']}]) == {dangerous: 9}

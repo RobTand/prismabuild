@@ -155,3 +155,36 @@ def test_cpu_plan_defers_capability_controls_without_dropping_quarantined_files(
     assert 'tests/test_fleet.py' not in [row['path'] for row in plan['selected']]
     assert plan['deselect'] == ['tests/test_mixed.py::test_needs_broker']
     assert plan['deferred'] == capabilities
+
+
+@pytest.mark.parametrize('files,exit_code,budget', [
+    (['tests/a.py', 'tests/b.py'], 1, 'pass'),
+    (['tests/a.py'], 2, 'pass'),
+    (['tests/a.py'], 1, 'unavailable'),
+])
+def test_final_failure_requires_independent_completion_for_baseline(tmp_path, files, exit_code, budget):
+    folder = tmp_path / '0'
+    folder.mkdir()
+    (folder / 'result.json').write_text(json.dumps({
+        'verdict': 'fail', 'head_sha': 'sha', 'files': files,
+        'pytest_exit_code': exit_code, 'budget': {'status': budget}}))
+    (folder / 'junit.xml').write_text('<testsuite><testcase file="tests/a.py" '
+        'classname="tests.a" name="test_failed"><failure>wrong</failure></testcase></testsuite>')
+    manifest = {'sha': 'sha', 'include': [{'index': 0, 'runner': 'ubuntu-24.04', 'files': files}]}
+    with pytest.raises(ValueError, match='complet|cover'):
+        workflow.collect_shards(tmp_path, manifest)
+
+
+def test_complete_test_or_budget_failure_can_be_a_baseline(tmp_path):
+    folder = tmp_path / '0'
+    folder.mkdir()
+    files = ['tests/a.py', 'tests/b.py']
+    (folder / 'result.json').write_text(json.dumps({
+        'verdict': 'fail', 'head_sha': 'sha', 'files': files,
+        'pytest_exit_code': 1, 'budget': {'status': 'fail'}}))
+    (folder / 'junit.xml').write_text('<testsuite><testcase file="tests/a.py" '
+        'classname="tests.a" name="test_failed"><failure>wrong</failure></testcase>'
+        '<testcase file="tests/b.py" classname="tests.b" name="test_skipped"><skipped/></testcase></testsuite>')
+    manifest = {'sha': 'sha', 'include': [{'index': 0, 'runner': 'ubuntu-24.04', 'files': files}]}
+    assert {node: row['outcome'] for node, row in workflow.collect_shards(tmp_path, manifest).items()} == {
+        'tests/a.py::test_failed': 'failed', 'tests/b.py::test_skipped': 'skipped'}
