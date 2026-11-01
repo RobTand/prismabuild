@@ -458,3 +458,34 @@ def test_tooling_handshake_runs_before_python_setup_and_binds_workflow_commit():
         step = workflow['jobs'][name]['steps'][0]
         assert 'HEAD_COMPATIBLE' in step['run']
         assert 'merge origin/main and push again' in step['run']
+
+
+
+def test_workflow_commit_is_fetched_by_sha_without_changing_pr_checkout(tmp_path, tooling_checkout):
+    import subprocess
+    repository, git, _, head = tooling_checkout
+    (repository / 'target-only.txt').write_text('Target content outside gate tooling\n')
+    git('add', '.')
+    git('commit', '-qm', 'Target advances independently')
+    git('merge', '--no-ff', '-qm', 'Workflow merge commit', 'pr-head')
+    workflow_sha = git('rev-parse', 'HEAD')
+    checkout = tmp_path / 'pr-checkout'
+    git('clone', '-q', '--no-local', '--single-branch', '--branch', 'pr-head',
+        str(repository), str(checkout))
+    absent = subprocess.run(['git', 'cat-file', '-e', workflow_sha], cwd=checkout,
+                            capture_output=True, check=False)
+    assert absent.returncode != 0
+    run, output = execute_head_contract(tmp_path, checkout, head, workflow_sha)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert output == 'compatible=true\n'
+    assert git('rev-parse', 'HEAD', cwd=checkout) == head
+    assert git('rev-parse', 'FETCH_HEAD', cwd=checkout) == workflow_sha
+
+
+def test_comparison_error_is_not_reported_as_stale_tooling(tmp_path, tooling_checkout):
+    repository, git, _, head = tooling_checkout
+    git('switch', '-q', 'pr-head')
+    run, output = execute_head_contract(tmp_path, repository, '1' * 40, head)
+    assert run.returncode == 75, run.stdout + run.stderr
+    assert 'compatible=false' not in output
+    assert 'NO_VERDICT: tooling comparison failed' in run.stdout
