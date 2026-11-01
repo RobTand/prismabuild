@@ -89,14 +89,14 @@ def replay_impact(root: Path, gate_dir: Path, mapping: dict, history: dict) -> d
     # The existing replay has no input-injection arguments. Adapt its reads for this call,
     # preserving its selector, estimates, replay loop and percentile calculation unchanged.
     original_index = gate_replay.select.dependency_index
-    original_json = gate_replay.select.read_json
+    original_json = gate_replay.select.load_gate_json
     gate_replay.select.dependency_index = lambda directory: {name: value for name, value in original_index(directory).items() if name not in excluded}
-    gate_replay.select.read_json = lambda path: context['durations'] if path.name == 'gate_durations.json' else original_json(gate_dir / path.name if path.name == 'gate_quarantine.json' else path)
+    gate_replay.select.load_gate_json = lambda path: context['durations'] if path.name == 'gate_durations.json' else original_json(gate_dir / path.name if path.name == 'gate_quarantine.json' else path)
     try:
-        static = gate_replay.replay(root, history)
+        static = gate_replay.replay_selection(root, history)
     finally:
         gate_replay.select.dependency_index = original_index
-        gate_replay.select.read_json = original_json
+        gate_replay.select.load_gate_json = original_json
     rows = []
     for pull in history['pulls']:
         merge = pull['merge_commit_sha']
@@ -108,7 +108,7 @@ def replay_impact(root: Path, gate_dir: Path, mapping: dict, history: dict) -> d
                      'serial_seconds': selected['estimate']['serial_seconds'],
                      'fallbacks': selected['fallbacks']})
     return {'schema': 'prismabuild.tia_replay.v1', 'static': static, 'evaluation_excluded': mapping.get('unmapped', {}),
-            'tia': {'summary': gate_replay.summarize(rows), 'pulls': rows},
+            'tia': {'summary': gate_replay.summarize_replay(rows), 'pulls': rows},
             'method': 'same current population and gate estimates; AST diffs of merge parent to merge; '
                       'historical source hashes must match the current map, otherwise static fallback'}
 
@@ -181,7 +181,7 @@ def mutations(root: Path, mapping: dict, *, paths: set[str] | None = None):
 def campaign(root: Path, gate_dir: Path, mapping: dict, map_path: Path, output: Path, count: int):
     gate = load_tia_module(gate_dir / 'gate_select.py', 'tia_campaign_gate')
     durations = prepare_selection(root, gate_dir, duration_updates=mapping.get('duration_updates'))['durations']
-    quarantine = gate.read_json(gate_dir / 'gate_quarantine.json')
+    quarantine = gate.load_gate_json(gate_dir / 'gate_quarantine.json')
     index = gate.dependency_index(root)
     graph = gate.helper_importers(index, [])
     costs = {}
@@ -248,16 +248,18 @@ def run_tia_pytest_process(command, *, cwd, env, timeout):
 
 def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Path, label: str) -> dict:
     xml = directory / (label + '.xml')
-    env = dict(os.environ, PYTHONPATH=str(root / 'src') + os.pathsep + str(root),
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(Path(__file__).resolve().parent),
+                                                    str(root / 'src'), str(root)]),
                PYTEST_ADDOPTS='', PYTHONDONTWRITEBYTECODE='1')
     for key in list(env):
         if key.startswith('PB_TIA_') or key == 'PYTEST_PLUGINS':
             env.pop(key, None)
-    command = [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider',
+    command = [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', '-p', 'tia_completion',
                '--junitxml=' + str(xml),
                *['--deselect=' + node for node in deselect], *files]
     start = time.monotonic()
     complete = True
+    completion = None
     scratch_root = os.environ.get('PB_TIA_SCRATCH_ROOT', '/tmp')
     if not Path(scratch_root).is_absolute():
         raise ValueError('PB_TIA_SCRATCH_ROOT must be absolute')
@@ -265,7 +267,9 @@ def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Pat
         temporary = Path(scratch) / 'tmp'
         temporary.mkdir()
         env['TMPDIR'] = str(temporary)
-        command.insert(7, '--basetemp=' + str(Path(scratch) / 't'))
+        completion_path = Path(scratch) / 'completion.json'
+        env['PB_TIA_COMPLETION'] = str(completion_path)
+        command.insert(3, '--basetemp=' + str(Path(scratch) / 't'))
         try:
             run = run_tia_pytest_process(command, cwd=root, env=env, timeout=1800)
             code, output = run.returncode, run.stdout + run.stderr
@@ -274,6 +278,12 @@ def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Pat
             output = ''.join(value.decode(errors='replace') if isinstance(value, bytes) else value
                              for value in (error.stdout, error.stderr) if value)
         (directory / (label + '.log')).write_text(output)
+        if completion_path.exists():
+            try:
+                completion = json.loads(completion_path.read_text())
+            except (OSError, ValueError):
+                pass
+        (directory / (label + '.completion.json')).write_text(sorted_json(completion) + '\n')
     failures, errors, tests, skips = [], [], 0, 0
     if xml.exists():
         for case in ET.parse(xml).iter('testcase'):
@@ -286,7 +296,18 @@ def pytest_run(root: Path, files: list[str], deselect: list[str], directory: Pat
             skips += case.find('skipped') is not None
     if code:
         print('tia-arm-log: ' + base64.b64encode(gzip.compress(output.encode(), mtime=0)).decode(), flush=True)
-    result = {'returncode': code, 'complete': complete and code in (0, 1, 2) and xml.exists(),
+    proof = completion if isinstance(completion, dict) else {}
+    execution_complete = (proof.get('schema') == 'prismabuild.tia_completion.v1' and
+                          proof.get('exitstatus') == code and proof.get('collection_complete') is True and
+                          isinstance(proof.get('collected'), list) and
+                          proof['collected'] == proof.get('finished') and
+                          not proof.get('collection_errors') and not proof.get('interruption'))
+    collection_failed = (complete and code == 2 and xml.exists() and bool(errors) and
+                         proof.get('schema') == 'prismabuild.tia_completion.v1' and
+                         proof.get('exitstatus') == code and bool(proof.get('collection_errors')) and
+                         proof.get('interruption') in (None, 'Interrupted'))
+    result = {'returncode': code, 'complete': complete and code in (0, 1) and xml.exists() and execution_complete,
+              'completion': completion, 'collection_failed': collection_failed,
               'failures': sorted(failures), 'errors': sorted(errors), 'tests': tests, 'skipped': skips,
               'files': len({target.split('::', 1)[0] for target in files}), 'targets': len(files),
               'elapsed_s': time.monotonic() - start, 'tail': output[-4000:] if code else ''}
@@ -304,8 +325,8 @@ def run_mutation(root: Path, gate_dir: Path, mutation: dict) -> dict:
     diff = {'python': {path: mutation['diff']}, 'non_python': [], 'base_hashes': {path: mutation['before']}}
     selected = plan(root, gate_dir, mapping, diff)
     gate = load_tia_module(gate_dir / 'gate_select.py', 'tia_mutation_gate')
-    static = gate.create_plan(root, [path], durations=gate.read_json(gate_dir / 'gate_durations.json'),
-                              quarantine=gate.read_json(gate_dir / 'gate_quarantine.json'))
+    static = gate.create_plan(root, [path], durations=gate.load_gate_json(gate_dir / 'gate_durations.json'),
+                              quarantine=gate.load_gate_json(gate_dir / 'gate_quarantine.json'))
     excluded = set(mapping.get('unmapped', {}))
     tia_files = [row['path'] for row in selected['selected'] if row['path'] not in excluded]
     static_files = [row['path'] for row in static['selected'] if row['path'] not in excluded]
@@ -325,6 +346,7 @@ def run_mutation(root: Path, gate_dir: Path, mutation: dict) -> dict:
                        'tests': 0, 'skipped': 0, 'files': 0, 'reason': 'invalid baseline'}
             return {'mutation': mutation, 'baseline': baseline, 'tia': skipped, 'static': skipped,
                     'tia_killed': False, 'static_killed': False, 'valid': False,
+                    'tia_collection_killed': False, 'static_collection_killed': False,
                     'known_baseline_failures': sorted(baseline_bad & known_baseline),
                     'tia_plan': selected, 'evaluation_excluded': mapping.get('unmapped', {})}
         changed = original[:mutation['start']] + mutation['replacement'].encode() + original[mutation['end']:]
@@ -339,8 +361,11 @@ def run_mutation(root: Path, gate_dir: Path, mutation: dict) -> dict:
             (root / path).write_bytes(original)
     def killed(result):
         return result['complete'] and bool(set(result['failures'] + result['errors']) - baseline_bad)
+    def collection_killed(result):
+        return result.get('collection_failed', False) and bool(set(result['errors']) - baseline_bad)
     return {'mutation': mutation, 'baseline': baseline, 'tia': tia, 'static': full,
             'tia_killed': killed(tia), 'static_killed': killed(full),
+            'tia_collection_killed': collection_killed(tia), 'static_collection_killed': collection_killed(full),
             'valid': baseline_valid and tia['complete'] and full['complete'],
             'known_baseline_failures': sorted(baseline_bad & known_baseline),
             'tia_plan': selected, 'evaluation_excluded': mapping.get('unmapped', {})}

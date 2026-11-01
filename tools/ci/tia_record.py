@@ -58,7 +58,10 @@ class Recorder:
         if self.tool is None:
             raise RuntimeError('TIA cannot acquire a sys.monitoring tool ID')
         sys.monitoring.register_callback(self.tool, sys.monitoring.events.PY_START, self.start)
-        sys.monitoring.set_events(self.tool, sys.monitoring.events.PY_START)
+        sys.monitoring.register_callback(self.tool, sys.monitoring.events.PY_RESUME, self.start)
+        sys.monitoring.register_callback(self.tool, sys.monitoring.events.PY_THROW, self.start)
+        sys.monitoring.set_events(self.tool, sys.monitoring.events.PY_START |
+                                  sys.monitoring.events.PY_RESUME | sys.monitoring.events.PY_THROW)
         atexit.register(self.close)
         if hasattr(os, 'register_at_fork'):
             os.register_at_fork(after_in_child=self.after_fork)
@@ -89,7 +92,7 @@ class Recorder:
         self.codes[identity] = result
         return result
 
-    def start(self, code, offset):
+    def start(self, code, offset, *exception):
         key = self.key(code)
         if key:
             if self.node:
@@ -98,7 +101,8 @@ class Recorder:
                     calls.add(key)
             else:
                 self.unattributed.add(key)
-        return sys.monitoring.DISABLE
+        # PY_THROW carries an exception and is global, so it cannot be disabled.
+        return None if exception else sys.monitoring.DISABLE
 
     def boundary(self, node: str):
         self.node = node
@@ -124,6 +128,8 @@ class Recorder:
         if self.tool is not None:
             sys.monitoring.set_events(self.tool, 0)
             sys.monitoring.register_callback(self.tool, sys.monitoring.events.PY_START, None)
+            sys.monitoring.register_callback(self.tool, sys.monitoring.events.PY_RESUME, None)
+            sys.monitoring.register_callback(self.tool, sys.monitoring.events.PY_THROW, None)
             sys.monitoring.free_tool_id(self.tool)
             self.tool = None
         self.flush()

@@ -116,11 +116,11 @@ def select(mapping: dict, diff: dict, *, file_hashes: dict, fast: list[str],
 
 def prepare_selection(root: Path, gate_dir: Path, *, exclude: set[str] | None = None, duration_updates: dict | None = None) -> dict:
     gate = load_tia_module(gate_dir / 'gate_select.py', 'tia_gate_select')
-    durations = gate.read_json(gate_dir / 'gate_durations.json')
+    durations = gate.load_gate_json(gate_dir / 'gate_durations.json')
     fills = {name: value for name, value in (duration_updates or {}).items() if name not in durations['files']}
     durations = dict(durations, files={**durations['files'], **fills},
                      source={**durations.get('source', {}), 'tia_map_missing_duration_fills': sorted(fills)})
-    quarantine = gate.read_json(gate_dir / 'gate_quarantine.json')
+    quarantine = gate.load_gate_json(gate_dir / 'gate_quarantine.json')
     index = {name: value for name, value in gate.dependency_index(root).items() if name not in (exclude or set())}
     graph = gate.helper_importers(index, [])
     def static(paths, mode='selection'):

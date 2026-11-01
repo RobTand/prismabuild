@@ -23,10 +23,10 @@ def pytest_tia_population_collection_modifyitems(config, items):
     gate = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gate)
     exclusions = gate.exclusion_entries(json.loads((path.parent / 'gate_quarantine.json').read_text()))
-    excluded = {row['target'] for row in exclusions}
+    excluded = tuple(row['target'] for row in exclusions)
     kept, removed = [], []
     for item in items:
-        (removed if item.nodeid in excluded or item.nodeid.split('::', 1)[0] in excluded else kept).append(item)
+        (removed if item.nodeid.startswith(excluded) else kept).append(item)
     items[:] = kept
     if removed:
         config.hook.pytest_deselected(items=removed)

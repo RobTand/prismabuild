@@ -361,7 +361,7 @@ def test_invalid_baseline_stops_before_mutating(tmp_path, monkeypatch):
     selected = {'selected': [{'path': 'tests/test_example.py'}], 'targets': ['tests/test_example.py'], 'deselect': []}
     monkeypatch.setattr(mod, 'plan', lambda *args: selected)
     monkeypatch.setattr(mod, 'load_tia_module', lambda *args: SimpleNamespace(
-        read_json=lambda path: {}, create_plan=lambda *args, **kwargs: selected))
+        load_gate_json=lambda path: {}, create_plan=lambda *args, **kwargs: selected))
     calls = []
     def invalid(*args):
         calls.append(args[-1])
@@ -496,7 +496,7 @@ def test_collection_failure_kill_is_separate_from_valid_comparisons(tmp_path, mo
                 'targets': ['tests/test_example.py'], 'deselect': []}
     monkeypatch.setattr(mod, 'plan', lambda *args: selected)
     monkeypatch.setattr(mod, 'load_tia_module', lambda *args: SimpleNamespace(
-        read_json=lambda path: {}, load_gate_json=lambda path: {},
+        load_gate_json=lambda path: {},
         create_plan=lambda *args, **kwargs: selected))
     def verdict(*args):
         baseline = args[-1] == 'baseline'
