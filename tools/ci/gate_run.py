@@ -138,12 +138,14 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
         # setup-python exports loader overrides; proof capture must see the actual
         # installed interpreter rather than an ambient dynamic-loader override.
         environment = {name: value for name, value in environment.items() if not name.startswith('LD_')}
+        environment['GATE_ASSIGNED_FILES'] = json.dumps(files)
+        environment['PYTHONPATH'] = str(Path(__file__).resolve().parent) + os.pathsep + environment.get('PYTHONPATH', '')
         junit.parent.mkdir(parents=True, exist_ok=True)
         profile = ['-X', 'importtime'] if os.environ.get('GATE_PROFILE_STARTUP') == '1' else []
         command = [sys.executable, *profile, '-m', 'pytest', '-n', str(workers), '--dist=loadfile',
-                   '-q', '-ra', '--junitxml=' + str(junit), '-o', 'junit_family=xunit1',
+                   '-q', '-ra', '-p', 'gate_collect', '--rootdir=' + str(root), '--junitxml=' + str(junit), '-o', 'junit_family=xunit1',
                    *('--deselect=' + target for target in plan['deselect']
-                     if target.split('::', 1)[0] in files), *files]
+                     if target.split('::', 1)[0] in files), str(root)]
         print('GATE_PYTEST_START', flush=True)
         result = execute(command, cwd=root, env=environment, check=False)
         print('GATE_PYTEST_END', flush=True)

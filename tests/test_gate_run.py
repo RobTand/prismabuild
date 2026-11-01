@@ -45,7 +45,8 @@ def test_completed_pytest_writes_a_final_verdict(tmp_path, code, verdict):
     command, kwargs = calls[0]
     assert command[command.index('-n') + 1] == '5'
     assert '--deselect=tests/test_one.py::test_bad' in command
-    assert command[-1] == 'tests/test_one.py'
+    assert json.loads(kwargs['env']['GATE_ASSIGNED_FILES']) == ['tests/test_one.py']
+    assert command[-1] == str(tmp_path)
     assert kwargs['env']['PRISMABUILD_TEST_TIMEOUT_S'] == '300'
     assert kwargs['env']['OMP_NUM_THREADS'] == kwargs['env']['OPENBLAS_NUM_THREADS'] == '1'
 
@@ -170,7 +171,7 @@ def test_long_files_start_first_without_changing_assigned_coverage(tmp_path):
     files = ['tests/test_a_short.py', 'tests/test_b_medium.py', 'tests/test_z_long.py']
     observed = []
     def execute(command, **kwargs):
-        observed.extend(command[-3:])
+        observed.extend(json.loads(kwargs['env']['GATE_ASSIGNED_FILES']))
         (tmp_path / 'junit.xml').write_text('<testsuites>' + ''.join(
             f'<testcase file="{path}" classname="{path[:-3].replace("/", ".")}" '
             'name="test_value" time="1"/>' for path in files) + '</testsuites>')
