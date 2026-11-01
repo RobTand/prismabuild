@@ -261,3 +261,75 @@ def test_regular_dependency_bytecode():
                            root=root, output=root / 'result.json', junit=root / 'junit.xml',
                            workers=1, affinity={0})
     assert code == 0
+
+
+def test_assigned_collection_node_ids_match_plain_pytest(tmp_path):
+    import subprocess
+    import sys
+
+    sources = {
+        'pytest.ini': '[pytest]\n',
+        'conftest.py': """import json
+import os
+from pathlib import Path
+import pytest
+
+@pytest.fixture(params=['root-a', 'root-b'])
+def root_value(request):
+    return request.param
+
+
+def pytest_collection_finish(session):
+    Path(os.environ['COLLECTION_REPORT']).write_text(
+        json.dumps(sorted(item.nodeid for item in session.items)))
+""",
+        'tests/nested/conftest.py': """import pytest
+
+@pytest.fixture(params=['nested-a', 'nested-b'])
+def nested_value(request, root_value):
+    return root_value, request.param
+
+
+def pytest_generate_tests(metafunc):
+    if 'generated' in metafunc.fixturenames:
+        metafunc.parametrize('generated', [3, 7], ids=['three', 'seven'])
+""",
+        'tests/nested/test_generated.py':
+            'def test_generated(nested_value, generated): assert generated > 0\n',
+        'tests/pkg/__init__.py': 'VALUE = 42\n',
+        'tests/pkg/sub/__init__.py': '',
+        'tests/pkg/sub/test_package.py':
+            'from .. import VALUE\ndef test_package(root_value): assert VALUE == 42\n',
+        'tests/test_with spaces.py':
+            'def test_spaces(root_value): assert root_value\n',
+        'tests/test_é.py':
+            'def test_unicode(root_value): assert root_value\n',
+    }
+    for filename, source in sources.items():
+        target = tmp_path / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source, encoding='utf-8')
+    files = ['tests/nested/test_generated.py', 'tests/pkg/sub/test_package.py',
+             'tests/test_with spaces.py', 'tests/test_é.py']
+    environment = {**os.environ, 'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1',
+                   'PYTHONPATH': str(ROOT / 'tools/ci')}
+    # An inherited -k or plugin would change both collections the same way and hide a difference.
+    for name in ('GATE_ASSIGNED_FILES', 'PYTEST_ADDOPTS', 'PYTEST_PLUGINS'):
+        environment.pop(name, None)
+    collected = []
+    for mode in ['plain', 'assigned']:
+        report = tmp_path / (mode + '.json')
+        env = {**environment, 'COLLECTION_REPORT': str(report)}
+        arguments = [str(tmp_path)]
+        if mode == 'assigned':
+            env['GATE_ASSIGNED_FILES'] = json.dumps(files)
+            arguments = ['-p', 'gate_collect', *arguments]
+        completed = subprocess.run(
+            [sys.executable, '-m', 'pytest', '--collect-only', '-q',
+             '-c', str(tmp_path / 'pytest.ini'), '--rootdir', str(tmp_path), *arguments],
+            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        collected.append(json.loads(report.read_text()))
+    plain, assigned = collected
+    assert len(plain) == 14
+    assert assigned == plain
