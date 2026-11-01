@@ -5,12 +5,15 @@ description: Submit computational work -- GPU jobs, benchmarks, builds and large
 
 # PrismaBuild execution
 
-PrismaBuild admission is for computational work: GPU jobs, benchmarks, and
-large or long-running compute; verify terminal records and CAS receipts.
+PrismaBuild admission is for exploratory work (experiments, trials,
+benchmarks, GPU work) and for placing CPU work that runs on fleet machines onto
+the machines with capacity; verify terminal records and CAS receipts.
 PrismaBuild is not the CI system. CI and integration tests run as GitHub checks
-in the Mergify merge queue on the integrated SHA. While developing, run the
-fast relevant tests in your worktree; a local run is evidence, not the merge
-gate. Merge only through the Mergify queue and never bypass required checks,
+in the Mergify merge queue on the integrated SHA. While developing, run tests
+on free remote compute (BuildBuddy or GitHub-hosted CI) or through PrismaBuild,
+and never run test suites directly on a fleet host outside PrismaBuild (Rob,
+amended 2026-11-01). A development run is evidence, not the merge gate: read
+its own verdict and logs. Merge only through the Mergify queue and never bypass required checks,
 reviews or branch protections; if a required check cannot run yet, leave the
 PR approved and report it.
 

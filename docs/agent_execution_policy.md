@@ -272,7 +272,9 @@ acknowledgement is not a passing test. Record skips and missing tooling. Install
 scoped tooling where required instead of silently skipping qualification.
 
 Read-only inspection, source edits, Git operations and submission commands may
-run on the coordinator; tests run through PrismaBuild. Do not hide work
+run on the coordinator. Tests run through PrismaBuild or on free remote compute
+(BuildBuddy, GitHub-hosted CI), never directly on a fleet host outside
+PrismaBuild. Do not hide work
 requiring admission in SSH commands, shell scripts, containers, inline Python
 or another agent to evade admission. If PrismaBuild
 cannot admit work, diagnose and repair its availability; do not silently fall
@@ -334,7 +336,7 @@ feels like a test or divides into quanta.
 This does not exempt the work *around* it. Non-vLLM GPU jobs, benchmarks, and
 large or long-running compute still require admission, including exports,
 probes or cost stages that merely run on the same box, and so do development
-tests, as the start of this policy says.
+tests that run on fleet machines, as the start of this policy says.
 
 A directly started serve remains **external load for batch admission**. It is
 outside the ledger, so no reservation accounts for the CPU, memory and GPU it
