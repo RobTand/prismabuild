@@ -504,6 +504,7 @@ def test_inventory_contention_does_not_duplicate_a_waiting_fill(sealing, tmp_pat
     else:
         cache.mkdir(mode=0o700)
     marker = tmp_path / "packs"
+    marker.touch()
     script = r'''
 import json, os, subprocess, sys
 from contextlib import contextmanager
