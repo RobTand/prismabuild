@@ -165,32 +165,44 @@ def census_manifest(root, sha, repeats, shard_count):
 
 
 def collect_census(directory, manifest, run_url, artifact_prefix=''):
-    samples = {}
-    indices = set()
+    """Keep independently validated shard observations when other shards are unavailable."""
+    samples, errors, indices = {}, [], set()
+    expected = {(arch, repeat) for arch in ARCHITECTURES for repeat in range(manifest['repeats'])}
     for entry in manifest['include']:
-        if entry['index'] in indices:
-            raise ValueError('duplicate shard index')
+        key = (entry['architecture'], entry['repeat'])
+        identity = {name: entry[name] for name in ('index', 'architecture', 'repeat', 'files')}
+        if entry['index'] in indices or key not in expected:
+            errors.append(dict(identity, stage='assignment', error='duplicate or unexpected shard identity'))
+            continue
         indices.add(entry['index'])
         source = dict(entry, index=artifact_prefix + str(entry['index']))
-        tests = nightly.collect_shards(directory, {'sha': manifest['sha'], 'include': [source]})
-        key = (entry['architecture'], entry['repeat'])
         sample = samples.setdefault(key, {'architecture': key[0], 'repeat': key[1], 'tests': {},
             'run_url': run_url, 'disk_samples': []})
-        available, inodes, tmpdir = (directory / str(source['index']) / 'disk.txt').read_text().strip().split(maxsplit=2)
-        disk = {'available_bytes': int(available), 'available_inodes': int(inodes), 'tmpdir': tmpdir,
-                'architecture': key[0], 'repeat': key[1], 'shard': entry['index'], 'run_url': run_url}
-        if disk['available_bytes'] < 0 or disk['available_inodes'] < 0 or not tmpdir.startswith('/'):
-            raise ValueError('invalid shard disk evidence')
-        sample['disk_samples'].append(disk)
+        disk = None
+        try:
+            available, inodes, tmpdir = (directory / str(source['index']) / 'disk.txt').read_text().strip().split(maxsplit=2)
+            disk = {'available_bytes': int(available), 'available_inodes': int(inodes), 'tmpdir': tmpdir,
+                    'architecture': key[0], 'repeat': key[1], 'shard': entry['index'], 'run_url': run_url}
+            if disk['available_bytes'] < 0 or disk['available_inodes'] < 0 or not tmpdir.startswith('/'):
+                raise ValueError('invalid shard disk evidence')
+            sample['disk_samples'].append(disk)
+        except (OSError, ValueError) as error:
+            disk = None
+            errors.append(dict(identity, stage='disk', error=str(error)))
+        try:
+            tests = nightly.collect_shards(directory, {'sha': manifest['sha'], 'include': [source]})
+            if sample['tests'].keys() & tests.keys():
+                raise ValueError('duplicate tests across census shards')
+        except (OSError, ValueError, KeyError, report.ET.ParseError) as error:
+            errors.append(dict(identity, stage='results', error=str(error)))
+            continue
         for row in tests.values():
             row['disk'] = disk
-        if sample['tests'].keys() & tests.keys():
-            raise ValueError('duplicate tests across census shards')
         sample['tests'].update(tests)
-    expected = {(arch, repeat) for arch in ARCHITECTURES for repeat in range(manifest['repeats'])}
-    if samples.keys() != expected:
-        raise ValueError('incomplete architecture/repeat coverage')
-    return list(samples.values())
+    for arch, repeat in sorted(expected - samples.keys()):
+        errors.append({'architecture': arch, 'repeat': repeat, 'stage': 'assignment',
+                       'error': 'incomplete architecture/repeat coverage'})
+    return {'samples': list(samples.values()), 'errors': errors, 'complete': not errors}
 
 
 def census_summary(result):
@@ -199,6 +211,10 @@ def census_summary(result):
              '', 'Full counts, excerpts and sample URLs are in the flake-census-results artifact.', '']
     if result.get('error'):
         lines += ['Incomplete: ' + report.literal_report_text(result['error']), '']
+        for error in result.get('errors', [])[:40]:
+            label = f"shard {error['index']}" if 'index' in error else f"{error['architecture']} repeat {error['repeat'] + 1}"
+            lines.append('- ' + label + ' (' + error['stage'] + '): ' + report.literal_report_text(error['error']))
+        lines.append('')
     if result['disk_samples']:
         lines += ['## Runner disk under TMPDIR before tests', '',
                   '| Architecture | Repeat | Shard | Available bytes | Available inodes | TMPDIR |',
@@ -273,11 +289,11 @@ def main(argv=None):
         return 0
     run_url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
     result = {'sha': manifest['sha'], 'complete': False, 'dry_run': args.dry_run, 'run_url': run_url}
-    try:
-        samples = collect_census(args.input, manifest, run_url, args.artifact_prefix)
-        result.update(classify_samples(samples, manifest['repeats'], manifest['quarantine']), complete=True)
-    except (OSError, ValueError, KeyError, report.ET.ParseError) as error:
-        result.update(classify_samples([], manifest['repeats'], manifest['quarantine']), error=str(error))
+    collected = collect_census(args.input, manifest, run_url, args.artifact_prefix)
+    result.update(classify_samples(collected['samples'], manifest['repeats'], manifest['quarantine']),
+                  complete=collected['complete'], errors=collected['errors'])
+    if result['errors']:
+        result['error'] = f"{len(result['errors'])} evidence errors; valid observations retained."
     result['deferred'], result['shards'] = manifest['deferred'], manifest['include']
     result['quarantine_snapshot'] = manifest['quarantine']
     api = report.GitHub.from_environment(os.environ['GITHUB_REPOSITORY'])

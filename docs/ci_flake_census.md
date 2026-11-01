@@ -6,13 +6,20 @@ independent samples per test on each architecture by default. `repeats` accepts
 every repeat. Four duration-balanced shards per architecture use the gate's
 partitioner, hosted setup and runner with four xdist workers each.
 
-The matrix permits at most four simultaneous test jobs, leaving sixteen of
-the approximate twenty hosted slots for a queue gate. It shares the nightly's
+The matrix permits at most four simultaneous test jobs. That leaves roughly
+sixteen of the account's approximate twenty hosted slots available, without
+reserving them for the merge queue. Other public CI, including TL3, may share
+that account pool. Start a manual census only when the merge queue is quiet.
+There is no weekly schedule. It shares the nightly's
 `full-suite-main` concurrency group, so a census and nightly cannot consume
 eight slots together. Runs are never cancelled to make room for a newer run.
 Each repeat uses fresh jobs. A failing test is a sample, never an infrastructure
 retry. Missing setup, runner or artifact evidence makes the census incomplete
-and prevents issue filing.
+and prevents issue filing. Completed shards retain their counts, excerpts
+and disk measurements. Missing or interrupted shards contribute missing
+observations to IDs seen in other samples; unavailable file assignments remain
+listed in the artifact when no sample discovered their node IDs. A missing disk
+record marks the report incomplete but preserves valid JUnit observations.
 
 The observed population is the gate's eligible CPU files plus its quarantined
 and cost-excluded tests. They must execute for quarantine retirement evidence.
@@ -23,6 +30,11 @@ quarantine snapshot from the tested main SHA. The census never changes policy.
 The classifier counts passed, failed, skipped and missing observations per
 architecture. A flake requires both pass and fail in repeats on the same
 architecture. Stable failures and architecture differences are separate groups.
+`unresolved` means that the available samples do not establish any of those
+patterns across both architectures. For example, a node that fails every repeat
+on x64 but is absent on arm64 remains unresolved: inspect its x64 failures and
+arm64 missing counts rather than interpreting the label as a pass. Only nodes
+that both pass and fail on the same architecture qualify for new flake issues.
 Skipped or absent tests never count as passes. Quarantined nodes retain all
 counts but do not file issues; a node passing every sample on both architectures
 is a retirement candidate for its named owner, not automatically unquarantined.

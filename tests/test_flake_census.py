@@ -123,8 +123,10 @@ def test_collect_refuses_partial_shards_instead_of_inventing_samples(tmp_path):
         'files': ['tests/a.py', 'tests/b.py'], 'pytest_exit_code': 2, 'budget': {'status': 'unavailable'}}))
     (folder / 'junit.xml').write_text('<testsuite><testcase file="tests/a.py" classname="tests.a" '
         'name="test_x"><failure>bad</failure></testcase></testsuite>')
-    with pytest.raises(ValueError, match='complet|cover'):
-        census.collect_census(tmp_path, manifest, 'run')
+    collected = census.collect_census(tmp_path, manifest, 'run')
+    assert collected['complete'] is False
+    assert collected['samples'][0]['tests'] == {}
+    assert any('complete runner record' in error['error'] for error in collected['errors'])
 
 
 def test_plan_uses_shared_partition_and_covers_both_architectures_every_repeat(tmp_path, monkeypatch):
@@ -212,7 +214,9 @@ def test_collection_retains_each_shards_own_disk_evidence(tmp_path):
                     f'classname="tests.test_{shard}" name="test_x"/></testsuite>')
                 (folder / 'disk.txt').write_text(f'{available} 10000 /home/rob/pbt17\n')
     manifest = dict(sha='sha', repeats=2, include=entries)
-    samples = census.collect_census(tmp_path, manifest, 'run')
+    collected = census.collect_census(tmp_path, manifest, 'run')
+    assert collected['complete'] is True
+    samples = collected['samples']
     assert len(samples) == 4
     for sample in samples:
         for shard, available in enumerate([13400000000, 42000000000]):
@@ -220,8 +224,10 @@ def test_collection_retains_each_shards_own_disk_evidence(tmp_path):
             assert row['disk']['available_bytes'] == available
             assert row['disk']['tmpdir'] == '/home/rob/pbt17'
     (tmp_path / '0/disk.txt').unlink()
-    with pytest.raises(OSError):
-        census.collect_census(tmp_path, manifest, 'run')
+    collected = census.collect_census(tmp_path, manifest, 'run')
+    assert collected['complete'] is False
+    assert sum(len(sample['tests']) for sample in collected['samples']) == 8
+    assert collected['errors'][0]['stage'] == 'disk'
 
 
 def test_reproducer_preserves_literal_node_id_without_mentions_or_shell_expansion():
