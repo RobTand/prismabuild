@@ -221,16 +221,18 @@ def test_failed_result_refuses_foreign_generation_and_replacement(consumer_world
     with pytest.raises(action_result.ActionResultError):
         action_result.read_verified_ending_result(consumer_world.queue, key,
             published_unix=record["published_unix"] + 1, attempt=1)
-    original = action_result.immutable_files.file_identity_nofollow
-    def replace_after_log(log_path, **kwargs):
-        raw = original(log_path, **kwargs)
-        if str(log_path).endswith(".stdout." + pb.raw_sha256(b"failed command output\n") + ".log"):
+    original = action_result._stream_verified_attempt_log
+    replaced = []
+    def replace_after_log(queue_root, descriptor, consume):
+        original(queue_root, descriptor, consume)
+        if descriptor["path"].endswith(".stdout." + pb.raw_sha256(b"failed command output\n") + ".log"):
             path.write_bytes(pb._canonical_file_bytes({**record, "published_unix": record["published_unix"] + 1}))
-        return raw
-    monkeypatch.setattr(action_result.immutable_files, "file_identity_nofollow", replace_after_log)
+            replaced.append(descriptor["path"])
+    monkeypatch.setattr(action_result, "_stream_verified_attempt_log", replace_after_log)
     with pytest.raises(action_result.ActionResultError):
         action_result.read_verified_ending_result(consumer_world.queue, key,
             published_unix=record["published_unix"], attempt=1)
+    assert len(replaced) == 1
 
 
 def test_failed_ending_can_carry_its_exact_published_receipt(consumer_world, capsys):
