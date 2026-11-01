@@ -109,6 +109,7 @@ def _write_budget_warnings(junit, warnings):
 def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
              files: list[str] | None = None, workers: int | None = None,
              execute=subprocess.run, affinity=None) -> int:
+    print('GATE_PREFLIGHT_START', flush=True)
     record = {'schema': 'prismabuild.gate_result.v1',
               'population_version': plan.get('population', {}).get('version'),
               'mode': plan.get('mode'), 'base_sha': plan.get('base_sha'), 'head_sha': plan.get('head_sha'), 'files': [], 'verdict': None, 'pytest_exit_code': None}
@@ -138,11 +139,14 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
         # installed interpreter rather than an ambient dynamic-loader override.
         environment = {name: value for name, value in environment.items() if not name.startswith('LD_')}
         junit.parent.mkdir(parents=True, exist_ok=True)
-        command = [sys.executable, '-m', 'pytest', '-n', str(workers), '--dist=loadfile',
+        profile = ['-X', 'importtime'] if os.environ.get('GATE_PROFILE_STARTUP') == '1' else []
+        command = [sys.executable, *profile, '-m', 'pytest', '-n', str(workers), '--dist=loadfile',
                    '-q', '-ra', '--junitxml=' + str(junit), '-o', 'junit_family=xunit1',
                    *('--deselect=' + target for target in plan['deselect']
                      if target.split('::', 1)[0] in files), *files]
+        print('GATE_PYTEST_START', flush=True)
         result = execute(command, cwd=root, env=environment, check=False)
+        print('GATE_PYTEST_END', flush=True)
         record['pytest_exit_code'] = result.returncode
         record['verdict'] = 'fail' if result.returncode == 1 else None
         try:

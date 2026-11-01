@@ -45,6 +45,42 @@ def shards(files: Sequence[str], durations: Mapping[str, float], count: int,
 
 
 
+
+# Stable-path compatibility fixtures hide /opt and need a namespace-capable bwrap.
+# The hosted dependency probes and full canaries qualify this set on both arches.
+SANDBOX_TEST_FILES = frozenset({
+    'tests/test_record_compatibility.py',
+    'tests/test_current_receipt_compat_composition.py',
+})
+# CPU-equivalent cost: four workers times the observed per-slot setup wall time.
+SANDBOX_SETUP_SECONDS = 40.0
+
+
+def setup_shards(files: Sequence[str], durations: Mapping[str, float], count: int,
+                 *, unknown_seconds: float, setup_seconds: float = SANDBOX_SETUP_SECONDS) -> list[dict]:
+    """Co-locate namespace fixtures and charge their shared setup only once.
+
+    The original shards() contract remains unchanged for nightly consumers.
+    Setup costs use the same CPU-equivalent seconds as file durations.
+    """
+    baseline = shards(files, durations, count, unknown_seconds=unknown_seconds)
+    overhead = _cost(setup_seconds)
+    sandbox = sorted(set(files) & SANDBOX_TEST_FILES)
+    if not sandbox:
+        return [dict(row, sandbox=False) for row in baseline]
+    representative = sandbox[0]
+    grouped = [path for path in files if path not in sandbox[1:]]
+    costs = dict(durations)
+    costs[representative] = sum(durations.get(path, unknown_seconds) for path in sandbox) + overhead
+    result = shards(grouped, costs, count, unknown_seconds=unknown_seconds)
+    for row in result:
+        row['sandbox'] = representative in row['files']
+        if row['sandbox']:
+            row['files'] = sorted([*row['files'], *sandbox[1:]])
+        row['unknown_files'] = sorted(path for path in row['files'] if path not in durations)
+    return result
+
+
 def selection_shard_count(files: Sequence[str], durations: Mapping[str, float], maximum: int,
                           *, workers: int, single_shard_seconds: float) -> int:
     """Keep small PRs on one slot; larger selections share the full gate matrix."""
@@ -67,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     common.add_argument('--durations', type=Path, required=True)
     common.add_argument('--shards', type=int, required=True)
     common.add_argument('--unknown-seconds', type=float)
+    common.add_argument('--setup-aware', action='store_true', help='gate only: group sandbox fixtures and charge their setup')
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     matrix = commands.add_parser('matrix', parents=[common])
@@ -89,7 +126,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == 'matrix' and args.single_shard_seconds is not None:
             args.shards = selection_shard_count(files, durations, args.shards, workers=args.workers,
                                                 single_shard_seconds=args.single_shard_seconds)
-        result = shards(files, durations, args.shards, unknown_seconds=unknown)
+        if args.command == 'matrix' and args.single_shard_seconds is not None and args.setup_aware:
+            args.shards = min(args.shards, max(1, len(files) - max(0, len(set(files) & SANDBOX_TEST_FILES) - 1)))
+        balance = setup_shards if args.setup_aware else shards
+        result = balance(files, durations, args.shards, unknown_seconds=unknown)
         if args.command == 'matrix':
             runners = [name.strip() for name in args.runners.split(',')]
             if not all(runners):
@@ -99,6 +139,10 @@ def main(argv: list[str] | None = None) -> int:
                       'include': [{'index': row['index'], 'runner': runners[row['index'] % len(runners)],
                                    'files': len(row['files']), 'estimated_seconds': row['estimated_seconds']}
                                   for row in result]}
+            if args.setup_aware:
+                output.update(partition='sandbox-v1', setup_seconds=SANDBOX_SETUP_SECONDS)
+                for item, row in zip(output['include'], result):
+                    item['sandbox'] = row['sandbox']
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(output, indent=2) + '\n')
         else:
