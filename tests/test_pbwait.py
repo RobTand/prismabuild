@@ -96,11 +96,43 @@ marker = Path({str(marker)!r})
 os.mkfifo(blocker)
 real_listdir = pbwait.os.listdir
 pbwait.slurm_lane.resolve_recorded = lambda *_args, **_kwargs: []
-pbwait.PREFIX_RESOLUTION_READ_TIMEOUT_S = 0.05
+# Expire the real bounded-reader path at an explicit child event, never
+# by hoping that Python and the marker write fit a wall-clock window.
+from types import SimpleNamespace
+from prismabuild import _bounded_reader as reader
+ready_read, ready_write = os.pipe()
+real_fork = os.fork
+real_isolate = reader._isolate_child_fds
+class Deadline:
+    bounded = True
+    def __init__(self, timeout_s):
+        self.timeout_s = timeout_s
+    def remaining(self):
+        return self.timeout_s
+
+def fork():
+    pid = real_fork()
+    os.close(ready_read if pid == 0 else ready_write)
+    return pid
+
+def isolate(write_fd, *, keep_fds=()):
+    return real_isolate(write_fd, keep_fds=(*keep_fds, ready_write))
+
+def expire_after_marker(*_args):
+    assert os.read(ready_read, 1) == b"E", "the private reader never entered"
+    return [], [], []
+
+reader.Deadline = Deadline
+reader.os.fork = fork
+reader._isolate_child_fds = isolate
+reader.select = SimpleNamespace(select=expire_after_marker)
 def blocked(path):
     if Path(path) == queue.records.dir(pool.record_store.READY):
-        marker.write_text("entered", encoding="utf-8")
-        fd = os.open(blocker, os.O_RDONLY)
+        # Force cancellation between the old marker's truncate and write.
+        with marker.open("w", encoding="utf-8") as stream:
+            os.write(ready_write, b"E")
+            fd = os.open(blocker, os.O_RDONLY)
+            stream.write("entered")
         try:
             return []
         finally:
@@ -110,11 +142,10 @@ pbwait.os.listdir = blocked
 pbwait.resolve_key(queue, "a", lane_root=Path({str(lane_root)!r}))
 '''
     try:
-        # A hang guard, not the property: 4.5 s leaves a loaded box time to
-        # start Python and fork, and stays under the 5 s production budget, so a
-        # child that ignored the 0.05 s override still fails (#1170).
+        # A generous failure guard only. The private-reader event above
+        # controls expiry; elapsed wall time is not an assertion.
         completed = subprocess.run([sys.executable, "-c", code], text=True,
-                                   capture_output=True, timeout=4.5, check=False)
+                                   capture_output=True, timeout=60, check=False)
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         pytest.fail("prefix resolution exceeded its reader budget; marker="
