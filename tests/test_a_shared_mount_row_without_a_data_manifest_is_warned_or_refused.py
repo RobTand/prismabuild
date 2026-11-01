@@ -25,6 +25,7 @@ from submission_support import patch_store
 
 import json
 from pathlib import Path
+import shutil
 import socket
 import sys
 
@@ -53,6 +54,22 @@ def fleet_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.01)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     return _checkout(tmp_path), _queue(tmp_path)
+
+
+@pytest.fixture()
+def host_without_a_bare_python(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the host the fleet's: no executable named ``python`` on any PATH.
+
+    A GitHub-hosted runner ships ``/usr/bin/python``; the fleet's workers do
+    not, so a logical request whose argv names a bare ``python`` was accepted
+    on the first and refused on the second (#2437).  Pinning the absence makes
+    the outcome the contract's, not the host's.
+    """
+
+    which = shutil.which
+    monkeypatch.setattr(
+        shutil, "which",
+        lambda name, *args, **kwargs: None if name == "python" else which(name, *args, **kwargs))
 
 
 def _manifest(tmp_path: Path, rows) -> str:
@@ -270,6 +287,7 @@ def test_require_data_manifest_accepts_a_row_that_names_its_bytes(
         "submitted"]
 
 
+@pytest.mark.usefixtures("host_without_a_bare_python")
 def test_require_data_manifest_refuses_a_logical_requests_common_before_it_is_cut(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fleet_paths,
 ) -> None:
@@ -279,7 +297,7 @@ def test_require_data_manifest_refuses_a_logical_requests_common_before_it_is_cu
     monkeypatch.setattr(submit_core, "SHARED_ROOT", tmp_path / "shared")
     request = _logical_request(common=_logical_common(
         data_manifest=None,
-        argv=["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER,
+        argv=[sys.executable, "collect.py", dc.TASK_BATCH_PLACEHOLDER,
               "--config", "local.json"],
     ))
     manifest = _manifest(tmp_path, request)
@@ -295,18 +313,43 @@ def test_require_data_manifest_refuses_a_logical_requests_common_before_it_is_cu
     assert not (tmp_path / "cas" / dc.DECOMPOSITIONS).exists()
 
 
+@pytest.mark.usefixtures("host_without_a_bare_python")
 def test_require_data_manifest_passes_a_common_half_that_names_its_bytes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fleet_paths,
 ) -> None:
     """The default logical request already names its bytes and is accepted."""
 
     monkeypatch.setattr(submit_core, "SHARED_ROOT", tmp_path / "shared")
-    request = _logical_request()
+    request = _logical_request(common=_logical_common(
+        argv=[sys.executable, "collect.py", dc.TASK_BATCH_PLACEHOLDER]))
     manifest = _manifest(tmp_path, request)
 
     assert pbcampaign.load_manifest(
         manifest, transport="pool", require_data_manifest=True,
     ) == dc.validate_logical_request(request)
+
+
+@pytest.mark.usefixtures("host_without_a_bare_python")
+def test_a_logical_request_naming_a_bare_interpreter_the_host_lacks_is_refused_by_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fleet_paths,
+) -> None:
+    """Portable placement seals the interpreter the submitting box resolves.
+
+    A bare name that no declared PATH entry holds cannot be sealed, so the
+    request is refused at load, naming the name and the PATH, ahead of the
+    data-manifest rule.  The refusal is the contract (#2437): the logical
+    tests above declare an absolute interpreter instead of borrowing the
+    host's.
+    """
+
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", tmp_path / "shared")
+    manifest = _manifest(tmp_path, _logical_request())
+
+    with pytest.raises(pbcampaign.ManifestError) as refused:
+        pbcampaign.load_manifest(
+            manifest, transport="pool", require_data_manifest=True)
+    message = str(refused.value)
+    assert "cannot be resolved from the declared PATH: 'python'" in message, message
 
 
 # --------------------------------------------------------------------------

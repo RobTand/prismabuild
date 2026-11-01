@@ -235,38 +235,6 @@
         1997
       ],
       "reason": "The archival-replay capability requires retained runtime inputs absent from the gate image. Archival TMPDIR qualification is tracked by #1997."
-    },
-    {
-      "target": "tests/test_a_shared_mount_row_without_a_data_manifest_is_warned_or_refused.py::test_require_data_manifest_refuses_a_logical_requests_common_before_it_is_cut",
-      "issue": 2437,
-      "reason": "Failed in all three inventory repeats at 22e9d752; logical-plan fixture or contract needs diagnosis.",
-      "evidence": {
-        "source_commit": "22e9d75298608078c91d331a646f6446352577f6",
-        "outcomes": {
-          "failed": 3
-        },
-        "action_keys": [
-          "4db86fd3f2666e25b62f69536b0e6e314b97c53653ee6844c599efabbbc72c57",
-          "442443ad95ff7c560bac2b15b6a5e591e6aea3b08c1f72b4710a9ec395d251cf",
-          "061f1fde31b6f802e391d2a5d36fec3f8a76ae0e9164b5ae72cc754eb1706217"
-        ]
-      }
-    },
-    {
-      "target": "tests/test_a_shared_mount_row_without_a_data_manifest_is_warned_or_refused.py::test_require_data_manifest_passes_a_common_half_that_names_its_bytes",
-      "issue": 2437,
-      "reason": "Failed in all three inventory repeats at 22e9d752; logical-plan fixture or contract needs diagnosis.",
-      "evidence": {
-        "source_commit": "22e9d75298608078c91d331a646f6446352577f6",
-        "outcomes": {
-          "failed": 3
-        },
-        "action_keys": [
-          "4db86fd3f2666e25b62f69536b0e6e314b97c53653ee6844c599efabbbc72c57",
-          "442443ad95ff7c560bac2b15b6a5e591e6aea3b08c1f72b4710a9ec395d251cf",
-          "061f1fde31b6f802e391d2a5d36fec3f8a76ae0e9164b5ae72cc754eb1706217"
-        ]
-      }
     }
   ],
   "cost_exclusions": [],
