@@ -455,17 +455,15 @@
     },
     {
       "target": "tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned",
-      "issue": 2436,
-      "reason": "Failed in all three inventory repeats at 22e9d752; PR #2422 is a candidate repair.",
+      "issue": 2516,
+      "reason": "Passes since #2515 reconciled the pins, but took 62.462 s on a hosted gate shard against the 30 s limit, and the shrink-only budget cannot add an exception. Returns to the gate when the audit fits the budget (#2516).",
       "evidence": {
-        "source_commit": "22e9d75298608078c91d331a646f6446352577f6",
         "outcomes": {
-          "failed": 3
+          "passed": 1,
+          "failed_budget": 1
         },
-        "action_keys": [
-          "e04bdecf4113a7a86081326703358fe8df3901a630075b129e936dffbd903249",
-          "4d782f428f08fe3aaca8fb9caccf0aa4b183f38317c9016ed6eb01c57f996030",
-          "e2ffd364b6ee1fbc737850fd97b1b999e9854f75a84b7af5113fd2db1eb7e4bc"
+        "hosted_runs": [
+          "https://github.com/RobTand/prismabuild/actions/runs/41331895355"
         ]
       }
     },
