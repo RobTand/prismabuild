@@ -222,3 +222,17 @@ def test_collection_retains_each_shards_own_disk_evidence(tmp_path):
     (tmp_path / '0/disk.txt').unlink()
     with pytest.raises(OSError):
         census.collect_census(tmp_path, manifest, 'run')
+
+
+def test_reproducer_preserves_literal_node_id_without_mentions_or_shell_expansion():
+    import subprocess
+    node = "tests/a.py::test_x[" + chr(64) + "owner'`$(printf injected)]"
+    result = dict(census.classify_samples(samples_for({arch: [{node: 'passed'}, {node: 'failed'}]
+        for arch in ['x64', 'arm64']}), 2, []), sha='abc', complete=True, run_url='run')
+    body = census.census_issue_plans(result, [])[0]['body']
+    command = body.split('main SHA above:\n\n    ', 1)[1].strip()
+    assert chr(64) + 'owner' not in command
+    # Parse the proposed command as arguments without running pbtest itself.
+    parsed = subprocess.run(['bash', '-c', 'set -- ' + command + '; printf "%s" "${!#}"'],
+                            check=True, capture_output=True, text=True, timeout=60)
+    assert parsed.stdout == node
