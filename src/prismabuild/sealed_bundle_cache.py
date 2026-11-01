@@ -29,7 +29,10 @@ def _default_bundle_cache_root() -> Path:
 CACHE_ROOT = _default_bundle_cache_root()
 MAX_ENTRIES = 128
 MAX_BYTES = 2 * 1024**3
-INVENTORY_WAIT_S = 1.0
+# Ordinary callers' budget for each inventory acquisition. Sixteen concurrent
+# 48 MiB fills on a loaded host waited up to 1.5 s (#2525); expiring inside
+# that repacks a bundle (36-46 s). Ten seconds caps what a stopped owner costs.
+INVENTORY_WAIT_S = 10.0
 _ADDRESS = re.compile(r"[0-9a-f]{64}")
 
 

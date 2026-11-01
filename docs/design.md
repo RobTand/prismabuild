@@ -3995,7 +3995,13 @@ without the member or the ordinary package import boundary.
   The first hit probe opens metadata and payload descriptors under a nonblocking
   shared inventory flock. After taking the address lock, an ordinary caller
   waits for that shared inventory lock before treating the entry as absent,
-  with a one-second acquisition budget using the existing monotonic Deadline.
+  with a ten-second acquisition budget using the existing monotonic Deadline.
+  Bookkeeping holds are not always brief: with sixteen concurrent 48 MiB fills
+  on dl380g10 at load 52, one reservation held inventory for 1.41 s, and
+  ordinary waits reached 1.50 s. A single publication alone held it for 0.89 s.
+  A one-second budget expired inside that contention and repacked bundles.
+  Ten seconds is over six times the worst measured wait, and it is under a
+  quarter of a 36-46 s bundle pack, which is the most a stopped owner can add.
   Both release inventory before copying and verification. Open
   descriptors survive eviction. Four warm deadline readers can all hit.
   Exclusive inventory locking covers only bookkeeping, space reservations,
