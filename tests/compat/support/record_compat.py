@@ -397,7 +397,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
     if namespace:
         command = namespace + ["--"] + command
     try:
-        process = subprocess.run(with_prelude(command, isolated_prelude()), input=json.dumps(request),
+        process = subprocess.run(command, input=json.dumps(request),
                                  text=True, env=environment,
                                  capture_output=True, timeout=45)
     except (OSError, subprocess.TimeoutExpired) as exc:

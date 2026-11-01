@@ -10,7 +10,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
-from record_compat import with_prelude
+import queue_space_support as support
+from record_compat import _ARCHIVAL_BOOTSTRAP, invoke, isolated_prelude, with_prelude
 
 
 DRIVER = "/support/compat_isolate.py"
@@ -39,3 +40,22 @@ def test_a_namespaced_launch_keeps_its_wrapper_arguments():
 def test_no_prelude_leaves_the_command_alone():
     command = ["/py", "-I", "-S", DRIVER, *ARGS]
     assert with_prelude(command, "") is command
+
+
+def test_invoke_runs_the_prelude_in_the_child_before_the_driver(tmp_path, monkeypatch):
+    # Delivery, not content: a prelude that exits proves the launch ran it.
+    monkeypatch.setattr(support, "HOST_PRELUDE", "raise SystemExit(97)\n")
+    result = invoke(ROOT, "shape-table/unhashed", tmp_path / "store")
+    assert result["process_returncode"] == 97
+    assert "driver_sha256" not in result
+
+
+def test_the_real_preludes_compile_in_both_launch_shapes():
+    plain = ["/py", "-I", "-S", DRIVER, *ARGS]
+    archival = ["/old/py", "-I", "-S", "-c", _ARCHIVAL_BOOTSTRAP, "{expected}", DRIVER, *ARGS]
+    prelude = isolated_prelude()
+    assert prelude
+    for command in (plain, archival):
+        wrapped = with_prelude(command, prelude)
+        assert wrapped[3] == "-c"
+        compile(wrapped[4], "<bootstrap>", "exec")
