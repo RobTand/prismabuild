@@ -95,15 +95,15 @@ def test_quarantine_and_cost_exclusions_are_owned_and_node_ids_stay_precise(tmp_
     root = tree(tmp_path)
     result = select.create_plan(root, ['src/prismabuild/pool.py'],
         durations={'source': 'fixture', 'files': {'tests/test_fast.py': 3, 'tests/test_direct.py': 7,
-            'tests/test_nested.py': 2, 'tests/test_pair.py': 4}},
+            'tests/test_nested.py': 2, 'tests/test_pair.py': 4, 'tests/test_indirect.py': 2}},
         quarantine={'entries': [
             {'target': 'tests/test_direct.py::test_bad[param]', 'reason': 'observed flake', 'issue': 9001},
             {'target': 'tests/test_nested.py', 'reason': 'broken at baseline', 'issue': 9001}],
             'cost_exclusions': [{'target': 'tests/test_pair.py', 'reason': 'measured cost', 'issue': 9001}]})
-    assert selected(result) == {'tests/test_fast.py', 'tests/test_direct.py'}
+    assert selected(result) == {'tests/test_fast.py', 'tests/test_direct.py', 'tests/test_indirect.py'}
     assert result['deselect'] == ['tests/test_direct.py::test_bad[param]']
     assert result['estimate']['wall_seconds'] == 7
-    assert result['estimate']['serial_seconds'] == 10
+    assert result['estimate']['serial_seconds'] == 12
     assert result['population']['version']
     assert {(row['path'], row['issue']) for row in result['deferred']} >= {
         ('tests/test_nested.py', 9001), ('tests/test_pair.py', 9001),
