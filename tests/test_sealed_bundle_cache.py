@@ -604,6 +604,103 @@ print(snapshot["input"]["sha256"])
             control.close()
 
 
+@pytest.mark.parametrize("stage", ("read", "reserve", "publish"))
+def test_stuck_inventory_falls_back_for_distinct_ordinary_callers(sealing, tmp_path, stage):
+    checkout, cache, _, _ = sealing
+    cache.mkdir(mode=0o700)
+    marker = tmp_path / "packs"
+    script = r'''
+import json, os, subprocess, sys
+from contextlib import contextmanager
+from multiprocessing.connection import Connection
+from pathlib import Path
+from types import SimpleNamespace
+from prismabuild import core, _bounded_reader, sealed_bundle_cache as cache, submission
+checkout, store, marker, stage, role = sys.argv[1:6]
+control = Connection(int(sys.argv[6]))
+os.statvfs = lambda path: os.statvfs_result(tuple(json.loads(sys.argv[7])))
+clock = [0.0]
+_bounded_reader.time = SimpleNamespace(monotonic=lambda: clock[0])
+run, lock = subprocess.run, cache._bundle_cache_lock
+def observed(args, **kwargs):
+    if "pack-objects" in args:
+        fd = os.open(marker, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        os.write(fd, (role + "\n").encode())
+        os.close(fd)
+    return run(args, **kwargs)
+subprocess.run = observed
+counts = {False: 0, True: 0}
+@contextmanager
+def gated(path, *, nonblocking=False, shared=False, **kwargs):
+    if path.name == ".inventory":
+        counts[shared] += 1
+        selected = ((stage == "read" and shared and counts[shared] == 2)
+                    or (not shared and counts[shared] == {"reserve": 2, "publish": 3}.get(stage)))
+        if selected:
+            control.send("ready")
+            assert control.recv() == "held"
+            with lock(path, nonblocking=True, shared=shared) as probe:
+                assert probe is None, "parent must still own inventory"
+            if kwargs.get("deadline") is None:
+                control.send("unbounded")
+                control.recv()  # Parent diagnoses the unbounded call, then kills us.
+                raise AssertionError("unbounded inventory wait was released")
+            control.send("bounded")
+            assert control.recv() == "expire"
+            clock[0] += 1000000
+    with lock(path, nonblocking=nonblocking, shared=shared, **kwargs) as locked:
+        yield locked
+cache._bundle_cache_lock = gated
+snapshot = submission.snapshot_checkout(Path(checkout), cas=core.PrismaBuildCAS(Path(store)),
+                                        stamp_name="caller", stamp_payload=role)
+control.send(("finished", snapshot["input"]["sha256"]))
+'''
+    controls, children = [], []
+    try:
+        for role in ("left", "right"):
+            parent, child = multiprocessing.Pipe()
+            controls.append(parent)
+            try:
+                process = subprocess.Popen([sys.executable, "-c", script, str(checkout),
+                    str(tmp_path / ("cas-" + role)), str(marker), stage, role,
+                    str(child.fileno()), json.dumps(_AMPLE_VFS)], pass_fds=(child.fileno(),),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    env={**os.environ, "PYTHONPATH": str(Path(submission.__file__).resolve().parents[1])})
+                children.append(process)
+            finally:
+                child.close()
+        for control in controls:
+            assert control.poll(90), "caller did not reach inventory checkpoint"
+            assert control.recv() == "ready"
+        with cache_module._bundle_cache_lock(cache / ".inventory"):
+            for control in controls:
+                control.send("held")
+            for control in controls:
+                assert control.poll(90), "caller did not report its inventory wait"
+                assert control.recv() == "bounded", "ordinary caller entered an unbounded inventory wait"
+            for control in controls:
+                control.send("expire")
+            digests = []
+            for control in controls:
+                assert control.poll(90), "ordinary caller did not finish while inventory remained held"
+                result, digest = control.recv()
+                assert result == "finished"
+                digests.append(digest)
+            for child in children:
+                _, stderr = child.communicate(timeout=90)
+                assert child.returncode == 0, stderr
+            assert len(set(digests)) == 2
+            assert sorted(marker.read_text().splitlines()) == ["left", "right"]
+            assert not list(cache.glob("*/bundle"))
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.communicate(timeout=90)
+        for control in controls:
+            control.close()
+
+
 def test_distinct_addresses_with_one_prefix_never_serialize(tmp_path, monkeypatch):
     cache = tmp_path / "cache"
     monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", str(cache))
