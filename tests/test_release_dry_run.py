@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import importlib.metadata
 import importlib.util
 import io
 from pathlib import Path
@@ -111,12 +112,36 @@ def test_invalid_candidate_does_not_mutate_source_or_build(tmp_path, monkeypatch
     b"[console_scripts]\nprismabuild = prismabuild.other:main\n",
     b"[console_scripts]\nprismabuild = prismabuild.core:main\nprismabuild = prismabuild.core:main\n",
     b"prismabuild = prismabuild.core:main\n",
-], ids=["wrong-group", "only-in-another-group", "wrong-target", "duplicate-key", "no-group"])
+    b"[DEFAULT]\nprismabuild = prismabuild.core:main\n[console_scripts]\n",
+    b"[DEFAULT]\nprismabuild = prismabuild.core:main\n[console_scripts]\nother = prismabuild.core:main\n",
+], ids=["wrong-group", "only-in-another-group", "wrong-target", "duplicate-key", "no-group",
+        "inherited-from-default", "inherited-beside-another-script"])
 def test_cli_entry_point_must_be_the_console_script(tmp_path, entry_points):
     # A RECORD-consistent wheel whose prismabuild line sits outside
     # [console_scripts], or points elsewhere, installs no prismabuild command.
     with pytest.raises(ValueError, match="entry point"):
         release.validate_wheel(wheel_fixture(tmp_path, entry_points=entry_points), "0.1.0")
+
+
+@pytest.mark.parametrize("entry_points", [
+    VALID_ENTRY_POINTS,
+    b"[console_scripts]\nprismabuild=prismabuild.core:main\n[gui_scripts]\nprismabuild-gui = prismabuild.core:main\n",
+    b"[gui_scripts]\nprismabuild = prismabuild.core:main\n",
+    b"[console_scripts]\nprismabuild = prismabuild.other:main\n",
+    b"[DEFAULT]\nprismabuild = prismabuild.core:main\n[console_scripts]\n",
+    b"[DEFAULT]\nprismabuild = prismabuild.core:main\n[console_scripts]\nother = prismabuild.core:main\n",
+], ids=["valid", "valid-beside-gui", "wrong-group", "wrong-target", "inherited-from-default",
+        "inherited-beside-another-script"])
+def test_the_console_script_check_agrees_with_importlib_metadata(tmp_path, entry_points):
+    # Installers read entry_points.txt with importlib.metadata's parser, which has
+    # no [DEFAULT] inheritance. A name only inherited there installs no command.
+    dist_info = tmp_path / "prismabuild-0.1.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "entry_points.txt").write_bytes(entry_points)
+    installed = [entry.value for entry in importlib.metadata.PathDistribution(dist_info).entry_points
+                 if entry.group == "console_scripts" and entry.name == "prismabuild"]
+    accepted = release.console_script(entry_points.decode()) == "prismabuild.core:main"
+    assert accepted == (installed == ["prismabuild.core:main"])
 
 
 def test_other_entry_point_groups_may_coexist(tmp_path):
