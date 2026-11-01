@@ -8,17 +8,20 @@ from pathlib import Path
 import subprocess
 import sys
 import tarfile
+from functools import lru_cache
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
-from wire_inventory import audit, field_policies, inventory_metadata, source_paths, validated_archive
+from wire_inventory import (audit, capture_metadata, field_policies, inventory_metadata,
+                            source_index, source_paths, validated_archive, validate_source)
 from rebind_source_reviews import reviewed_sites
 
 
 def test_repository_catalogue_and_dispositions_are_consistent():
-    inventory_metadata(ROOT)
+    known, _ = inventory_metadata(ROOT)
+    capture_metadata(ROOT, known)
 
 
 @pytest.mark.parametrize('archive', sorted((ROOT / 'tests/compat/generations').glob('*.tar.gz')),
@@ -31,7 +34,7 @@ def test_retained_archive_is_intact(archive):
 def test_repository_metadata_guard_rejects_corruption(tmp_path, monkeypatch, corruption):
     package = tmp_path / 'src/prismabuild'
     package.mkdir(parents=True)
-    catalogue_source = 'RecordKind(name="qualified", wire_id="example.qualified.v1")\n'
+    catalogue_source = 'RecordKind(name="qualified", wire_id="example.qualified.v1", variants=())\n'
     (package / 'record_kinds.py').write_text(catalogue_source)
     metadata = tmp_path / 'tests/compat/dispositions.jsonl'
     metadata.parent.mkdir(parents=True)
@@ -113,7 +116,7 @@ def _rejected(check):
 def test_metadata_guard_covers_audit_documents(tmp_path, monkeypatch, corruption):
     package = tmp_path / 'src/prismabuild'
     package.mkdir(parents=True)
-    declaration = 'RecordKind(name="qualified", wire_id="example.qualified.v1", older_participant_absence=True)\n'
+    declaration = 'RecordKind(name="qualified", wire_id="example.qualified.v1", variants=(), older_participant_absence=True)\n'
     catalogue = package / 'record_kinds.py'
     catalogue.write_text(declaration)
     compat = tmp_path / 'tests/compat'
@@ -154,8 +157,9 @@ def test_metadata_guard_covers_audit_documents(tmp_path, monkeypatch, corruption
 
 
 def _source_audit(root):
-    # Red stub for the bounded source-index validator.
-    return None
+    known, reviewed = inventory_metadata(root)
+    capture_metadata(root, known)
+    return source_index(root, known), known, reviewed
 
 
 @pytest.fixture(scope='module')
@@ -165,8 +169,8 @@ def repository_source_index():
 
 @pytest.mark.parametrize('path', list(source_paths(ROOT)))
 def test_source_file_preserves_audit_assertions(path, repository_source_index):
-    # Red stub: source assertions currently run only for production pin cases.
-    pass
+    index, known, reviewed = repository_source_index
+    validate_source(ROOT, path, index, known, reviewed)
 
 
 @pytest.mark.parametrize('wire', ['prismaquant.prismabuild.action.v1', 'buffered-sequential-write-fdatasync-read.v1',
@@ -215,8 +219,16 @@ def _write_source_archive(root, files):
 
 @pytest.fixture(scope='module')
 def retained_source_indexes(tmp_path_factory):
-    # Red stub: retained contents are currently checked only for byte integrity.
-    return lambda archive: None
+    @lru_cache(maxsize=None)
+    def load(archive):
+        _, members = validated_archive(archive)
+        root = tmp_path_factory.mktemp('retained-source')
+        for name, raw in members.items():
+            destination = root / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(raw)
+        return root, _source_audit(root)
+    return load
 
 
 def _retained_source_paths():
@@ -230,7 +242,8 @@ def _retained_source_paths():
 @pytest.mark.parametrize('archive,path', list(_retained_source_paths()),
                          ids=lambda value: value.name if isinstance(value, Path) else value)
 def test_retained_source_preserves_audit_assertions(archive, path, retained_source_indexes):
-    pass
+    root, (index, known, reviewed) = retained_source_indexes(archive)
+    validate_source(root, path, index, known, reviewed)
 
 
 @pytest.mark.parametrize('wire', ['prismaquant.prismabuild.action.v1', 'buffered-sequential-write-fdatasync-read.v1',
@@ -245,10 +258,8 @@ def test_retained_source_guard_rejects_forbidden_constructors(tmp_path, retained
 def test_retained_source_guard_rejects_changes_after_indexing(tmp_path, retained_source_indexes):
     path = 'src/prismabuild/builder.py'
     archive = _write_source_archive(tmp_path, {path: b'VALUE = 1\n'})
-    loaded = retained_source_indexes(archive)
-    if loaded is not None:
-        root, _ = loaded
-        (root / path).write_text('VALUE = 2\n')
+    root, _ = retained_source_indexes(archive)
+    (root / path).write_text('VALUE = 2\n')
     assert _rejected(lambda: test_retained_source_preserves_audit_assertions(archive, path, retained_source_indexes))
 
 

@@ -122,6 +122,11 @@ def inventory_metadata(root):
     known = catalogue(root)
     reviewed = classifications(root)
     assert not known.keys() & reviewed.keys(), "a kind cannot be qualified and excluded from the window"
+    for kind in known.values():
+        tuple(kind["name"] + "/" + variant for variant in kind["variants"])
+    for row in reviewed.values():
+        for category in ("occurrences", "schema_builders", "reader_checks"):
+            row["witnesses"][category]
     return known, reviewed
 
 
@@ -182,8 +187,9 @@ def source_expression(node, source):
     return ast.unparse(node)
 
 
-def _source_inventory(root, observations, known, *, include_tests=True, include_records=True, paths=None):
-    observations.update({key: [] for key in ("parsed_sources", "unparsed_sources", "unresolved_schema_builders", "serialization_sites")})
+def source_index(root, known, *, include_tests=True, paths=None):
+    """Freeze first-pass hashes and bindings, without retaining syntax trees."""
+    observations = {"parsed_sources": [], "unparsed_sources": []}
     wire_ids = {row["name"]: wire for wire, row in known.items()}
     constants, imports, exports = {}, {}, {}
     for unit, tree in sources(root, observations, include_tests=include_tests, paths=paths):
@@ -215,6 +221,18 @@ def _source_inventory(root, observations, known, *, include_tests=True, include_
                     aliases[name.asname or name.name] = name.name
         imports[path, unit["block"]] = (local, aliases)
         exports.update({module + "." + name: origin for name, origin in aliases.items()})
+    return {**observations, "constants": constants, "imports": imports, "exports": exports}
+
+
+def _source_inventory(root, observations, known, *, include_tests=True, include_records=True, paths=None, index=None):
+    if index is None:
+        index = source_index(root, known, include_tests=include_tests, paths=paths)
+    selected = set(paths) if paths is not None else None
+    observations.update({key: [] for key in ("parsed_sources", "unparsed_sources", "unresolved_schema_builders", "serialization_sites")})
+    for category in ("parsed_sources", "unparsed_sources"):
+        observations[category] = [dict(row) for row in index[category]
+                                  if selected is None or row["path"] in selected]
+    constants, imports, exports = (index[key] for key in ("constants", "imports", "exports"))
 
     def imported_constant(name):
         visited = set()
@@ -380,9 +398,22 @@ def field_policies(root, *, paths=None):
     return _source_inventory(root, {}, catalogue(root), include_tests=False, include_records=False, paths=paths)[1]
 
 
-def audit(root, observations=None):
-    observations = observations if observations is not None else {}
-    known, reviewed = inventory_metadata(root)
+def validate_builders(wire, builders, known, reviewed):
+    if wire not in known and wire not in reviewed and wire in (
+            "buffered-sequential-write-fdatasync-read.v1", "contiguous-residency-exact-cover.v1",
+            "repeated-shake256-block.v1", "prismaquant.prismabuild.action.v1"):
+        assert not any(production(row["path"]) for row in builders), "production constructor for " + wire
+
+
+def validate_source(root, path, index, known, reviewed):
+    """Run the audit's second pass and constructor checks for one source file."""
+    rows, _ = _source_inventory(root, {}, known, paths=[path], index=index)
+    for wire, row in rows.items():
+        validate_builders(wire, row["schema_builders"], known, reviewed)
+
+
+def capture_metadata(root, known):
+    """Read descriptor/capture fields and validate declared absence eligibility."""
     required_generations = set()
     for name in ("window.json", "prepared.json"):
         path = root / "tests/compat/generations" / name
@@ -404,6 +435,13 @@ def audit(root, observations=None):
                 captured["absent_inputs"][item["generation"]].add(item["case"])
             else:
                 captured["historical"][item["generation"]].add(item["case"])
+    return required_generations, captured
+
+
+def audit(root, observations=None):
+    observations = observations if observations is not None else {}
+    known, reviewed = inventory_metadata(root)
+    required_generations, captured = capture_metadata(root, known)
     rows, policies = _source_inventory(root, observations, known)
     for base in ("src", "tools", "tests"):
         for path in sorted((root / base).rglob("*.json")):
@@ -441,6 +479,7 @@ def audit(root, observations=None):
                     ("occurrences", "schema_builders", "reader_checks")}}
     result = []
     for wire, value in sorted(rows.items()):
+        validate_builders(wire, value["schema_builders"], known, reviewed)
         witnesses = [row for row in value["occurrences"] if production(row["path"])]
         for category in ("occurrences", "schema_builders", "json_boundaries", "reader_checks"):
             for row in value[category]:
@@ -473,11 +512,9 @@ def audit(root, observations=None):
         elif wire in ("buffered-sequential-write-fdatasync-read.v1", "contiguous-residency-exact-cover.v1",
                       "repeated-shake256-block.v1"):
             disposition = "algorithm_identifier_not_record"
-            assert not any(row["scope"] == "production" for row in value["schema_builders"])
         elif wire == "prismaquant.prismabuild.action.v1":
             disposition = "retired_rejected_schema"
             value["disposition_reason"] = "core.validate_action accepts action.v2 only; no current v1 constructor"
-            assert not any(row["scope"] == "production" for row in value["schema_builders"])
         elif not witnesses and value.get("retained"):
             disposition = "retained_only_requires_review"
         elif not witnesses:
