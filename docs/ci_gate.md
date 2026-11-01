@@ -157,7 +157,9 @@ A full **Re-run all jobs** executes the plan again and starts a new plan namespa
 Shard results remain immutable, named by the workflow attempt that actually ran
 the shard and by its infrastructure stage, `a1` or `a2`. Control jobs read the
 paginated GitHub REST job inventory and choose each shard's latest execution
-within the current plan namespace. Successful jobs that GitHub did not rerun
+within the current plan namespace. GitHub copies inherited jobs with new IDs and
+attempt numbers but the original start timestamps; the resolver uses the full
+inventory to recover the execution that actually uploaded the artifact. Successful jobs that GitHub did not rerun
 retain their original coverage. A rerun with no uploaded result is no verdict;
 it cannot fall back to an older pass. An `a2` result predating a newer `a1` is
 ignored. An explicit failure in either applicable stage stays final; GitHub's

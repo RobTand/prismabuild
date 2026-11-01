@@ -75,7 +75,6 @@ def _read_result(path):
         return None
 
 
-
 def workflow_artifacts(jobs, assignments, prefix, plan_attempt, workflow_attempt):
     """Resolve inherited GitHub jobs to their actual immutable result artifacts."""
     if (type(plan_attempt) is not int or type(workflow_attempt) is not int or
@@ -120,6 +119,7 @@ def workflow_artifacts(jobs, assignments, prefix, plan_attempt, workflow_attempt
             if job and job['run_attempt'] >= first and job.get('status') == 'completed':
                 sources[index][stage] = f"{prefix}-{job['run_attempt']}-a{stage}-{index}"
     return sources
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
