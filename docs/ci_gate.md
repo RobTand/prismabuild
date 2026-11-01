@@ -1,11 +1,12 @@
 # Hosted Actions merge gate
 
-Ordinary PRs run `pr-gate` on GitHub-hosted `ubuntu-24.04`, selecting tests by
-evidence. Mergify batch drafts run the full eligible population when the head
+Ordinary PRs select tests by evidence, then use the same duration-balanced
+execution and retry path as the full gate. The final `pr-gate` check aggregates
+the complete selection. Mergify batch drafts run the full eligible population when the head
 branch starts `mergify/merge-queue/`, the PR author is login `mergify[bot]` with
 id 37929162, and the head repository is this repository. A same-repository PR
 with the `gate-canary` label also runs the full gate, without duplicating the
-single-job PR selection run. The label takes effect on the next push or reopen:
+PR selection run. The label takes effect on the next push or reopen:
 label changes don't trigger the workflow, because Mergify's own `queued` and
 `dequeued` labels would otherwise rerun `pr-gate` on queued pull requests. No CI
 job uses the fleet.
@@ -18,18 +19,18 @@ The full plan records a shadow selection while coverage stays full. The full
 matrix defaults to sixteen shards, alternating `ubuntu-24.04` and `ubuntu-24.04-arm`.
 Workflow reruns swap the architectures by shard index, so qualification exercises
 each file on both architectures.
-`GATE_RUNNERS` is the workflow's single list of test destinations. The small
-label-resolution job bootstraps on hosted x64; test jobs use its outputs,
-and `matrix --runners` receives that same list. Changing test destinations
-requires one edit to `GATE_RUNNERS`.
+`GATE_RUNNERS` is the workflow's single list of test destinations. Control
+jobs bootstrap on hosted x64; `matrix --runners` receives that list. Changing
+test destinations requires one edit to `GATE_RUNNERS`.
 `GATE_SHARDS` is the single workflow setting for the full shard count. The
 lead sizes Mergify parallel checks so shard count times concurrent batches
 stays near the account's 20 hosted Linux jobs.
 Each shard uses four pytest-xdist workers within inherited CPU affinity.
 Actions are pinned by commit SHA. Setup uses Python 3.14 and pip caching with
 pytest 9.1.1, pytest-xdist 3.8.0, PyYAML 6.0.3 and setuptools 80.9.0.
-Hosted setup installs bubblewrap and creates the real local scratch directory
-declared in the fleet roster. It exports that directory as TMPDIR. Proof capture
+Hosted setup creates the real local scratch directory declared in the fleet
+roster. Only shards assigned the compatibility sandbox fixtures install
+bubblewrap and relocate Python. It exports that directory as TMPDIR. Proof capture
 runs without setup-python's ambient LD_* loader overrides; the interpreter must
 also pass its version check without those overrides. Native threads are bounded to
 one and each test has the integration tier's 300-second failure bound. A test over 60 seconds is reported as a cost issue for #2328, not a speed
@@ -55,15 +56,22 @@ retains empty shards when there are fewer files than shards.
 ```sh
 python tools/ci/gate_select.py --base "$BASE_SHA" --head "$HEAD_SHA" --mode full \
   --output plan.json --files-output files.txt
-python tools/ci/gate_partition.py matrix --files-from files.txt \
+python tools/ci/gate_partition.py matrix --setup-aware --files-from files.txt \
   --durations tools/ci/gate_durations.json --shards 16 \
   --runners ubuntu-24.04,ubuntu-24.04-arm --output matrix.json
-python tools/ci/gate_partition.py shard --files-from files.txt \
+python tools/ci/gate_partition.py shard --setup-aware --files-from files.txt \
   --durations tools/ci/gate_durations.json --shards 16 --index 0 \
   --output-files assigned.txt
 python tools/ci/gate_run.py --plan plan.json --files-from assigned.txt --workers 4 \
   --result result.json --junitxml junit.xml
 ```
+
+The gate's optional `--setup-aware` partition groups the two sandbox files and
+charges 40 CPU-equivalent seconds for their shared setup. Groups costing at
+least 60 seconds get their own shards, while at least one shard remains for
+short files. This prevents a long file from waiting behind unrelated collection
+and fixture work. The shared nightly `shards(...)` interface retains its
+original longest-processing-time algorithm.
 
 Each shard recomputes its assignment from the same population, duration table
 and shard count. No test-file list passes through matrix entries. Coverage is
@@ -87,8 +95,11 @@ include an earlier 49.002-second duplication audit and 37.809-second history
 audit, larger than the latest 21.952 and 34.428-second observations.
 
 Issue #2448, under #2328, owns reducing these costs and shrinking the slow list.
-The per-file scheduling table still uses the PB inventory's summed medians;
-it estimates shard balance, rather than setting per-test cost limits.
+The per-file scheduling table uses hosted JUnit observations from three
+baseline runs of 41260080645. It takes each architecture's median per-file sum
+and then the larger architecture median. Unobserved files retain their PB
+inventory estimates with separate provenance. This table schedules coverage;
+it does not set per-test cost limits.
 
 The gate runner checks xunit1 JUnit times, including setup and teardown, after
 pytest completes. Enforcement uses the runner's named
@@ -124,6 +135,19 @@ first runner. A JUnit failure or error is final even if pytest then exits 2
 or 3, or its timing evidence is incomplete. The final `gate` job fails on
 explicit failure evidence from either attempt, even if the other passed, or
 on a missing verdict after retry.
+
+The runner loads `gate_collect.py`, traverses the repository once, and ignores
+unassigned files and directories before importing them. It preserves the assigned
+file order and pytest's file-based xdist scheduling, including shared fixtures,
+deselections and xunit1 file identities. Unusual assigned filenames extend
+pytest patterns individually, preserving normal assertion rewriting and bytecode
+policy for imported production dependencies. A hosted profile of a 71-file assignment
+found about 93,000 directory collections when each file was a separate pytest
+argument. Root imports took only 1.2–1.4 seconds; repeated sibling-directory
+collection accounted for most of the 15–46-second startup. The collector's
+regression counts directory visits and refuses import of an unassigned file.
+Splitting individual test cases across workers was trialled and rejected because
+it duplicated shared build fixtures; the gate retains `--dist=loadfile`.
 
 Artifacts are separated by workflow attempt and shard/attempt index to avoid
 stale evidence on reruns. Plans include base/head SHAs, population version,
@@ -169,10 +193,11 @@ Both `test_record_compatibility.py` and
 41247411735 passed all 24 compatibility cases and eight selected-interpreter
 controls on both architectures. Initial trials refused UID-map setup; disabling
 Ubuntu's AppArmor userns restriction allowed namespace entry. The compatibility
-sandbox intentionally hides `/opt`, so setup copies Python's installed prefix
-under root-owned `/usr/local/pb-gate-python`, preserving interpreter/library
-bytes, registers its shared library with ldconfig, and relocates its sysconfig
-installation metadata to the copied extension-module directory. The two
+sandbox intentionally hides `/opt`, so setup relocates Python's installed prefix
+to `/usr/local/pb-gate-python`, preserving interpreter/library bytes, registers
+its shared library with ldconfig, and relocates its sysconfig installation
+metadata. The speed round measures the cheaper same-filesystem move and the
+need for ownership changes below. The two
 previously deferred customization controls also return to the gate. This is
 hosted-VM setup, not a change to the test owners or their attestation checks.
 The selection agent's admitted PB actions instead refused `/proc` mounting with
@@ -367,9 +392,9 @@ selection accuracy.
 | `with_name` | 199 | 105 |
 | `with_suffix` | 49 | 33 |
 
-## Hosted qualification timings
+## Initial hosted qualification timings
 
-The three final-population samples below each run all 1,245 eligible files.
+The three initial final-population samples below each run all 1,245 eligible files.
 They passed without infrastructure retries or test failures. No test above
 60 seconds was observed in retained JUnit, including root/capability diagnostics. Full-run wall
 measures workflow start to completion of the final `gate`; pickup measures
@@ -450,3 +475,163 @@ final correction drops that flag and passes another 152 cases in five verified
 actions. Failing actions have terminal records/logs and no success receipt.
 No x86 admission check remains pending. Complete keys and receipt digests are
 in `tools/ci/gate_evidence.json`.
+
+## Gate speed qualification
+
+The speed round records three baseline samples and opportunistic revised
+full-population canaries. Each trial starts only when no merge-queue gate is
+active; it never reserves capacity or holds the queue.
+It keeps the population, 16 shards, both hosted architectures, test budgets
+and infrastructure-only retry unchanged. Large PR selections use the same
+balanced shards, with `pr-gate` remaining the required PR check.
+
+`GATE_PR_SINGLE_SECONDS` sets the one-slot cutoff, initially 90 estimated
+seconds at four workers. Above it, selections use the full gate's shard
+limit. Missing files use the inventory p90 rather than zero when choosing
+whether to fan out. A small selection uses one x64 shard to avoid duplicating
+setup and coverage; larger selections use both architectures without increasing
+the shard limit. The final check verifies every selected file exactly once.
+
+A head without required gate tooling fails before dependency setup, with
+instructions to merge `origin/main`. That is a final failure because retrying
+the same incompatible head cannot repair it. Setup and planning infrastructure
+failures retain exit 75 and the infrastructure-only retry.
+
+Selection summaries show counts, reason categories, the first 50 selected
+files and the first 50 exclusions. Long cells are abbreviated. Budget summaries
+show at most 25 warnings. The complete selection remains in `plan.json`, and
+the complete warning list remains in `result.json` and JUnit. These bounded
+previews leave headroom below GitHub's 1 MiB step-summary limit.
+
+Whole-population triggers discover filenames without building an unused import
+and helper graph. Shadow coverage is still the complete population. Shards
+order collection by estimated file duration. xdist retains file-based dispatch,
+and the longest files are isolated as described below. Neither optimization
+removes or retries a test.
+
+The gate's optional `--setup-aware` partition keeps the two real namespace
+fixtures together and charges their shared setup once. The shared nightly
+`shards(...)` API and the CLI's default partition retain their original
+behavior. Assignment precedes setup. Ordinary shards install only the pinned
+Python dependencies and create the roster scratch directory. The runtime
+observation file additionally needs a root-owned executable, so its shard
+changes that one binary's owner without relocating its prefix.
+
+Bubblewrap installation first uses the image's existing apt indexes. A failed
+install permits one bounded index refresh and another install. Same-filesystem
+Python relocation uses `mv`, retaining a symlink for installed entry points
+and setup-python's cache post-step. A cross-filesystem move retains the copy
+fallback. The compatibility fixtures pass without recursive `chown`; readonly
+namespace bindings preserve their containment checks. These are ephemeral
+hosted-VM setup operations, never fleet changes.
+
+Startup markers separate the runner's pre-work from pytest startup.
+`GATE_PREFLIGHT_START` to `GATE_PYTEST_START` was 5–10 ms in the first fan-out
+trial; the remaining 16–46 s before xdist announced nodes belongs to pytest
+startup. This distinction avoids attributing that gap to plan validation.
+
+Within each shard, xdist retains `loadfile`, preserving module/session fixtures
+and wheel-build behavior. The trial of unrestricted case dispatch duplicated
+shared build/audit fixtures, so it was dropped. Files above 60 estimated seconds
+instead get a dedicated shard, up to the existing shard limit minus one. The
+rest retain duration-balanced packing; every file remains selected exactly once.
+This avoids collecting unrelated modules beside the longest serial files.
+Trial 41266469261 passed all 19,656 tests in 196 seconds but the repository
+timing audit took 33.509 seconds while sharing a 113-file shard, above its
+unchanged 30-second enforcement threshold. A later dedicated-shard experiment
+measured 16.224 seconds, but that special case is removed from the review
+branch. The scan itself costs 20–33 seconds, including 32.7 seconds in the
+172-file selection of run 41266808306. Its owner is splitting the guard into
+per-file tests on `prismabuild-2448-timing-guard-split`; scheduling is not its
+root fix. Its checks, budget and tolerance are unchanged here.
+
+The 90-second cutoff separates the retained examples well. Applying refreshed
+hosted costs, the 169- and 173-file PR selections estimate 255 and 262 seconds
+at one slot; the 314-file examples estimate 433 seconds, and the 1,246-file
+example estimates 1,089 seconds. All fan out. FAST alone has 24 files and a
+4.8-second estimate, so it stays on one x64 job. A 90-second estimate leaves
+setup, planning and aggregation headroom below the full gate's observed wall.
+It is a scheduling estimate, not a cutoff on coverage or an execution deadline.
+
+
+## Speed-round measurements
+
+The latest trial is [41267195546](https://github.com/RobTand/prismabuild/actions/runs/41267195546), head `baa99b84`: 1,256 files, 19,656 passes, 104 skips and one test failure. All sixteen shards started within six seconds. Workflow start to final verdict was 226 seconds, with no retry. It used the temporary timing-audit isolation, since removed. The timing audit passed on x64 in 16.224 seconds alone, versus 33.509 seconds beside other shard work in trial 41266469261. No test exceeded 60 seconds. The retained scheduler is the one used in 41266469261, which finished in 196 seconds with all pytest cases passing but the guard over its cost threshold. Both results remain red evidence, for different reasons.
+
+The final verdict correctly remained red on `tests/test_pbwait.py::test_prefix_resolution_bounds_a_private_blocked_pool_scan`: it observed an empty marker under its 0.05-second reader bound, consistent with termination during `write_text`. Its existing timing-debt owner is open issue #2035. This speed change does not edit, exclude or retry that test. A clean hosted verdict remains pending that independent failure; this run provides timing evidence, not a clean qualification.
+
+Per the lead's opportunistic-trial policy, a wall sample is eligible only when all sixteen `started_at` timestamps span at most about 30 seconds. Phase observations remain useful with queue overlap. The three before samples have p50 409 and nearest-rank p90 487 seconds. Sample 1 includes a pending interval behind a superseded run; sample 2 passed pytest but failed the old cost enforcement. Configuration changes and VM variation prevent treating these as an isolated benchmark. Stable after-change p50/p90 belong to real queue runs after merge; three clean canaries are not a prerequisite for review.
+
+Earlier failed trials are retained: 41262943816 exposed the repaired root-owner/helper-name issues; 41264307352 rejected unrestricted case dispatch; 41265889404 exposed bytecode-policy and hook-name collisions; 41266469261 passed pytest but exposed the timing-audit contention. Trial 41263467098 passed `gate`; a temporary diagnostic job separately failed on its same-step Python path. All temporary probe jobs are removed.
+
+| Trial / attempt | Final check | Wall s | 16-shard start spread s | Wall eligible | Pickup min/median/max s |
+| --- | --- | ---: | ---: | --- | --- |
+| 41260080645 a1 | success | 487.0 | 3.0 | yes | 2.0/3.5/5.0 |
+| 41260080645 a2 | failure | 409.0 | 4.0 | yes | 3.0/5.0/7.0 |
+| 41260080645 a3 | success | 321.0 | 12.0 | yes | 3.0/4.5/15.0 |
+| 41262943816 a1 | failure | 354.0 | 3.0 | yes | 2.0/4.0/5.0 |
+| 41263467098 a1 | success | 285.0 | 8.0 | yes | 2.0/4.0/10.0 |
+| 41264307352 a1 | failure | 261.0 | 13.0 | yes | 7.0/10.5/20.0 |
+| 41265889404 a1 | failure | 216.0 | 14.0 | yes | 2.0/4.0/16.0 |
+| 41266469261 a1 | failure | 196.0 | 12.0 | yes | 2.0/3.5/14.0 |
+| 41267195546 a1 | failure | 226.0 | 6.0 | yes | 2.0/4.5/8.0 |
+
+Each phase cell is min/median/max seconds across eight architecture jobs. Setup excludes the test step. The test step includes pytest startup. Before conditional setup, package installation, apt and Python relocation share one step.
+
+| Trial / attempt | Arch | Setup before test step | Install step | Assigned setup | Pre-xdist | Test step |
+| --- | --- | --- | --- | --- | --- | --- |
+| 41260080645 a1 | x64 | 49.0/60.0/98.0 | 36.0/47.5/86.0 | unavailable | 20.9/38.6/43.6 | 73.0/112.5/137.0 |
+| 41260080645 a1 | arm64 | 52.0/59.0/71.0 | 42.0/47.5/59.0 | unavailable | 15.0/15.5/16.4 | 61.0/69.5/134.0 |
+| 41260080645 a2 | x64 | 49.0/60.5/113.0 | 37.0/47.0/101.0 | unavailable | 19.9/27.5/44.4 | 72.0/114.5/209.0 |
+| 41260080645 a2 | arm64 | 47.0/59.5/76.0 | 35.0/47.5/65.0 | unavailable | 15.3/15.8/16.9 | 57.0/65.0/81.0 |
+| 41260080645 a3 | x64 | 53.0/58.0/68.0 | 38.0/45.0/55.0 | unavailable | 26.0/42.2/43.3 | 72.0/121.5/139.0 |
+| 41260080645 a3 | arm64 | 53.0/60.0/78.0 | 41.0/50.0/65.0 | unavailable | 14.6/16.0/16.4 | 66.0/71.0/159.0 |
+| 41262943816 a1 | x64 | 16.0/20.0/24.0 | 3.0/4.5/5.0 | 0.0/0.0/7.0 | 27.2/39.9/45.8 | 106.0/119.5/175.0 |
+| 41262943816 a1 | arm64 | 14.0/16.0/19.0 | 3.0/4.0/5.0 | 0.0/0.0/1.0 | 15.7/16.8/18.1 | 66.0/71.0/130.0 |
+| 41263467098 a1 | x64 | 15.0/18.5/21.0 | 3.0/4.0/5.0 | 0.0/0.0/0.0 | 21.2/30.7/43.1 | 77.0/99.5/215.0 |
+| 41263467098 a1 | arm64 | 13.0/16.0/22.0 | 3.0/4.0/5.0 | 0.0/0.0/8.0 | 14.8/16.2/17.8 | 61.0/73.0/129.0 |
+| 41264307352 a1 | x64 | 16.0/20.0/22.0 | 4.0/4.0/5.0 | 0.0/0.0/1.0 | 21.7/37.6/46.8 | 84.0/113.0/144.0 |
+| 41264307352 a1 | arm64 | 14.0/15.5/27.0 | 3.0/4.0/5.0 | 0.0/0.0/11.0 | 15.7/17.2/20.2 | 57.0/68.0/84.0 |
+| 41265889404 a1 | x64 | 16.0/18.0/19.0 | 3.0/5.0/5.0 | 0.0/0.0/0.0 | 6.2/13.7/20.3 | 51.0/112.5/149.0 |
+| 41265889404 a1 | arm64 | 12.0/14.5/20.0 | 3.0/3.5/5.0 | 0.0/0.0/7.0 | 5.0/10.0/11.5 | 41.0/73.5/110.0 |
+| 41266469261 a1 | x64 | 12.0/19.0/20.0 | 2.0/4.0/5.0 | 0.0/0.0/1.0 | 2.6/11.9/16.6 | 50.0/105.5/127.0 |
+| 41266469261 a1 | arm64 | 14.0/16.0/22.0 | 3.0/4.0/5.0 | 0.0/0.0/8.0 | 2.8/8.1/9.5 | 38.0/75.0/111.0 |
+| 41267195546 a1 | x64 | 13.0/15.5/21.0 | 3.0/4.0/5.0 | 0.0/0.0/1.0 | 2.8/11.9/19.4 | 20.0/104.0/162.0 |
+| 41267195546 a1 | arm64 | 13.0/16.0/29.0 | 3.0/4.0/5.0 | 0.0/0.0/13.0 | 2.4/8.1/8.6 | 35.0/82.5/97.0 |
+
+Per-shard cells are job seconds / pickup seconds.
+
+| Shard | a1 |
+| --- | ---: |
+| 0 | arm64 117 / 4 |
+| 1 | x64 120 / 8 |
+| 2 | arm64 74 / 5 |
+| 3 | x64 57 / 2 |
+| 4 | arm64 52 / 5 |
+| 5 | x64 41 / 3 |
+| 6 | arm64 103 / 5 |
+| 7 | x64 124 / 3 |
+| 8 | arm64 109 / 5 |
+| 9 | x64 182 / 2 |
+| 10 | arm64 101 / 5 |
+| 11 | x64 157 / 2 |
+| 12 | arm64 96 / 5 |
+| 13 | x64 95 / 2 |
+| 14 | arm64 106 / 5 |
+| 15 | x64 154 / 2 |
+
+## Single-job and fan-out test times
+
+The following distributions exclude `test_repository_has_no_unallowlisted_timing_calls`. Its individual time is listed separately; the other 19,514 matched passing cases keep their normal inclusion.
+
+| Run | Common cases without guard | p50 s | p90 s | p99 s | >20 s | Guard alone s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 41259310026:1 | 19514 | 0.096 | 0.650 | 2.597 | 13 | 28.976 |
+| 41260354001:1 | 19514 | 0.062 | 0.576 | 2.219 | 5 | 17.350 |
+| 41267195546:1 | 19514 | 0.037 | 0.395 | 2.149 | 2 | 16.224 |
+
+These are matched passing node identities, not all outcomes. The latest fan-out mixes architectures and used the since-removed dedicated guard shard. For the identical 9,585-case x64 subset excluding the guard, the two single-job runs and the latest fan-out have p50/p90/p99 0.100/0.678/2.659, 0.066/0.611/2.124 and 0.046/0.502/2.452 seconds. Sources and VM load differ; this is observational evidence, not an isolated architecture benchmark or a claim that fan-out repairs the guard.
+
+The review branch removes the guard-specific partition exception and its test. All gate Python, gate tests, durations and workflow content now match the already-qualified `878cd6c4` snapshot exactly. That snapshot passed 176 cases per repeat, five fresh repeats per architecture including two xdist repeats per architecture, for 1,760 passes and ten verified terminal completions/CAS receipts. The additional isolated variant passed 1,770 cases in ten verified actions, but is retained as experimental evidence only. Main's subsequent quarantine-explanation change and documentation updates do not change the tested gate logic.
+
+The planning profile is PrismaBuild action `78a123c1d4346f105dc77cb318970707e05f50904b570c3b655514fdceadb700`, with verified terminal exit 0 and CAS receipt `8c387a9c43992803d7d55ef9f3e4a103f3b31a903d12b077a82f71b52f51db6e`. On that x64 development worker, cProfile recorded 0.175 seconds for the whole-population trigger fast path and 90.155 instrumented seconds for an ordinary `pool.py` shadow plan. Dependency extraction used 58.863 seconds and helper matching 30.376 seconds. Profiler overhead and worker hardware make these unsuitable as hosted wall estimates. Ordinary dependency traversal remains expensive and is left unchanged for the separate #2472 owner.
