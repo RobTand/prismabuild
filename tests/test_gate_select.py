@@ -438,3 +438,15 @@ def test_repository_outcomes_path_selects_shape_gate_consumer(tmp_path):
     (root / 'tests/test_shape_consumer.py').write_text('from tools.fleet import shape_gate\n')
     assert 'tests/test_shape_consumer.py' in selected(
         plan(root, ['tools/fleet/pbtest_outcomes.py']))
+
+
+def test_production_module_and_path_strings_require_a_recognized_loader(tmp_path):
+    root = tree(tmp_path)
+    (root / 'tools/fleet/pbtest_outcomes.py').write_text('VALUE = 1\n')
+    (root / 'src/prismabuild/private.py').write_text('VALUE = 1\n')
+    (root / 'src/prismabuild/pool.py').write_text(
+        'def store(value): return value\n'
+        'VALUES = {"path": "tools/fleet/pbtest_outcomes.py"}\n'
+        'store("prismabuild.private")\n')
+    assert selected(plan(root, ['tools/fleet/pbtest_outcomes.py', 'src/prismabuild/private.py'])) == {
+        'tests/test_fast.py'}
