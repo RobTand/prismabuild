@@ -419,3 +419,136 @@ def test_evaluation_timeout_reaps_descendants_before_scratch_cleanup(tmp_path, m
     assert result['complete'] is False
     assert 'complete stderr' in result['tail']
     assert not scratch[0].parent.exists()
+
+
+@pytest.mark.parametrize('mode', ['select', 'replay'])
+def test_default_tia_commands_integrate_with_adjacent_gate_modules(tmp_path, mode):
+    root = tmp_path / 'repo'
+    (root / 'tests').mkdir(parents=True)
+    (root / 'tools').mkdir()
+    (root / 'tools/verify.py').write_text("FAST = ('tests/test_fast.py',)\nGPU = ()\nTWO_CPU = ()\n")
+    (root / 'tests/test_fast.py').write_text('def test_fast(): pass\n')
+    (root / 'tests/proof_execution.json').write_text('{"root":{"files":{}}}')
+    (root / 'tests/receipt_execution.json').write_text('{"root_files":{}}')
+    def git(*args):
+        return subprocess.check_output(['git', *args], cwd=root, text=True).strip()
+    git('init', '-q')
+    git('add', '.')
+    git('-c', 'user.name=TIA fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '-qm', 'base')
+    commit = git('rev-parse', 'HEAD')
+    mapping = tmp_path / 'map.gz'
+    mapping.write_bytes(gzip.compress(json.dumps({
+        'schema': 'prismabuild.tia_map.v1', 'source_commit': commit, 'files': {},
+        'functions': [], 'tests': {}, 'unattributed': []}).encode()))
+    command = [sys.executable, str(ROOT / 'tools/ci' / ('tia_select.py' if mode == 'select' else 'tia_evaluate.py'))]
+    if mode == 'select':
+        command += ['--base', commit, '--head', commit]
+    else:
+        history = tmp_path / 'history.json'
+        history.write_text('{"pulls":[]}')
+        command += ['replay', '--history', str(history)]
+    output = tmp_path / 'plan.json'
+    command += ['--root', str(root), '--map', str(mapping), '--output', str(output)]
+    run = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stdout + run.stderr
+    result = json.loads(output.read_text())
+    if mode == 'select':
+        assert result['targets'] == ['tests/test_fast.py']
+    else:
+        assert result['static']['summary']['prs'] == 0
+        assert result['tia']['summary']['prs'] == 0
+
+
+@pytest.mark.parametrize('arm', ['complete', 'interrupted', 'collection_error'])
+def test_evaluation_requires_complete_collection_and_execution(tmp_path, arm):
+    mod = load_tia_module('tia_evaluate')
+    root = tmp_path / 'repo'
+    root.mkdir()
+    source = 'def test_complete(tmp_path):\n p = tmp_path / "record"\n p.write_text("complete")\n assert p.read_text() == "complete"\n'
+    if arm == 'interrupted':
+        source += 'def test_interrupt():\n raise KeyboardInterrupt()\n'
+    elif arm == 'collection_error':
+        source = 'import missing_tia_completion_dependency\n' + source
+    (root / 'test_arm.py').write_text(source)
+    result = mod.pytest_run(root, ['test_arm.py'], [], tmp_path, arm)
+    if arm == 'complete':
+        assert result['complete'] is True
+        assert result['completion']['collected'] == ['test_arm.py::test_complete']
+        assert result['completion']['finished'] == ['test_arm.py::test_complete']
+    else:
+        assert result['returncode'] == 2
+        assert result['complete'] is False
+        assert result['collection_failed'] is (arm == 'collection_error')
+
+
+def test_collection_failure_kill_is_separate_from_valid_comparisons(tmp_path, monkeypatch):
+    import base64
+    from types import SimpleNamespace
+    mod = load_tia_module('tia_evaluate')
+    path = tmp_path / 'src/prismabuild/example.py'
+    path.parent.mkdir(parents=True)
+    original = b'def work(): return 7\n'
+    path.write_bytes(original)
+    monkeypatch.setenv('PB_TIA_MAP', base64.b64encode(gzip.compress(json.dumps({
+        'unmapped': {}, 'baseline_failures': []}).encode())).decode())
+    selected = {'selected': [{'path': 'tests/test_example.py'}],
+                'targets': ['tests/test_example.py'], 'deselect': []}
+    monkeypatch.setattr(mod, 'plan', lambda *args: selected)
+    monkeypatch.setattr(mod, 'load_tia_module', lambda *args: SimpleNamespace(
+        read_json=lambda path: {}, load_gate_json=lambda path: {},
+        create_plan=lambda *args, **kwargs: selected))
+    def verdict(*args):
+        baseline = args[-1] == 'baseline'
+        return {'returncode': 0 if baseline else 2, 'complete': baseline,
+                'collection_failed': not baseline, 'failures': [],
+                'errors': [] if baseline else ['tests.test_example::collection'], 'tests': 1}
+    monkeypatch.setattr(mod, 'pytest_run', verdict)
+    mutation = {'path': 'src/prismabuild/example.py', 'before': mod.raw_sha256(original),
+                'start': 0, 'end': len(original), 'replacement': 'def work(): return 9\n', 'diff': {}}
+    result = mod.run_mutation(tmp_path, tmp_path / 'support', mutation)
+    assert result['valid'] is False
+    assert result['tia_killed'] is False and result['static_killed'] is False
+    assert result['tia_collection_killed'] is True
+    assert result['static_collection_killed'] is True
+    assert path.read_bytes() == original
+
+
+def test_shared_generator_records_normal_and_exception_resumptions(tmp_path):
+    mod = load_tia_module('tia_record')
+    path = tmp_path / 'src/example.py'
+    path.parent.mkdir()
+    source = 'def stream():\n yield 1\n try:\n  yield 2\n except ValueError:\n  yield 3\n'
+    path.write_text(source)
+    namespace = {}
+    exec(compile(source, str(path), 'exec'), namespace)
+    generator = namespace['stream']()
+    recorder = mod.Recorder(tmp_path, tmp_path / 'records', 'a' * 40)
+    try:
+        recorder.boundary('tests/test_example.py::test_start')
+        assert next(generator) == 1
+        recorder.boundary('tests/test_example.py::test_resume')
+        assert next(generator) == 2
+        recorder.boundary('tests/test_example.py::test_throw')
+        assert generator.throw(ValueError()) == 3
+        assert recorder.tests['tests/test_example.py::test_start'] == {'src/example.py::stream'}
+        assert recorder.tests['tests/test_example.py::test_resume'] == {'src/example.py::stream'}
+        assert recorder.tests['tests/test_example.py::test_throw'] == {'src/example.py::stream'}
+    finally:
+        generator.close()
+        recorder.close()
+
+
+def test_population_deselection_uses_pytest_prefix_semantics(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    mod = load_tia_module('tia_population')
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setenv('PB_TIA_GATE_DIR', 'tools/ci')
+    prefix = 'tests/test_progress_reporting_boundaries.py::test_completion_samples_the_final_report_before_removing_it'
+    removed = []
+    config = SimpleNamespace(hook=SimpleNamespace(pytest_deselected=lambda *, items: removed.extend(items)))
+    items = [SimpleNamespace(nodeid=prefix + '[False]'), SimpleNamespace(nodeid=prefix + '[True]'),
+             SimpleNamespace(nodeid='tests/test_progress_reporting_boundaries.py::test_other')]
+    mod.pytest_tia_population_collection_modifyitems(config, items)
+    assert [item.nodeid for item in items] == ['tests/test_progress_reporting_boundaries.py::test_other']
+    assert [item.nodeid for item in removed] == [prefix + '[False]', prefix + '[True]']
