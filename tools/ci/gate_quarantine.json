@@ -495,64 +495,6 @@
       "reason": "Deterministic hosted four-CPU topology exposes a changed adapter caller affinity at worker_adapter_fixture.py:183; not established as flaky.",
       "issue": 2446,
       "evidence": "https://github.com/RobTand/prismabuild/actions/runs/41242040262"
-    },
-    {
-      "target": "tests/test_compat_bundle_cache_isolation.py",
-      "issue": 2435,
-      "reason": "All three collected cases are the inventory-proven bundle-cache flakes already owned by #2435; whole-file exclusion prevents a zero-case assignment from making the shadow audit inconclusive.",
-      "node_evidence": [
-        {
-          "target": "tests/test_compat_bundle_cache_isolation.py::test_replay_uses_its_own_sealed_bundle_cache[checkout-recovery-plan/banked]",
-          "issue": 2435,
-          "reason": "Passed twice and failed once in the three-repeat inventory at 22e9d752.",
-          "evidence": {
-            "source_commit": "22e9d75298608078c91d331a646f6446352577f6",
-            "outcomes": {
-              "passed": 2,
-              "failed": 1
-            },
-            "action_keys": [
-              "bb71f46720c293dfad8b83137ae007a40eca64c6a3d47f34f326df660453bbd4",
-              "9fbe6bece5f3e62984c10e0e2949a958319cf64aa2184721e38669557782cf6d",
-              "d3d5c7767a061064e2c56819c67029bb013dc9f99e06ae46e761074cc949cbd1"
-            ]
-          }
-        },
-        {
-          "target": "tests/test_compat_bundle_cache_isolation.py::test_replay_uses_its_own_sealed_bundle_cache[checkout-snapshot/clean]",
-          "issue": 2435,
-          "reason": "Passed twice and failed once in the three-repeat inventory at 22e9d752.",
-          "evidence": {
-            "source_commit": "22e9d75298608078c91d331a646f6446352577f6",
-            "outcomes": {
-              "passed": 2,
-              "failed": 1
-            },
-            "action_keys": [
-              "bb71f46720c293dfad8b83137ae007a40eca64c6a3d47f34f326df660453bbd4",
-              "9fbe6bece5f3e62984c10e0e2949a958319cf64aa2184721e38669557782cf6d",
-              "d3d5c7767a061064e2c56819c67029bb013dc9f99e06ae46e761074cc949cbd1"
-            ]
-          }
-        },
-        {
-          "target": "tests/test_compat_bundle_cache_isolation.py::test_replay_uses_its_own_sealed_bundle_cache[checkout-snapshot/dirty]",
-          "issue": 2435,
-          "reason": "Passed twice and failed once in the three-repeat inventory at 22e9d752.",
-          "evidence": {
-            "source_commit": "22e9d75298608078c91d331a646f6446352577f6",
-            "outcomes": {
-              "passed": 2,
-              "failed": 1
-            },
-            "action_keys": [
-              "bb71f46720c293dfad8b83137ae007a40eca64c6a3d47f34f326df660453bbd4",
-              "9fbe6bece5f3e62984c10e0e2949a958319cf64aa2184721e38669557782cf6d",
-              "d3d5c7767a061064e2c56819c67029bb013dc9f99e06ae46e761074cc949cbd1"
-            ]
-          }
-        }
-      ]
     }
   ],
   "cost_exclusions": [],
