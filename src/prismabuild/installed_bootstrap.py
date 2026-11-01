@@ -147,8 +147,9 @@ def _load_qualification_tools(checkout):
             'shape_gate': 'tools/fleet/shape_gate.py',
             'pbtest_outcomes': 'tools/fleet/pbtest_outcomes.py',
         }
-    def load(name):
-        spec = importlib.util.spec_from_file_location('_bootstrap_' + name, Path(checkout, locations[name]))
+    def load(qualification_tool_name):
+        spec = importlib.util.spec_from_file_location(
+            '_bootstrap_' + qualification_tool_name, Path(checkout, locations[qualification_tool_name]))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module

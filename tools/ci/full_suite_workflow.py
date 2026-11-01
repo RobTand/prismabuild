@@ -15,13 +15,13 @@ import urllib.request
 import zipfile
 
 
-def sibling(name):
+def sibling(sibling_name):
     locations = {
         'full_suite_report': Path(__file__).with_name('full_suite_report.py'),
         'gate_select': Path(__file__).with_name('gate_select.py'),
         'gate_partition': Path(__file__).with_name('gate_partition.py'),
     }
-    spec = importlib.util.spec_from_file_location(name, locations[name])
+    spec = importlib.util.spec_from_file_location(sibling_name, locations[sibling_name])
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

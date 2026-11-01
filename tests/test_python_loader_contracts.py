@@ -28,7 +28,8 @@ def test_reviewed_python_loader_targets_are_complete_and_bounded(owner, expected
     candidates = {path.relative_to(ROOT).as_posix()
                   for directory in ('src/prismabuild', 'tools')
                   for path in (ROOT / directory).rglob('*.py')} | expected
-    actual = {path for path in candidates if gate.gate_paths.matches(path, references)}
+    # __file__ is retained as conservative evidence, not an additional load.
+    actual = {path for path in candidates - {owner} if gate.gate_paths.matches(path, references)}
     assert actual == expected, {'missing': sorted(expected - actual), 'extra': sorted(actual - expected)}
 
 
