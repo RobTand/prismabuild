@@ -72,10 +72,72 @@ def module_names(path: str) -> set[str]:
     return names
 
 
+def production_loader_paths(target: ast.AST, call: ast.Call, path: str, parents: dict) -> set[str]:
+    """Narrow loader evidence only when its complete target is certain."""
+    scopes = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+    controls = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.TryStar,
+                ast.With, ast.AsyncWith, ast.Match, ast.ExceptHandler, ast.match_case)
+
+    def context(node):
+        branches = set()
+        while node in parents:
+            owner, field = parents[node]
+            if isinstance(owner, scopes):
+                return owner, branches
+            if isinstance(owner, controls):
+                branches.add((owner, field))
+            node = owner
+        return node, branches
+
+    scope, call_branches = context(call)
+    assignments, evidence, values = [], [], {}
+    filename = gate_paths.REPOSITORY + '/' + path
+    for node in parents:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)) or node.value is None:
+            continue
+        owner, branches = context(node)
+        if owner is scope and (node.lineno, node.col_offset) < (call.lineno, call.col_offset):
+            assignments.append((node, branches <= call_branches))
+        # Globals may be assigned after a function definition, before it runs.
+        # They provide fallback evidence, never certainty about a function call.
+        if owner is scope or isinstance(owner, ast.Module) and not isinstance(scope, ast.Module):
+            if owner is not scope or (node.lineno, node.col_offset) < (call.lineno, call.col_offset):
+                evidence.append(node)
+    for node, dominates in sorted(assignments, key=lambda item: (item[0].lineno, item[0].col_offset)):
+        resolved = (gate_paths.resolve(node.value, values, filename)
+                    if dominates and isinstance(node, (ast.Assign, ast.AnnAssign)) else set())
+        for binding in node.targets if isinstance(node, ast.Assign) else [node.target]:
+            if isinstance(binding, ast.Name):
+                values[binding.id] = resolved
+    resolved = gate_paths.resolve(target, values, filename)
+    if len(resolved) == 1 and not any('*' in value for value in resolved):
+        value = gate_paths.join_reference(gate_paths.REPOSITORY, next(iter(resolved)))
+        prefix = gate_paths.REPOSITORY + '/'
+        return {value[len(prefix):]} if value.startswith(prefix) else set()
+
+    # Preserve intermediate literals when parameters, branches or dynamic values
+    # prevent proving a complete target. Limit evidence to the target's bindings.
+    needed = {node.id for node in ast.walk(target) if isinstance(node, ast.Name)}
+    relevant = set()
+    while True:
+        previous = len(relevant)
+        for node in evidence:
+            bindings = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(binding, ast.Name) and binding.id in needed for binding in bindings):
+                relevant.add(node)
+                needed.update(child.id for child in ast.walk(node.value) if isinstance(child, ast.Name))
+        if len(relevant) == previous:
+            break
+    evidence_tree = ast.Module(body=[*sorted(relevant, key=lambda node: (node.lineno, node.col_offset)),
+                                    ast.Expr(value=target)], type_ignores=[])
+    return gate_paths.references(evidence_tree, path)
+
+
 def production_loads(tree: ast.AST, path: str) -> tuple[set[str], set[str]]:
     """Recognize literal dynamic imports and resolvable Python path loaders."""
     aliases = {'__import__': '__import__'}
-    assignments: dict[str, list[ast.AST]] = {}
+    parents = {child: (node, field) for node in ast.walk(tree) for field, value in ast.iter_fields(node)
+               for child in (value if isinstance(value, list) else [value]) if isinstance(child, ast.AST)}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for name in node.names:
@@ -83,10 +145,6 @@ def production_loads(tree: ast.AST, path: str) -> tuple[set[str], set[str]]:
         elif isinstance(node, ast.ImportFrom) and not node.level:
             for name in node.names:
                 aliases[name.asname or name.name] = f'{node.module}.{name.name}'
-        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
-                if isinstance(target, ast.Name):
-                    assignments.setdefault(target.id, []).append(node)
     modules, paths = set(), set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -118,31 +176,7 @@ def production_loads(tree: ast.AST, path: str) -> tuple[set[str], set[str]]:
                       node.args[position] if len(node.args) > position else None)
         if target is None:
             continue
-        # Resolve the complete argument, not intermediate literals such as the
-        # basename of an external or nested path.
-        pending = [child.id for child in ast.walk(target) if isinstance(child, ast.Name)]
-        seen, bindings = set(), set()
-        while pending:
-            variable = pending.pop()
-            if variable in seen:
-                continue
-            seen.add(variable)
-            for assignment in assignments.get(variable, ()):
-                if assignment.value is not None:
-                    bindings.add(assignment)
-                    pending.extend(child.id for child in ast.walk(assignment.value) if isinstance(child, ast.Name))
-        filename = gate_paths.REPOSITORY + '/' + path
-        values = {}
-        for assignment in sorted(bindings, key=lambda item: item.lineno):
-            resolved = gate_paths.resolve(assignment.value, values, filename)
-            for binding in assignment.targets if isinstance(assignment, ast.Assign) else [assignment.target]:
-                if isinstance(binding, ast.Name):
-                    values[binding.id] = resolved
-        prefix = gate_paths.REPOSITORY + '/'
-        for value in gate_paths.resolve(target, values, filename):
-            resolved = gate_paths.join_reference(gate_paths.REPOSITORY, value)
-            if resolved.startswith(prefix) and '*' not in resolved:
-                paths.add(resolved[len(prefix):])
+        paths.update(production_loader_paths(target, node, path, parents))
     return modules, paths
 
 
