@@ -114,8 +114,13 @@ def test_invalid_candidate_does_not_mutate_source_or_build(tmp_path, monkeypatch
     b"prismabuild = prismabuild.core:main\n",
     b"[DEFAULT]\nprismabuild = prismabuild.core:main\n[console_scripts]\n",
     b"[DEFAULT]\nprismabuild = prismabuild.core:main\n[console_scripts]\nother = prismabuild.core:main\n",
+    b"[console_scripts] # comment\nprismabuild = prismabuild.core:main\n",
+    b"[console_scripts] = ignored\nprismabuild = prismabuild.core:main\n",
+    b"[console_scripts]\nprismabuild =\n    prismabuild.core:main\n",
+    b"[console_scripts]\n; note\nprismabuild = prismabuild.core:main\n",
 ], ids=["wrong-group", "only-in-another-group", "wrong-target", "duplicate-key", "no-group",
-        "inherited-from-default", "inherited-beside-another-script"])
+        "inherited-from-default", "inherited-beside-another-script", "header-with-comment",
+        "header-with-assignment", "continuation-line", "semicolon-comment"])
 def test_cli_entry_point_must_be_the_console_script(tmp_path, entry_points):
     # A RECORD-consistent wheel whose prismabuild line sits outside
     # [console_scripts], or points elsewhere, installs no prismabuild command.
@@ -130,16 +135,24 @@ def test_cli_entry_point_must_be_the_console_script(tmp_path, entry_points):
     b"[console_scripts]\nprismabuild = prismabuild.other:main\n",
     b"[DEFAULT]\nprismabuild = prismabuild.core:main\n[console_scripts]\n",
     b"[DEFAULT]\nprismabuild = prismabuild.core:main\n[console_scripts]\nother = prismabuild.core:main\n",
+    b"[console_scripts] # comment\nprismabuild = prismabuild.core:main\n",
+    b"[console_scripts] = ignored\nprismabuild = prismabuild.core:main\n",
+    b"[console_scripts]\nprismabuild =\n    prismabuild.core:main\n",
+    b"[console_scripts]\n; note\nprismabuild = prismabuild.core:main\n",
 ], ids=["valid", "valid-beside-gui", "wrong-group", "wrong-target", "inherited-from-default",
-        "inherited-beside-another-script"])
+        "inherited-beside-another-script", "header-with-comment", "header-with-assignment",
+        "continuation-line", "semicolon-comment"])
 def test_the_console_script_check_agrees_with_importlib_metadata(tmp_path, entry_points):
     # Installers read entry_points.txt with importlib.metadata's parser, which has
     # no [DEFAULT] inheritance. A name only inherited there installs no command.
     dist_info = tmp_path / "prismabuild-0.1.0.dist-info"
     dist_info.mkdir()
     (dist_info / "entry_points.txt").write_bytes(entry_points)
-    installed = [entry.value for entry in importlib.metadata.PathDistribution(dist_info).entry_points
-                 if entry.group == "console_scripts" and entry.name == "prismabuild"]
+    try:
+        installed = [entry.value for entry in importlib.metadata.PathDistribution(dist_info).entry_points
+                     if entry.group == "console_scripts" and entry.name == "prismabuild"]
+    except (TypeError, ValueError):  # a line the installer's reader cannot split
+        installed = []
     accepted = release.console_script(entry_points.decode()) == "prismabuild.core:main"
     assert accepted == (installed == ["prismabuild.core:main"])
 
