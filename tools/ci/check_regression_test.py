@@ -82,7 +82,25 @@ def _test_bodies(source: str) -> dict[str, tuple[str, bool]]:
     return tests
 
 
+def _authenticated_batch(pull: dict) -> bool:
+    # Match issue-link's batch identity. The API's base repository is trusted;
+    # neither a fork branch name nor a copied bot login grants this exemption.
+    author = pull.get("user") or {}
+    head = pull.get("head") or {}
+    repository = ((pull.get("base") or {}).get("repo") or {}).get("full_name")
+    return (isinstance(repository, str) and bool(repository)
+            and pull.get("draft") is True
+            and head.get("ref", "").startswith("mergify/merge-queue/")
+            and author.get("login") == "mergify[bot]"
+            and author.get("id") == 37929162
+            and author.get("type") == "Bot"
+            and (head.get("repo") or {}).get("full_name") == repository)
+
+
 def check_pull_request(pull: dict, files: list[dict]) -> Verdict:
+    if _authenticated_batch(pull):
+        return Verdict(True, "Authenticated Mergify batch draft; regression-test is not applicable. "
+                       "Member PRs receive their own regression-test checks.")
     # The release train opens tl/release-* PRs that only merge PRs this check
     # already judged; issue-link exempts the same branches from its name rule.
     if (pull.get("head") or {}).get("ref", "").startswith(_RELEASE_BRANCH):
