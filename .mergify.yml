@@ -27,6 +27,14 @@
 # with "@mergifyio queue" or "requeue". Mergify's default restrictions refuse
 # commands from a sender without write permission, so the app is allowed by
 # name, alongside people with write permission.
+#
+# TL3's pull requests enter the default queue another way: TL3 tests each
+# change through PrismaBuild and reviews it, posts its "TL3 approval" check on
+# the reviewed head, then adds "tl3-queue". That pair replaces "queue" and
+# "pr-gate". TL3 reads the batch draft's checks, not the pull request's own, so
+# a pr-gate condition would leave a failing pull request unqueued without TL3
+# noticing. The batch's full "gate" still has to pass before anything merges.
+# TL3 finds its rule's check by name, so keep "Queue TL3-approved PRs".
 commands_restrictions:
   queue:
     conditions:
@@ -65,9 +73,14 @@ queue_rules:
   - name: default
     queue_conditions:
       - base = main
-      - label = queue
       - -draft
-      - check-success = pr-gate
+      - or:
+          - and:
+              - label = queue
+              - check-success = pr-gate
+          - and:
+              - label = tl3-queue
+              - check-success = @tl3-robtand/TL3 approval
     merge_conditions:
       - check-success = gate
     merge_method: merge
@@ -92,3 +105,12 @@ pull_request_rules:
       - -draft
     actions:
       queue:
+  - name: Queue TL3-approved PRs
+    conditions:
+      - base = main
+      - label = tl3-queue
+      - -draft
+      - check-success = @tl3-robtand/TL3 approval
+    actions:
+      queue:
+        name: default
