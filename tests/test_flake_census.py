@@ -236,3 +236,14 @@ def test_reproducer_preserves_literal_node_id_without_mentions_or_shell_expansio
     parsed = subprocess.run(['bash', '-c', 'set -- ' + command + '; printf "%s" "${!#}"'],
                             check=True, capture_output=True, text=True, timeout=60)
     assert parsed.stdout == node
+
+
+def test_quarantine_of_a_function_owns_its_parameters_but_not_sibling_functions():
+    samples = samples_for({arch: [
+        {'tests/a.py::test_x[param]': 'passed', 'tests/a.py::test_x_extra': 'passed'},
+        {'tests/a.py::test_x[param]': 'failed', 'tests/a.py::test_x_extra': 'failed'}]
+        for arch in ['x64', 'arm64']})
+    result = census.classify_samples(samples, 2, [{'target': 'tests/a.py::test_x', 'issue': 123}])
+    assert result['classification']['quarantined'] == ['tests/a.py::test_x[param]']
+    assert result['classification']['intermittent'] == ['tests/a.py::test_x_extra']
+    assert result['tests']['tests/a.py::test_x[param]']['owners'] == [123]
