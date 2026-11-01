@@ -169,3 +169,16 @@ def test_label_changes_do_not_rerun_the_gate_workflow():
     workflow = yaml.safe_load((ROOT / '.github/workflows/gate.yml').read_text())
     types = set(workflow['on']['pull_request']['types'])
     assert types == {'opened', 'synchronize', 'reopened'}
+
+
+def test_a_superseded_run_stops_its_jobs():
+    # A new push cancels the PR's previous run (cancel-in-progress), but GitHub
+    # keeps running any job whose condition calls always(). A cancelled pr-gate
+    # kept testing a stale head for up to 30 minutes and held the concurrency
+    # slot the current head was waiting for. !cancelled() still runs a job after
+    # a failed dependency, which is what these conditions need.
+    import yaml
+    workflow = yaml.safe_load((ROOT / '.github/workflows/gate.yml').read_text())
+    assert workflow['concurrency']['cancel-in-progress'] is True
+    conditions = {name: str(job.get('if', '')) for name, job in workflow['jobs'].items()}
+    assert [name for name, condition in conditions.items() if 'always()' in condition] == []
