@@ -324,3 +324,18 @@ def test_environment_lanes_require_a_real_owner_and_capability(tmp_path, owner, 
         select.create_plan(tree(tmp_path), [], durations={'files': {}}, quarantine={
             'environment_lanes': [{'target': 'tests/test_direct.py', 'lane': lane,
                                    'issue': owner, 'reason': 'Requires the broker'}]})
+
+
+def test_whole_population_trigger_does_not_build_an_unused_import_graph(tmp_path, monkeypatch):
+    root = tree(tmp_path)
+    expected = plan(root, ['tools/ci/gate_run.py'], mode='full')
+    def unexpected_scan(*args):
+        raise AssertionError('whole-population planning parsed an unnecessary dependency graph')
+    monkeypatch.setattr(select, 'dependency_index', unexpected_scan)
+    for mode in ('selection', 'full'):
+        actual = plan(root, ['tools/ci/gate_run.py'], mode=mode)
+        assert selected(actual) == selected(expected)
+        assert {row['path'] for row in actual['shadow_selected']} == selected(expected)
+        assert actual['population'] == expected['population']
+        assert actual['deferred'] == expected['deferred']
+        assert actual['deselect'] == expected['deselect']

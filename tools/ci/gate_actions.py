@@ -93,8 +93,10 @@ def main(argv=None):
         plan = json.loads(args.plan.read_text())
         matrix = json.loads(args.matrix.read_text())
         costs = json.loads(args.durations.read_text())['files']
-        assignments = partition.shards([row['path'] for row in plan['selected']], costs,
-                                      matrix['shards'], unknown_seconds=partition.default_unknown_seconds(costs))
+        balance = partition.setup_shards if matrix.get('partition') == 'setup-v2' else partition.shards
+        options = {'setup_seconds': matrix['setup_seconds'], 'isolation_seconds': matrix['isolation_seconds']} if matrix.get('partition') == 'setup-v2' else {}
+        assignments = balance([row['path'] for row in plan['selected']], costs,
+                              matrix['shards'], unknown_seconds=partition.default_unknown_seconds(costs), **options)
         if (len(matrix['include']) != len(assignments) or
                 sorted(row['index'] for row in matrix['include']) != list(range(len(assignments)))):
             raise ValueError('matrix indices do not match the complete partition')
@@ -126,7 +128,7 @@ def main(argv=None):
         print(message)
         if args.summary:
             with args.summary.open('a') as handle:
-                handle.write('## Full gate verdict\n\n' + message + '\n')
+                handle.write('## Gate verdict\n\n' + message + '\n')
         return result['exit_code']
     except (OSError, ValueError, KeyError, TypeError) as error:
         print('NO_VERDICT: ' + str(error), file=sys.stderr)
