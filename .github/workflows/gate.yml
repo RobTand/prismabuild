@@ -1,7 +1,9 @@
 name: Merge gate
 'on':
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    # No label triggers: Mergify adds and removes its own labels on queued pull
+    # requests, and each would rerun pr-gate, which the queue requires.
+    types: [opened, synchronize, reopened]
 permissions:
   contents: read
 concurrency:
