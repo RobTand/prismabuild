@@ -1,0 +1,306 @@
+[
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "<module>",
+      "unresolved": "256",
+      "binding": "MAX_RETENTION_KEYS"
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_retention.py:<module> binding MAX_RETENTION_KEYS. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_reader_gate",
+      "fields": [
+        "approvals",
+        "config_sha256",
+        "deferred_inventory_complete",
+        "expires_unix",
+        "generations",
+        "inventory_attested_by",
+        "inventory_complete",
+        "issued_unix",
+        "members",
+        "queue_id",
+        "queue_root",
+        "schema",
+        "store_id"
+      ],
+      "binding": "fields"
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_retention.py:_verify_attempt_reader_gate binding fields. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/test_runtime_inventory.py",
+      "owner": "observe_inventory_process",
+      "unresolved": "Path(f\"/proc/{pid}/stat\").read_text().rpartition(\")\")[2].split()",
+      "binding": "fields"
+    },
+    "count": 1,
+    "reason": "Already-merged #2279 source on main. This local list parses /proc/<pid>/stat for process state and start ticks. It is not a durable record member boundary."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/test_runtime_inventory.py",
+      "owner": "reconcile_attempt",
+      "unresolved": "{shard['action_key'] for shard in progress.get('shards', []) if shard.get('action_key')}",
+      "binding": "keys"
+    },
+    "count": 1,
+    "reason": "Already-merged #2279 source on main. This local set collects published action keys from retained pbtest progress and log evidence when the controller died. It is not a record field allowlist."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "survey_attempt_log_retention",
+      "unresolved": "_select_attempt_retention_keys(queue.root, cursor='', limit=max_keys)",
+      "binding": "keys"
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_retention.py:survey_attempt_log_retention binding keys. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "survey_attempt_log_retention",
+      "unresolved": "_select_attempt_retention_keys(queue.root, cursor=cursor, limit=max_keys)",
+      "binding": "keys"
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_retention.py:survey_attempt_log_retention binding keys. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_archive.py",
+      "owner": "_load_attempt_retention_config",
+      "fields": [
+        "archive_root",
+        "dataset",
+        "dataset_guid",
+        "queue_id",
+        "schema",
+        "store_id"
+      ],
+      "binding": "required"
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_archive.py:_load_attempt_retention_config binding required. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_read_attempt_retention_cursor",
+      "fields": [
+        "after_key",
+        "queue_id",
+        "schema"
+      ]
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_retention.py:_read_attempt_retention_cursor. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_reader_gate",
+      "fields": [
+        "approvals",
+        "config_sha256",
+        "deferred_inventory_complete",
+        "expires_unix",
+        "generations",
+        "inventory_attested_by",
+        "inventory_complete",
+        "issued_unix",
+        "members",
+        "queue_id",
+        "queue_root",
+        "schema",
+        "store_id"
+      ]
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_retention.py:_verify_attempt_reader_gate. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_archive.py",
+      "owner": "_load_attempt_retention_config",
+      "fields": [
+        "archive_root",
+        "dataset",
+        "dataset_guid",
+        "queue_id",
+        "schema",
+        "store_id"
+      ]
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_archive.py:_load_attempt_retention_config. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_reader_gate",
+      "fields": [
+        "by",
+        "config_sha256",
+        "inventory_sha256",
+        "reason",
+        "unix"
+      ]
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_retention.py:_verify_attempt_reader_gate. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_archive.py",
+      "owner": "_stream_archived_attempt_log",
+      "fields": [
+        "bytes",
+        "compressed_bytes",
+        "compressed_sha256",
+        "sha256"
+      ]
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_archive.py:_stream_archived_attempt_log. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_reader_gate",
+      "fields": [
+        "bytes",
+        "path",
+        "sha256"
+      ]
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_retention.py:_verify_attempt_reader_gate. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_reader_gate",
+      "fields": [
+        "capabilities",
+        "generation",
+        "id",
+        "role",
+        "schema",
+        "verified_unix"
+      ]
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_retention.py:_verify_attempt_reader_gate. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_archive.py",
+      "owner": "_read_attempt_archive_manifest",
+      "fields": [
+        "chunks",
+        "descriptor",
+        "queue_id",
+        "schema",
+        "store_id"
+      ]
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_archive.py:_read_attempt_archive_manifest. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_generation_receipts",
+      "fields": [
+        "commit",
+        "content_sha256",
+        "directory",
+        "generation",
+        "receipt_sha256"
+      ]
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_retention.py:_verify_attempt_generation_receipts. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_archive.py",
+      "owner": "_read_attempt_archive_manifest",
+      "fields": [
+        "descriptor",
+        "manifest_sha256",
+        "queue_id",
+        "schema",
+        "store_id"
+      ]
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_archive.py:_read_attempt_archive_manifest. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_reader_gate",
+      "fields": [
+        "evidence",
+        "generation",
+        "id",
+        "role"
+      ]
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_retention.py:_verify_attempt_reader_gate. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_current_attempt_readers",
+      "fields": [
+        "generation",
+        "root"
+      ]
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_retention.py:_verify_current_attempt_readers. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/attempt_retention.py",
+      "owner": "_verify_attempt_reader_gate",
+      "fields": [
+        "pb_lead",
+        "tl_lead"
+      ]
+    },
+    "count": 1,
+    "reason": "Capture the existing source policy at src/prismabuild/attempt_retention.py:_verify_attempt_reader_gate. The canonical scanner found this entry missing from field_sets.json. The exact owner source is unchanged since approved parent a5ac35b9c3036be9d1761c4797e188e816f2b1ce. This addition pins the existing policy without changing reader acceptance or removing any prior pin. Round 4 restores this #2023 policy after taking main a85f3886c3 metadata verbatim; no main policy is removed."
+  }
+]
