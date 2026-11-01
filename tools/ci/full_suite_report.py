@@ -18,15 +18,33 @@ from typing import Protocol
 import xml.etree.ElementTree as ET
 
 LABEL = 'full-suite'
-MARKER = re.compile(r'<!-- full-suite: (.*?) -->')
+MARKER = re.compile(r'<!-- full-suite: ([^\r\n]*?) -->')
 
 
 def safe_text(text: str) -> str:
     return str(text).replace('@', '＠')
 
 
+def literal_report_text(text: str) -> str:
+    """Render untrusted inline text without Markdown, HTML, or mention effects."""
+    escaped = html.escape(safe_text(' '.join(str(text).splitlines())), quote=False)
+    return re.sub(r'([\\`*_{}\[\]()#+.!|>~-])', r'\\\1', escaped)
+
+
 def marker(node: str) -> str:
-    return '<!-- full-suite: ' + html.escape(node).replace('@', '&#64;') + ' -->'
+    encoded = html.escape(node).replace('@', '&#64;').replace('\r', '&#13;').replace('\n', '&#10;')
+    return '<!-- full-suite: ' + encoded + ' -->'
+
+
+def ownership_nodes(body: str) -> list[str]:
+    """Only the leading standalone metadata block can declare test ownership."""
+    nodes = []
+    for line in body.split('\n'):
+        match = MARKER.fullmatch(line)
+        if match is None:
+            break
+        nodes.append(html.unescape(match.group(1)))
+    return nodes
 
 
 def classify_failures(now: dict, before: dict, quarantine: set[str]) -> dict[str, list[str]]:
@@ -47,8 +65,8 @@ def owners(issues: list[dict]) -> dict[str, int]:
     result = {}
     for issue in sorted(issues, key=lambda issue: issue['number']):
         if not issue.get('pull_request') and LABEL in [label['name'] for label in issue.get('labels', [])]:
-            for node in MARKER.findall(issue.get('body') or ''):
-                result.setdefault(html.unescape(node), issue['number'])
+            for node in ownership_nodes(issue.get('body') or ''):
+                result.setdefault(node, issue['number'])
     return result
 
 
@@ -57,7 +75,7 @@ def issue_plan(now: dict, before: dict, quarantine: set[str], owned: dict[str, i
     groups = classify_failures(now, before, quarantine)
     plans = []
     new = groups['new']
-    pr_text = '\n'.join(f"- #{pr['number']}: {safe_text(pr['title'])}" for pr in prs) or '- None found.'
+    pr_text = '\n'.join(f"- #{pr['number']}: {literal_report_text(pr['title'])}" for pr in prs) or '- None found.'
 
     def failure_body(node):
         base = before.get(node, {}).get('last_pass_sha') or previous_sha
@@ -76,9 +94,9 @@ def issue_plan(now: dict, before: dict, quarantine: set[str], owned: dict[str, i
 
     if len(new) > 20:
         # Every test marker owns its failure, including after the baseline recovers.
-        body = ('More than 20 new failures may indicate infrastructure trouble.\n\n'
-                + '\n'.join(marker(node) for node in new)
-                + f'\n\nCommit range: {previous_sha}...{sha}\nRun: {run_url}\n\n'
+        body = ('\n'.join(marker(node) for node in new)
+                + '\n\nMore than 20 new failures may indicate infrastructure trouble.\n\n'
+                + f'Commit range: {previous_sha}...{sha}\nRun: {run_url}\n\n'
                 + f'Merged PRs:\n{pr_text}\n\n' + failure_body(new[0]))
         plans.append({'kind': 'issue', 'title': f'[P2] Full suite: {len(new)} new failures on main',
                       'body': body, 'labels': [LABEL]})
@@ -93,7 +111,7 @@ def issue_plan(now: dict, before: dict, quarantine: set[str], owned: dict[str, i
     for node in groups['recovered']:
         if node in owned:
             plans.append({'kind': 'comment', 'number': owned[node],
-                          'body': f'{marker(node)}\n\n{safe_text(node)} passed at {sha}.\n\nRun: {run_url}\n'})
+                          'body': f'{marker(node)}\n\n{literal_report_text(node)} passed at {sha}.\n\nRun: {run_url}\n'})
     return plans
 
 
@@ -183,7 +201,7 @@ def apply_plan(api: IssueAPI, plans: list[dict]) -> list[dict]:
             # Reruns can happen after filing but before the artifact upload.
             # Look again at current owners before each create, without Search's lag.
             current = owners(api.pages('issues?state=open&labels=full-suite'))
-            nodes = [html.unescape(node) for node in MARKER.findall(plan['body'])]
+            nodes = ownership_nodes(plan['body'])
             existing = sorted({current[node] for node in nodes if node in current})
             if existing:
                 for number in existing:
@@ -192,10 +210,8 @@ def apply_plan(api: IssueAPI, plans: list[dict]) -> list[dict]:
                 unowned = [node for node in nodes if node not in current]
                 if not unowned:
                     continue
-                plan = dict(plan, body='\n'.join(
-                    line for line in plan['body'].splitlines()
-                    if not MARKER.fullmatch(line) or html.unescape(
-                        MARKER.fullmatch(line).group(1)) in unowned))
+                plan = dict(plan, body='\n'.join(marker(node) for node in unowned)
+                            + '\n\n' + plan['body'].partition('\n\n')[2])
             payload = {k: v for k, v in plan.items() if k != 'kind'}
             result = api.request('issues', payload)
         else:

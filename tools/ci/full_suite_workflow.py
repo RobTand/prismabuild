@@ -49,9 +49,15 @@ def collect_shards(directory: Path, manifest: dict) -> dict:
         if (result.get('verdict') not in {'pass', 'fail'} or result.get('head_sha') != manifest['sha']
                 or sorted(result.get('files', [])) != sorted(entry['files'])):
             raise ValueError('shard has no complete verdict or mismatched identity')
+        # A definite failure is final for retry policy, even after interruption.
+        # Baselines require separate evidence that pytest and timing collection finished.
+        code = result.get('pytest_exit_code')
+        if (type(code) is not int or code not in {0, 1} or result.get('infrastructure_reason')
+                or result.get('budget', {}).get('status') not in {'pass', 'fail'}):
+            raise ValueError('shard has no complete runner record')
         rows = report.parse_junit((folder / 'junit.xml').read_bytes())
-        if not rows:
-            raise ValueError('shard JUnit contains no outcomes')
+        if not rows or {node.split('::', 1)[0] for node in rows} != set(entry['files']):
+            raise ValueError('shard JUnit does not cover every assigned file')
         if tests.keys() & rows.keys():
             raise ValueError('duplicate tests across shards')
         for row in rows.values():

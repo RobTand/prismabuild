@@ -11,11 +11,12 @@ controls recorded by the gate also stay out: fleet broker/runtime and archival
 replay inputs are unavailable on hosted runners. Precise node exclusions retain
 portable cases in mixed files. The plan records every such exclusion with its
 owning issue. Ordinary quarantine never removes nightly coverage. The matrix has
-16 duration-balanced shards assigned round-robin across `ubuntu-24.04` and
+four duration-balanced shards assigned round-robin across `ubuntu-24.04` and
 `ubuntu-24.04-arm`, with four xdist workers per job and bounded native threads.
-Sixteen jobs leave capacity within the public repository's approximate
-20-job allowance. The first full hosted trial finished in 300 seconds, below
-the ten-minute target. Hosted measurements determine later adjustments.
+Four nightly jobs leave room for a full 16-job queue gate within the
+repository's approximate 20-job allowance and pay shard setup four times
+instead of sixteen. The earlier 16-shard hosted trials below measured 300
+and 311 seconds; the four-shard configuration has not yet been timed.
 
 One concurrency group permits one active run and one pending run, with
 `cancel-in-progress: false`. A pytest test failure is never retried. The runner
@@ -36,7 +37,9 @@ including after failure. The final report job runs with `if: always()` and the
 workflow's own token with `issues: write` and `actions: read`.
 
 Before reporting, it requires every expected shard's matching SHA, assignment,
-terminal test verdict and JUnit file. Missing or invalid input writes an
+terminal test verdict, pytest exit code 0 or 1, available timing coverage,
+and JUnit outcomes accounting for every assigned file. A final failure alone
+does not establish completion. Missing or invalid input writes an
 incomplete snapshot and files nothing. Such snapshots cannot become history.
 Duplicate tests across shards refuse reporting.
 
@@ -47,14 +50,16 @@ Runner identity, outcomes and durations remain in the `full-suite-results` artif
 The reporter compares against the latest complete, non-dry-run results artifact
 from this workflow on `main`. Dry runs never suppress later issue filing.
 A new failure creates a `[P2] Full suite: … fails on main` issue with a
-`full-suite` label. Exact hidden test markers identify existing open owners;
-recurrences comment on them. Recovery comments say `passed at SHA` without
+`full-suite` label. A leading block of standalone hidden test markers identifies
+existing open owners. Markers inside failure excerpts or other body text have
+no ownership effect. Recurrences comment on their owners. Recovery comments say `passed at SHA` without
 closing the owner. More than 20 new failures create one summary issue.
 Quarantine and cost-exclusion entries suppress new filing, never execution.
 
 Issue text includes the commit range, merged PRs, first failure lines, run URL
-and a PrismaBuild reproducer. Mention characters are replaced. Runtime token
-values are redacted from REST payloads and output artifacts. GitHub I/O uses
+and a PrismaBuild reproducer. Test IDs and PR titles render as escaped literal
+text, including Markdown, HTML and backticks. Mention characters are replaced.
+Runtime token values are redacted from REST payloads and output artifacts. GitHub I/O uses
 REST only; signed artifact downloads never receive the authorization header.
 
 ## Rerun
@@ -165,3 +170,19 @@ Missing `py-spy` is among the quarantined failures; the workflow does not claim
 those tests passed. Production baseline retrieval and recovery comments are
 covered by deterministic tests; the proof did not seed a results artifact on
 `main` or exercise a real recovery comment.
+
+## Baseline and recovery proof on main
+
+Dry runs never become baselines and never post comments. After merge, dispatch
+a complete run on `main` with `dry_run: false` and retain its results artifact.
+Dispatch a second run with `dry_run: true` to verify it retrieves that first
+artifact and classifies against its SHA without writing. Two dry runs alone
+cannot exercise baseline retrieval unless a reported baseline already exists.
+
+To exercise a real recovery comment, retain an open full-suite issue for a
+nonquarantined failure recorded in a complete, non-dry baseline. Merge its fix
+and dispatch on `main` with `dry_run: false`. Verify the recovered classification
+and the owner's `passed at SHA` comment through REST, and verify the issue stays
+open. If no such failure exists, wait for an observed failure and its normal fix;
+do not introduce a deliberate failure on main. A second dry run can preview this
+classification but cannot post the recovery comment.

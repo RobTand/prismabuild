@@ -14,7 +14,7 @@ concurrency:
   group: full-suite-main
   cancel-in-progress: false
 env:
-  FULL_SUITE_SHARDS: '16'
+  FULL_SUITE_SHARDS: '4'
   OMP_NUM_THREADS: '1'
   MKL_NUM_THREADS: '1'
   OPENBLAS_NUM_THREADS: '1'

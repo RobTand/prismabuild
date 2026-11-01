@@ -32,7 +32,7 @@ def test_missing_shard_or_no_verdict_refuses_complete_reporting(tmp_path):
         path = tmp_path / str(index)
         path.mkdir()
         (path / 'result.json').write_text(json.dumps({'verdict': 'pass', 'head_sha': 'a' * 40,
-                                                     'files': [f'tests/{name}.py']}))
+            'files': [f'tests/{name}.py'], 'pytest_exit_code': 0, 'budget': {'status': 'pass'}}))
         (path / 'junit.xml').write_text(f'<testsuite><testcase file="tests/{name}.py" classname="tests.{name}" name="test_x"/></testsuite>')
     assert workflow.collect_shards(tmp_path, manifest)['tests/a.py::test_x']['outcome'] == 'passed'
     (tmp_path / '1/result.json').write_text(json.dumps({'verdict': None}))
@@ -51,7 +51,7 @@ def test_nightly_workflow_uses_hosted_gate_tools_and_always_reports():
     assert {'schedule', 'workflow_dispatch'} <= set(triggers)
     assert value['concurrency']['cancel-in-progress'] is False
     assert value['jobs']['suite']['strategy']['fail-fast'] is False
-    assert value['env']['FULL_SUITE_SHARDS'] == '16'
+    assert value['env']['FULL_SUITE_SHARDS'] == '4'
     assert value['jobs']['retry-plan']['needs'] == ['plan', 'suite']
     assert value['jobs']['retry-suite']['strategy']['fail-fast'] is False
     assert value['jobs']['report']['if'] == 'always()'
