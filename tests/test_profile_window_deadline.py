@@ -158,15 +158,26 @@ def test_direct_execution_deadline_still_governs_after_a_profile_window(
         'argv': [sys.executable, '-c', 'import signal; signal.pause()'],
     }
     original = pb._ProfileSession.action_returncode
+    real_settled = pb._process_group_settled
+    sleeps = []
+
+    class ExpiredClock:
+        @staticmethod
+        def monotonic():
+            return 101.0
+
+    def settled_only_after_a_sleep(process, pgid):
+        # Pin the interleaving: the profiler leader has exited while the
+        # action it relayed is still alive, so the reap loop must wait.
+        return bool(sleeps) and real_settled(process, pgid)
+
     def expired(self, process=None, *, deadline=None):
         wait_for_profile_file(
             self.exit_status_path, lambda text: json.loads(text).get('phase') == 'launched')
-        class ExpiredClock:
-            @staticmethod
-            def monotonic():
-                return 101.0
+        process.wait()
         with monkeypatch.context() as patch:
             patch.setattr(pb, 'time', ExpiredClock())
+            patch.setattr(pb, '_process_group_settled', settled_only_after_a_sleep)
             return original(self, process, deadline=100.0)
     monkeypatch.setattr(pb._ProfileSession, 'action_returncode', expired)
     with pytest.raises(pb.LocalActionError, match='timed out') as raised:
