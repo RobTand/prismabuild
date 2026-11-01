@@ -162,7 +162,8 @@ def census_manifest(root, sha, repeats, shard_count, *, quarantine_issue=None):
         plan['shadow_selected'] = [row for row in plan['shadow_selected'] if row['path'] in targets]
     files = [row['path'] for row in plan['selected']]
     plan['estimate'] = nightly.gate_select.estimate(files, durations)
-    partitions = nightly.gate_partition.shards(files, durations['files'], shard_count,
+    count = min(shard_count, len(files)) if quarantine_issue is not None else shard_count
+    partitions = nightly.gate_partition.shards(files, durations['files'], count,
         unknown_seconds=nightly.gate_partition.default_unknown_seconds(durations['files']))
     include = []
     for repeat in range(repeats):
