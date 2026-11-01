@@ -44,6 +44,23 @@ def _worker_loop():
     return module
 
 
+class _CallingThread:
+    """The kernel's affinity for the thread that runs the loop."""
+
+    def __init__(self, affinity) -> None:
+        self.affinity = affinity
+        self.applied: list[set[int]] = []
+
+    def get(self, _pid):
+        if isinstance(self.affinity, BaseException):
+            raise self.affinity
+        return set(self.affinity)
+
+    def set(self, _pid, mask) -> None:
+        self.affinity = set(mask)
+        self.applied.append(set(mask))
+
+
 class _Ledger:
     def __init__(self, seen: dict[str, int]) -> None:
         self._seen = seen
@@ -63,8 +80,13 @@ class _Ledger:
 
 
 def _offer(module, argv: list[str], *, affinity, cpu_count: int = 80,
-           pinned=None) -> dict[str, int]:
-    """Run one poll of the real loop and return the capacity it retired to."""
+           pinned=None, topology=None) -> dict[str, int]:
+    """Run one poll of the real loop and return the capacity it retired to.
+
+    ``affinity`` is the inherited mask, or a ``_CallingThread`` to inspect
+    afterwards.  With ``topology`` (a synthetic sysfs CPU root) the loop pins
+    itself through the real topology code instead of a stubbed pin.
+    """
 
     seen: dict[str, int] = {}
 
@@ -92,10 +114,13 @@ def _offer(module, argv: list[str], *, affinity, cpu_count: int = 80,
         def placement_census(self) -> dict:
             return {}
 
-    def sched_getaffinity(_pid):
-        if isinstance(affinity, BaseException):
-            raise affinity
-        return set(affinity)
+    thread = affinity if isinstance(affinity, _CallingThread) else _CallingThread(affinity)
+    topology_code = module.cpu_topology
+    pin = (mock.patch.object(topology_code, "pin_to_preferred", return_value=pinned)
+           if topology is None else
+           mock.patch.multiple(topology_code,
+                               pin_to_preferred=partial(topology_code.pin_to_preferred, topology),
+                               inherited_tiers=partial(topology_code.inherited_tiers, topology)))
 
     with tempfile.TemporaryDirectory(prefix="pb-affinity-") as scratch:
         private = Path(scratch)
@@ -112,9 +137,10 @@ def _offer(module, argv: list[str], *, affinity, cpu_count: int = 80,
              mock.patch.object(module, "PUBLICATION_LOCK_ROOT", private / "offer-locks"), \
              mock.patch.object(module.container_images, "InventoryCache", partial(
                  module.container_images.InventoryCache, root=private / "images")), \
-             mock.patch.object(module.cpu_topology, "pin_to_preferred", return_value=pinned), \
+             pin, \
              mock.patch.object(module.os, "cpu_count", return_value=cpu_count), \
-             mock.patch.object(module.os, "sched_getaffinity", sched_getaffinity), \
+             mock.patch.object(module.os, "sched_getaffinity", thread.get), \
+             mock.patch.object(module.os, "sched_setaffinity", thread.set), \
              mock.patch.object(sys, "argv", ["worker_loop.py", *argv]):
             assert module.main() == 0
     return seen
@@ -162,6 +188,32 @@ def test_the_pinned_path_still_offers_what_it_pinned() -> None:
                    pinned={5, 6, 7})
 
     assert offer["cpu"] == 3
+
+
+def test_the_loop_returns_its_caller_the_affinity_it_inherited(tmp_path) -> None:
+    """The pin lasts as long as the loop, not as long as its caller (#2446).
+
+    A GitHub-hosted runner's four vCPUs are two cores with two threads each.
+    While it serves, the loop pins itself to one thread per core, and every
+    action it launches inherits that pin.  ``worker.main`` runs the loop in its
+    caller's thread, so a pin still in place when the loop returned left the
+    caller on half of the mask it was given.
+    """
+
+    root = tmp_path / "devices" / "system" / "cpu"
+    for cpu in range(4):
+        siblings = root / f"cpu{cpu}" / "topology" / "thread_siblings_list"
+        siblings.parent.mkdir(parents=True)
+        siblings.write_text(f"{cpu % 2},{cpu % 2 + 2}\n")
+    (root / "online").write_text("0-3\n")
+    thread = _CallingThread({0, 1, 2, 3})
+
+    offer = _offer(_worker_loop(), BASE, affinity=thread, topology=root)
+
+    assert thread.applied[0] == {0, 1}, "the loop did not pin while it served"
+    assert offer["cpu"] == 2
+    assert thread.affinity == {0, 1, 2, 3}, (
+        "the loop's pin outlived the loop and narrowed its caller")
 
 
 def test_a_platform_with_no_affinity_call_falls_back_to_the_machine_count(
