@@ -183,3 +183,26 @@ def test_long_files_start_first_without_changing_assigned_coverage(tmp_path):
         execute=execute, affinity={1, 2})
     assert code == 0
     assert observed == ['tests/test_z_long.py', 'tests/test_b_medium.py', 'tests/test_a_short.py']
+
+
+def test_a_long_file_can_use_both_assigned_workers(tmp_path):
+    """File ownership stays with this shard, while test cases use both CPUs."""
+    import json
+    root = tmp_path / 'project'
+    (root / 'tests').mkdir(parents=True)
+    (root / 'tools/ci').mkdir(parents=True)
+    (root / 'tools/ci/gate_budget.json').write_text(json.dumps({'seconds': 20, 'slow': {}}))
+    (root / 'pyproject.toml').write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')
+    path = 'tests/test_parallel_file.py'
+    (root / path).write_text('''from pathlib import Path
+import pytest
+
+@pytest.mark.parametrize('case', range(4))
+def test_case(case, worker_id):
+    Path(__file__).with_name('worker-' + str(case)).write_text(worker_id)
+''')
+    plan = {'selected': [{'path': path, 'estimated_seconds': 100}], 'deselect': []}
+    code = runner.run_plan(plan, root=root, output=root / 'result.json',
+                           junit=root / 'junit.xml', workers=2, affinity={0, 1})
+    assert code == 0
+    assert len({p.read_text() for p in (root / 'tests').glob('worker-*')}) == 2
