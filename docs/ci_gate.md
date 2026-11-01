@@ -204,8 +204,9 @@ the hosted trial failed representative cleanup/scratch controls. The gate does
 not install a fleet supervisor or broker, fabricate a shared runtime, or relax
 production containment to make those controls pass.
 
-Both `test_record_compatibility.py` and
-`test_current_receipt_compat_composition.py` are included. Hosted canary
+`test_record_compatibility.py`, `test_current_receipt_compat_composition.py`
+and `test_compat_bundle_cache_isolation.py` are included (the last reaches the
+same stable-path sandbox; it joined after #2435). Hosted canary
 41247411735 passed all 24 compatibility cases and eight selected-interpreter
 controls on both architectures. Initial trials refused UID-map setup; disabling
 Ubuntu's AppArmor userns restriction allowed namespace entry. The compatibility

@@ -87,7 +87,8 @@ def test_compat_proc_probe_runs_once_per_session_and_keeps_its_pid_namespace(com
         child = run()
         assert child.returncode == 0 and "2 passed" in child.stdout, child.stdout + child.stderr
         calls = [json.loads(line) for line in (directory / "probe-calls.jsonl").read_text().splitlines()]
-        assert calls == [["--unshare-pid", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "true"]] * (session + 1)
+        assert calls == [["--unshare-user", "--uid", "1000", "--gid", "1000", "--unshare-pid",
+                          "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "true"]] * (session + 1)
 
 
 def test_repository_conftest_refuses_the_real_receipt_population_before_execution(compat_namespace_session):

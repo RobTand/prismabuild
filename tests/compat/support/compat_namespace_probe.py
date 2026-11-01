@@ -10,7 +10,10 @@ import socket
 import subprocess
 
 
-BWRAP_NAMESPACE_ARGS = ("--unshare-pid", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc")
+# The fixtures and goldens record owner 1000:1000, so the sandbox presents that
+# owner whatever user runs the suite (hosted runners are 1001:1001).
+BWRAP_NAMESPACE_ARGS = ("--unshare-user", "--uid", "1000", "--gid", "1000", "--unshare-pid",
+                        "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc")
 PROC_MOUNT_ERROR = "bwrap: Can't mount proc on /newroot/proc: Operation not permitted"
 
 
