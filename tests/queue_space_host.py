@@ -6,7 +6,6 @@ win. Client bootstrap programs get the same simulated host in their children.
 """
 import os
 from pathlib import Path
-import types
 
 
 def install_host_space(state):
@@ -16,7 +15,18 @@ def install_host_space(state):
     sample = os.statvfs_result((4096, 4096, (100 << 30) // 4096,
                                (100 << 30) // 4096, available // 4096,
                                1000, 900, 1 if state == "inodes" else 900, 0, 255))
-    filesystem_capacity.os = types.SimpleNamespace(**{**vars(os), "statvfs": lambda path: sample})
+    read_room = filesystem_capacity.local_disk_room
+    host_statvfs = filesystem_capacity.os.statvfs
+
+    def room(path, floor_percent, *, statvfs=None):
+        # Only default zero-floor observations use the simulated host. Explicit
+        # samples, including module/global OS patches, keep their own meaning.
+        if (statvfs is None and floor_percent == 0
+                and filesystem_capacity.os.statvfs is host_statvfs):
+            statvfs = lambda path: sample
+        return read_room(path, floor_percent, statvfs=statvfs)
+
+    filesystem_capacity.local_disk_room = room
 
 
 def pytest_configure(config):
