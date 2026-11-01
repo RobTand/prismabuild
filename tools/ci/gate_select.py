@@ -21,7 +21,7 @@ PATH_SPEC = importlib.util.spec_from_file_location('gate_paths', Path(__file__).
 gate_paths = importlib.util.module_from_spec(PATH_SPEC)
 PATH_SPEC.loader.exec_module(gate_paths)
 
-POLICY = 'direct-imports-bound-paths-helper-closure-v2'
+POLICY = 'production-loads-bound-paths-helper-closure-v4'
 
 
 def load_gate_json(path: Path) -> dict:
@@ -73,32 +73,98 @@ def module_names(path: str) -> set[str]:
     return names
 
 
-def dependencies(source: str, path: str = '') -> tuple[set[str], set[str]]:
+def production_loads(tree: ast.AST, path: str) -> tuple[set[str], set[str]]:
+    """Recognize literal dynamic imports and resolvable Python path loaders."""
+    aliases = {'__import__': '__import__'}
+    assignments: dict[str, list[ast.AST]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for name in node.names:
+                aliases[name.asname or name.name.split('.')[0]] = name.name if name.asname else name.name.split('.')[0]
+        elif isinstance(node, ast.ImportFrom) and not node.level:
+            for name in node.names:
+                aliases[name.asname or name.name] = f'{node.module}.{name.name}'
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                if isinstance(target, ast.Name):
+                    assignments.setdefault(target.id, []).append(node)
+    modules, paths = set(), set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = gate_paths.dotted(node.func)
+        first, _, tail = name.partition('.')
+        name = aliases.get(first, '') + ('.' + tail if tail else '')
+        if name in {'importlib.import_module', '__import__'} and node.args:
+            target = node.args[0]
+            if isinstance(target, ast.Constant) and isinstance(target.value, str):
+                module = target.value
+                if module.startswith('.') and name == 'importlib.import_module':
+                    package = next((item.value for item in node.keywords if item.arg == 'package'),
+                                   node.args[1] if len(node.args) > 1 else None)
+                    if not isinstance(package, ast.Constant) or not isinstance(package.value, str):
+                        continue
+                    parts = package.value.split('.')
+                    level = len(module) - len(module.lstrip('.'))
+                    module = '.'.join(parts[:len(parts) - level + 1] + [module.lstrip('.')]).rstrip('.')
+                modules.add(module)
+        slots = {'importlib.util.spec_from_file_location': (1, 'location'),
+                 'importlib.machinery.SourceFileLoader': (1, 'path'),
+                 'importlib.machinery.SourcelessFileLoader': (1, 'path'),
+                 'runpy.run_path': (0, 'path_name')}
+        if name not in slots:
+            continue
+        position, keyword = slots[name]
+        target = next((item.value for item in node.keywords if item.arg == keyword),
+                      node.args[position] if len(node.args) > position else None)
+        if target is None:
+            continue
+        # Keep intermediate loader path literals conservatively: even a basename
+        # joined to /tmp may select a same-named repository file. Accuracy wins.
+        pending = [child.id for child in ast.walk(target) if isinstance(child, ast.Name)]
+        seen, bindings = set(), set()
+        while pending:
+            variable = pending.pop()
+            if variable in seen:
+                continue
+            seen.add(variable)
+            for assignment in assignments.get(variable, ()):
+                if assignment.value is not None:
+                    bindings.add(assignment)
+                    pending.extend(child.id for child in ast.walk(assignment.value) if isinstance(child, ast.Name))
+        evidence = ast.Module(body=[*sorted(bindings, key=lambda item: item.lineno), ast.Expr(value=target)],
+                              type_ignores=[])
+        paths.update(gate_paths.references(evidence, path))
+    return modules, paths
+
+
+def dependencies(source: str, path: str = '', *, production: bool = False) -> tuple[set[str], set[str]]:
     parsed = ast.parse(source)
     trees = [parsed]
     # Subprocess Python snippets are direct evidence too.
-    for node in ast.walk(parsed):
+    for node in (() if production else ast.walk(parsed)):
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and 'import ' in node.value:
             try:
                 trees.append(ast.parse(node.value))
             except SyntaxError:
                 pass
-    modules, paths = set(), set()
+    modules, paths = production_loads(parsed, path) if production else (set(), set())
     for tree in trees:
-        paths.update(gate_paths.references(tree, path))
+        if not production:
+            paths.update(gate_paths.references(tree, path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 modules.update(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
                 prefix = node.module or ''
                 if node.level and path:
-                    package = list(PurePosixPath(path).parent.parts)
+                    package = list(PurePosixPath(path.removeprefix('src/')).parent.parts)
                     package = package[:len(package) - node.level + 1]
                     prefix = '.'.join([*package, *([prefix] if prefix else [])])
                 if prefix:
                     modules.add(prefix)
                 modules.update(f'{prefix}.{alias.name}' if prefix else alias.name for alias in node.names)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if not production and isinstance(node, ast.Constant) and isinstance(node.value, str):
                 value = node.value
                 if not value.endswith('.py') and re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*', value):
                     modules.add(value)
@@ -106,11 +172,42 @@ def dependencies(source: str, path: str = '') -> tuple[set[str], set[str]]:
 
 
 def dependency_index(root: Path) -> dict[str, tuple[set[str], set[str]]]:
-    return {path.relative_to(root).as_posix(): dependencies(path.read_text(), path.relative_to(root).as_posix())
-            for path in sorted((root / 'tests').rglob('*.py'))}
+    return {path.relative_to(root).as_posix(): dependencies(path.read_text(), path.relative_to(root).as_posix(),
+                                                         production=directory != 'tests')
+            for directory in ('tests', 'src/prismabuild', 'tools')
+            for path in sorted((root / directory).rglob('*.py'))}
+
+
+def production_import_closure(index: dict, changed: list[str]) -> set[str]:
+    """Follow reverse production imports before selecting tests and their helpers."""
+    production = {path for path in index if not path.startswith('tests/')}
+    seeds = {path for path in changed if path.endswith('.py') and
+             path.startswith(('src/prismabuild/', 'tools/'))}
+    aliases: dict[str, set[str]] = {}
+    for path in production | seeds:
+        for alias in module_names(path):
+            aliases.setdefault(alias, set()).add(path)
+    reverse: dict[str, set[str]] = {}
+    for path in production:
+        for target in index[path][1] & (production | seeds):
+            reverse.setdefault(target, set()).add(path)
+        for dependency in index[path][0]:
+            parts = dependency.split('.')
+            for end in range(1, len(parts) + 1):
+                for target in aliases.get('.'.join(parts[:end]), ()):
+                    reverse.setdefault(target, set()).add(path)
+    affected = set(seeds)
+    pending = list(seeds)
+    while pending:
+        for importer in reverse.get(pending.pop(), ()):
+            if importer not in affected:
+                affected.add(importer)
+                pending.append(importer)
+    return affected
 
 
 def helper_importers(index: dict, changed: list[str], existing: dict | None = None) -> dict[str, set[str]]:
+    index = {path: value for path, value in index.items() if path.startswith('tests/')}
     targets_to_index = {name for name in changed if name.startswith('tests/') and name.endswith('.py')}
     targets_to_index = (set(index) | targets_to_index) if existing is None else targets_to_index - index.keys()
     if not targets_to_index:
@@ -187,7 +284,7 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
         index = dependency_index(root) if index is None else index
     if mode not in {'selection', 'full'}:
         raise ValueError('mode must be selection or full')
-    all_tests = {path for path in index if Path(path).name.startswith('test_')}
+    all_tests = {path for path in index if path.startswith('tests/') and Path(path).name.startswith('test_')}
     fast, other_lanes = tier_declarations(root)
     if fast - all_tests:
         raise ValueError(f'fast tier names missing files: {sorted(fast - all_tests)}')
@@ -198,7 +295,15 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
                     'other_lanes': other_lanes, 'exclusions': exclusions, 'durations': durations}
     version = digest.canonical_sha256(version_body)
     reasons: dict[str, list[str]] = {}
+    affected = set(changed) | production_import_closure(index, changed)
+    import_targets: dict[str, set[str]] = {}
+    for path in affected:
+        if not path.startswith('tests/'):
+            for module in module_names(path):
+                import_targets.setdefault(module, set()).add(path)
     for name, (imports, paths) in index.items():
+        if not name.startswith('tests/'):
+            continue
         why = []
         if name in fast:
             why.append('fast tier')
@@ -206,12 +311,19 @@ def create_plan(root: Path, changed: list[str], *, durations: dict, quarantine: 
             why.append('whole population: ' + ', '.join(triggers))
         if name in changed:
             why.append('changed test file')
-        for path in sorted(set(changed)):
-            modules = module_names(path) if not path.startswith('tests/') else set()
-            if modules and any(dependency == module or dependency.startswith(module + '.')
-                               for dependency in imports for module in modules):
-                why.append('direct import: ' + path)
-            elif gate_paths.matches(path, paths):
+        imported = set()
+        for dependency in imports:
+            parts = dependency.split('.')
+            for end in range(1, len(parts) + 1):
+                imported.update(import_targets.get('.'.join(parts[:end]), ()))
+        referenced = affected & paths
+        patterns = {path for path in paths if '**' in path}
+        if patterns:
+            referenced.update(path for path in affected if gate_paths.matches(path, patterns))
+        for path in sorted(imported | referenced):
+            if path in imported:
+                why.append(('direct import: ' if path in changed else 'production import: ') + path)
+            else:
                 why.append('literal path reference: ' + path)
         if why:
             reasons[name] = why
