@@ -470,8 +470,7 @@ def parse_timing_allowlist(contents):
     return entries
 
 
-def validate_timing_allowlist(counts, contents):
-    entries = parse_timing_allowlist(contents)
+def _validate_timing_entries(counts, entries):
     errors = []
     for key in sorted(counts.keys() | entries.keys()):
         found = counts.get(key, 0)
@@ -487,13 +486,38 @@ def validate_timing_allowlist(counts, contents):
         raise ValueError("\n".join(errors))
 
 
-def test_repository_has_no_unallowlisted_timing_calls(capsys):
-    repository = Path(__file__).resolve().parents[1]
-    scan = scan_timing_tests(repository)
-    validate_timing_allowlist(scan.findings,
-                              (repository / "tests/timing_allowlist.txt").read_text(encoding="utf-8"))
-    with capsys.disabled():
-        print(f"timing-prefilter: files={scan.files} parsed={scan.files - scan.skipped} skipped={scan.skipped}")
+def validate_timing_allowlist(counts, contents):
+    _validate_timing_entries(counts, parse_timing_allowlist(contents))
+
+
+def timing_guard_paths(repository, entries):
+    """Collect sources and deleted allowlisted paths without reading Python."""
+    return sorted({path.relative_to(repository).as_posix()
+                   for path in (repository / "tests").rglob("*.py")}
+                  | {key.path for key in entries})
+
+
+TIMING_REPOSITORY = Path(__file__).resolve().parents[1]
+
+
+def pytest_generate_tests(metafunc):
+    if metafunc.function is test_file_has_no_unallowlisted_timing_calls:
+        entries = parse_timing_allowlist(
+            (TIMING_REPOSITORY / "tests/timing_allowlist.txt").read_text(encoding="utf-8"))
+        paths = timing_guard_paths(TIMING_REPOSITORY, entries)
+        metafunc.parametrize(("relative", "timing_allowlist"),
+                             [(relative, entries) for relative in paths], ids=paths)
+
+
+def test_file_has_no_unallowlisted_timing_calls(relative, timing_allowlist):
+    path = TIMING_REPOSITORY / relative
+    counts = Counter()
+    if path.exists():
+        source = path.read_text(encoding="utf-8")
+        if timing_source_needs_ast(source):
+            counts = scan_timing_source(source, relative)
+    entries = {key: value for key, value in timing_allowlist.items() if key.path == relative}
+    _validate_timing_entries(counts, entries)
 
 
 POSITIVE_TIMING_CASES = [
@@ -985,3 +1009,101 @@ def outer():
 """
     assert scan_timing_source(source) == {
         TimingIdentity("tests/snippet.py", "outer.inner", "sleep"): 1}
+
+
+CHARACTERIZED_TIMING_ERRORS = [
+    "tests/deleted.py::gone join: stale entry/count mismatch, found 0, listed 1; lower or remove its allowlist entry",
+    "tests/test_clean.py::gone wait: stale entry/count mismatch, found 0, listed 1; lower or remove its allowlist entry",
+    "tests/test_unlisted.py::<module> sleep: new offender/count mismatch, found 1, listed 0; remove the timing dependency (allowlist growth requires PB lead approval)",
+    "tests/test_violations.py::example sleep: new offender/count mismatch, found 2, listed 1; remove the timing dependency (allowlist growth requires PB lead approval)",
+]
+CHARACTERIZED_TIMING_FINDINGS = {
+    TimingIdentity("tests/support/allowed.py", "example", "wait"): 1,
+    TimingIdentity("tests/test_unlisted.py", "<module>", "sleep"): 1,
+    TimingIdentity("tests/test_violations.py", "example", "sleep"): 2,
+}
+
+
+def _timing_guard_characterization_tree(repository):
+    sources = {
+        "tests/support/allowed.py": "def example(event):\n event.wait(5)\n",
+        "tests/test_clean.py": "value = 2\n",
+        "tests/test_unlisted.py": "from time import sleep\n",
+        "tests/test_violations.py": "import time\ndef example():\n time.sleep(1)\n time.sleep(2)\n",
+        "src/ignored.py": "import time\ntime.sleep(1)\n",
+    }
+    for relative, source in sources.items():
+        path = repository / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+    return ("tests/support/allowed.py::example wait 1 #2035\n"
+            "tests/test_violations.py::example sleep 1 #2035\n"
+            "tests/test_clean.py::gone wait 1 #2035\n"
+            "tests/deleted.py::gone join 1 #2035\n")
+
+
+def test_fixture_tree_timing_findings_are_characterized(tmp_path):
+    import pytest
+
+    contents = _timing_guard_characterization_tree(tmp_path)
+    scan = scan_timing_tests(tmp_path)
+    assert scan.findings == CHARACTERIZED_TIMING_FINDINGS
+    assert (scan.files, scan.skipped) == (4, 1)
+    with pytest.raises(ValueError) as caught:
+        validate_timing_allowlist(scan.findings, contents)
+    assert str(caught.value).splitlines() == CHARACTERIZED_TIMING_ERRORS
+
+
+def test_timing_guard_collection_only_lists_paths(tmp_path, monkeypatch):
+    contents = _timing_guard_characterization_tree(tmp_path)
+    entries = parse_timing_allowlist(contents)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("collection must not read or parse Python source")
+
+    monkeypatch.setattr(Path, "read_text", forbidden)
+    monkeypatch.setitem(globals(), "scan_timing_source", forbidden)
+    paths = globals().get("timing_guard_paths")
+    assert callable(paths), "guard needs per-file collection without source analysis"
+    assert paths(tmp_path, entries) == [
+        "tests/deleted.py", "tests/support/allowed.py", "tests/test_clean.py",
+        "tests/test_unlisted.py", "tests/test_violations.py",
+    ]
+
+
+def test_file_guard_reads_only_the_named_source(tmp_path, monkeypatch):
+    contents = _timing_guard_characterization_tree(tmp_path)
+    entries = parse_timing_allowlist(contents)
+    parsed = []
+    native_scan = scan_timing_source
+
+    def record_scan(source, relative):
+        parsed.append(relative)
+        return native_scan(source, relative)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("a file test must not enumerate or scan the repository")
+
+    monkeypatch.setitem(globals(), "TIMING_REPOSITORY", tmp_path)
+    monkeypatch.setitem(globals(), "scan_timing_source", record_scan)
+    monkeypatch.setitem(globals(), "scan_timing_tests", forbidden)
+    monkeypatch.setattr(Path, "rglob", forbidden)
+    check = globals().get("test_file_has_no_unallowlisted_timing_calls")
+    assert callable(check), "guard needs one independently scheduled test per file"
+    check("tests/support/allowed.py", entries)
+    assert parsed == ["tests/support/allowed.py"]
+
+
+def test_distributed_guard_preserves_characterized_findings(tmp_path, monkeypatch):
+    contents = _timing_guard_characterization_tree(tmp_path)
+    entries = parse_timing_allowlist(contents)
+    monkeypatch.setitem(globals(), "TIMING_REPOSITORY", tmp_path)
+    check = globals().get("test_file_has_no_unallowlisted_timing_calls")
+    assert callable(check), "guard needs per-file validation with stale-entry checks"
+    errors = []
+    for relative in timing_guard_paths(tmp_path, entries):
+        try:
+            check(relative, entries)
+        except ValueError as exc:
+            errors.extend(str(exc).splitlines())
+    assert sorted(errors) == CHARACTERIZED_TIMING_ERRORS

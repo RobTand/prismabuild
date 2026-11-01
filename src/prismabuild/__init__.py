@@ -17,6 +17,8 @@ from .progress import commit, report_action_progress
 
 __all__ = [
     "core", "progress", "residency_map", "commit", "report_action_progress",
+    "resolve_attempt_log", "InvalidLogDescriptor", "AttemptLogMissing",
+    "AttemptLogIntegrityError", "AttemptArchiveUnavailable",
 ]
 __version__ = "0.1.0"
 
@@ -26,6 +28,11 @@ def __getattr__(name: str):
         module = _import_module(f".{name}", __name__)
         globals()[name] = module
         return module
+    if name in ("resolve_attempt_log", "InvalidLogDescriptor", "AttemptLogMissing",
+                "AttemptLogIntegrityError", "AttemptArchiveUnavailable"):
+        value = getattr(_import_module(".attempt_archive", __name__), name)
+        globals()[name] = value
+        return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
