@@ -721,7 +721,7 @@ def test_timed_inventory_grant_stays_owned_after_the_helper_exits(tmp_path, monk
         return native(args, **kwargs)
 
     def take_inventory():
-        with cache_module._bundle_inventory_lock(tmp_path, bounded_wait=False) as owned:
+        with cache_module._bundle_inventory_lock(tmp_path, nonblocking=False) as owned:
             assert owned is not None
             acquired.set()
             assert finished.wait(60), "test did not release the granted lock"
@@ -773,7 +773,7 @@ def test_ordinary_inventory_budget_outlasts_measured_contention(tmp_path, monkey
     monkeypatch.setattr(subprocess, "run", helper_after_measured_wait)
     try:
         holder.enter_context(cache_module._bundle_cache_lock(tmp_path / ".inventory"))
-        with cache_module._bundle_inventory_lock(tmp_path, bounded_wait=False) as owned:
+        with cache_module._bundle_inventory_lock(tmp_path, nonblocking=False) as owned:
             assert owned is not None
     finally:
         holder.close()
@@ -786,7 +786,7 @@ def test_nonpositive_inventory_budget_expires_at_once(tmp_path, monkeypatch, bud
     monkeypatch.setattr(cache_module, "INVENTORY_WAIT_S", budget)
     with cache_module._bundle_cache_lock(tmp_path / ".inventory"):
         with pytest.raises(cache_module._InventoryUnavailable):
-            with cache_module._bundle_inventory_lock(tmp_path, bounded_wait=False):
+            with cache_module._bundle_inventory_lock(tmp_path, nonblocking=False):
                 pytest.fail("held inventory was granted")
 
 
@@ -957,7 +957,7 @@ def test_deadline_caller_bypasses_a_stuck_cold_filler(tmp_path, monkeypatch):
         try:
             assert entered.wait(90)
             deadline = workers.submit(cache_module.seal_bundle_cached, bounded, {"stuck": True},
-                                      fresh, bounded_wait=True)
+                                      fresh, deadline_caller=True)
             deadline.result(timeout=90)
             assert bounded.read_bytes() == b"same bundle"
         finally:
@@ -1000,7 +1000,7 @@ def test_caller_deadline_bypasses_a_contended_cache_lock(sealing, monkeypatch, w
     _, cache, packs, seal = sealing
     expected = seal()[1]
     address = next(cache.glob("*/bundle")).parent.name
-    lock = (cache_module._bundle_cache_flight(cache, address, bounded_wait=False) if which_lock == "address"
+    lock = (cache_module._bundle_cache_flight(cache, address, nonblocking=False) if which_lock == "address"
             else cache_module._bundle_cache_lock(cache / ".inventory"))
     monkeypatch.setattr(core, "git_deadline_timeout", lambda deadline: None)
     with lock:
