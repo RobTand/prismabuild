@@ -197,7 +197,8 @@ def workflow_fixture(tmp_path, jobs, plan_attempt=1, workflow_attempt=2):
 
 
 def workflow_job(index, attempt=1, stage=1, status='completed'):
-    return {'name': f'shard-{index}-a{stage}', 'run_attempt': attempt, 'status': status}
+    return {'name': f'shard-{index}-a{stage}', 'run_attempt': attempt, 'status': status,
+            'started_at': f'2026-11-01T00:{attempt:02d}:{index:02d}Z'}
 
 
 def save_workflow_result(tmp_path, index, verdict='pass', stage=1, workflow_attempt=1):
@@ -210,7 +211,8 @@ def save_workflow_result(tmp_path, index, verdict='pass', stage=1, workflow_atte
 
 def test_failed_job_rerun_reuses_successful_shards_from_its_plan(tmp_path):
     import json
-    arguments = workflow_fixture(tmp_path, [workflow_job(0), workflow_job(1), workflow_job(1, 2)])
+    arguments = workflow_fixture(tmp_path, [workflow_job(0), workflow_job(1), workflow_job(1, 2),
+                                                dict(workflow_job(0), run_attempt=2)])
     save_workflow_result(tmp_path, 0)
     save_workflow_result(tmp_path, 1, 'fail')
     save_workflow_result(tmp_path, 1, workflow_attempt=2)
@@ -330,3 +332,13 @@ def test_gate_artifacts_follow_the_plan_job_across_failed_job_reruns():
         upload = next(step for step in jobs[name]['steps'] if 'upload-artifact@' in step.get('uses', ''))
         assert 'github.run_attempt' in upload['with']['name']
         assert not upload['with'].get('overwrite', False)
+
+
+def test_inherited_job_copies_do_not_supply_coverage_for_a_full_rerun(tmp_path):
+    jobs = [job for i in range(2) for job in
+            [workflow_job(i), dict(workflow_job(i), run_attempt=2)]]
+    arguments = workflow_fixture(tmp_path, jobs, plan_attempt=2)
+    for i in range(2):
+        save_workflow_result(tmp_path, i)
+    run = cli('finish', *arguments)
+    assert run.returncode == 75, run.stdout + run.stderr
