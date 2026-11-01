@@ -118,8 +118,8 @@ def production_loads(tree: ast.AST, path: str) -> tuple[set[str], set[str]]:
                       node.args[position] if len(node.args) > position else None)
         if target is None:
             continue
-        # Feed only the loader argument and its assignments into the existing
-        # path resolver, so documentation and unrelated path strings add no edge.
+        # Resolve the complete argument, not intermediate literals such as the
+        # basename of an external or nested path.
         pending = [child.id for child in ast.walk(target) if isinstance(child, ast.Name)]
         seen, bindings = set(), set()
         while pending:
@@ -131,9 +131,18 @@ def production_loads(tree: ast.AST, path: str) -> tuple[set[str], set[str]]:
                 if assignment.value is not None:
                     bindings.add(assignment)
                     pending.extend(child.id for child in ast.walk(assignment.value) if isinstance(child, ast.Name))
-        evidence = ast.Module(body=[*sorted(bindings, key=lambda item: item.lineno), ast.Expr(value=target)],
-                              type_ignores=[])
-        paths.update(gate_paths.references(evidence, path))
+        filename = gate_paths.REPOSITORY + '/' + path
+        values = {}
+        for assignment in sorted(bindings, key=lambda item: item.lineno):
+            resolved = gate_paths.resolve(assignment.value, values, filename)
+            for binding in assignment.targets if isinstance(assignment, ast.Assign) else [assignment.target]:
+                if isinstance(binding, ast.Name):
+                    values[binding.id] = resolved
+        prefix = gate_paths.REPOSITORY + '/'
+        for value in gate_paths.resolve(target, values, filename):
+            resolved = gate_paths.join_reference(gate_paths.REPOSITORY, value)
+            if resolved.startswith(prefix) and '*' not in resolved:
+                paths.add(resolved[len(prefix):])
     return modules, paths
 
 
