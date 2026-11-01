@@ -514,3 +514,11 @@ boundary. This lets the four CPUs share cases from a long file, instead of
 serializing the entire file on one worker. Longest files are listed first;
 bounded dispatch chunks prevent the initial queue from putting all their
 cases on one CPU. No function-level selection is introduced.
+
+The 90-second cutoff separates the retained examples well. Applying refreshed
+hosted costs, the 169- and 173-file PR selections estimate 255 and 262 seconds
+at one slot; the 314-file examples estimate 433 seconds, and the 1,246-file
+example estimates 1,089 seconds. All fan out. FAST alone has 24 files and a
+4.8-second estimate, so it stays on one x64 job. A 90-second estimate leaves
+setup, planning and aggregation headroom below the full gate's observed wall.
+It is a scheduling estimate, not a cutoff on coverage or an execution deadline.
