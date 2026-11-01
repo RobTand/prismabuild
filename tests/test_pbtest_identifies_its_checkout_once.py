@@ -32,6 +32,7 @@ import sys
 
 import pytest
 
+from queue_space_support import QUEUE_SPACE_BOOTSTRAP
 from submission_support import patch_store
 from test_pbtest import pbtest
 from prismabuild import capability_eligibility, contracts, core, pool, submission
@@ -68,6 +69,7 @@ from prismabuild.submission_frontend import store_for
 configured = store_for(pbrun.__file__, root=Path(os.environ["PBT_ROOT"]))
 pbrun.configured_store = lambda: configured
 sys.argv = [str(source / "tools" / "fleet" / "pbrun.py"), *sys.argv[1:]]
+''' + QUEUE_SPACE_BOOTSTRAP + r'''
 raise SystemExit(pbrun.main())
 '''
 
