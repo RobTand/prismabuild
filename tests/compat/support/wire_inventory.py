@@ -159,7 +159,7 @@ def source_expression(node, source):
     return ast.unparse(node)
 
 
-def _source_inventory(root, observations, known, *, include_tests=True):
+def _source_inventory(root, observations, known, *, include_tests=True, include_records=True):
     observations.update({key: [] for key in ("parsed_sources", "unparsed_sources", "unresolved_schema_builders", "serialization_sites")})
     wire_ids = {row["name"]: wire for wire, row in known.items()}
     constants, imports, exports = {}, {}, {}
@@ -266,14 +266,15 @@ def _source_inventory(root, observations, known, *, include_tests=True):
                 scope = scope_values(node, scope)
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 if WIRE.fullmatch(node.value):
-                    rows[node.value]["occurrences"].append({"path": path, "owner": owner, "line": node.lineno, "embedded": embedded})
+                    if include_records:
+                        rows[node.value]["occurrences"].append({"path": path, "owner": owner, "line": node.lineno, "embedded": embedded})
                 elif "schema" in node.value:
                     try:
                         walk(ast.parse(node.value), owner + ":embedded", True, scope, node.value)
                     except SyntaxError:
                         pass
             schema, names, expansion, schema_node = None, [], False, None
-            if isinstance(node, ast.Dict):
+            if include_records and isinstance(node, ast.Dict):
                 for key, value in zip(node.keys, node.values):
                     if key is None:
                         expansion = True
@@ -283,13 +284,15 @@ def _source_inventory(root, observations, known, *, include_tests=True):
                             schema_node = value
                             schema = resolve(value, scope)
             if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Name) and node.func.id == "dict":
+                if include_records and isinstance(node.func, ast.Name) and node.func.id == "dict":
                     names = [kw.arg for kw in node.keywords if kw.arg]
                     expansion = any(kw.arg is None for kw in node.keywords)
                     schema_node = next((kw.value for kw in node.keywords if kw.arg == "schema"), None)
                     schema = resolve(schema_node, scope)
-                target = ast.unparse(node.func)
-                if target.endswith(("json.dump", "json.dumps", "write_json", "write_record", "write_document", "_write_json_atomic", "_write_atomic", "_publish_immutable", "publish_immutable")):
+                target = (ast.unparse(node.func) if include_records else
+                          node.func.id if isinstance(node.func, ast.Name) else
+                          node.func.attr if isinstance(node.func, ast.Attribute) else "")
+                if include_records and target.endswith(("json.dump", "json.dumps", "write_json", "write_record", "write_document", "_write_json_atomic", "_write_atomic", "_publish_immutable", "publish_immutable")):
                     observations["serialization_sites"].append({"path": path, "owner": owner, "line": node.lineno,
                                                                 "call": target, "embedded": embedded})
                     # Boundaries remain source witnesses until a production adapter covers them.
@@ -318,7 +321,7 @@ def _source_inventory(root, observations, known, *, include_tests=True):
                                 pin(part, owner, scope, source)
                         elif not is_keys(fields):
                             pin(fields, owner, scope, source)
-                for expression in ast.walk(node):
+                for expression in ast.walk(node) if include_records else ():
                     wire = resolve(expression, scope)
                     if isinstance(wire, str) and WIRE.fullmatch(wire) and "schema" in source_expression(node, source).lower():
                         rows[wire]["reader_checks"].append({"path": path, "owner": owner, "line": node.lineno,
@@ -351,7 +354,7 @@ def _source_inventory(root, observations, known, *, include_tests=True):
 
 def field_policies(root):
     """Discover every production policy without auditing corpus record captures."""
-    return _source_inventory(root, {}, catalogue(root), include_tests=False)[1]
+    return _source_inventory(root, {}, catalogue(root), include_tests=False, include_records=False)[1]
 
 
 def audit(root, observations=None):
