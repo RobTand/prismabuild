@@ -8,6 +8,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from prismabuild.pytest_temp import pytest_basetemp
+
 BASE = 'f0bcb21e195378e7fb6e85e1bbfde24c45672e6b'
 CONTROLS = ['tests/test_pbtest_sealed_basetemp_1469.py',
     'tests/test_a_range_decision_takes_its_censuses_once.py::test_a_partial_created_during_a_scan_is_reported_and_not_kept']
@@ -31,8 +34,10 @@ def compare_submission_sources(repo: Path, output: Path):
             command = [sys.executable, '-c',
                 'import pbtest_outcomes; raise SystemExit(pbtest_outcomes.main())',
                 '-q', '--tb=short', *selected]
-            run = subprocess.run(command, cwd=checkout, env=environment, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True)
+            with pytest_basetemp() as base:
+                command.append(f"--basetemp={base}")
+                run = subprocess.run(command, cwd=checkout, env=environment, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, text=True)
             (output / f'controls-{name}.log').write_text(run.stdout)
             if 'pbtest-outcomes: ' not in run.stdout or 'pbtest-completion: ' not in run.stdout:
                 raise RuntimeError(f'{name}: control produced no native outcome or completion record')

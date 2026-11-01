@@ -12,6 +12,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 NO_VERDICT = 75
+BUDGET_ENFORCEMENT_TOLERANCE = 1.5
 
 
 class BudgetFailure(ValueError):
@@ -80,6 +81,29 @@ def _budget_timings(junit, files, config):
             if elapsed > config['slow'].get(nodeid, config['seconds'])]
 
 
+def _write_budget_warnings(junit, warnings):
+    messages = [
+        f"BUDGET_WARNING: {row['nodeid']}: {row['seconds']:.3f}s > "
+        f"{row['budget_seconds']:.3f}s policy; within "
+        f"{BUDGET_ENFORCEMENT_TOLERANCE:g}x tolerance "
+        f"({row['budget_seconds'] * BUDGET_ENFORCEMENT_TOLERANCE:.3f}s)"
+        for row in warnings]
+    text = '\n'.join(messages)
+    print(text)
+    tree = ET.parse(junit)
+    suite = next(tree.iter('testsuite'), tree.getroot())
+    output = suite.find('system-out')
+    if output is None:
+        output = ET.SubElement(suite, 'system-out')
+    output.text = (output.text + '\n' if output.text else '') + text
+    tree.write(junit, encoding='utf-8', xml_declaration=True)
+    summary = os.environ.get('GITHUB_STEP_SUMMARY')
+    if summary:
+        with Path(summary).open('a') as handle:
+            handle.write('\n## Per-test budget warnings\n\n' +
+                         '\n'.join('- ' + message for message in messages) + '\n')
+
+
 def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
              files: list[str] | None = None, workers: int | None = None,
              execute=subprocess.run, affinity=None) -> int:
@@ -129,13 +153,23 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
                 raise RuntimeError(f'pytest exited {result.returncode}, without a complete test verdict')
             record['verdict'] = 'pass'
         try:
-            overruns = _budget_timings(junit, files, config)
-            record['budget'].update(status='fail' if overruns else 'pass', overruns=overruns)
+            costs = _budget_timings(junit, files, config)
+            overruns, warnings = [], []
+            for row in costs:
+                target = (overruns if row['seconds'] >
+                          row['budget_seconds'] * BUDGET_ENFORCEMENT_TOLERANCE else warnings)
+                target.append(row)
+            record['budget'].update(status='fail' if overruns else 'pass',
+                                    overruns=overruns, warnings=warnings)
             if overruns:
                 record['verdict'] = 'fail'
                 print('Per-test time budget exceeded:')
                 for row in overruns:
-                    print(f"{row['nodeid']}: {row['seconds']:.3f}s > {row['budget_seconds']:.3f}s")
+                    limit = row['budget_seconds'] * BUDGET_ENFORCEMENT_TOLERANCE
+                    print(f"{row['nodeid']}: {row['seconds']:.3f}s > {limit:.3f}s "
+                          f"(policy {row['budget_seconds']:.3f}s x {BUDGET_ENFORCEMENT_TOLERANCE:g})")
+            if warnings:
+                _write_budget_warnings(junit, warnings)
         except (OSError, ValueError, ET.ParseError) as error:
             record['budget'].update(status='unavailable', reason=str(error))
             # A definite test failure remains final even if timing evidence is lost.

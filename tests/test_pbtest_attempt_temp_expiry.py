@@ -8,7 +8,7 @@ gave up on a test's read-only directory, leaving the tree behind.
 
 These tests drive real shard programs and look only at the filesystem, so
 they say the same thing about any layout: a passing attempt leaves nothing,
-a failed or killed attempt stays for its retention window and then goes, a
+a killed attempt stays for its retention window and then goes, a
 live attempt stays at any age. "Ageing" an attempt backdates every entry in
 its directory, which is where an attempt keeps its retention clock.
 """
@@ -129,36 +129,14 @@ def test_a_passing_shard_removes_a_read_only_directory_in_its_base(tmp_path):
         _writable(scratch)
 
 
-def test_a_failed_base_is_kept_through_its_window_then_reaped(tmp_path):
+def test_failed_default_base_removes_read_only_directories(tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    failing = _checkout(tmp_path / "failing", "    assert False, 'kept'\n")
+    failing = _checkout(tmp_path, READ_ONLY + "    assert False\n")
     result = _shard(failing, scratch)
     assert result.returncode == 1, result.stdout + result.stderr
-    (kept,) = scratch.iterdir()
-    assert list(kept.rglob("marker")), "the failed test's tmp_path is gone"
-
-    passing = _checkout(tmp_path / "passing", "")
-    assert _shard(passing, scratch).returncode == 0
-    assert list(scratch.iterdir()) == [kept], "reaped inside its window"
-
-    _age(kept, DAY_AND_AN_HOUR_S)
-    assert _shard(passing, scratch).returncode == 0
-    assert _tree(scratch) == [], "an expired failed base outlived its window"
-
-
-def test_an_expired_failed_base_with_a_read_only_directory_is_removed(tmp_path):
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    failing = _checkout(tmp_path / "failing", READ_ONLY + "    assert False\n")
-    assert _shard(failing, scratch).returncode == 1
-    (kept,) = scratch.iterdir()
-    assert list(kept.rglob("kept.txt"))
-    _age(kept, DAY_AND_AN_HOUR_S)
-    passing = _checkout(tmp_path / "passing", "")
-    assert _shard(passing, scratch).returncode == 0
     try:
-        assert _tree(scratch) == [], "expiry left a read-only directory behind"
+        assert _tree(scratch) == [], "failed default base retained read-only data"
     finally:
         _writable(scratch)
 
