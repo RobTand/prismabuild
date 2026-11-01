@@ -111,6 +111,9 @@ def operate(request, store, load):
     if family in ("idle-baseline", "spool-pacing", "spool-refusal", "spool-tick"):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_observation_adapters.py")))["operate"]
         return adapter(request, store, load)
+    if family == "publication-index":
+        adapter = runpy.run_path(str(Path(__file__).with_name("compat_publication_index_adapters.py")))["operate"]
+        return adapter(request, store, load)
     if family in ("shape-table", "publication-ending", "mover-landing"):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_publication_adapters.py")))["operate"]
         return adapter(request, store, load)

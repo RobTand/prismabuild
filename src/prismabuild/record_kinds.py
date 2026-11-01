@@ -36,6 +36,16 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("publication-index", "prismabuild.publication_index.v1", "queue/publication-index/v1 facets, days and coverage markers", "additive",
+               "prismabuild.publication_index:publication_candidates",
+               ("prismabuild.publication_index:index_publication", "prismabuild.publication_index:Reconciliation.step"),
+               ("leaf", "namespace-coverage", "bucket-coverage"),
+               ("advisory candidates only; canonical queue slots remain authoritative",
+                "directory metadata and filesystem/clock trust are explicit private fixture observations"),
+               older_participant_absence=True,
+               variant_writers=(("leaf", "prismabuild.publication_index:index_publication"),
+                                ("namespace-coverage", "prismabuild.publication_index:Reconciliation.step"),
+                                ("bucket-coverage", "prismabuild.publication_index:Reconciliation.step"))),
     RecordKind("q-host-hold", "prismabuild.host_hold.v1", "holds/<host>.json", "additive",
                "prismabuild.host_hold:read_host_hold", ("prismabuild.host_hold:change_host_hold",),
                ("active", "expired"),

@@ -537,6 +537,23 @@
           }
         }
       ]
+    },
+    {
+      "target": "tests/test_admission_charges_refill_horizons_jointly.py::test_a_reader_that_slows_keeps_the_footprint_it_was_charged",
+      "issue": 2462,
+      "reason": "Depends on the wall clock: it builds claim and report times from one time.time() read while tier_cycle.residency_window reads the clock again, so a slow pass flips the outcome. Failed in 2 of 3 single-job full-population pr-gate runs on content that passed the 16-shard queue gate. Remove this entry with the fix for #2462.",
+      "evidence": {
+        "source_commit": "8f72a0caecb688fb02363c9bec44ef18930bb7f0",
+        "outcomes": {
+          "passed": 1,
+          "failed": 2
+        },
+        "hosted_runs": [
+          "https://github.com/RobTand/prismabuild/actions/runs/41259310026",
+          "https://github.com/RobTand/prismabuild/actions/runs/41260354001",
+          "https://github.com/RobTand/prismabuild/actions/runs/41257519367"
+        ]
+      }
     }
   ],
   "cost_exclusions": [],

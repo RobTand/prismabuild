@@ -7476,6 +7476,7 @@ class PoolQueue:
         if phases:
             item["phases"] = phases
         self.records.replace_record_at(path, item)
+        self.records.index_publication(item)
         return path
 
     #: Everything that describes the claim that has just ended.  A ready item
