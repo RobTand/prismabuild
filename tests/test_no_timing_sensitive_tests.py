@@ -985,3 +985,46 @@ def outer():
 """
     assert scan_timing_source(source) == {
         TimingIdentity("tests/snippet.py", "outer.inner", "sleep"): 1}
+
+
+CHARACTERIZED_TIMING_ERRORS = [
+    "tests/deleted.py::gone join: stale entry/count mismatch, found 0, listed 1; lower or remove its allowlist entry",
+    "tests/test_clean.py::gone wait: stale entry/count mismatch, found 0, listed 1; lower or remove its allowlist entry",
+    "tests/test_unlisted.py::<module> sleep: new offender/count mismatch, found 1, listed 0; remove the timing dependency (allowlist growth requires PB lead approval)",
+    "tests/test_violations.py::example sleep: new offender/count mismatch, found 2, listed 1; remove the timing dependency (allowlist growth requires PB lead approval)",
+]
+CHARACTERIZED_TIMING_FINDINGS = {
+    TimingIdentity("tests/support/allowed.py", "example", "wait"): 1,
+    TimingIdentity("tests/test_unlisted.py", "<module>", "sleep"): 1,
+    TimingIdentity("tests/test_violations.py", "example", "sleep"): 2,
+}
+
+
+def _timing_guard_characterization_tree(repository):
+    sources = {
+        "tests/support/allowed.py": "def example(event):\n event.wait(5)\n",
+        "tests/test_clean.py": "value = 2\n",
+        "tests/test_unlisted.py": "from time import sleep\n",
+        "tests/test_violations.py": "import time\ndef example():\n time.sleep(1)\n time.sleep(2)\n",
+        "src/ignored.py": "import time\ntime.sleep(1)\n",
+    }
+    for relative, source in sources.items():
+        path = repository / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+    return ("tests/support/allowed.py::example wait 1 #2035\n"
+            "tests/test_violations.py::example sleep 1 #2035\n"
+            "tests/test_clean.py::gone wait 1 #2035\n"
+            "tests/deleted.py::gone join 1 #2035\n")
+
+
+def test_fixture_tree_timing_findings_are_characterized(tmp_path):
+    import pytest
+
+    contents = _timing_guard_characterization_tree(tmp_path)
+    scan = scan_timing_tests(tmp_path)
+    assert scan.findings == CHARACTERIZED_TIMING_FINDINGS
+    assert (scan.files, scan.skipped) == (4, 1)
+    with pytest.raises(ValueError) as caught:
+        validate_timing_allowlist(scan.findings, contents)
+    assert str(caught.value).splitlines() == CHARACTERIZED_TIMING_ERRORS
