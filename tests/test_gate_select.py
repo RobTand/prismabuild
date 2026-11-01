@@ -379,3 +379,62 @@ def test_repository_gpu_policy_private_module_selects_public_campaign_consumer(t
         target.write_text((ROOT / name).read_text())
     assert 'tests/test_gpu_submission_eligibility_2036.py' in selected(
         plan(root, ['src/prismabuild/_gpu_submission_policy.py']))
+
+
+@pytest.mark.parametrize('source', [
+    'COUNTERS = {"census": 1}\n',
+    '"""Example: import census"""\n',
+])
+def test_production_strings_do_not_create_import_edges_but_test_heuristics_remain(tmp_path, source):
+    root = tree(tmp_path)
+    (root / 'tools/backlog_census').mkdir()
+    (root / 'tools/backlog_census/census.py').write_text('VALUE = 1\n')
+    (root / 'src/prismabuild/pool.py').write_text(source)
+    (root / 'tests/test_named_string.py').write_text('MODULE = "census"\n')
+    (root / 'tests/census_support.py').write_text('MODULE = "census"\n')
+    (root / 'tests/test_string_helper.py').write_text('from . import census_support\n')
+    assert selected(plan(root, ['tools/backlog_census/census.py'])) == {
+        'tests/test_fast.py', 'tests/test_named_string.py', 'tests/test_string_helper.py'}
+
+
+@pytest.mark.parametrize('source', [
+    'import importlib\nmod = importlib.import_module("prismabuild.private")\n',
+    'import importlib as loader\nmod = loader.import_module("prismabuild.private")\n',
+    'from importlib import import_module as load\nmod = load("prismabuild.private")\n',
+    'mod = __import__("prismabuild.private")\n',
+    'import importlib\nmod = importlib.import_module(".private", "prismabuild")\n',
+    'import importlib\nmod = importlib.import_module(".private", package="prismabuild")\n',
+])
+def test_recognized_literal_dynamic_production_imports_reach_tests(tmp_path, source):
+    root = tree(tmp_path)
+    (root / 'src/prismabuild/private.py').write_text('VALUE = 1\n')
+    (root / 'src/prismabuild/pool.py').write_text(source)
+    assert selected(plan(root, ['src/prismabuild/private.py'])) == {
+        'tests/test_fast.py', 'tests/test_direct.py', 'tests/test_nested.py', 'tests/test_indirect.py'}
+
+
+@pytest.mark.parametrize('loader', [
+    'importlib.util.spec_from_file_location("outcomes", OUTCOMES)',
+    'importlib.machinery.SourceFileLoader("outcomes", str(OUTCOMES))',
+    'runpy.run_path(str(OUTCOMES))',
+])
+def test_production_sibling_path_loading_reaches_test_helper_consumers(tmp_path, loader):
+    root = tree(tmp_path)
+    (root / 'tools/fleet/pbtest_outcomes.py').write_text('VALUE = 1\n')
+    (root / 'tools/fleet/shape_gate.py').write_text(
+        'from pathlib import Path\nimport importlib.util\nimport importlib.machinery\nimport runpy\n'
+        'OUTCOMES = Path(__file__).parent.resolve() / "pbtest_outcomes.py"\n'
+        'def load():\n    return ' + loader + '\n')
+    (root / 'tests/shape_support.py').write_text('from tools.fleet import shape_gate\n')
+    (root / 'tests/test_shape_consumer.py').write_text('from .shape_support import load\n')
+    assert selected(plan(root, ['tools/fleet/pbtest_outcomes.py'])) == {
+        'tests/test_fast.py', 'tests/test_shape_consumer.py'}
+
+
+def test_repository_outcomes_path_selects_shape_gate_consumer(tmp_path):
+    root = tree(tmp_path)
+    for name in ('tools/fleet/shape_gate.py', 'tools/fleet/pbtest_outcomes.py'):
+        (root / name).write_text((ROOT / name).read_text())
+    (root / 'tests/test_shape_consumer.py').write_text('from tools.fleet import shape_gate\n')
+    assert 'tests/test_shape_consumer.py' in selected(
+        plan(root, ['tools/fleet/pbtest_outcomes.py']))
