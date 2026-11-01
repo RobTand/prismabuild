@@ -224,7 +224,7 @@ def test_pinned_field_guard_scans_only_requested_source(tmp_path, monkeypatch):
     original = wire_inventory.syntax_tree
 
     def selected_source(path, snippet):
-        assert path == tmp_path / 'tools/extensionless', "pin case must scan only its source"
+        assert (path if path.is_absolute() else tmp_path / path) == tmp_path / 'tools/extensionless', "pin case must scan only its source"
         return original(path, snippet)
 
     monkeypatch.setattr(wire_inventory, 'syntax_tree', selected_source)
@@ -240,7 +240,7 @@ def test_pin_cases_detect_added_and_removed_sources(tmp_path, monkeypatch, chang
     pin.write_text(json.dumps(expected))
     path = 'tools/new.py' if change == 'added' else 'tools/extensionless'
     if change == 'added':
-        (tmp_path / path).write_text("FIELDS = {'new'}\n")
+        (tmp_path / path).write_text("NEW_FIELDS = {'new'}\n")
     else:
         (tmp_path / path).unlink()
     monkeypatch.setitem(globals(), 'ROOT', tmp_path)
