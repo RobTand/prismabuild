@@ -470,10 +470,13 @@ This bounded diagnostic executes the selected killing node, not the complete
 
 ## Mutation acceptance remains open
 
-Mutation acceptance is still in progress. The collection at 01:51 UTC contains 53 valid,
-receipt-backed comparisons: static killed 48, TIA killed 49, and 0 were
-static-killed/TIA-survived misses. The required minimum of 100 valid comparisons
-is not yet established.
+Mutation acceptance is still in progress. The collection at 01:51 UTC contains 53
+receipt-backed historical comparisons: static killed 48, TIA killed 49, and 0 were
+static-killed/TIA-survived misses. They have no completion ledgers, so they do not
+count toward acceptance. The required 100 valid comparisons must all be run under
+the completion protocol with the corrected recorder; none have been run yet.
+The recorder's overhead must also be measured again before shadow mode, because
+the 6.07% sample predates the resume and throw subscriptions.
 
 The quota-affected campaign was superseded. The invalid relative-layout Spark
 resubmission published 113 of its frozen 120 rows before withdrawal. It ended with 101 withdrawn rows and 12 failed actions. Five
