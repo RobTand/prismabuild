@@ -394,12 +394,16 @@ def test_owner_filter_cli_roundtrip_recomputes_the_frozen_selection(tmp_path, mo
                      '--index', '0', '--output', str(assigned)])
 
 
-def test_hosted_requirements_pin_the_py_spy_the_pb_runtime_pins():
+def test_hosted_requirements_pin_the_py_spy_every_pb_runtime_manifest_pins():
     pinned = {line.split('==')[0]: line.split('==')[1].strip()
               for line in (ROOT / 'tools/ci/gate_requirements.txt').read_text().splitlines() if '==' in line}
-    runtime = json.loads((ROOT / 'tools/maintenance/pb_cpu/x86_64-cp314.json').read_text())
-    packages = {row['name']: row['version'] for row in _runtime_packages(runtime)}
-    assert pinned['py-spy'] == packages['py-spy']
+    versions = {}
+    for manifest in sorted((ROOT / 'tools/maintenance/pb_cpu').glob('*.json')):
+        packages = {row['name']: row['version'] for row in _runtime_packages(json.loads(manifest.read_text()))}
+        if 'py-spy' in packages:
+            versions[manifest.name] = packages['py-spy']
+    # The aarch64 runtime manifest lists no py-spy; hosted arm64 installs the pinned wheel with pip.
+    assert versions and set(versions.values()) == {pinned['py-spy']}
 
 
 def _runtime_packages(node):

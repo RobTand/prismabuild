@@ -3,8 +3,9 @@
 The manual Flake census workflow freezes main's SHA once and collects five
 independent samples per test on each architecture by default. `repeats` accepts
 2 through 10. Every file runs on both `ubuntu-24.04` and `ubuntu-24.04-arm`
-every repeat. Set the optional `quarantine_issue` input to an open quarantine
-owner number to repeat only that owner's target files. Node-level entries select
+every repeat. Set the optional `quarantine_issue` input to a quarantine
+owner number from `tools/ci/gate_quarantine.json` to repeat only that owner's
+target files. It does not check that the issue is still open. Node-level entries select
 their whole file, so sibling nodes also run. The plan rejects unknown owners or
 unavailable target files, freezes the filter in its manifest, and rechecks it in
 every assignment. Classification retains the complete quarantine snapshot.
