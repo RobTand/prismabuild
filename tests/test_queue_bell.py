@@ -84,6 +84,56 @@ def _consume_through(bell, monkeypatch, directory, key, write):
         assert consumed.wait(60), "inotify did not consume the publication"
 
 
+def test_publication_acknowledges_an_already_bound_consumer(bell, monkeypatch):
+    captured, release, consumed = (threading.Event() for _ in range(3))
+    watch, ring = bell.service.watch, bell.service.ring
+    original_read, original_consume = os.read, watch.consume
+
+    def read_after_consumer_binding(fd, size):
+        assert fd == watch.fd
+        captured.set()
+        assert release.wait(60), "test did not release the captured consumer"
+        return original_read(fd, size)
+
+    def record_real_consumption(data, target):
+        original_consume(data, target)
+        with ring.condition:
+            if any(event["topic"] == "done" and event["id"] == KEY
+                   for event in ring.events):
+                consumed.set()
+
+    monkeypatch.setattr(watch, "consume", record_real_consumption)
+    monkeypatch.setattr(queue_notifier, "os", SimpleNamespace(read=read_after_consumer_binding))
+    # Readiness makes _listen bind consume, then stop before reading any bytes.
+    (bell.root / "done" / ".trigger").write_text("{}")
+    try:
+        assert captured.wait(60), "listener did not capture its consumer"
+
+        def publish_then_release_consumer():
+            (bell.root / "done" / f"{KEY}.json").write_text("{}")
+            release.set()
+            assert consumed.wait(60), "production did not consume the publication"
+
+        _consume_through(bell, monkeypatch, "done", KEY, publish_then_release_consumer)
+    finally:
+        release.set()
+    assert consumed.is_set()
+
+
+def test_publication_before_listener_start_is_retained(tmp_path):
+    root = tmp_path / "queue"
+    for directory in queue_bell.STATE_DIRS:
+        (root / directory).mkdir(parents=True)
+    service = queue_notifier.BellService(root, [("127.0.0.1", 0)])
+    cursor = queue_bell.Cursor.parse("{epoch}:{seq}".format(**service.ring.now()))
+    # Construction installs the watches synchronously, before the thread starts.
+    _rename_bell_record(root)
+    with service:
+        reply = service.ring.wait(cursor, {"done"}, {KEY}, 60)
+        assert any(event["key"] == KEY and event["dir"] == "done"
+                   and event["seq"] > cursor.seq for event in reply["events"])
+
+
 def test_filters_and_timeout_ignore_other_keys_dirs_and_temporary_files(bell, monkeypatch):
     ring = bell.service.ring
     cursor = queue_bell.Cursor.parse("{epoch}:{seq}".format(**ring.now()))
