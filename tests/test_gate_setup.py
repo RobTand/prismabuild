@@ -139,3 +139,16 @@ def test_setup_matrix_shard_and_retry_aggregation_use_the_same_assignment(tmp_pa
                  '--prefix', 'proof', '--output', str(tmp_path / 'final.json'))
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads((tmp_path / 'final.json').read_text())['missing_indices'] == []
+
+
+def test_root_owned_interpreter_fixture_needs_no_namespace_or_relocation(monkeypatch):
+    setup = load('gate_setup')
+    operations = []
+    monkeypatch.setattr(setup, '_export', lambda *args: None)
+    def execute(command, **kwargs):
+        operations.append(command)
+        return SimpleNamespace(returncode=0)
+    setup.prepare(['tests/test_proof_runtime_observation.py'], execute=execute)
+    assert ['sudo', 'chown', 'root:root', str(Path(setup.sys.executable).resolve())] in operations
+    assert not any(word in {'apt-get', 'bwrap', 'mv', 'cp', 'ldconfig'}
+                   for command in operations for word in command)
