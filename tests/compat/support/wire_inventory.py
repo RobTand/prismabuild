@@ -225,9 +225,9 @@ def source_index(root, known, *, include_tests=True, paths=None):
 
 
 def _source_inventory(root, observations, known, *, include_tests=True, include_records=True, paths=None, index=None):
+    selected = set(paths) if index is not None and paths is not None else None
     if index is None:
         index = source_index(root, known, include_tests=include_tests, paths=paths)
-    selected = set(paths) if paths is not None else None
     observations.update({key: [] for key in ("parsed_sources", "unparsed_sources", "unresolved_schema_builders", "serialization_sites")})
     for category in ("parsed_sources", "unparsed_sources"):
         observations[category] = [dict(row) for row in index[category]
