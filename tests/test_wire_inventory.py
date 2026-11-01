@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import io
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 
 import pytest
 
@@ -12,6 +15,86 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
 from wire_inventory import audit, field_policies, source_paths
 from rebind_source_reviews import reviewed_sites
+
+
+def test_repository_catalogue_and_dispositions_are_consistent():
+    # Red stub: the split guard has no repository metadata validation yet.
+    pass
+
+
+@pytest.mark.parametrize('archive', sorted((ROOT / 'tests/compat/generations').glob('*.tar.gz')),
+                         ids=lambda path: path.name)
+def test_retained_archive_is_intact(archive):
+    # Red stub: archive validation must be independent of the source audit.
+    pass
+
+
+@pytest.mark.parametrize('corruption', ['duplicate', 'overlap', 'empty_reason', 'unknown_disposition', 'catalogue_alias'])
+def test_repository_metadata_guard_rejects_corruption(tmp_path, monkeypatch, corruption):
+    package = tmp_path / 'src/prismabuild'
+    package.mkdir(parents=True)
+    catalogue_source = 'RecordKind(name="qualified", wire_id="example.qualified.v1")\n'
+    (package / 'record_kinds.py').write_text(catalogue_source)
+    metadata = tmp_path / 'tests/compat/dispositions.jsonl'
+    metadata.parent.mkdir(parents=True)
+    row = dict(wire_id='example.control.v1', disposition='operator_control', reason='stdout only')
+    metadata.write_text(json.dumps(row) + '\n')
+    monkeypatch.setitem(globals(), 'ROOT', tmp_path)
+    test_repository_catalogue_and_dispositions_are_consistent()
+    if corruption == 'duplicate':
+        metadata.write_text(metadata.read_text() * 2)
+    elif corruption == 'catalogue_alias':
+        (package / 'record_kinds.py').write_text(catalogue_source * 2)
+    else:
+        row[{'overlap': 'wire_id', 'empty_reason': 'reason', 'unknown_disposition': 'disposition'}[corruption]] = {
+            'overlap': 'example.qualified.v1', 'empty_reason': '', 'unknown_disposition': 'unreviewed'}[corruption]
+        metadata.write_text(json.dumps(row) + '\n')
+    with pytest.raises((AssertionError, ValueError)):
+        test_repository_catalogue_and_dispositions_are_consistent()
+
+
+@pytest.mark.parametrize('corruption', ['archive_hash', 'member_hash', 'receipt_hash', 'missing_member',
+                                      'unexpected_member', 'duplicate_member', 'unsafe_path', 'non_file'])
+def test_archive_guard_rejects_corruption(tmp_path, corruption):
+    archive = tmp_path / 'generation.tar.gz'
+    receipt = b'{"generation": "fixture"}'
+    payload = b'VALUE = 1\n'
+    members = [('src/prismabuild/example.py', payload), ('RUNTIME_VERSION.json', receipt)]
+    manifest = dict(generation='fixture', archive_sha256='',
+                    receipt_sha256=hashlib.sha256(receipt).hexdigest(),
+                    files={'src/prismabuild/example.py': hashlib.sha256(payload).hexdigest()})
+
+    def write_archive():
+        with tarfile.open(archive, 'w:gz') as stream:
+            for name, raw in members:
+                entry = tarfile.TarInfo(name)
+                entry.size = len(raw)
+                if corruption == 'non_file' and name == 'link':
+                    entry.type = tarfile.SYMTYPE
+                    entry.linkname = 'src/prismabuild/example.py'
+                stream.addfile(entry, io.BytesIO(raw))
+        manifest['archive_sha256'] = hashlib.sha256(archive.read_bytes()).hexdigest()
+        archive.with_suffix('').with_suffix('.json').write_text(json.dumps(manifest))
+
+    write_archive()
+    test_retained_archive_is_intact(archive)
+    if corruption in ('archive_hash', 'member_hash', 'receipt_hash'):
+        if corruption == 'archive_hash':
+            manifest['archive_sha256'] = '0' * 64
+        elif corruption == 'member_hash':
+            manifest['files']['src/prismabuild/example.py'] = '0' * 64
+        else:
+            manifest['receipt_sha256'] = '0' * 64
+        archive.with_suffix('').with_suffix('.json').write_text(json.dumps(manifest))
+    else:
+        if corruption == 'missing_member':
+            members.pop(0)
+        else:
+            members.append({'unexpected_member': ('extra', b'new'), 'duplicate_member': members[0],
+                            'unsafe_path': ('../escape', b'bad'), 'non_file': ('link', b'')}[corruption])
+        write_archive()
+    with pytest.raises(AssertionError):
+        test_retained_archive_is_intact(archive)
 
 
 def _field_policy_paths(root):
