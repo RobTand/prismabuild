@@ -33,6 +33,18 @@ def test_entries_have_an_issue_a_reason_and_an_existing_target(quarantine):
         assert isinstance(entry['reason'], str) and entry['reason'].strip(), label
 
 
+def test_quarantine_covers_the_authorized_gate_failures(quarantine):
+    # Remove each expectation alongside its entry when the deflake issue closes.
+    assert len(quarantine) == 23
+    assert len({entry['issue'] for entry in quarantine.values()}) == 19
+    expected = {
+        '//tests:test_output_reconciliation_cycle': 2670,
+        '//tests:test_queue_bell': 2671,
+        '//tests:test_a_produced_namespace_is_not_a_consumer': 2672,
+    }
+    assert {label: quarantine[label]['issue'] for label in expected} == expected
+
+
 def test_only_quarantined_targets_are_flaky(quarantine):
     captured = []
     native = SimpleNamespace(package_name=lambda: 'tests', package_relative_label=str)

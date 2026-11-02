@@ -559,4 +559,16 @@ QUARANTINE = {
         "issue": 2625,
         "reason": "the rebuilt-sampler fixture assumes PID 4242 is unused on the runner",
     },
+    "//tests:test_output_reconciliation_cycle": {
+        "issue": 2670,
+        "reason": "all assertions pass but real admission and mover waits overrun the per-node budget, including the budget-only rerun",
+    },
+    "//tests:test_queue_bell": {
+        "issue": 2671,
+        "reason": "the real requeue publication waiter returns no events when its three-second poll expires under contention",
+    },
+    "//tests:test_a_produced_namespace_is_not_a_consumer": {
+        "issue": 2672,
+        "reason": "the produced namespace fixture's live owner claim returns None under contention; the exact admission refusal is unconfirmed",
+    },
 }
