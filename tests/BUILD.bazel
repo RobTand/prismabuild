@@ -28600,6 +28600,7 @@ pb_py_test(
         "//tools:ci/check_no_secret_leak.py",
         "//tools:ci/gate_budget.json",
         "//tools:ci/gate_durations.json",
+        "//tools:ci/gate_env.py",
         "//tools:ci/gate_paths.py",
         "//tools:ci/gate_quarantine.json",
         "//tools:ci/gate_run.py",

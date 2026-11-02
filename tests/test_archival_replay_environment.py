@@ -69,7 +69,7 @@ def test_selected_tmpdir_survives_ambient_mutation(directory, native, probe, tmp
             os.putenv("TMPDIR", str(tmp_path / "later"))
         else:
             monkeypatch.setenv("TMPDIR", str(tmp_path / "later"))
-        supplied.append(kwargs.get("env"))
+        supplied.append(kwargs.get("env", {}).get("TMPDIR"))
         try:
             return run(command, **kwargs)
         finally:
@@ -78,7 +78,7 @@ def test_selected_tmpdir_survives_ambient_mutation(directory, native, probe, tmp
     monkeypatch.setattr(record_compat.subprocess, "run", change_ambient)
     observed = invoke_probe(probe, tmp_path)
     binding = observed["archival_runtime"]
-    assert supplied == [environment]
+    assert supplied == [selected]
     assert binding["selected"]["environment_before_driver"]["TMPDIR"] == selected
     expected_digest = hashlib.sha256(
         b"prismabuild.compat_environment.v1\0" +

@@ -214,7 +214,8 @@ def run_request(args):
         'repo': args.repo,
         'branch': args.branch,
         'commit_sha': args.checkout or args.head,
-        'steps': [{'run': INSTALL}, *secured_steps(command)],
+        'steps': [{'run': 'python3 tools/ci/gate_env.py bash -c ' + shlex.quote(INSTALL)},
+                  *secured_steps(command)],
         'env': {'GIT_REPO_DEFAULT_BRANCH': 'main'},
         'platform_properties': {
             # The runner hosts only the Bazel client; tests go to remote execution.

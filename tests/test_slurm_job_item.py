@@ -92,4 +92,5 @@ def test_a_job_with_no_lane_or_id_asks_for_nothing(slurm_job) -> None:
         environment = slurm_job._worker_environment(
             {"PATH": "/usr/bin"}, lane_dir=lane_dir, job_id=job_id
         )
-        assert environment == {"PATH": "/usr/bin"}
+        assert set(environment) == {"PATH"}
+        assert environment["PATH"] == "/usr/bin"

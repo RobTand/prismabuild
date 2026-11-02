@@ -68,7 +68,7 @@ def test_scopes_reach_mergify_or_the_gate_fails():
 
 def test_ordinary_pull_requests_test_the_merge_commit_and_drafts_their_head():
     target = next(step for step in steps('bazel') if step.get('id') == 'target')
-    assert 'MERGE: ${{ github.sha }}' in yaml.safe_dump(target) or target['env']['MERGE'] == '${{ github.sha }}'
+    assert target['env']['MERGE'] == '${{ github.sha }}'
     assert 'git rev-parse "$MERGE^1"' in target['run']
     assert 'base="$REFS_BASE" head="$REFS_HEAD"' in target['run']
 

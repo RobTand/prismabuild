@@ -118,8 +118,15 @@ jobs:
             exit 1
           fi
           echo scopes_uploaded=true >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - id: secret-scan
+        name: Scan artifacts for secrets (pending PrismaQuant vendor SHA)
         if: always()
+        run: |
+          # Pending PrismaQuant: vendor check_no_secret_leak.py byte-identical and pin SHA-256.
+          # Fail closed until the coordinator supplies the published source SHA.
+          python3 tools/ci/check_no_secret_leak.py gate-output/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.secret-scan.outcome == 'success'
         with:
           name: bazel-gate
           path: gate-output/
@@ -242,8 +249,15 @@ jobs:
         run: >-
           python3 tools/ci/remote_gate.py main --base "$BEFORE" --head "$AFTER"
           --branch main --prs "$PRS" --timeout 100
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - id: secret-scan
+        name: Scan artifacts for secrets (pending PrismaQuant vendor SHA)
         if: always()
+        run: |
+          # Pending PrismaQuant: vendor check_no_secret_leak.py byte-identical and pin SHA-256.
+          # Fail closed until the coordinator supplies the published source SHA.
+          python3 tools/ci/check_no_secret_leak.py gate-output/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.secret-scan.outcome == 'success'
         with:
           name: post-merge-${{ github.sha }}
           path: gate-output/

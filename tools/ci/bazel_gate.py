@@ -36,7 +36,7 @@ BAZEL_DIFF_SHA256 = '44226a1d1d5239abc8bc6158de1f886fcbbf58e44479ec178df8c01e7e3
 FALLBACK = [
     'MODULE.bazel', 'MODULE.bazel.lock', '.bazelrc', '.bazelversion', '.bazelignore', 'BUILD.bazel',
     'tools/bazel/*', '.github/workflows/*', 'tools/ci/bazel_gate.py', 'tools/ci/remote_gate.py',
-    'tools/ci/gate_requirements.txt', 'tools/ci/gate_select.py', 'tools/ci/gate_paths.py',
+    'tools/ci/gate_env.py', 'tools/ci/gate_requirements.txt', 'tools/ci/gate_select.py', 'tools/ci/gate_paths.py',
     'tools/ci/graph_adoption.py', 'tools/ci/public_view_adoption.json',
 ]
 # Files no build or test reads. Only these may change without selecting a target.
@@ -318,6 +318,9 @@ def blame_target(error, head, affected):
     return '//tools:ci/bazel_gate'
 
 
+gate_env = module_from('gate_env', Path(__file__).with_name('gate_env.py'))
+
+
 class Workspace:
     """Git and Bazel on the runner. Every failure raises GateError."""
 
@@ -328,7 +331,10 @@ class Workspace:
     def run(self, *command, capture=True, check=True):
         print('$ ' + shlex.join(map(str, command)), flush=True)
         result = subprocess.run(list(map(str, command)), cwd=self.root, text=True,
-                                stdout=subprocess.PIPE if capture else None)
+                                stdout=subprocess.PIPE if capture else None,
+                                env=(dict(os.environ) if str(command[0]) == str(self.bazel)
+                                     or Path(str(command[0])).name in {'bazel', 'bb'}
+                                     else gate_env.child_environment()))
         if check and result.returncode:
             raise GateError(f'{shlex.join(map(str, command))} exited {result.returncode}')
         return result.stdout if capture else result.returncode
@@ -337,7 +343,7 @@ class Workspace:
         if not sha:
             raise GateError('empty base or head; the queue-aware refs were unavailable')
         present = subprocess.run(['git', 'cat-file', '-e', f'{sha}^{{commit}}'], cwd=self.root,
-                                 stderr=subprocess.DEVNULL)
+                                 stderr=subprocess.DEVNULL, env=gate_env.child_environment())
         if present.returncode:
             self.run('git', 'fetch', '--quiet', '--no-tags', 'origin', sha)
 
@@ -624,7 +630,8 @@ class Workspace:
         started = []
         for command in generated.commands():
             print('$ ' + shlex.join(map(str, command)) + ' &', flush=True)
-            started.append((command, subprocess.Popen(list(map(str, command)), cwd=self.root)))
+            started.append((command, subprocess.Popen(list(map(str, command)), cwd=self.root,
+                                                       env=gate_env.child_environment())))
         return started
 
     def inputs_check(self, started=None):

@@ -367,7 +367,8 @@ def test_the_parent_hands_the_child_a_dropped_credential_invocation(tmp_path, mo
     assert seen['argv'][seen['argv'].index('--config') + 1] == str(config_path)
     assert seen['user'] == os.getuid()
     assert seen['extra_groups'] == []
-    assert seen['env'] == {'PATH': '/usr/bin:/bin'}
+    assert set(seen['env']) == {'PATH'}
+    assert seen['env']['PATH'] == '/usr/bin:/bin'
     assert seen['cwd'] == '/'
     assert seen['content'] == b'{}\n'
 

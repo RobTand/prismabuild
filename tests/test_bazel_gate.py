@@ -126,7 +126,7 @@ def test_impacted_tests_are_selected_and_packages_become_scopes():
 @pytest.mark.parametrize('path', ['MODULE.bazel', 'MODULE.bazel.lock', '.bazelrc', '.bazelversion',
                                   '.bazelignore', 'BUILD.bazel', 'tools/bazel/python.bzl',
                                   'tools/bazel/requirements.txt', '.github/workflows/gate.yml',
-                                  'tools/ci/gate_requirements.txt', 'tools/ci/bazel_gate.py',
+                                  'tools/ci/gate_env.py', 'tools/ci/gate_requirements.txt', 'tools/ci/bazel_gate.py',
                                   'tools/ci/gate_select.py'])
 def test_build_lock_and_workflow_changes_test_everything(path):
     decision = plan([path, 'src/prismabuild/core.py'])

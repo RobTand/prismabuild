@@ -78,7 +78,9 @@ def import_from_path(name, path):
 def repository_files(root):
     """Tracked and untracked, unignored files: a new test counts before `git add`."""
     output = subprocess.run(['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
-                            cwd=root, capture_output=True, check=True).stdout.decode()
+                            cwd=root, capture_output=True, check=True,
+                            env=import_from_path('build_gate_env',
+                                Path(__file__).resolve().parents[1] / 'ci/gate_env.py').child_environment()).stdout.decode()
     # BUILD files define the graph; no test reads them, and leaving them out
     # keeps generation a fixed point.
     return sorted(path for path in set(output.split('\0')) if path and not path.startswith(SKIPPED)

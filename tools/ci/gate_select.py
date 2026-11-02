@@ -13,6 +13,10 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 
+
+ENV_SPEC = importlib.util.spec_from_file_location('gate_env', Path(__file__).with_name('gate_env.py'))
+gate_env = importlib.util.module_from_spec(ENV_SPEC)
+ENV_SPEC.loader.exec_module(gate_env)
 DIGEST_SPEC = importlib.util.spec_from_file_location('gate_digest', Path(__file__).resolve().parents[2] / 'src/prismabuild/digest_primitives.py')
 digest = importlib.util.module_from_spec(DIGEST_SPEC)
 DIGEST_SPEC.loader.exec_module(digest)
@@ -37,7 +41,7 @@ def changed_files(root: Path, base: str, head: str) -> list[str]:
     # --no-renames retains both sides of every rename.
     result = subprocess.run(['git', 'diff', '--name-only', '--no-renames', '-z',
                              base, head, '--'], cwd=root,
-                            capture_output=True, check=True)
+                            capture_output=True, check=True, env=gate_env.child_environment())
     return sorted(set(result.stdout.decode().rstrip('\0').split('\0')) - {''})
 
 

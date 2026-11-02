@@ -266,14 +266,15 @@ def test_real_gate_child_call_sites_never_inherit_secrets(tmp_path, monkeypatch)
 
     paths = ['tools/ci/bazel_gate.py', 'tools/ci/gate_run.py',
              'tools/ci/bazel_generated.py', 'tools/ci/gate_select.py',
-             'tools/ci/gate_revision.py', 'tools/ci/gate_setup.py']
+             'tools/ci/gate_revision.py', 'tools/ci/gate_setup.py',
+             'tools/bazel/build_files.py', 'tools/ci/bazel_parity.py']
     modules = [load('secret_probe_' + Path(path).stem, path) for path in paths]
-    gate, runner, generated, select, revision, setup = modules
+    gate, runner, generated, select, revision, setup, build_files, parity = modules
     expected = set()
     for path in paths:
         for node in ast.walk(ast.parse((ROOT / path).read_text())):
             if isinstance(node, ast.Call) and ast.unparse(node.func) in {
-                    'subprocess.run', 'subprocess.Popen', 'execute'}:
+                    'subprocess.run', 'subprocess.Popen', 'subprocess.check_output', 'execute'}:
                 expected.add((str((ROOT / path).resolve()), node.lineno))
     observed = set()
     ambient = {'PATH': '/usr/bin', 'HOME': str(tmp_path), 'GITHUB_SHA': 'abc',
@@ -303,8 +304,10 @@ def test_real_gate_child_call_sites_never_inherit_secrets(tmp_path, monkeypatch)
             forbidden = sorted(name for name in names if name.endswith(('_API_KEY', '_TOKEN')))
             assert not forbidden, 'forbidden child environment names: ' + ', '.join(forbidden)
             assert kwargs['env']['PATH'] == '/usr/bin'
-        stdout = ''
-        if command[:2] == ['git', 'ls-tree']:
+        stdout = '' if kwargs.get('text') else b''
+        if command[:2] == ['git', 'ls-files']:
+            stdout = b''
+        elif command[:2] == ['git', 'ls-tree']:
             stdout = 'budget exists'
         elif command[:2] == ['git', 'show']:
             stdout = budget.read_text()
@@ -314,13 +317,22 @@ def test_real_gate_child_call_sites_never_inherit_secrets(tmp_path, monkeypatch)
 
     monkeypatch.setattr(subprocess, 'run', capture)
     monkeypatch.setattr(subprocess, 'Popen', capture)
-    workspace = gate.Workspace(tmp_path)
+    workspace = gate.Workspace(ROOT)
     for command in [('git', 'status'), ('python3', 'tool.py'), ('java', '-jar', 'diff.jar'),
                     ('bash', '-c', 'true'), ('bazel', 'query'), ('/opt/bin/bb', 'version')]:
         workspace.run(*command)
     workspace.ensure_commit('a' * 40)
     workspace.start_generated_checks()
     generated.check(root=tmp_path)
+    build_files.repository_files(tmp_path)
+    def capture_output(command, **kwargs):
+        caller = inspect.currentframe().f_back
+        observed.add((str(Path(caller.f_code.co_filename).resolve()), caller.f_lineno))
+        return capture(command, **kwargs).stdout
+    monkeypatch.setattr(subprocess, 'check_output', capture_output)
+    monkeypatch.setattr(parity, 'population', lambda: [])
+    monkeypatch.setattr(parity, 'compare_static', lambda *args: {})
+    assert parity.main(['static']) == 0
     runner._budget_policy(tmp_path, 'a' * 40)
     assert runner.run_plan({'selected': [{'path': 'tests/test_one.py'}], 'deselect': []},
                            root=tmp_path, output=tmp_path / 'result.json', junit=junit,
@@ -365,3 +377,19 @@ def test_real_gate_child_call_sites_never_inherit_secrets(tmp_path, monkeypatch)
     setup.prepare_assigned_gate(files, execute=subprocess.run)
     # Wrapper frames aren't call sites. Every real subprocess site must execute.
     assert expected <= observed, sorted((Path(path).name, line) for path, line in expected - observed)
+
+
+def test_runner_shell_launcher_uses_the_allowlist(monkeypatch):
+    builder = load('gate_env_launcher', 'tools/ci/gate_env.py')
+    monkeypatch.setattr(os, 'environ', {'PATH': '/usr/bin', 'HOME': '/home/ci',
+                                      'BUILDBUDDY_API_KEY': 'fake-secret-value',
+                                      'GITHUB_TOKEN': 'fake-secret-value'})
+    calls = []
+    def execute(file, argv, env):
+        calls.append(file)
+        assert argv == ['bash', '-c', 'true']
+        assert set(env) == {'PATH', 'HOME'}
+        assert env['PATH'] == '/usr/bin'
+    monkeypatch.setattr(os, 'execvpe', execute)
+    builder.main(['bash', '-c', 'true'])
+    assert calls == ['bash']

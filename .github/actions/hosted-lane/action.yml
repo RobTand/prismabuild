@@ -45,8 +45,16 @@ runs:
         python tools/ci/gate_run.py --plan gate-artifacts/plan.json
         --files-from gate-artifacts/assigned.txt --workers 4
         --result gate-artifacts/result.json --junitxml gate-artifacts/junit.xml
-    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+    - id: secret-scan
+      name: Scan artifacts for secrets (pending PrismaQuant vendor SHA)
       if: always()
+      shell: bash
+      run: |
+        # Pending PrismaQuant: vendor check_no_secret_leak.py byte-identical and pin SHA-256.
+        # Fail closed until the coordinator supplies the published source SHA.
+        python3 tools/ci/check_no_secret_leak.py gate-artifacts/
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      if: always() && steps.secret-scan.outcome == 'success'
       with:
         name: hosted-lane-${{ runner.arch }}
         path: gate-artifacts/

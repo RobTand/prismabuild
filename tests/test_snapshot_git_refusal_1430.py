@@ -76,7 +76,8 @@ def test_deterministic_bundle_streams_bytes_and_names_pack_failure(
         assert actual_argv == argv
         assert kwargs.keys() == {"cwd", "env", "input", "stdout", "stderr", "timeout"}
         assert kwargs["cwd"] == str(tmp_path)
-        assert kwargs["env"] == environment
+        assert set(kwargs["env"]) == {"GIT_OBJECT_DIRECTORY"}
+        assert kwargs["env"]["GIT_OBJECT_DIRECTORY"] == "private-objects"
         assert kwargs["input"] == b"a" * 40 + b"\n" + b"b" * 40 + b"\n"
         assert kwargs["stderr"] == subprocess.PIPE
         assert kwargs["timeout"] is None
