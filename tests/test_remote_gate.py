@@ -116,6 +116,11 @@ def test_the_arm64_hosted_lane_also_runs_what_arm64_executors_cannot_host():
     assert remote_gate.ARM64_HOSTED == ('runner', 'hosted-arm64')
 
 
+@pytest.mark.parametrize('architecture', ['amd64', 'arm64'])
+def test_root_owned_interpreter_observation_runs_on_hosted_runners(architecture):
+    assert 'tests/test_proof_runtime_observation.py' in remote_gate.hosted_files(ROOT, arch=architecture)
+
+
 class Client:
     def __init__(self, answers):
         self.answers = list(answers)
