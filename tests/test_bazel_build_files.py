@@ -32,12 +32,46 @@ def test_import_statements_anywhere_are_edges_and_bare_strings_are_not(tmp_path)
         'tests/test_a.py': ('import helper\n'
                             'def test_x():\n    from prismabuild import core\n'
                             "PATCHED = ('prismabuild.pool', 'pbrun')\n"),
+        'tests/test_b.py': ("import importlib\nNAMES = ('prismabuild.pool', 'pbrun')\n"
+                            'MODULES = [importlib.import_module(name) for name in NAMES]\n'),
         'tests/helper.py': '', 'src/prismabuild/core.py': '', 'src/prismabuild/pool.py': '',
         'tools/fleet/pbrun.py': ''})
     modules, _ = found.of('tests/test_a.py')
     assert modules == {'tests/helper.py', 'src/prismabuild/core.py'}
-    # A test's own strings are its target's inputs, never its library's.
-    assert found.test_modules('tests/test_a.py') == {'src/prismabuild/pool.py', 'tools/fleet/pbrun.py'}
+    assert found.test_modules('tests/test_a.py') == set()
+    # A test that imports by name gets the modules it names, on its own target only.
+    assert found.of('tests/test_b.py')[0] == set()
+    assert found.test_modules('tests/test_b.py') == {'src/prismabuild/pool.py', 'tools/fleet/pbrun.py'}
+
+
+def test_a_script_run_by_path_brings_its_imports_to_the_test(tmp_path):
+    found = evidence(tmp_path, {
+        'tests/test_shim.py': ("from pathlib import Path\n"
+                               "SHIM = Path(__file__).resolve().parents[1] / 'tools/fleet/docker'\n"),
+        'tools/fleet/docker': '#!/usr/bin/python3\nfrom prismabuild import resource_scope\n',
+        'tools/worker.py': ("import subprocess, sys\nfrom pathlib import Path\n"
+                            "EXEC = Path(__file__).resolve().parent / 'fleet/resource_exec.py'\n"
+                            "def run():\n    subprocess.run([sys.executable, str(EXEC)], check=True)\n"),
+        'tools/named.py': ("from pathlib import Path\n"
+                           "EXEC = Path(__file__).resolve().parent / 'fleet/resource_exec.py'\n"
+                           "print('would run', EXEC)\n"),
+        'tools/fleet/resource_exec.py': 'from prismabuild import pool\n',
+        'src/prismabuild/resource_scope.py': '', 'src/prismabuild/pool.py': ''})
+    assert found.run_by_path({'tests/test_shim.py'}) == {'tools/fleet/docker', 'src/prismabuild/resource_scope.py'}
+    # A path that reaches a launch counts; the same path only named does not.
+    assert found.run_by_path({'tools/worker.py'}) == {'tools/fleet/resource_exec.py'}
+    assert found.run_by_path({'tools/named.py'}) == set()
+    assert found.of('tools/worker.py')[0] == set()
+
+
+def test_bare_file_names_count_only_when_a_path_is_built_from_them():
+    tree = build_files.ast.parse(
+        "SCRIPTS = ('worker_loop.py', 'tier_loop.py')\n"
+        "DEPENDENCIES = ('resource_broker.py',)\n"
+        "def busy(name):\n    return name in SCRIPTS\n"
+        "def copy(source, target):\n    for dependency in DEPENDENCIES:\n"
+        "        (target / dependency).write_bytes((source / dependency).read_bytes())\n")
+    assert build_files.path_built_names(tree) == {'resource_broker.py'}
 
 
 def test_a_test_importing_another_test_depends_on_its_library_not_its_test():

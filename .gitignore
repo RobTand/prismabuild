@@ -19,3 +19,8 @@ __pycache__/
 # rule is a bundle that does not rebuild the tree the action ran in.
 .pbrun-closure.[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
 pbrun_result.[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].txt
+
+# Bazel's output links and the diagnostic logs .bazelrc writes (docs/bazel.md).
+/bazel-*
+/*bazel-remote-grpc.log
+/*execution_log.binpb.zst
