@@ -501,11 +501,11 @@ def test_workspace_reuses_both_graphs_and_fingerprints_only_a_tests_source_and_i
     workspace.ensure_graphs('base-sha', 'head-sha')
     assert workspace.bazel_diff('base-sha', 'head-sha') == {'//tests:test_t'}
     assert generated == ['base-sha', 'head-sha']
-    assert workspace.snapshots['base'].contents['//tests:test_t'] == {
-        'source': 'SourceFile#same~same', 'imports': []}
-    assert workspace.snapshots['head'].contents['//tests:test_t'] == {
-        'source': 'SourceFile#same~same', 'imports': []}
-    assert workspace.graph_impact.measure(workspace.snapshots['head'])['reach'] == {
+    assert workspace.graph_contents['base']['//tests:test_t'] == {
+        'source': 'SourceFile#same~same', 'imports': [], 'deps': ['//tests:test_t_lib']}
+    assert workspace.graph_contents['head']['//tests:test_t'] == {
+        'source': 'SourceFile#same~same', 'imports': [], 'deps': ['//tests:test_t_lib']}
+    assert workspace.snapshots['head']['reach'] == {
         '//tests:test_t': ['//tests:test_t.py']}
 
 
@@ -544,8 +544,65 @@ def test_a_diff_checksum_mismatch_refuses_the_binary(tmp_path, monkeypatch):
 
 def test_gate_metrics_record_counts_without_repeating_full_source_closures():
     measured = {'u_pct': 25, 'reach': {'t': ['a', 'b']},
-                'sccs': [['a'], ['b', 'c']], 'scc_max': 2, 'scc_members': ['b', 'c']}
+                'components': [['a'], ['b', 'c']], 'edges': [['t', 'a']], 'loc': {'a': 1}, 'scc_max': 2, 'scc_members': ['b', 'c']}
     record = bazel_gate.graph_metrics(measured)
     assert record == {'u_pct': 25, 'reach_sizes': {'t': 2}, 'cycles': [['b', 'c']],
                       'scc_max': 2, 'scc_members': ['b', 'c']}
     assert measured['reach']['t'] == ['a', 'b']
+
+
+def test_adapter_produces_packages_base_maxima_and_both_typed_edge_directions():
+    before = {'reach': {'//pkg:old': ['//pkg:a.py', '//pkg:b.py'], '//other:t': ['//pkg:a.py']},
+              'test_packages': {'//pkg:old': '//pkg', '//other:t': '//other'}}
+    after = {'reach': {'//pkg:old': ['//pkg:a.py'], '//new:t': ['//pkg:c.py']},
+             'test_packages': {'//pkg:old': '//pkg', '//new:t': '//new'}}
+    old_edges = {'rule_to_rule': {('//pkg:old', '//pkg:lib')},
+                 'rule_to_source': {('//pkg:lib', '//pkg:b.py')}}
+    new_edges = {'rule_to_rule': {('//pkg:old', '//pkg:newlib')},
+                 'rule_to_source': {('//pkg:newlib', '//pkg:c.py')}}
+    assert bazel_gate.graph_policy_inputs(before, after, old_edges, new_edges) == {
+        'test_packages': {'//pkg:old': '//pkg', '//new:t': '//new'},
+        'base_package_max_reach': {'//pkg': 2, '//other': 1},
+        'edge_diff': {'added': {'rule_to_rule': [['//pkg:old', '//pkg:newlib']],
+                                'rule_to_source': [['//pkg:newlib', '//pkg:c.py']]},
+                      'removed': {'rule_to_rule': [['//pkg:old', '//pkg:lib']],
+                                  'rule_to_source': [['//pkg:lib', '//pkg:b.py']]}}}
+
+
+def test_edge_types_use_bazel_kinds_instead_of_file_extensions():
+    edges = {'//pkg:t': {'//pkg:generated.py', '//pkg:source', '//pkg:lib.py'},
+             '//pkg:source': {'//pkg:lib.py'}}
+    assert bazel_gate.typed_edges(edges, {'//pkg:t', '//pkg:lib.py'}, {'//pkg:source'}) == {
+        'rule_to_rule': {('//pkg:t', '//pkg:lib.py')},
+        'rule_to_source': {('//pkg:t', '//pkg:source')}}
+
+
+def test_graph_only_baseline_writer_keeps_history_and_never_runs_test_populations(tmp_path, monkeypatch, capsys):
+    impact = bazel_gate.module_from('core_for_baseline_test', ROOT / 'tools/ci/graph_impact.py')
+    workspace = bazel_gate.Workspace(root=tmp_path)
+    snapshot = impact.measure({'//pkg:t': {'//pkg:a'}}, {('//pkg:t', '//pkg:a')}, {'//pkg:a': 1})
+    baseline = impact.baseline_record(snapshot)
+    baseline['figures']['u_pct'] = 200
+    workspace.snapshots = {'base': snapshot, 'head': snapshot}
+    workspace.graph_impact = impact
+    workspace.graph_baselines = {'head': {'history': ['preserved'], 'graph_impact': baseline}}
+    calls = []
+    def check(base, head, *, record_gains=False):
+        calls.append(record_gains)
+        return {'summary': 'U 100.0% → 100.0%, SCC max 1 → 1', 'errors': []}
+    monkeypatch.setattr(workspace, 'graph_check', check)
+    monkeypatch.setattr(workspace, 'run', lambda *args, **kwargs: pytest.fail('graph mode must not run test populations'))
+    monkeypatch.setenv('BUILDBUDDY_ARTIFACTS_DIRECTORY', str(tmp_path / 'artifacts'))
+    path = tmp_path / 'tests/fixtures/import_fanout_baseline.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(workspace.graph_baselines['head']))
+    assert bazel_gate.main(['graph', '--base', 'base', '--head', 'head', '--write-baseline'], workspace) == 0
+    written = json.loads(path.read_text())
+    assert written['history'] == ['preserved']
+    assert written['graph_impact']['figures']['u_pct'] == 100
+    assert calls == [True]
+    assert 'U 100.0% → 100.0%' in capsys.readouterr().out
+    original = path.read_bytes()
+    monkeypatch.setattr(workspace, 'graph_check', lambda *args, **kwargs: {'summary': 'loss', 'errors': ['SCC grew']})
+    assert bazel_gate.main(['graph', '--base', 'base', '--head', 'head', '--write-baseline'], workspace) == 1
+    assert path.read_bytes() == original

@@ -1,165 +1,255 @@
-"""Bazel graph metrics and minimum-only policy on deterministic small graphs."""
+"""Synthetic contracts for the shared graph-impact core vendored by PrismaBuild."""
 from __future__ import annotations
-
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
-
 import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('graph_impact', ROOT / 'tools/ci/graph_impact.py')
 impact = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(impact)
 
-
-def graph(edges=None, roots=None, loc=None, contents=None):
-    return impact.Snapshot(edges or {}, roots or {}, loc or {}, contents or {})
-
-
-def record(snapshot, **overrides):
-    return {**impact.baseline_record(impact.measure(snapshot)), **overrides}
+def measure(tests=None, edges=(), loc=None):
+    return impact.measure(tests or {}, set(edges), loc)
 
 
-def test_metrics_include_unreached_sources_and_weight_lines():
-    snapshot = graph({'t1': {'a'}, 't2': set(), 'conftest.py': {'b'}, 'a': {'b'}},
-                     {'t1': {'t1', 'conftest.py'}, 't2': {'t2'}}, {'a': 1, 'b': 3, 'c': 2})
-    live = impact.measure(snapshot)
-    assert live['reach'] == {'t1': ['a', 'b'], 't2': []}
-    assert live['dependents'] == {'a': 1, 'b': 1, 'c': 0}
-    assert live['u_pct'] == pytest.approx(100 / 3)
-    assert live['loc_u_pct'] == pytest.approx(100 / 3)
-    assert (live['reach_median'], live['reach_p90'], live['reach_max']) == (1, 2, 2)
-    assert impact.measure(graph(snapshot.edges, snapshot.roots, {'a': 1, 'b': 5, 'c': 0}))['loc_u_pct'] == 50
-    assert record(snapshot)['reach_budget'] == 2
+def baseline(snapshot, **overrides):
+    return {**impact.baseline_record(snapshot), **overrides}
 
 
-def test_empty_graph_has_finite_zero_metrics():
-    live = impact.measure(graph())
-    assert [live[k] for k in ('u_pct', 'loc_u_pct', 'scc_max', 'reach_median', 'reach_p90', 'reach_max')] == [0] * 6
+def test_metrics_include_unreached_sources_and_line_weights():
+    snapshot = measure({'t1': {'a', 'b'}, 't2': set()}, {('t1', 'a'), ('a', 'b')}, {'a': 1, 'b': 3, 'c': 2})
+    assert snapshot['reach'] == {'t1': ['a', 'b'], 't2': []}
+    assert snapshot['dependents'] == {'a': 1, 'b': 1, 'c': 0}
+    assert snapshot['u_pct'] == pytest.approx(100 / 3)
+    assert snapshot['loc_u_pct'] == pytest.approx(100 / 3)
+    assert snapshot['reach_median'] == 1
+    assert snapshot['reach_p90'] == snapshot['reach_max'] == 2
+    weighted = measure({'t1': {'a', 'b'}, 't2': set()}, (), {'a': 1, 'b': 5, 'c': 0})
+    assert weighted['loc_u_pct'] == 50
 
 
-def test_scc_members_and_deep_graph_do_not_need_python_recursion():
-    edges = {str(i): {str(i + 1)} for i in range(1500)}
-    edges['1500'] = {'1499'}
-    live = impact.measure(graph(edges))
-    assert live['scc_max'] == 2
-    assert live['scc_members'] == ['1499', '1500']
+def test_empty_graph_and_zero_loc_are_defined():
+    empty = measure()
+    assert empty['u_pct'] == empty['loc_u_pct'] == empty['scc_max'] == empty['reach_max'] == 0
+    assert measure({'t': {'empty'}}, loc={'empty': 0})['loc_u_pct'] == 0
+    with pytest.raises(ValueError, match='LOC'):
+        measure({'t': {'a'}}, loc={'a': -1})
 
 
-def test_deps_reader_accepts_source_leaves_without_keys_and_normalizes_labels(tmp_path):
-    path = tmp_path / 'deps.json'
-    path.write_text(json.dumps({'@//tests:t': ['@//pkg:a.py', '@@external//:ignored']}))
-    snapshot = impact.read_deps(path, {'//tests:t'}, {'//pkg:a.py': 3})
-    assert impact.measure(snapshot)['reach'] == {'//tests:t': ['//pkg:a.py']}
-    assert snapshot.edges['//tests:t'] == {'//pkg:a.py'}
-    path.write_text('{"//tests:t": "not a list"}')
-    with pytest.raises(ValueError, match='dependencies'):
-        impact.read_deps(path, {'//tests:t'}, {})
+def test_changed_test_budget_prints_shortest_path_to_farthest_hub():
+    edges = {('test', 'fixture'), ('fixture', 'pkg/a'), ('pkg/a', 'pkg/hub')}
+    snapshot = measure({'test': {'pkg/a', 'pkg/hub'}}, edges, {'pkg/a': 1, 'pkg/hub': 1})
+    before = measure({'test': {'pkg/a'}}, edges - {('pkg/a', 'pkg/hub')}, {'pkg/a': 1, 'pkg/hub': 1})
+    errors = impact.compare(before, snapshot, baseline(before, reach_budget=1), changed_tests={'test'})
+    assert any('reach 2 exceeds budget 1' in error and 'test → fixture → pkg/a → pkg/hub' in error for error in errors)
+    assert not impact.compare(snapshot, snapshot, baseline(snapshot, reach_budget=2))
 
 
-def test_changed_and_new_tests_use_the_recorded_budget_and_bazel_blame():
-    before = graph({'t': {'a'}, 'a': {'hub'}}, {'t': {'t'}}, {'a': 1, 'hub': 1}, {'t': 'old'})
-    after = graph(before.edges, before.roots, before.loc, {'t': 'changed'})
-    errors = impact.compare(before, after, record(before, reach_budget=1),
-                            explain=lambda target: f'```mermaid\ngraph TD\n{target} --> hub\n```')
-    assert any('t reach 2 exceeds budget 1' in e and 't --> hub' in e for e in errors)
-    assert impact.compare(before, before, record(before, reach_budget=1)) == []
-    errors = impact.compare(None, after, record(after, reach_budget=0))
-    assert any('t reach 2 exceeds budget 0' in e for e in errors)
+def test_new_test_budget_and_no_history_absolute_check():
+    before = measure({}, loc={'a': 1})
+    after = measure({'new_test': {'a'}}, {('new_test', 'a')}, {'a': 1})
+    for base in (None, before):
+        errors = impact.compare(base, after, baseline(after, reach_budget=0))
+        assert any('reach 1 exceeds budget 0' in error for error in errors)
 
 
-def test_direct_dependency_change_counts_as_a_changed_test():
-    before = graph({'t': {'a'}}, {'t': {'t'}}, {'a': 1, 'b': 1})
-    after = graph({'t': {'a', 'b'}}, before.roots, before.loc)
-    assert any('t reach 2 exceeds budget 1' in e for e in impact.compare(before, after, record(before)))
+@pytest.mark.parametrize('group,edge', [('test_to_test', 't1 -> t2'), ('conftest_source_imports', 'fixture -> a')])
+def test_new_forbidden_edge_fails(group, edge):
+    before = measure()
+    before['edge_groups'][group] = []
+    after = measure()
+    after['edge_groups'][group] = [edge]
+    assert any(f'new {group} edge: {edge}' in error for error in impact.compare(before, after, baseline(before)))
 
 
-def test_uniform_regression_attributes_added_edges_and_source_fanout():
-    before = graph({'t': {'a'}}, {'t': {'t'}}, {'a': 1, 'b': 1})
-    after = graph({'t': {'a'}, 'a': {'b'}, 'unrelated': {'leaf'}}, before.roots, before.loc)
-    errors = impact.compare(before, after, record(before, reach_budget=10))
-    error = next(e for e in errors if 'u_pct rose' in e)
-    assert 'a -> b' in error and 'b +1' in error
-    assert 'unrelated -> leaf' not in error
+def test_test_to_test_edges_are_discovered_without_language_assumptions():
+    after = measure({'//rust:a_test': set(), '//rust:b_test': set()}, {('//rust:a_test', '//rust:b_test')})
+    assert after['edge_groups']['test_to_test'] == ['//rust:a_test -> //rust:b_test']
 
 
-@pytest.mark.parametrize('edges,added', [
-    ({'a': {'b'}, 'b': {'a', 'c'}, 'c': set()}, ('c', 'a')),
-    ({'a': {'b'}, 'b': {'a', 'c'}, 'c': {'d'}, 'd': {'c'}}, ('d', 'a')),
-    ({'a': {'b'}, 'b': set(), 'x': {'y'}, 'y': {'z'}, 'z': {'x'}}, ('b', 'a')),
-])
-def test_any_scc_growth_or_merge_fails_even_below_the_largest(edges, added):
-    before = graph({**edges, 'unrelated': set()})
-    after = graph({**before.edges, added[0]: edges[added[0]] | {added[1]}, 'unrelated': {'leaf'}})
-    error = next(e for e in impact.compare(before, after, record(before)) if 'SCC grew or merged' in e)
-    assert f'{added[0]} -> {added[1]}' in error
-    assert 'unrelated -> leaf' not in error
+def test_uniform_regression_attributes_edges_and_fanout_growth():
+    before = measure({'t': {'a'}}, {('t', 'a')}, {'a': 1, 'b': 1})
+    after = measure({'t': {'a', 'b'}}, {('t', 'a'), ('a', 'b')}, {'a': 1, 'b': 1})
+    errors = impact.compare(before, after, baseline(before, reach_budget=10))
+    assert any('existing source fanout grew' in error and 'a -> b' in error and 'b +1' in error for error in errors)
 
 
-def test_minimum_baseline_preserves_history_and_never_banks_tolerated_rises():
-    old = {'u_pct': 40, 'loc_u_pct': 50, 'scc_max': 4, 'reach_p90': 10}
-    baseline = impact.baseline_record(old)
-    assert impact.regressions({**old, 'u_pct': 40.5}, baseline) == []
-    live = {**old, 'u_pct': 30, 'loc_u_pct': 50.5, 'scc_max': 2, 'reach_p90': 8}
-    assert any('u_pct fell' in e for e in impact.stale_entries(live, baseline))
-    updated = impact.baseline_record(live, baseline)
-    assert (updated['u_pct'], updated['loc_u_pct'], updated['reach_budget']) == (30, 50, 8)
+def test_tolerated_noise_does_not_loosen_the_minimum():
+    snapshot = measure({'t': {'a'}}, loc={'a': 1})
+    previous = baseline(snapshot)
+    previous['figures']['u_pct'] = 99.5
+    assert not impact.regressions(snapshot, previous)
+    assert impact.baseline_record(snapshot, previous)['figures']['u_pct'] == 99.5
 
 
-def test_baseline_writer_records_gains_and_refuses_losses_without_writing(tmp_path, capsys):
-    path = tmp_path / 'baseline.json'
-    path.write_text(json.dumps({'history': 'kept', 'graph_impact': {
-        'u_pct': 90, 'loc_u_pct': 90, 'scc_max': 3, 'reach_budget': 4}}))
-    deps = tmp_path / 'deps.json'
-    deps.write_text('{"t": ["a"]}')
-    metadata = tmp_path / 'sources.json'
-    metadata.write_text('{"tests": ["t"], "loc": {"a": 1, "b": 1}}')
-    args = ['--head-deps', str(deps), '--head-metadata', str(metadata), '--baseline', str(path), '--write-baseline']
-    assert impact.main(args) == 0
-    written = json.loads(path.read_text())
-    assert written['history'] == 'kept'
-    assert written['graph_impact']['u_pct'] == 50
-    old = path.read_bytes()
-    deps.write_text('{"t": ["a", "b"]}')
-    assert impact.main(args) == 1
-    assert path.read_bytes() == old
-    assert 'refusing to record' in capsys.readouterr().err
+def test_unrelated_added_edge_is_not_blamed_for_cycle_growth():
+    before = measure(edges={('a', 'b')})
+    after = measure(edges={('a', 'b'), ('b', 'a'), ('x', 'y')})
+    error = next(e for e in impact.compare(before, after, baseline(before)) if 'SCC grew' in e)
+    assert 'b -> a' in error and 'x -> y' not in error
 
 
-def test_allowlist_requires_a_reason_and_may_only_shrink():
-    assert impact.allowlist_errors({'reach:t': 'integration contract'}, {})
-    assert impact.allowlist_errors({'reach:t': ''}, {'reach:t': ''})
-    assert impact.allowlist_errors({'reach:t': 'changed'}, {'reach:t': 'original'})
-    assert impact.allowlist_errors({}, {'reach:t': 'integration contract'}) == []
-    after = graph({'t': {'a'}, 'other': {'a'}}, {'t': {'t'}, 'other': {'other'}}, {'a': 1})
-    errors = impact.compare(None, after, record(after, reach_budget=0), allowlist={'reach:t': 'integration'})
-    assert not any('t reach ' in e for e in errors)
-    assert any('other reach ' in e for e in errors)
+def test_missing_gain_fails_and_recording_tightens_budget():
+    before = measure({'t': {'a', 'b'}}, {('a', 'b'), ('b', 'a')}, {'a': 1, 'b': 1})
+    after = measure({'t': {'a'}}, loc={'a': 1, 'b': 1})
+    previous = baseline(before)
+    assert any('scc_max fell' in error for error in impact.stale_entries(after, previous))
+    record = impact.baseline_record(after, previous)
+    assert record['figures']['u_pct'] == 50
+    assert record['figures']['scc_max'] == 1
+    assert record['reach_budget'] == 1
 
 
-def test_summary_has_metrics_budget_and_added_edge_attribution():
-    before = graph({'t': {'a'}}, {'t': {'t'}}, {'a': 1})
-    after = graph(before.edges, {**before.roots, 'new': {'new'}}, before.loc)
+def test_baseline_and_allowlist_only_shrink():
+    previous = baseline(measure())
+    current = {**previous, 'reach_budget': 10}
+    assert 'reach budget may only shrink' in impact.baseline_errors(current, previous)
+    exception = {'reach:integration': 'integration contract'}
+    assert impact.allowlist_errors(exception, {})
+    assert impact.allowlist_errors({'reach:integration': ''}, exception)
+    assert impact.allowlist_errors({'reach:integration': 'changed reason'}, exception)
+    assert impact.allowlist_errors({}, exception) == []
+
+
+def test_reasoned_exception_is_scoped_to_one_test():
+    snapshot = measure({'a_test': {'a'}, 'b_test': {'a'}}, loc={'a': 1})
+    errors = impact.compare(None, snapshot, baseline(snapshot, reach_budget=0),
+                            allowlist={'reach:a_test': 'integration contract'})
+    assert not any('a_test reach' in error for error in errors)
+    assert any('b_test reach' in error for error in errors)
+
+
+def test_summary_format_on_pass_and_failure():
+    before = measure({'t1': {'a'}}, {('t1', 'a')}, {'a': 1})
+    after = measure({'t1': {'a'}, 't2': set()}, {('t1', 'a')}, {'a': 1})
     assert impact.summary(before, after, 1) == (
         'U 100.0% → 50.0%, SCC max 1 → 1, new tests 1 (reach 0 ≤ budget 1), new edges 0, none to a hub')
     assert 'no base available' in impact.summary(None, after, 0)
+    assert 'reach 1, 0 > budget 0' in impact.summary(None, after, 0)
 
 
-def test_inherited_reach_growth_uses_uniform_check_without_reclassifying_the_test():
-    before = graph({'t': {'a'}}, {'t': {'t'}}, {'a': 1, 'b': 1}, {'t': 'same test'})
-    after = graph({'t': {'a'}, 'a': {'b'}}, before.roots, before.loc, before.contents)
-    errors = impact.compare(before, after, record(before))
-    assert not any('exceeds budget' in error for error in errors)
-    assert any('u_pct rose' in error for error in errors)
+def test_check_prints_summary_on_failure_and_preserves_baseline(tmp_path, capsys):
+    snapshot = measure({'test': {'a'}}, {('test', 'a')}, {'a': 1})
+    path = tmp_path / 'baseline.json'
+    path.write_text(json.dumps(baseline(snapshot, reach_budget=0)))
+    old = path.read_bytes()
+    assert impact.check(None, snapshot, path, write_baseline=True) == 1
+    assert path.read_bytes() == old
+    output = capsys.readouterr()
+    assert 'U no base available' in output.out
+    assert 'refusing to record' in output.err and 'reach 1 exceeds budget 0' in output.err
 
 
-def test_uniform_message_names_the_largest_gains_and_keeps_the_full_diff():
-    sources = {'a': 1, **{f's{n}': 1 for n in range(10)}}
-    before = graph({'t': {'a'}}, {'t': {'t'}}, sources)
-    after = graph({'t': {'a'}, 'a': {f's{n}' for n in range(10)}}, before.roots, sources)
-    error = next(e for e in impact.compare(before, after, record(before, reach_budget=100)) if 'u_pct rose' in e)
-    assert 's0 +1' in error and 's4 +1' in error
-    assert 's5 +1' not in error
-    assert '5 more in graph_impact.fanout_growth' in error
-    assert impact.changes(before, after)[1]['s9'] == 1
+def test_bazel_mermaid_blame_is_printed_on_failure(tmp_path, capsys):
+    snapshot = measure({'test': {'a'}}, {('test', 'a')}, {'a': 1})
+    path = tmp_path / 'baseline.json'
+    path.write_text(json.dumps(baseline(snapshot, reach_budget=0)))
+    assert impact.check(None, snapshot, path, explain=lambda test: 'graph TD; test-->a') == 1
+    assert '```mermaid\ngraph TD; test-->a\n```' in capsys.readouterr().err
+
+
+def test_package_max_allows_new_test_in_a_hub_package():
+    before = impact.measure({'//small:t': {'a'}, '//hub:old': {'a', 'b'}},
+                            {('//small:t', 'a'), ('//hub:old', 'a'), ('//hub:old', 'b')}, {'a': 1, 'b': 1})
+    after = impact.measure({**{t: set(r) for t, r in before['reach'].items()}, '//hub:new': {'a', 'b'}},
+                           set(map(tuple, before['edges'])) | {('//hub:new', 'a'), ('//hub:new', 'b')}, before['loc'])
+    assert not impact.compare(before, after, baseline(before, reach_budget=1))
+
+
+def test_new_package_uses_global_budget_and_names_extra_sources():
+    before = impact.measure({'//old:t': {'a'}}, {('//old:t', 'a')}, {'a': 1, 'b': 1})
+    after = impact.measure({'//old:t': {'a'}, '//new:t': {'a', 'b'}},
+                           {('//old:t', 'a'), ('//new:t', 'a'), ('a', 'b')}, before['loc'])
+    errors = impact.compare(before, after, baseline(before, reach_budget=1))
+    assert any('//new:t reach 2 exceeds budget 1' in e and 'extra sources:' in e and 'b' in e for e in errors)
+
+
+def test_new_hub_sources_are_reported_without_uniform_failure():
+    before = impact.measure({'//hub:t': {'//hub:a'}, '//other:t': {'//other:b'}},
+                            {('//hub:t', '//hub:a'), ('//other:t', '//other:b')},
+                            {'//hub:a': 1, '//other:b': 1})
+    sources = {'//hub:a', '//hub:new1', '//hub:new2', '//hub:new3'}
+    after = impact.measure({'//hub:t': sources, '//other:t': {'//other:b'}},
+                           {('//hub:t', p) for p in sources} | {('//other:t', '//other:b')},
+                           {p: 1 for p in sources | {'//other:b'}})
+    assert not impact.compare(before, after, baseline(before), changed_tests={'//hub:t'})
+    assert '3 new sources inherit //hub fan-out 50%' in impact.summary(before, after, 1)
+
+
+def test_new_tests_do_not_count_as_existing_source_fanout_growth():
+    before = measure({'pkg/old': {'pkg/a'}}, {('pkg/old', 'pkg/a')}, {'pkg/a': 1})
+    after = measure({'pkg/old': {'pkg/a'}, 'pkg/new': {'pkg/a'}},
+                    {('pkg/old', 'pkg/a'), ('pkg/new', 'pkg/a')}, {'pkg/a': 1})
+    assert not impact.compare(before, after, baseline(before))
+
+
+def test_real_existing_source_expansion_names_added_edges():
+    before = measure({'pkg/t': {'pkg/a'}}, {('pkg/t', 'pkg/a')}, {'pkg/a': 1, 'other/b': 1})
+    after = measure({'pkg/t': {'pkg/a', 'other/b'}}, {('pkg/t', 'pkg/a'), ('pkg/a', 'other/b')}, before['loc'])
+    errors = impact.compare(before, after, baseline(before))
+    assert any('existing source fanout grew' in e and 'pkg/a -> other/b' in e for e in errors)
+    assert any('existing test reach grew' in e and 'pkg/a -> other/b' in e for e in errors)
+    assert not any('u_pct rose' in e for e in errors)
+
+
+def test_uniform_figures_never_fail_and_writer_keeps_the_minimum():
+    before = measure({'test': {'a'}}, loc={'a': 1, 'b': 1})
+    after = measure({'test': {'a', 'b'}}, loc={'a': 1, 'b': 1})
+    record = baseline(before)
+    assert not impact.regressions(after, record)
+    assert impact.baseline_record(after, record)['figures']['u_pct'] == before['u_pct']
+    assert not any('u_pct fell' in e for e in impact.stale_entries(before, baseline(after)))
+
+
+def test_package_mapping_overrides_label_inference():
+    before = impact.measure({'old_binary': {'a', 'b'}}, {('old_binary', 'a'), ('old_binary', 'b')},
+                            {'a': 1, 'b': 1}, test_packages={'old_binary': 'controller'})
+    after = impact.measure({'old_binary': {'a', 'b'}, 'new_binary': {'a', 'b'}},
+                           {('old_binary', 'a'), ('old_binary', 'b'), ('new_binary', 'a'), ('new_binary', 'b')},
+                           before['loc'], test_packages={'old_binary': 'controller', 'new_binary': 'controller'})
+    assert not impact.compare(before, after, baseline(before, reach_budget=1))
+
+
+def test_exact_coordinator_input_contract_is_accepted():
+    before = impact.measure({'old': {'source'}}, {('old', 'source')}, {'source': 1},
+                            test_packages={'old': 'crate'})
+    typed_diff = {'added': {'rule_to_rule': [], 'rule_to_source': [('new', 'source')]},
+                  'removed': {'rule_to_rule': [], 'rule_to_source': []}}
+    after = impact.measure({'old': {'source'}, 'new': {'source'}},
+                           {('old', 'source'), ('new', 'source')}, {'source': 1},
+                           test_packages={'old': 'crate', 'new': 'crate'},
+                           base_package_max_reach={'crate': 1}, edge_diff=typed_diff)
+    assert impact.compare(before, after, baseline(before, reach_budget=0),
+                          test_packages={'old': 'crate', 'new': 'crate'},
+                          base_package_max_reach={'crate': 1}, edge_diff=typed_diff) == []
+
+
+def test_vendored_core_is_the_reviewed_prismaquant_file():
+    assert hashlib.sha256((ROOT / 'tools/ci/graph_impact.py').read_bytes()).hexdigest() == (
+        '50dd4ca0b6d77a5fee57e06ea2a435b75a8a7e473e80bd6863bdda9bb7c4c16b')
+
+
+@pytest.mark.parametrize('old_edges, added', [
+    ({('a', 'b'), ('b', 'a'), ('b', 'c')}, {('c', 'a')}),
+    ({('a', 'b'), ('b', 'a'), ('b', 'c'), ('c', 'd'), ('d', 'c')}, {('d', 'a')}),
+    ({('a', 'b'), ('x', 'y'), ('y', 'z'), ('z', 'x')}, {('b', 'a')}),
+    ({('x', 'y'), ('y', 'z'), ('z', 'x')}, {('new_a', 'new_b'), ('new_b', 'new_a')}),
+])
+def test_scc_growth_merges_and_new_cycles_fail_below_an_unrelated_max(old_edges, added):
+    before = measure(edges=old_edges)
+    after = measure(edges=old_edges | added)
+    errors = impact.compare(before, after, baseline(before))
+    error = next(e for e in errors if 'SCC grew or merged' in e)
+    assert any(f'{a} -> {b}' in error for a, b in added)
+    assert 'x -> y' not in error
+
+
+def test_deliberate_new_cycle_uses_its_exact_reasoned_exception():
+    old = {('x', 'y'), ('y', 'z'), ('z', 'x')}
+    before = measure(edges=old)
+    after = measure(edges=old | {('a', 'b'), ('b', 'a')})
+    assert impact.compare(before, after, baseline(before), allowlist={'scc:a,b': 'intentional fixture cycle'}) == []
+    assert any('SCC grew or merged' in e for e in impact.compare(
+        before, after, baseline(before), allowlist={'scc:other': 'unrelated exception'}))
