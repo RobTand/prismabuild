@@ -46505,6 +46505,7 @@ pb_py_test(
     library = ":test_digest_sites_1547_lib",
     deps = [
         "//src/prismabuild:__init__",
+        "//src/prismabuild:d38_gate_cycle",
         "//tools:fleet/pbgang",
         "//tools:fleet/pbrecover_checkout",
         "//tools:fleet/qualify_rollout",
@@ -46686,6 +46687,7 @@ pb_py_library(
         "//src/prismabuild:_gang_cycle",
         "//src/prismabuild:checkout_recovery",
         "//src/prismabuild:core",
+        "//src/prismabuild:d38_gate_cycle",
         "//src/prismabuild:digest_primitives",
         "//tools:fleet/pbgang",
         "//tools:fleet/pbrecover_checkout",
