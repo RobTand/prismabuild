@@ -28547,6 +28547,7 @@ pb_py_library(
         "//src/prismabuild:BUILD.bazel",
         "//src/prismabuild:core.py",
         "//tools/bazel:generate.sh",
+        "//tools/bazel:nonhermetic.bzl",
         "//tools/bazel:python.bzl",
         "//tools/bazel:requirements.txt",
         "//tools:ci/bazel_gate.py",
@@ -28563,6 +28564,7 @@ pb_py_library(
     deps = [
         "//src/prismabuild:core",
         "//tools:ci/bazel_gate",
+        "//tools:ci/bazel_quarantine",
         "//tools:ci/gate_run",
         "//tools:ci/gate_select",
         "//tools:ci/graph_impact",
