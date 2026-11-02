@@ -128,6 +128,12 @@ reason:
   workflow's hosted lane runs it with `tools/ci/gate_run.py` on a GitHub-hosted
   runner, exactly as the old gate did, whenever Bazel's selection impacts it.
   Parity counts it as run.
+- **`hosted-arm64`:** BuildBuddy's arm64 executors can't host the test. They
+  keep every writable path on an unsized tmpfs, which PrismaBuild's disk
+  checks refuse and `statvfs` reports as 0 bytes free; Firecracker isolation,
+  which would give a disk, fails to start there. The test runs on amd64
+  executors as usual. After a merge, the hosted lane runs it on
+  `ubuntu-24.04-arm` instead of the arm64 executors.
 - **`requires-network`:** the remote executor gets a network.
 
 CI fails when a generated input is stale (`tools/ci/bazel_generated.py`). It
@@ -272,7 +278,12 @@ scope:
 Impacted targets that no test depends on are built.
 
 Each push to `main` runs every test on amd64, then on arm64 remote executors,
-and the hosted lane on both architectures. A failure names the merged pull
+and the hosted lane on both architectures. The arm64 pass leaves out the
+`runner` tests (Remote Bazel runners are amd64 only) and the `hosted-arm64`
+tests; `gate-result.json` counts them under `architectures.arm64.excluded`, and
+the arm64 hosted lane runs their files. An architecture whose Bazel invocation
+runs no test at all is an error naming the invocation and its first `ERROR`
+line, not a failure of every test. A failure names the merged pull
 requests and says whether their selection included the failing test. The job
 summary and the `post-merge-<sha>` artifact hold one `POST_MERGE_RECORD`
 JSON line per run.

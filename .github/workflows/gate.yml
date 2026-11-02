@@ -266,7 +266,10 @@ jobs:
           persist-credentials: false
       - id: files
         name: Hosted-lane files
-        run: echo "files=$(python3 tools/ci/remote_gate.py hosted-files)" >> "$GITHUB_OUTPUT"
+        # On arm64, also what BuildBuddy's arm64 executors can't host.
+        env:
+          ARCH: ${{ matrix.runner == 'ubuntu-24.04-arm' && 'arm64' || 'amd64' }}
+        run: echo "files=$(python3 tools/ci/remote_gate.py hosted-files --arch "$ARCH")" >> "$GITHUB_OUTPUT"
       - name: Run every hosted-lane file
         if: steps.files.outputs.files != '[]'
         uses: ./.github/actions/hosted-lane

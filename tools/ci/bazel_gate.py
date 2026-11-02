@@ -2,9 +2,9 @@
 """The Bazel merge gate. Runs on a BuildBuddy Remote Bazel runner.
 
 pr mode selects the tests a change can affect, runs them on remote execution
-and reports Mergify scopes. main mode runs every test on amd64 and arm64 after
-a merge and records whether the merged change's own selection would have
-caught each failure. Both modes write gate-result.json to the BuildBuddy
+and reports Mergify scopes. main mode runs every test on amd64, and on arm64
+every test its executors can host, after a merge and records whether the
+merged change's own selection would have caught each failure. Both modes write gate-result.json to the BuildBuddy
 artifacts directory, and the GitHub job reads it back. Any detection failure
 is a gate failure, never an empty pass.
 """
@@ -14,6 +14,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -42,6 +43,13 @@ CONFIGS = {'amd64': 'remote', 'arm64': 'remote-arm64'}
 DIAGNOSTICS = ['bazel-remote-grpc.log', 'execution_log.binpb.zst']
 TESTS = 'tests(//...)'
 HOSTED = 'gate-lane-hosted'
+# nonhermetic.bzl lanes BuildBuddy's arm64 executors can't host: the Remote
+# Bazel runner is amd64 only, and the executors keep every writable path on
+# tmpfs. main mode leaves them out of its arm64 pass and records them; the
+# post-merge hosted lane runs their files on ubuntu-24.04-arm.
+ARM64_EXCLUDED = ('runner', 'hosted-arm64')
+# With --show_timestamps, Bazel prefixes each stderr line with the time.
+ERROR_LINE = re.compile(r'(\(\d\d:\d\d:\d\d\) )?ERROR: ')
 
 
 def bazel_diff_digest(data):
@@ -127,16 +135,39 @@ def verdict_of(selected, statuses):
     return ('fail' if failed else 'pass' if selected else 'skipped'), failed
 
 
-def test_statuses(bep_path):
-    statuses = {}
-    if not bep_path.exists():
-        return statuses
-    for line in bep_path.read_text().splitlines():
+def bep_run(text):
+    """Per-label test status, the invocation ID and Bazel's first ERROR line, from a JSON BEP file."""
+    statuses, invocation, error = {}, None, None
+    for line in text.splitlines():
         event = json.loads(line)
+        if 'started' in event.get('id', {}):
+            invocation = event.get('started', {}).get('uuid')
         summary = event.get('id', {}).get('testSummary')
         if summary:
             statuses[summary['label']] = event.get('testSummary', {}).get('overallStatus', 'NO_STATUS')
-    return statuses
+        if error is None:
+            error = next((output for output in event.get('progress', {}).get('stderr', '').splitlines()
+                          if ERROR_LINE.match(output)), None)
+    return {'statuses': statuses, 'invocation': invocation, 'error': error}
+
+
+def architecture_result(population, run, selected):
+    """One architecture's verdict. An invocation that ran no test failed as a
+    whole, before any test: an error naming it, not a failure per label."""
+    if population and not run['statuses']:
+        return {'verdict': 'error', 'failed': [], 'missed': [],
+                'error': f"invocation {run['invocation'] or '(unknown)'} ran no tests: "
+                         f"{run['error'] or 'its build events hold no ERROR line'}"}
+    verdict, failed = verdict_of(population, run['statuses'])
+    return {'verdict': verdict, 'failed': failed,
+            'missed': sorted(label for label in failed if label not in selected)}
+
+
+def arm64_population(population, excluded):
+    """The tests arm64 executors run, and the rest by nonhermetic.bzl lane."""
+    left_out = {tag: sorted(set(population) & labels) for tag, labels in excluded.items()}
+    skipped = {label for labels in left_out.values() for label in labels}
+    return sorted(label for label in population if label not in skipped), left_out
 
 
 def canonical_label(label):
@@ -194,6 +225,11 @@ class Workspace:
         """Manual targets the workflow's hosted lane runs instead of Bazel."""
         return set(map(canonical_label, self.query(f'attr(tags, "\\b{HOSTED}\\b", {TESTS})')))
 
+    def arm64_excluded(self):
+        """Tests in lanes arm64 executors can't host, by nonhermetic.bzl tag."""
+        return {tag: set(map(canonical_label, self.query(f'attr(tags, "\\b{tag}\\b", {TESTS})')))
+                for tag in ARM64_EXCLUDED}
+
     def used_sources(self):
         # BUILD and .bzl files define targets rather than being read by one; Bazel still reads them.
         labels = self.query('kind("source file", deps(//...))') + self.query('buildfiles(//...)')
@@ -221,9 +257,10 @@ class Workspace:
         return {canonical_label(line) for line in impacted.read_text().split() if line}
 
     def test(self, targets, config, metadata, log_name):
-        """Run targets; return per-label status. Build failures leave labels without status."""
+        """Run targets; return bep_run's statuses, invocation and first ERROR line.
+        Build failures leave labels without status."""
         if not targets:
-            return {}
+            return bep_run('')
         patterns = Path(tempfile.gettempdir(), f'{log_name}-targets.txt')
         patterns.write_text('\n'.join(targets) + '\n')
         bep = Path(tempfile.gettempdir(), f'{log_name}-bep.json')
@@ -233,7 +270,7 @@ class Workspace:
                  *diagnostic_logs(log_name),
                  *[f'--build_metadata={key}={value}' for key, value in metadata.items()],
                  capture=False, check=False)
-        return test_statuses(bep)
+        return bep_run(bep.read_text() if bep.exists() else '')
 
     def build(self, targets, config, metadata, log_name):
         """Build targets; True when every one built."""
@@ -308,7 +345,7 @@ def gate_pr(workspace, base, head, metadata):
     selected_seconds = time.monotonic() - started
     # The generated-input checks need no Bazel server: they run beside the tests.
     checks = workspace.start_generated_checks()
-    statuses = workspace.test(decision['selected'], CONFIGS['amd64'], metadata, 'pr')
+    statuses = workspace.test(decision['selected'], CONFIGS['amd64'], metadata, 'pr')['statuses']
     tested_seconds = time.monotonic() - started
     verdict, failed = verdict_of(decision['selected'], statuses)
     inputs = workspace.inputs_check(checks) + workspace.budget_check(base)
@@ -322,7 +359,8 @@ def gate_pr(workspace, base, head, metadata):
 
 
 def gate_main(workspace, base, head, metadata):
-    """Full run after a merge, on both architectures, plus what selection would have run."""
+    """Full run after a merge, on both architectures, plus what selection would have run.
+    arm64 leaves out the lanes in ARM64_EXCLUDED and records them."""
     started = time.monotonic()
     for sha in [base, head]:
         workspace.ensure_commit(sha)
@@ -339,15 +377,16 @@ def gate_main(workspace, base, head, metadata):
         tests = workspace.tests()
         selection = {'selection': 'error', 'reason': [str(error)], 'selected': sorted(tests)}
     population = sorted(tests)
+    runnable = {'amd64': (population, {}), 'arm64': arm64_population(population, workspace.arm64_excluded())}
     architectures = {}
     for architecture, config in CONFIGS.items():
         begun = time.monotonic()
-        statuses = workspace.test(population, config, metadata, f'main-{architecture}')
-        verdict, failed = verdict_of(population, statuses)
+        targets, excluded = runnable[architecture]
+        run = workspace.test(targets, config, metadata, f'main-{architecture}')
         architectures[architecture] = {
-            'verdict': verdict, 'failed': failed,
-            'missed': sorted(label for label in failed if label not in selection['selected']),
-            'seconds': round(time.monotonic() - begun, 1)}
+            **architecture_result(targets, run, selection['selected']), 'invocation': run['invocation'],
+            'tests': len(targets), 'excluded': {tag: len(labels) for tag, labels in excluded.items()},
+            'excluded_tests': excluded, 'seconds': round(time.monotonic() - begun, 1)}
     return {'selection': selection['selection'], 'reason': selection['reason'],
             'selected': selection['selected'], 'tests': len(population),
             'hosted': sorted(workspace.hosted_tests()),
@@ -360,7 +399,7 @@ def passed(result):
     if result.get('error') or result.get('inputs'):
         return False
     if result['mode'] == 'main':
-        return all(not arch['failed'] for arch in result['architectures'].values())
+        return all(not arch['failed'] and not arch.get('error') for arch in result['architectures'].values())
     return result['verdict'] != 'fail'
 
 
