@@ -28376,6 +28376,24 @@ pb_py_library(
 )
 
 pb_py_test(
+    name = "test_bazel_flow_probe",
+    path = "tests/test_bazel_flow_probe.py",
+    library = ":test_bazel_flow_probe_lib",
+    timeout = "moderate",
+)
+
+pb_py_library(
+    name = "test_bazel_flow_probe_lib",
+    srcs = [
+        "test_bazel_flow_probe.py",
+    ],
+    deps = [
+        "//src/prismabuild:__init__",
+        "//src/prismabuild:digest_primitives",
+    ],
+)
+
+pb_py_test(
     name = "test_bazel_gate",
     path = "tests/test_bazel_gate.py",
     library = ":test_bazel_gate_lib",
