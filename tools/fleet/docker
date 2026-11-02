@@ -468,20 +468,87 @@ def _container_options(argv: list[str], *, memory_limit: int | None = None, runt
     return kept, options, cpuset
 
 
+_GPUS_KEY = re.compile(r'driver|count|device|capabilities|options')
+
+
+def _gpus_csv_is_go_strict(value: str) -> bool:
+    """Reject CSV that Python's strict reader accepts but Go's encoding/csv does not.
+
+    Python tolerates a bare '"' inside an unquoted field; Go (no LazyQuotes)
+    does not. Embedded CR/LF would be a second CSV record, so it is rejected
+    too. Trailing data after a closing quote and unterminated quotes are
+    rejected here as well, independently of Python's reader.
+    """
+    if '\n' in value or '\r' in value:
+        return False
+    index, size = 0, len(value)
+    while True:
+        if value[index:index + 1] == '"':
+            index += 1
+            while True:
+                close = value.find('"', index)
+                if close < 0:
+                    return False
+                if value[close + 1:close + 2] == '"':
+                    index = close + 2
+                    continue
+                index = close + 1
+                break
+            if index < size and value[index] != ',':
+                return False
+        else:
+            comma = value.find(',', index)
+            end = size if comma < 0 else comma
+            if '"' in value[index:end]:
+                return False
+            index = end
+        if index >= size:
+            return True
+        index += 1
+
+
+def _parse_gpus_fields(value: str, fields: list[str]):
+    """Return (driver, device_ids) for a --gpus value Docker would accept, else None.
+
+    Grammar follows docker/cli opts/gpus.go (UNVERIFIED here: no source in this
+    repo): CSV fields; a lone bare 'all' or non-negative count; otherwise
+    key=value with keys driver, count, device, capabilities, options, each at
+    most once; count is 'all' or a non-negative integer. Fail closed where the
+    grammar is uncertain: empty value or fields, whitespace around keys, other
+    bare tokens, 'all' mixed with other fields, count=-1, trailing data after a
+    closing quote, embedded newlines/multiple records and bare quotes are all
+    treated as invalid (Docker is still the final judge of the forwarded argv).
+    """
+    if not fields or not _gpus_csv_is_go_strict(value):
+        return None  # An empty value yields no CSV fields: reject it.
+    if len(fields) == 1 and (fields[0] == 'all' or (fields[0].isascii() and fields[0].isdigit())):
+        return '', []
+    seen: dict[str, str] = {}
+    for field in fields:
+        key, equals, text = field.partition('=')
+        if not equals or _GPUS_KEY.fullmatch(key) is None or key in seen:
+            return None
+        if key == 'count' and not (text == 'all' or (text.isascii() and text.isdigit())):
+            return None
+        seen[key] = text
+    return seen.get('driver', ''), seen['device'].split(',') if 'device' in seen else []
+
+
 def _nvidia_injection_intent(intent):
     requests = [{'Driver': 'cdi', 'DeviceIDs': intent.get('devices', [])}]
     for value in intent.get('gpus', []):
         # Docker opts/gpus.go parses CSV, defaults Driver to empty, and always
-        # includes gpu in capabilities. Docker still validates/executes argv.
+        # includes gpu in capabilities. Docker rejects the whole run if any
+        # --gpus value is invalid, so one invalid value voids all intent.
+        # Docker still validates/executes argv.
         try:
             fields = next(csv.reader([value], strict=True))
         except (csv.Error, StopIteration):
-            continue
-        drivers = [field.partition('=')[2] for field in fields if field.startswith('driver=')]
-        devices = [field.partition('=')[2].split(',') for field in fields if field.startswith('device=')]
-        if len(drivers) <= 1 and len(devices) <= 1:
-            requests.append({'Driver': drivers[0] if drivers else '',
-                             'DeviceIDs': devices[0] if devices else [], 'Capabilities': [['gpu']]})
+            return False
+        parsed = _parse_gpus_fields(value, fields)
+        if parsed is None:
+            return False
+        requests.append({'Driver': parsed[0], 'DeviceIDs': parsed[1], 'Capabilities': [['gpu']]})
     # The action namespace supplies intent, never the broker's vendor proof.
     return _gpu_runtime_policy().container_nvidia_intent({
         'HostConfig': {'Runtime': intent.get('runtime'), 'DeviceRequests': requests}}) != 'none'
