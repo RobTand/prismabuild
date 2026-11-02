@@ -38,7 +38,28 @@ def runner_cgroups(base, existing):
                   if path not in existing and (path / 'cpu.stat').is_file())
 
 
-def record(root, first, current, burst, processes, samples, status, *, runner):
+def memory_usage(root, *, proc_root=Path('/proc'), page_size=None):
+    """Cgroup high-water mark, or sampled aggregate RSS if unavailable.
+
+    Some runner kernels expose no memory controller. Only numeric statm
+    counters of this test cgroup's members are read; never argv or environ.
+    Shared pages can be counted more than once by the RSS fallback.
+    """
+    peak = root / 'memory.peak'
+    if peak.exists():
+        return int(peak.read_text()), 'cgroup-memory.peak'
+    page_size = page_size or os.sysconf('SC_PAGE_SIZE')
+    resident = 0
+    for pid in (root / 'cgroup.procs').read_text().split():
+        try:
+            resident += int((proc_root / pid / 'statm').read_text().split()[1]) * page_size
+        except (FileNotFoundError, ProcessLookupError):
+            pass  # A sampled child can exit before its counter is read.
+    return resident, 'sampled-sum-rss'
+
+
+def record(root, first, current, burst, processes, samples, status, *, runner,
+           peak_memory, memory_source):
     """Keep a checkpoint even when Bazel terminates the wrapper at timeout."""
     settings = {name: (root / name).read_text().strip() for name in
                 ('cpu.max', 'cpu.weight', 'memory.max', 'cpuset.cpus.effective') if (root / name).exists()}
@@ -47,10 +68,8 @@ def record(root, first, current, burst, processes, samples, status, *, runner):
                   burst_cpu=burst, processes=processes, samples=samples,
                   interval_seconds=0.1, cgroup_settings=settings, exit_code=status,
                   complete=complete,
+                  peak_memory_bytes=peak_memory, memory_source=memory_source,
                   isolation='runner-delegated-cgroup' if runner else 'remote-action-cgroup')
-    peak = root / 'memory.peak'
-    if peak.exists():
-        result['peak_memory_bytes'] = int(peak.read_text())
     outputs = Path(os.environ['TEST_UNDECLARED_OUTPUTS_DIR'])
     outputs.mkdir(parents=True, exist_ok=True)
     temporary = outputs / 'sizing.json.tmp'
@@ -67,16 +86,11 @@ def main():
     if runner:
         command = command[1:]
     delegated = Path('/sys/fs/cgroup/prismabuild-tests')
-    if runner:
-        # The runtime delegates test leaves but does not enable memory
-        # accounting on their parent. Enable it only in this test-owned tree.
-        subprocess.run(['sudo', '-n', 'sh', '-c',
-                        f'mkdir -p {delegated} && echo +memory > {delegated}/cgroup.subtree_control'],
-                       check=True)
     existing = set(delegated.iterdir()) if runner and delegated.exists() else set()
     root = None if runner else cgroup()
     previous = first = (time.monotonic(), 0.0, 0) if runner else sample(root)
     burst, processes, samples = 0.0, 0, 0
+    peak_memory = 0
     child = subprocess.Popen(command)
     measurement_error = None
     while True:
@@ -100,7 +114,10 @@ def main():
         samples += 1
         previous = current
         if root is not None:
-            record(root, first, current, burst, processes, samples, status, runner=runner)
+            memory, memory_source = memory_usage(root)
+            peak_memory = max(peak_memory, memory)
+            record(root, first, current, burst, processes, samples, status, runner=runner,
+                   peak_memory=peak_memory, memory_source=memory_source)
         if status is not None:
             break
     if root is None:

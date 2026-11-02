@@ -122,6 +122,26 @@ def test_interrupted_calibration_retains_its_last_measured_peak(tmp_path, monkey
     assert result['cpu_seconds'] == pytest.approx(2.8)
     assert result['burst_cpu'] == 2.0
     assert result['processes'] == 6
+    assert result['peak_memory_bytes'] == 123456
+    assert result['memory_source'] == 'cgroup-memory.peak'
+
+
+def test_runner_memory_fallback_uses_only_member_resident_page_counters(tmp_path):
+    spec = importlib.util.spec_from_file_location('calibrate_tests', ROOT / 'tools/bazel/calibrate_tests.py')
+    calibration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(calibration)
+    group, proc = tmp_path / 'group', tmp_path / 'proc'
+    group.mkdir()
+    (group / 'cgroup.procs').write_text('123\n124\n125\n')
+    for pid, counters in [('123', '100 20 5 0 0 0 0'), ('124', '200 30 6 0 0 0 0')]:
+        (proc / pid).mkdir(parents=True)
+        (proc / pid / 'statm').write_text(counters)
+    # Member 125 exited, and unrelated resident pages must stay excluded.
+    (proc / '999').mkdir()
+    (proc / '999' / 'statm').write_text('10000 9000 0 0 0 0 0')
+    assert calibration.memory_usage(group, proc_root=proc, page_size=4096) == (
+        204800, 'sampled-sum-rss',
+    )
 
 
 def test_every_size_has_measurements_a_reason_and_an_existing_test_target(sizing):
