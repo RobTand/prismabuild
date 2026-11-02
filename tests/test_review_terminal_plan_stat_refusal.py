@@ -8,6 +8,7 @@ from test_gang_plan_confirmation import _waiting_plan
 from test_gang_residency_members import _compose_map
 from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 
 @pytest.mark.parametrize("stat_unavailable", [False, True], ids=["control", "stat-failure"])

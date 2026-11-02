@@ -23,6 +23,7 @@ import pytest
 from movement_publication_support import (
     GENERATION, approve, retained_generation, seal, unseal)
 from prismabuild import runtime_publication as publication
+from movement_publication_support import publication_store  # noqa: E402,F401
 
 
 @contextmanager

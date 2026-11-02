@@ -9,6 +9,7 @@ from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_gang_teardown_1517 import _both_claimed
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 from prismabuild import _gang, pool
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 
 def _row(queue, state, key):
