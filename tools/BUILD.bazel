@@ -118,6 +118,31 @@ pb_py_library(
 )
 
 pb_py_library(
+    name = "ci/bazel_gate",
+    srcs = [
+        "ci/bazel_gate.py",
+    ],
+    data = [
+        "//:.bazelignore",
+        "//:.bazelrc",
+        "//:.bazelversion",
+        "//:.mergify.yml",
+        "//:BUILD.bazel",
+        "//:MODULE.bazel",
+        "//:MODULE.bazel.lock",
+        "//src/prismabuild:digest_primitives.py",
+        "ci/bazel_gate.py",
+        "ci/bazel_generated.py",
+        "ci/bazel_parity.py",
+        "ci/gate_paths.py",
+        "ci/gate_requirements.txt",
+        "ci/gate_run.py",
+        "ci/gate_select.py",
+        "ci/remote_gate.py",
+    ],
+)
+
+pb_py_library(
     name = "ci/bazel_generated",
     srcs = [
         "ci/bazel_generated.py",
@@ -381,12 +406,48 @@ pb_py_library(
 )
 
 pb_py_library(
+    name = "ci/remote_gate",
+    srcs = [
+        "ci/remote_gate.py",
+    ],
+    data = [
+        "//tools/bazel:nonhermetic.bzl",
+        "ci/bazel_gate.py",
+        "ci/remote_gate.py",
+    ],
+)
+
+pb_py_library(
     name = "ci/replay_regression_gate",
     srcs = [
         "ci/replay_regression_gate.py",
     ],
     deps = [
         ":ci/check_regression_test",
+    ],
+)
+
+pb_py_library(
+    name = "ci/seeded_breaks",
+    srcs = [
+        "ci/seeded_breaks.py",
+    ],
+    data = [
+        "//:AGENTS.md",
+        "//src/prismabuild:core.py",
+        "//src/prismabuild:drain_policy.py",
+        "//tests:admitted_queue_fixture.py",
+        "//tests:compat/field_sets.json",
+        "//tests:fixtures/measurement_kernel_denial_1399.json",
+        "//tests:test_drain_policy.py",
+        "ci/gate_select.py",
+        "ci/seeded_breaks.py",
+        "duplication_inventory.py",
+        "fleet/fleet_boxes.json",
+        "fleet/pbrun.py",
+    ],
+    deps = [
+        ":ci/bazel_gate",
     ],
 )
 

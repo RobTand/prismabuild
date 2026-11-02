@@ -72,28 +72,37 @@ def test_outputs_name_the_hosted_files_and_fail_on_stale_inputs():
     assert failed['scopes_ready'] == 'false' and failed['tests'] == 'failure' and failed['hosted'] == '[]'
 
 
-def needs(tests='success', uploaded='true', hosted=(), lane='skipped', result_='success'):
-    return {'bazel': {'result': result_, 'outputs': {'tests': tests, 'scopes_uploaded': uploaded,
-                                                      'hosted': json.dumps(list(hosted))}},
+def needs(tests='success', uploaded='true', lane='success', result_='success'):
+    return {'bazel': {'result': result_, 'outputs': {'tests': tests, 'scopes_uploaded': uploaded}},
             'hosted': {'result': lane}}
 
 
-@pytest.mark.parametrize('case, message', [
-    (needs(uploaded=''), 'did not finish detection and scope upload'),
-    (needs(result_='cancelled'), 'did not finish detection and scope upload'),
-    (needs(tests='failure'), 'The Bazel gate failed'),
-    (needs(hosted=['tests/test_x.py'], lane='failure'), 'hosted lane did not pass its 1 selected'),
-    (needs(hosted=['tests/test_x.py'], lane='skipped'), 'hosted lane did not pass its 1 selected'),
-    (needs(lane='failure'), 'hosted lane did not pass its 0 selected'),
+HOSTED = ['tests/test_pbrun_placement.py']
+
+
+@pytest.mark.parametrize('case, hosted, message', [
+    (needs(uploaded=''), HOSTED, 'did not finish detection and scope upload'),
+    (needs(result_='cancelled'), HOSTED, 'did not finish detection and scope upload'),
+    (needs(tests='failure'), HOSTED, 'The Bazel gate failed'),
+    (needs(lane='failure'), HOSTED, 'hosted lane did not pass its 1 files'),
+    (needs(lane='skipped'), HOSTED, 'hosted lane did not pass its 1 files'),
+    (needs(lane='failure'), [], 'hosted lane did not pass its 0 files'),
 ])
-def test_the_required_checks_fail_closed(case, message):
+def test_the_required_checks_fail_closed(case, hosted, message):
     with pytest.raises(RuntimeError, match=message):
-        remote_gate.aggregate(case)
+        remote_gate.aggregate(case, hosted)
 
 
 def test_the_required_checks_pass_with_or_without_hosted_files():
-    remote_gate.aggregate(needs())
-    remote_gate.aggregate(needs(hosted=['tests/test_x.py'], lane='success'))
+    remote_gate.aggregate(needs(), HOSTED)
+    remote_gate.aggregate(needs(lane='skipped'), [])
+
+
+def test_the_hosted_lane_runs_what_nonhermetic_tags_hosted():
+    files = remote_gate.hosted_files(ROOT)
+    assert files and all(path.startswith('tests/test_') and (ROOT / path).is_file() for path in files)
+    table = (ROOT / 'tools/bazel/nonhermetic.bzl').read_text()
+    assert table.count('tags = ["hosted"]') == len(files)
 
 
 class Client:
