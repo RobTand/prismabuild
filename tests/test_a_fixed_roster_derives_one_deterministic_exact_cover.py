@@ -23,7 +23,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-import conftest  # noqa: E402
+import decomposition_support  # noqa: E402
 from prismabuild import decomposition as dc  # noqa: E402
 
 
@@ -162,13 +162,13 @@ def test_the_same_bytes_give_the_same_plan_key_and_a_changed_task_does_not() -> 
         "roster": _roster(*[("r", 8.2) for _ in range(66)]),
         "batch_policy": _policy(("r", 45.0)),
     }
-    frozen = conftest.frozen_common(request)
+    frozen = decomposition_support.frozen_common(request)
     first = dc.build_plan(request, frozen)
     assert dc.build_plan(request, frozen) == first
 
     moved = dict(request)
     moved["batch_policy"] = _policy(("r", 45.0), fraction=0.25)
-    replanned = dc.build_plan(moved, conftest.frozen_common(moved))
+    replanned = dc.build_plan(moved, decomposition_support.frozen_common(moved))
     assert replanned["parent_key"] != first["parent_key"], (
         "the policy is part of what the parent is, not only of how it is cut"
     )
@@ -191,7 +191,7 @@ def test_a_plan_key_that_does_not_match_its_blueprint_is_refused(tmp_path: Path)
         "roster": _roster(*[("r", 8.2) for _ in range(66)]),
         "batch_policy": _policy(("r", 45.0)),
     }
-    frozen = conftest.frozen_common(request)
+    frozen = decomposition_support.frozen_common(request)
     plan = dc.freeze_plan(request, frozen, cas_root=tmp_path)
     tampered = {**plan, "partitions": [
         [*plan["partitions"][0], *plan["partitions"][1]],
@@ -220,7 +220,7 @@ def test_a_valid_older_algorithm_plan_is_the_recovery_authority(
         "roster": _roster(*[("r", 8.2) for _ in range(3)]),
         "batch_policy": _policy(("r", 20.0), fraction=0.5),
     }
-    frozen = conftest.frozen_common(request)
+    frozen = decomposition_support.frozen_common(request)
     current = dc.build_plan(request, frozen)
     blueprint = {key: value for key, value in current.items() if key != "plan_key"}
     blueprint["algorithm_version"] = "older-test-algorithm.v1"
@@ -271,13 +271,13 @@ def test_parent_identity_follows_the_tree_not_the_path() -> None:
     }
     elsewhere = {**request, "common": {**request["common"],
                                        "cwd": "/home/rob/tmp/a-worktree"}}
-    here = dc.build_plan(request, conftest.frozen_common(request))
-    there = dc.build_plan(elsewhere, conftest.frozen_common(elsewhere))
+    here = dc.build_plan(request, decomposition_support.frozen_common(request))
+    there = dc.build_plan(elsewhere, decomposition_support.frozen_common(elsewhere))
     assert there["parent_key"] == here["parent_key"], (
         "the same commit under a second path is the same work"
     )
 
-    moved = dc.build_plan(request, conftest.frozen_common(request, snapshot="c" * 64))
+    moved = dc.build_plan(request, decomposition_support.frozen_common(request, snapshot="c" * 64))
     assert moved["parent_key"] != here["parent_key"], (
         "a commit later, the same path is different work"
     )
@@ -300,7 +300,7 @@ def test_a_plan_may_not_be_keyed_on_a_command_no_child_runs() -> None:
     other = {**request, "common": {**request["common"], "argv": [
         "python", "measure.py", dc.TASK_BATCH_PLACEHOLDER]}}
     with pytest.raises(dc.ActionContractError, match="argv differs"):
-        dc.build_plan(request, conftest.frozen_common(other))
+        dc.build_plan(request, decomposition_support.frozen_common(other))
 
 
 def test_a_declared_data_manifest_must_be_frozen_with_a_digest() -> None:
@@ -315,11 +315,11 @@ def test_a_declared_data_manifest_must_be_frozen_with_a_digest() -> None:
         "env": {},
     }
     with pytest.raises(dc.ActionContractError, match="carries none"):
-        dc.freeze_common(common, action_common=conftest.action_common())
+        dc.freeze_common(common, action_common=decomposition_support.action_common())
     with pytest.raises(dc.ActionContractError, match="carries one"):
         dc.freeze_common(
             {**common, "data_manifest": None},
-            action_common=conftest.action_common(manifest=conftest.DECOMPOSITION_MANIFEST),
+            action_common=decomposition_support.action_common(manifest=decomposition_support.DECOMPOSITION_MANIFEST),
         )
 
 
@@ -346,7 +346,7 @@ def test_the_parent_binds_every_sealed_thing_the_children_share() -> None:
         "roster": _roster(("r", 10.0), ("r", 10.0)),
         "batch_policy": _policy(("r", 1.0)),
     }
-    here = dc.parent_key(conftest.frozen_common(request), request["roster"],
+    here = dc.parent_key(decomposition_support.frozen_common(request), request["roster"],
                          request["batch_policy"])
     for moved in (
         {"placement": {"required_tags": ["sparky"]}},
@@ -355,10 +355,10 @@ def test_the_parent_binds_every_sealed_thing_the_children_share() -> None:
         {"profile": {"backend": "sample"}},
     ):
         assert dc.parent_key(
-            conftest.frozen_common(request, **moved), request["roster"],
+            decomposition_support.frozen_common(request, **moved), request["roster"],
             request["batch_policy"],
         ) != here, moved
     assert dc.parent_key(
-        conftest.frozen_common(request, variables={"CUDA_VISIBLE_DEVICES": ""}),
+        decomposition_support.frozen_common(request, variables={"CUDA_VISIBLE_DEVICES": ""}),
         request["roster"], request["batch_policy"],
     ) != here, "the resolved environment is part of what the children share"

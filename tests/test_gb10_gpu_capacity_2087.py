@@ -6,7 +6,7 @@ import time
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-import conftest
+import decomposition_support
 from prismabuild import adaptive_gpu, core, decomposition as dc, pool
 from prismabuild.resource_scope import ResourceScope
 
@@ -116,7 +116,7 @@ def test_gb10_gpu_capacity_2087(tmp_path, monkeypatch):
         demand=invalid_demand, gpu_memory_gb=105, host_class="gb10",
     ))
     with pytest.raises(dc.ActionContractError):
-        frozen = conftest.frozen_common(
+        frozen = decomposition_support.frozen_common(
             request, demand=invalid_demand,
             placement={"required_tags": ["gb10"]},
         )

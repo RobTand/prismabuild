@@ -18,6 +18,7 @@ from test_measurement_drains_gpu_backfill import fleet as fleet_fixture
 
 from prismabuild import _gang, adaptive_gpu, core as pb, pool
 from prismabuild import data_manifest as manifest_codec
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 fleet = fleet_fixture
 CAPACITY = {"cpu": 20, "gpu": 1, "mem_gb": 120}
