@@ -474,3 +474,89 @@ def nonhermetic(name):
     if "hosted" in entry.tags:
         tags += ["manual", "gate-lane-hosted"]
     return tags, properties, env
+
+# Temporary file-level retries authorized by #2667. Each fix removes its entry;
+# the hosted Gate check refuses closed issues. Keep this a literal data table
+# so the controller can read it without executing Starlark or Python code.
+QUARANTINE = {
+    "//tests:test_a_kill_between_a_movers_two_documents_blocks_nothing": {
+        "issue": 2640,
+        "reason": "mover adoption's elapsed-time grace assertion counts scheduler delay as publication waiting",
+    },
+    "//tests:test_a_successors_committed_identity_survives_a_link_back": {
+        "issue": 2641,
+        "reason": "queue state-machine fixtures race the census reader's real scheduling deadline",
+    },
+    "//tests:test_gang_residency_members": {
+        "issue": 2641,
+        "reason": "gang membership claims race the census reader's real scheduling deadline",
+    },
+    "//tests:test_preemption_review_boundaries": {
+        "issue": 2641,
+        "reason": "preemption boundary claims race the census reader's real scheduling deadline",
+    },
+    "//tests:test_allowance_suite_filesystem_isolation": {
+        "issue": 2642,
+        "reason": "adaptive admission samples and telemetry age on different real fixture clocks",
+    },
+    "//tests:test_cpu_control_plane_admission": {
+        "issue": 2642,
+        "reason": "adaptive CPU samples expire under scheduler delay before the admission assertion",
+    },
+    "//tests:test_claim_progresses_while_a_sibling_stalls": {
+        "issue": 2643,
+        "reason": "claim-progress proofs depend on worker speed instead of an explicit scheduling handshake",
+    },
+    "//tests:test_gpu_sample_facts_profiles": {
+        "issue": 2643,
+        "reason": "GPU sample claim-progress proofs depend on worker speed under executor contention",
+    },
+    "//tests:test_client_proof_bridge_recovery": {
+        "issue": 2644,
+        "reason": "recovery boundaries are checked before installed readers acknowledge readiness",
+    },
+    "//tests:test_docker_shim_relays_termination_1599": {
+        "issue": 2645,
+        "reason": "created-container removal depends on a real stop clock before start-unresolved is asserted",
+    },
+    "//tests:test_measurement_census_reader_fence_1498": {
+        "issue": 2646,
+        "reason": "busy census-fence refusal asserts elapsed time below five seconds",
+    },
+    "//tests:test_operator_host_hold": {
+        "issue": 2647,
+        "reason": "guest admission evidence expires across operator-hold transitions and claim returns None",
+    },
+    "//tests:test_paced_exports_share_a_tier": {
+        "issue": 2648,
+        "reason": "export pacing and receipt pricing depend on real elapsed time",
+    },
+    "//tests:test_pbwait_finds_a_later_submission": {
+        "issue": 2649,
+        "reason": "late submission publication competes with the bounded observation child",
+    },
+    "//tests:test_the_claim_pass_times_its_transition_holds": {
+        "issue": 2650,
+        "reason": "real scheduler delay changes which transition-lock hold ranks as the maximum",
+    },
+    "//tests:test_ordinary_census_admission_2199": {
+        "issue": 2654,
+        "reason": "the live census reader times out with measurement_census_unavailable instead of the expected reservation refusal",
+    },
+    "//tests:test_an_unproven_ending_is_refused_terminally_at_its_bound": {
+        "issue": 2659,
+        "reason": "the shared dead-owner publish-and-claim helper races the real census deadline",
+    },
+    "//tests:test_a_ready_gpu_action_is_not_starved_by_cpu_shards": {
+        "issue": 2662,
+        "reason": "the GPU-holder claim returns None when the census reader misses its real deadline",
+    },
+    "//tests:test_claim_denials": {
+        "issue": 2665,
+        "reason": "the injected hot CPU sample expires before the final claim, allowing admission",
+    },
+    "//tests:test_action_resource_profile": {
+        "issue": 2625,
+        "reason": "the rebuilt-sampler fixture assumes PID 4242 is unused on the runner",
+    },
+}

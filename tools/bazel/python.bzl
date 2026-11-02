@@ -7,7 +7,7 @@ module or test shares, so the generated files hold only per-module evidence.
 load("@pb_pip//:requirements.bzl", "all_requirements")
 load("@rules_python//python:py_library.bzl", "py_library")
 load("@rules_python//python:py_test.bzl", "py_test")
-load("//tools/bazel:nonhermetic.bzl", "nonhermetic")
+load("//tools/bazel:nonhermetic.bzl", "QUARANTINE", "nonhermetic")
 load("//tools/bazel:test_inputs.bzl", "TEST_INPUTS")
 load("//tools/bazel:test_sizing.bzl", "TEST_SIZING")
 
@@ -57,6 +57,7 @@ def pb_py_test(name, path, library, args = [], tags = [], deps = [], data = [], 
         deps = _unique([library] + deps + _TEST_DEPS),
         data = _unique(_TEST_DATA + data + (extra.data if extra else [])),
         tags = tags + extra_tags,
+        flaky = label in QUARANTINE,
         exec_properties = exec_properties,
         env = env,
         **kwargs

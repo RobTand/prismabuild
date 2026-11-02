@@ -28661,6 +28661,9 @@ pb_py_test(
     name = "test_bazel_quarantine",
     path = "tests/test_bazel_quarantine.py",
     library = ":test_bazel_quarantine_lib",
+    deps = [
+        "//tools:ci/bazel_quarantine",
+    ],
     timeout = "moderate",
 )
 

@@ -21,6 +21,16 @@ fails. Any other failure is never rerun. The gate result lists reruns as
 architecture after a merge.
 - `tools/ci/gate_requirements.txt` pins the packages.
 
+Bazel retries only the narrow issue-backed quarantine in
+`tools/bazel/nonhermetic.bzl` with `flaky = True`. Each target names its open
+deflake issue and the failing symptom or reason. Offline guards check that
+the targets exist, entries have an issue and a reason, and no other target is
+flaky. Before submitting the gate to BuildBuddy, a GitHub-hosted controller
+checks each distinct issue once using only its job token and fails if any
+issue is closed or cannot be verified. The PR that fixes a flake must remove
+its table entry when it closes the issue. These Bazel retries are separate
+from the budget-only gate rerun described above.
+
 ## Running tests
 
 Run Bazel on BuildBuddy, never with a local Bazel server on a fleet host.
