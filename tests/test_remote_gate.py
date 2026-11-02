@@ -172,3 +172,20 @@ def test_a_post_merge_record_names_invocation_errors_and_exclusions():
     assert record['excluded'] == {'amd64': {}, 'arm64': {'runner': 49}}
     summary = remote_gate.explain({**post_merge(arm64_error=error), 'mode': 'main'}, [2593])
     assert f'arm64: {error}' in summary and 'FAILED' not in summary
+
+
+def test_batch_mode_uses_the_workflows_authenticated_batch_signal(monkeypatch):
+    monkeypatch.setenv('BATCH_DRAFT', 'true')
+    assert '--fail-fast=batch' in request()['steps'][1]['run']
+    monkeypatch.setenv('BATCH_DRAFT', 'false')
+    assert '--fail-fast=pr' in request(branch='mergify/merge-queue/spoof')['steps'][1]['run']
+    assert '--fail-fast=off' in request(mode='main')['steps'][1]['run']
+
+
+def test_aborted_gate_is_explained_and_cannot_report_success():
+    record = json.loads(result(aborted_early={'label': '//tests:test_core', 'reason': 'FAILED'},
+                               not_run=['//tests:test_pbrun']))
+    assert remote_gate.outputs(record)['tests'] == 'failure'
+    summary = remote_gate.explain(record, [])
+    assert 'aborted' in summary.lower() and '//tests:test_core' in summary
+    assert '//tests:test_pbrun' in summary

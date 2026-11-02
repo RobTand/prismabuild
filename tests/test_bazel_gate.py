@@ -670,3 +670,165 @@ def test_prismabuild_baseline_cannot_enable_transitional_test_imports():
     baseline = bazel_gate.graph_baseline({'u_pct': 20, 'loc_u_pct': 30, 'scc_max': 1, 'reach_budget': 9})
     assert any('strict' in error for error in bazel_gate.graph_baseline_errors(
         {**baseline, 'test_to_test': 'reach'}, baseline))
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def result_event(label='//tests:test_core', status='FAILED', shard=0):
+    return {'id': {'testResult': {'label': label, 'shard': shard}},
+            'testResult': {'status': status}}
+
+
+def announced(*labels):
+    return {'id': {'progress': {'opaqueCount': 1}},
+            'children': [{'testResult': {'label': label, 'shard': 0}} for label in labels]}
+
+
+def test_incremental_bep_keeps_partial_lines_and_summary_overrides_attempts():
+    stream = bazel_gate.BepStream()
+    data = bep(result_event(), {'id': {'testSummary': {'label': '//tests:test_core'}},
+                              'testSummary': {'overallStatus': 'PASSED'}}).encode()
+    assert list(stream.feed(data[:13])) == []
+    events = list(stream.feed(data[13:-1]))
+    assert events == [result_event()]
+    assert list(stream.feed(data[-1:]))[0]['testSummary']['overallStatus'] == 'PASSED'
+    assert bazel_gate.bep_run(data.decode())['statuses'] == {'//tests:test_core': 'PASSED'}
+
+
+@pytest.mark.parametrize('status, marked, quarantined, cancels', [
+    ('FAILED', False, False, True), ('TIMEOUT', False, False, False),
+    ('FAILED', True, False, False), ('FAILED', False, True, False),
+    ('PASSED', False, False, False), ('FLAKY', False, False, False),
+])
+def test_only_definitive_attempt_failures_cancel(status, marked, quarantined, cancels):
+    clock = FakeClock()
+    watch = bazel_gate.FailFast('batch', {'//tests:test_core'} if quarantined else set(),
+                               lambda label, event: marked, clock)
+    watch.observe(result_event(status=status))
+    assert watch.cancel_due() is cancels
+    assert watch.failure == ({'label': '//tests:test_core', 'reason': 'FAILED'} if cancels else None)
+
+
+@pytest.mark.parametrize('event', [
+    {'id': {'targetCompleted': {'label': '//tests:test_core'}}, 'completed': {'success': False}},
+    {'id': {'actionCompleted': {'label': '//tests:test_core', 'primaryOutput': 'obj'}},
+     'action': {'success': False}},
+    {'id': {'targetConfigured': {'label': '//tests:test_core'}},
+     'aborted': {'reason': 'ANALYSIS_FAILURE'}},
+])
+def test_build_failures_cancel_unless_the_target_is_quarantined(event):
+    for quarantine in (set(), {'//tests:test_core'}):
+        watch = bazel_gate.FailFast('batch', quarantine, lambda *args: False, FakeClock())
+        watch.observe(event)
+        assert watch.cancel_due() is (not quarantine)
+        if not quarantine:
+            assert watch.failure == {'label': '//tests:test_core', 'reason': 'BUILD_FAILURE'}
+
+
+def test_pr_grace_collects_failures_until_announced_actions_drain():
+    clock = FakeClock()
+    watch = bazel_gate.FailFast('pr', set(), lambda *args: False, clock)
+    watch.observe(announced('//tests:test_core', '//tests:test_pbrun'))
+    watch.observe(result_event())
+    assert not watch.cancel_due()
+    clock.now = 12
+    watch.observe(result_event('//tests:test_pbrun'))
+    assert watch.cancel_due()
+    assert watch.failure == {'label': '//tests:test_core', 'reason': 'FAILED'}
+
+
+def test_pr_grace_expires_at_sixty_seconds_without_waiting_for_pending_actions():
+    clock = FakeClock()
+    watch = bazel_gate.FailFast('pr', set(), lambda *args: False, clock)
+    watch.observe(announced('//tests:test_core', '//tests:test_pbrun'))
+    clock.now = 100
+    watch.observe(result_event())
+    clock.now = 159.99
+    assert not watch.cancel_due()
+    clock.now = 160
+    assert watch.cancel_due()
+
+
+@pytest.mark.parametrize('mode', ['main', 'off'])
+def test_main_and_disabled_modes_never_cancel(mode):
+    clock = FakeClock()
+    watch = bazel_gate.FailFast(mode, set(), lambda *args: False, clock)
+    watch.observe(result_event())
+    clock.now = 1000
+    assert not watch.cancel_due()
+
+
+class ScriptedBazel:
+    """Each wait advances a scripted BEP stream, without real processes or time."""
+
+    def __init__(self, command, *, frames, clock, **kwargs):
+        self.path = Path(next(arg.split('=', 1)[1] for arg in command
+                              if arg.startswith('--build_event_json_file=')))
+        self.frames, self.clock = iter(frames), clock
+        self.signals, self.returncode = [], None
+        self.wait()
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if self.returncode is not None:
+            return self.returncode
+        try:
+            seconds, events = next(self.frames)
+        except StopIteration:
+            self.returncode = 8 if self.signals else 1
+            return self.returncode
+        self.clock.now = seconds
+        with self.path.open('a') as handle:
+            handle.write(bep(*events))
+        if timeout is not None:
+            raise bazel_gate.subprocess.TimeoutExpired('fake-bazel', timeout)
+
+    def send_signal(self, signal):
+        self.signals.append(signal)
+
+
+def test_workspace_interrupts_the_client_and_keeps_partial_failures(tmp_path):
+    clock, processes = FakeClock(), []
+    def launch(command, **kwargs):
+        process = ScriptedBazel(command, frames=[(0, [result_event()]), (1, [])], clock=clock, **kwargs)
+        processes.append(process)
+        return process
+    workspace = bazel_gate.Workspace(root=ROOT, clock=clock, process_factory=launch)
+    result = workspace.test(['//tests:test_core', '//tests:test_pbrun'], 'remote', {}, 'fake-batch',
+                            fail_fast='batch', quarantine=set())
+    assert processes[0].signals == [bazel_gate.signal.SIGINT]
+    assert result['aborted_early'] == {'label': '//tests:test_core', 'reason': 'FAILED'}
+    assert result['statuses']['//tests:test_core'] == 'FAILED'
+    assert result['not_run'] == ['//tests:test_pbrun']
+
+
+def test_aborted_gate_fails_and_does_not_rerun_or_launch_a_build(tmp_path, monkeypatch):
+    workspace = FakeWorkspace(['MODULE.bazel'])
+    def aborted(targets, *args, **kwargs):
+        return {'statuses': {'//tests:test_core': 'FAILED'}, 'invocation': 'cancelled', 'error': None,
+                'aborted_early': {'label': '//tests:test_core', 'reason': 'FAILED'},
+                'not_run': ['//tests:test_pbrun', '//tests:test_fixture_reader']}
+    workspace.test = aborted
+    workspace.budget_only = lambda *args: pytest.fail('aborted runs must not rerun budgets')
+    status, result = run(workspace, tmp_path, monkeypatch)
+    assert status == 1 and result['verdict'] == 'fail'
+    assert result['aborted_early'] == {'label': '//tests:test_core', 'reason': 'FAILED'}
+    assert result['not_run'] == ['//tests:test_pbrun', '//tests:test_fixture_reader']
+    assert result['budget_reruns'] == {} and workspace.built == []
+
+
+def test_raw_diagnostics_never_move_to_uploaded_artifacts(tmp_path):
+    root, upload = tmp_path / 'root', tmp_path / 'upload'
+    root.mkdir()
+    for name in ('pr-bazel-remote-grpc.log', 'pr-execution_log.binpb.zst'):
+        (root / name).write_text('not for upload')
+    bazel_gate.write_result({'verdict': 'fail'}, upload, root)
+    assert sorted(path.name for path in upload.iterdir()) == [bazel_gate.RESULT]
