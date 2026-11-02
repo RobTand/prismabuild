@@ -58,3 +58,33 @@ def test_a_loaded_pbrun_reads_the_tests_explicit_store(tmp_path, d38_config):
 
     store = pbrun.configured_store()
     assert (store.root, store.d38_config_path) == (tmp_path / "fleet", d38_config)
+
+
+def test_a_freshly_loaded_filesystem_capacity_gets_the_tests_sample_os(monkeypatch):
+    # The real fixture (_ample_queue_space), not a probe: a load inside the test body is patched.
+    import importlib
+    import os
+
+    import prismabuild
+
+    name = "prismabuild.filesystem_capacity"
+    loaded = sys.modules.get(name)
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    if loaded is not None:
+        monkeypatch.setattr(prismabuild, "filesystem_capacity", loaded)
+    fresh = importlib.import_module(name)
+    assert fresh is not loaded
+    assert fresh.os is not os
+
+
+def test_a_store_module_loaded_without_its_frontend_is_refused_by_name(tmp_path, monkeypatch):
+    probe = "pb_store_probe_2582"
+    (tmp_path / f"{probe}.py").write_text("def configured_store():\n    return None\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "prismabuild.submission_frontend", raising=False)
+    monkeypatch.delitem(sys.modules, probe, raising=False)
+    try:
+        with pytest.raises(RuntimeError, match="prismabuild.submission_frontend"):
+            __import__(probe)
+    finally:
+        sys.modules.pop(probe, None)

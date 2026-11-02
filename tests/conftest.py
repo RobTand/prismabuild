@@ -69,14 +69,11 @@ TEST_RUNTIME_EVIDENCE_PREFIX = "prismabuild-test-runtime: "
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """Keep unavailable runtime observations separate from test outcomes."""
-    import hashlib
     import json
     import platform
 
-    def raw_sha256(data: bytes) -> str:
-        # ``prismabuild.core.raw_sha256``'s recipe, without making every test
-        # depend on core through this conftest (#2582).
-        return hashlib.sha256(data).hexdigest()
+    # The digest owner's function; conftest already imports core (#2582 review).
+    raw_sha256 = pb_core.raw_sha256
 
     record = dict(complete=False, version=list(sys.version_info[:3]),
                   description=sys.version, files=list(config.args))
@@ -382,9 +379,7 @@ def d38_config(monkeypatch, tmp_path):
     directory.mkdir()
     path = directory / "fleet_boxes.json"
     path.write_text('{"d38_enforce": false}', encoding="utf-8")
-    _when_loaded(monkeypatch, "prismabuild.d38_gate",
-                 lambda module: monkeypatch.setattr(
-                     module, "__file__", str(directory / Path(module.__file__).name)))
+    # d38_gate reads the store's d38_config_path, which the live-store fixtures point here.
     return path
 
 
@@ -584,7 +579,12 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         if hasattr(module, "configured_store"):
             # A module that defines ``configured_store`` has loaded the
             # frontend it builds the store with.
-            store_for = sys.modules["prismabuild.submission_frontend"].store_for
+            frontend = sys.modules.get("prismabuild.submission_frontend")
+            if frontend is None:
+                raise RuntimeError(
+                    f"{module.__name__} defines configured_store but prismabuild.submission_frontend "
+                    "is not loaded; import the frontend it builds the store with")
+            store_for = frontend.store_for
             configured = store_for(module.__file__, root=root / "fleet")
             setattr(module, "configured_store", lambda: configured)
         for module_name, attr, sub in LIVE_DEFAULTS:
