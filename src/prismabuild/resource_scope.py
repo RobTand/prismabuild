@@ -358,9 +358,29 @@ _PROXY_PACKAGE_DEPENDENCIES = (
 )
 
 
+def _broker_scope_id(action_key: str, nonce: str) -> str:
+    """The scope id the broker issues for an action+nonce (existing rule).
+
+    Same formula `ResourceScope._adopt_created_scope` enforces on every
+    broker response: `prismabuild-job` + sha256(action+nonce)[:32] + `.slice`.
+    Reused here as the control-identity check, never redefined.  This is the
+    package-side owner: `produced_output`, `local_scratch` and the cleanup
+    paths call it rather than restating the formula.  It lives here, below
+    them, so a resource scope never imports the produced-output layer (#2582).
+    The broker itself keeps its own spelling -- a stdlib-only root
+    daemon cannot import the package -- and the issuer/mirror agreement is
+    pinned by `tests/test_broker_scope_contract_1301.py`.
+    """
+
+    from . import digest_primitives
+
+    return ("prismabuild-job"
+            + digest_primitives.raw_sha256((action_key + nonce).encode())[:32]
+            + ".slice")
+
+
 def _checked_control_identity(action_key: str, control: object) -> tuple[str, str]:
     """Pure identity half of pool scope recovery; no host check or broker RPC."""
-    from .produced_output import _broker_scope_id
 
     if not isinstance(control, dict):
         raise ValueError("resource scope control must be an object")
@@ -453,13 +473,10 @@ class ResourceScope:
         return True
 
     def _adopt_created_scope(self, response: dict) -> None:
-        from prismabuild.produced_output import (
-            _broker_scope_id as _expected_scope_id,
-        )
         unit = response.get('scope_id', '')
         token = response.get('token', '')
         path = Path(response.get('cgroup_path', ''))
-        expected = _expected_scope_id(self.action_key, self.nonce)
+        expected = _broker_scope_id(self.action_key, self.nonce)
         if (not isinstance(unit, str) or unit != expected
                 or not isinstance(token, str) or re.fullmatch('[a-f0-9]{64}', token) is None
                 or path != Path('/sys/fs/cgroup/prismabuild.slice') / unit):

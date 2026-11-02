@@ -1,7 +1,7 @@
 {
   "evidence": "imports",
-  "median_selected_pct": 7.6,
-  "p90_selected_pct": 89.0,
+  "median_selected_pct": 7.4,
+  "p90_selected_pct": 88.2,
   "modules_over_half": 149,
   "conftest_source_modules": 9,
   "conftest_source_imports": [
