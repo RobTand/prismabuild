@@ -73,6 +73,21 @@ def test_a_quarantined_in_process_mover_keeps_dynamic_sizing():
     assert properties == {}
 
 
+def test_runner_calibration_excludes_preexisting_and_incomplete_cgroups(tmp_path):
+    spec = importlib.util.spec_from_file_location('calibrate_tests', ROOT / 'tools/bazel/calibrate_tests.py')
+    calibration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(calibration)
+    existing = tmp_path / 'previous-test'
+    current = tmp_path / 'current-test'
+    incomplete = tmp_path / 'not-a-test'
+    for group in (existing, current, incomplete):
+        group.mkdir()
+    for group in (existing, current):
+        (group / 'cpu.stat').write_text('usage_usec 0\n')
+    assert calibration.runner_cgroups(tmp_path, {existing}) == [current]
+    assert calibration.runner_cgroups(tmp_path / 'absent', set()) == []
+
+
 def test_every_size_has_measurements_a_reason_and_an_existing_test_target(sizing):
     build = (ROOT / 'tests/BUILD.bazel').read_text()
     targets = set(re.findall(r'pb_py_test\(\n    name = "([^"]+)"', build))
