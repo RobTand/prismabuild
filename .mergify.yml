@@ -1,15 +1,18 @@
-# Mergify merge queue for PrismaBuild. Tracking: #2428.
+# Mergify merge queue for PrismaBuild. Tracking: #2428, #2593.
 #
-# CI runs as GitHub Actions checks on GitHub-hosted runners (Rob, 2026-10-31);
-# they are free for this public repository and put no load on the fleet.
-# Two steps:
-# - Every pull request push runs "pr-gate", which selects tests by evidence
-#   from the pull request's changes. A pull request needs it, and
-#   "issue-link", to enter the queue.
+# CI is the Merge gate workflow: Bazel on BuildBuddy, with one GitHub-hosted
+# job for the few tests only a hosted runner can host (docs/bazel.md). It puts
+# no load on the fleet. Two steps:
+# - Every pull request push runs "pr-gate": the tests Bazel's impact analysis
+#   selects for the pull request merged into main. A pull request needs it,
+#   and "issue-link", to enter the queue.
 # - Each batch is tested on a draft pull request that Mergify opens on a
-#   mergify/merge-queue/ branch. There "gate" runs the full gate population on
-#   the integrated SHA, split across hosted runners of both architectures. It
-#   must pass before Mergify merges the batch.
+#   mergify/merge-queue/ branch. There "gate" runs the tests the batch impacts
+#   on its integrated SHA, against the queue-aware base. It must pass before
+#   Mergify merges the batch. Every push to main then runs every test on amd64
+#   and arm64 and records any detection miss.
+#
+# The gate uploads each pull request's impacted Bazel packages as its scopes.
 #
 # Add the "queue" label to queue a pull request and remove it to dequeue. A
 # pull request that also carries "release" goes to the release queue, which is
@@ -18,10 +21,8 @@
 # protection's "require a pull request" rule without a bypass actor.
 #
 # Batches grow from one pull request toward seven when the queue backs up, and
-# two batches are tested at once. The gate runs the full population whatever
-# the batch size, so bigger batches cost no more CI. A failed batch is split to
-# find the pull request that broke it. The gate itself reruns a shard that
-# ended without a test verdict; a test failure is never retried, so
+# two batches are tested at once. A failed batch is split to find the pull
+# request that broke it. A test failure is never retried, so
 # max_checks_retries stays 0.
 # TL3's GitHub App requeues its own pull requests after Mergify dequeues them
 # with "@mergifyio queue" or "requeue". Mergify's default restrictions refuse
@@ -35,6 +36,10 @@
 # pr-gate, so a pr-gate condition would leave a failing pull request unqueued
 # without TL3 noticing. The batch's full "gate" still decides every merge.
 # TL3 finds its rule's check by name, so keep "Queue TL3-approved PRs".
+scopes:
+  source:
+    manual:
+
 commands_restrictions:
   queue:
     conditions:
