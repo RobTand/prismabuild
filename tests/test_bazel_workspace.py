@@ -28,6 +28,15 @@ def test_both_executor_platforms_pin_an_ubuntu24_image_by_digest_without_network
     assert PLATFORMS.count('"dockerUser": "1000:1000"') == 2
 
 
+def test_both_executor_platforms_resolve_a_cc_toolchain():
+    # Without one, every target fails analysis on linux_arm64, so the post-merge
+    # arm64 run finds no tests (the first run after #2614 did exactly that).
+    assert 'bazel_dep(name = "toolchains_buildbuddy"' in MODULE
+    for toolchain in ['ubuntu_cc_toolchain', 'ubuntu_cc_toolchain_arm64']:
+        assert f'"@buildbuddy_toolchain//:{toolchain}"' in MODULE
+    assert PLATFORMS.count('"@bazel_tools//tools/cpp:gcc"') == 2
+
+
 def test_buildbuddy_suggested_flags_apply_to_every_command():
     for flag in ['--remote_cache_compression', '--experimental_remote_cache_chunking',
                  '--remote_grpc_log=bazel-remote-grpc.log',
