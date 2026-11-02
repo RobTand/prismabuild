@@ -348,8 +348,13 @@ def stale_entries(live: dict, baseline: dict) -> list[str]:
     return found
 
 
-def baseline_record(live: dict) -> dict:
-    return {key: live[key] for key in ('evidence', *RATCHETED_FIGURES, *RATCHETED_LISTS)}
+def baseline_record(live: dict, baseline: dict | None = None) -> dict:
+    """The figures to commit. With a baseline, each figure keeps the lower value, so the record only tightens."""
+    record = {key: live[key] for key in ('evidence', *RATCHETED_FIGURES, *RATCHETED_LISTS)}
+    if baseline is not None:
+        for key in RATCHETED_FIGURES:
+            record[key] = min(live[key], baseline[key])
+    return record
 
 
 def fanout_summary(live: dict, top: int) -> str:
@@ -381,12 +386,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.evidence != 'imports':
             parser.error('the baseline holds the imports evidence')
         path = args.root / BASELINE.relative_to(ROOT)
-        if path.exists():
-            worse = regressions(live, json.loads(path.read_text(encoding='utf-8')))
+        recorded = json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
+        if recorded is not None:
+            worse = regressions(live, recorded)
             if worse:
                 print('refusing to record a regression:\n  ' + '\n  '.join(worse), file=sys.stderr)
                 return 1
-        path.write_text(json.dumps(baseline_record(live), indent=2) + '\n', encoding='utf-8')
+        path.write_text(json.dumps(baseline_record(live, recorded), indent=2) + '\n', encoding='utf-8')
     return 0
 
 
