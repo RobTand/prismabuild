@@ -2663,6 +2663,30 @@ private queues. Source implementation does not establish runtime deployment.
 
 
 
+## Gate GPU leases (#2630)
+
+A gate test that needs the host's GPU outside PrismaBuild's own admission takes
+a lease in `/run/prismabuild-gpu-lease` (protocol `prismabuild.gpu_lease.v1`,
+a `<lease_id>.lock` held under `flock` and a `<lease_id>.json` written
+atomically). PrismaBuild's worker side reads the leases; this section holds
+the client, and the worker side adds its own content here.
+
+**Client.** `tools/gpu_lease/pb_gpu_lease.py` is the lease client, one
+stdlib-only file (Python >= 3.8, Linux, no `prismabuild` import). The
+PrismaQuant and Tessera Bazel test actions vendor it as a data input and run it
+as root in the BuildBuddy executor's action container on sparky and sparklina,
+where the PrismaBuild SDK is not installed; the sha256 pin test lives in those
+repos. It takes the lock before it writes the JSON, polls `pb-state.json` every
+0.5 s and grants itself when its lease is in `ready`, or the state is absent or
+older than 30 s (being in `fencing` only does not count). A daemon thread renews
+`renewed_unix` every 5 s. The command `run ... -- CMD` runs CMD with
+`PR_SET_PDEATHSIG=SIGKILL`, forwards SIGTERM, SIGINT and SIGHUP, and releases
+the lease on every exit path; a killed client frees the lock because the kernel
+closes the fd. It never deletes the lease files. A missing directory exits 3
+(`--optional` runs CMD without a lease), and `--max-wait-s` ends a wait with
+exit 75. The Python API is `pb_gpu_lease.lease(...)`; the module docstring is
+the reference for both.
+
 ## Work decomposition boundary
 
 Rob's 2026-09-11 design decision is to partition logical requests into small,
