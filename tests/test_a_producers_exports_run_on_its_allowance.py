@@ -89,10 +89,12 @@ def _denial(queue: pool.PoolQueue, key: str) -> dict:
     return next(value for value in records.values() if value["action_key"] == key)
 
 
-def _publish_producer(tmp_path: Path, *, measurement: bool = False,
+def _publish_producer(tmp_path: Path, monkeypatch, *, measurement: bool = False,
                       demand: dict[str, int] = PRODUCER_DEMAND,
                       timeout_s: float | None = None):
     """Seal and publish a spool producer without claiming it."""
+    clock = Clock()
+    clock.install(monkeypatch)
     cas_root = tmp_path / "cas"
     template = fx._template(str(tmp_path / "canonical"))
     initial = fx._producer_request(tmp_path, cas_root, template)
@@ -110,6 +112,13 @@ def _publish_producer(tmp_path: Path, *, measurement: bool = False,
     cas.publish_action_request(action)
     owner = str(action["action_key"])
     queue = fx._queue(tmp_path)
+    real_publish = queue.queue.publish
+
+    def publish_next(*args, **kwargs):
+        clock.advance(.001)
+        return real_publish(*args, **kwargs)
+
+    monkeypatch.setattr(queue.queue, "publish", publish_next)
     queue.publish(action_key=owner, cas_root=str(cas_root),
                   worker_script=str(fx.REPO / "tools" / "prismabuild_worker.py"),
                   checkout_root=str(tmp_path / "mover-checkout"),
@@ -128,18 +137,9 @@ def _producer(tmp_path: Path, monkeypatch, *, measurement: bool = False,
     does, and nothing else about the allowance: the default applies.
     """
 
-    clock = Clock()
-    clock.install(monkeypatch)
-    (published, cas) = _publish_producer(tmp_path, measurement=measurement,
+    (published, cas) = _publish_producer(tmp_path, monkeypatch, measurement=measurement,
                                          demand=demand, timeout_s=timeout_s)
     queue, owner = published.queue, published.owner
-    real_publish = queue.queue.publish
-
-    def publish_next(*args, **kwargs):
-        clock.advance(.001)
-        return real_publish(*args, **kwargs)
-
-    monkeypatch.setattr(queue.queue, "publish", publish_next)
     template, cas_root = published.template, published.cas_root
     cpu_sampler = _sample(psi=0.)
     claimed = queue.claim(owner="spool-producer", capacity=CAPACITY,
@@ -468,7 +468,7 @@ def test_stale_owner_telemetry_does_not_project_the_export_against_its_owner(
 def test_a_published_producer_that_fits_without_its_allowance_still_claims(
         tmp_path, monkeypatch, demand, measured_slots) -> None:
     """Preserve #985 for published producers, including learned slot counts."""
-    published, _cas = _publish_producer(tmp_path, demand=demand)
+    published, _cas = _publish_producer(tmp_path, monkeypatch, demand=demand)
     queue, owner = published.queue, published.owner
     if measured_slots is not None:
         rates = {oc.template_sha256(published.template): {
