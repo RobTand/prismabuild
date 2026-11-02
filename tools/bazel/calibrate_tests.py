@@ -67,6 +67,12 @@ def main():
     if runner:
         command = command[1:]
     delegated = Path('/sys/fs/cgroup/prismabuild-tests')
+    if runner:
+        # The runtime delegates test leaves but does not enable memory
+        # accounting on their parent. Enable it only in this test-owned tree.
+        subprocess.run(['sudo', '-n', 'sh', '-c',
+                        f'mkdir -p {delegated} && echo +memory > {delegated}/cgroup.subtree_control'],
+                       check=True)
     existing = set(delegated.iterdir()) if runner and delegated.exists() else set()
     root = None if runner else cgroup()
     previous = first = (time.monotonic(), 0.0, 0) if runner else sample(root)
