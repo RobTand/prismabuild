@@ -9,9 +9,37 @@ input instead.
 """
 
 NONHERMETIC = {
+    "//tests:test_a_dead_producers_spool_is_retired": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
+    "//tests:test_a_failed_producers_exports_do_not_block_its_successor": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
+    "//tests:test_a_producers_export_rates_are_learned_per_family": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
+    "//tests:test_a_producers_paced_export_borrows_its_familys_fill": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
+    "//tests:test_a_read_back_owners_local_group_is_committed": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
     "//tests:test_action_resource_profile": struct(
         tags = ["runner"],
         reason = "it reads the test's own cgroup membership; hosted processes live in a service cgroup, so the runner gives each test a delegated leaf.",
+    ),
+    "//tests:test_an_export_survives_a_delegation_recall": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
+    "//tests:test_an_identity_refusal_names_the_entry_and_both_identities": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
     ),
     "//tests:test_attempt_log_archive": struct(
         tags = ["runner"],
@@ -29,9 +57,21 @@ NONHERMETIC = {
         tags = ["runner"],
         reason = "the installer refuses a root-owned, world-writable ancestor; remote runfiles sit under /buildbuddy-execroot (root, 0777).",
     ),
+    "//tests:test_census_reuse_transitions_1571": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_check_export_receipt_1286": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
     "//tests:test_checkout_recovery_1465": struct(
         tags = ["runner"],
         reason = "it calls io_uring_setup, which the executor's seccomp profile refuses (ENOSYS).",
+    ),
+    "//tests:test_claim_arbitration_histories": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
     ),
     "//tests:test_client_upgrade": struct(
         tags = ["runner"],
@@ -49,6 +89,10 @@ NONHERMETIC = {
         tags = ["hosted"],
         reason = "it needs a running Docker daemon, which hosted runners have; elsewhere it skips.",
     ),
+    "//tests:test_contract_registry_publication": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
     "//tests:test_current_receipt_compat_composition": struct(
         tags = ["runner"],
         reason = "it needs bubblewrap with unprivileged user namespaces, which gate_setup.py installs on hosted shards; the executor image lacks it.",
@@ -65,9 +109,77 @@ NONHERMETIC = {
         tags = ["runner"],
         reason = "it runs only as uid 1000, the production acting owner. Hosted runners are uid 1001 and skip it; executors are uid 1000 and would run it, so it runs on the runner VM (uid 1001) to keep the hosted skip.",
     ),
+    "//tests:test_family_fill_lends_once": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
     "//tests:test_filesystem_floor_1483": struct(
         tags = ["hosted"],
         reason = "it needs a non-loopback address, which executors lack, and a filesystem identity the runner VM's ext4 can't give (its tests skip there); hosted runners give both.",
+    ),
+    "//tests:test_gang_bounded_loans_2343": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_cleanup_1521": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_demand_fence_claims_1579": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_fence_backfill": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_plan_confirmation": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_plan_stat_uncertainty": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_plan_terminal_1543": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_record_isolation_1521": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_registration_1521": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_reservation_1517": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_residency_members": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_sweep_progress_1521": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_teardown_1517": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_teardown_with_prelaunch_1543": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_wait_cli_2343": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_gang_wait_deadline_2343": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
     ),
     "//tests:test_generation_drift_refusals": struct(
         tags = ["runner"],
@@ -81,13 +193,33 @@ NONHERMETIC = {
         tags = ["runner"],
         reason = "it runs git in the repository checkout; remote runfiles have no .git.",
     ),
+    "//tests:test_gpu_runtime_reservations": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
     "//tests:test_issue_link_workflow": struct(
         tags = ["hosted"],
         reason = "it runs the workflow's JavaScript with Node.js, which the hosted image has; elsewhere it skips.",
     ),
+    "//tests:test_measurement_census_tolerates_an_unorderable_ready_record_1506": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_movement_tool_roots_1659": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
     "//tests:test_needrestart_broker_restart_exclusion": struct(
         tags = ["hosted"],
         reason = "it reads the installed needrestart configuration, which the hosted image has; elsewhere it skips.",
+    ),
+    "//tests:test_ordinary_census_admission_2199": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_paced_exports_share_a_tier": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
     ),
     "//tests:test_pbmergeq_gh_cli": struct(
         tags = ["runner"],
@@ -149,6 +281,14 @@ NONHERMETIC = {
         tags = ["runner"],
         reason = "worker_loop's --all-cores sizes CPU slots from the host's sysfs, which on a remote executor exceeds the container's cpuset; a hosted runner owns all its CPUs.",
     ),
+    "//tests:test_pool_withdrawn_retention_1533": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_prelaunch_admission_1594": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
     "//tests:test_private_claim_admission_compat_1419": struct(
         tags = ["runner"],
         reason = "its pool builds CPU tiers from the host's topology, which on a remote executor names CPUs outside the container's cpuset.",
@@ -156,6 +296,22 @@ NONHERMETIC = {
     "//tests:test_process_io_membership": struct(
         tags = ["runner"],
         reason = "it reads the test's own cgroup membership; hosted processes live in a service cgroup, so the runner gives each test a delegated leaf.",
+    ),
+    "//tests:test_produced_spool": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
+    "//tests:test_produced_spool_host_window": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
+    "//tests:test_produced_spool_paced_export": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
+    "//tests:test_proof_runtime_observation": struct(
+        tags = ["hosted"],
+        reason = "it needs the running interpreter root-owned, as on hosted runners; on remote executors each test runs a private copy owned by the test user (tools/bazel/runtime.py).",
     ),
     "//tests:test_publish_runtime": struct(
         tags = ["runner"],
@@ -181,6 +337,10 @@ NONHERMETIC = {
         tags = ["runner"],
         reason = "it needs the zstd command, which the hosted image has and the executor image lacks.",
     ),
+    "//tests:test_review_terminal_plan_stat_refusal": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
     "//tests:test_role_log_migration_review_boundaries": struct(
         tags = ["runner"],
         reason = "it runs only as uid 1000, the production acting owner. Hosted runners are uid 1001 and skip it; executors are uid 1000 and would run it, so it runs on the runner VM (uid 1001) to keep the hosted skip.",
@@ -189,6 +349,26 @@ NONHERMETIC = {
         tags = ["runner"],
         reason = "worker_loop's --all-cores sizes CPU slots from the host's sysfs, which on a remote executor exceeds the container's cpuset; a hosted runner owns all its CPUs.",
     ),
+    "//tests:test_runtime_publication_1659": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_scratch_lifetime_directory": struct(
+        tags = ["hosted-arm64"],
+        reason = "disk scratch refuses tmpfs; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
+    "//tests:test_scratch_lifetime_ownership": struct(
+        tags = ["hosted-arm64"],
+        reason = "disk scratch refuses tmpfs; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
+    "//tests:test_scratch_lifetime_pool": struct(
+        tags = ["hosted-arm64"],
+        reason = "disk scratch refuses tmpfs; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
+    "//tests:test_sealed_bundle_cache": struct(
+        tags = ["hosted-arm64"],
+        reason = "the bundle cache stores a bundle only with free space to spare; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free and git runs again.",
+    ),
     "//tests:test_shared_census_safety_2199": struct(
         tags = ["runner"],
         reason = "it hashes the interpreter and refuses an inode that changes while read; executors hardlink one cached file into concurrent actions, which changes its ctime.",
@@ -196,6 +376,10 @@ NONHERMETIC = {
     "//tests:test_slurm_install_scripts": struct(
         tags = ["hosted"],
         reason = "it needs a running Docker daemon; executors have none, and the runner VM has no init to start one outside the test's process tree.",
+    ),
+    "//tests:test_spool_poll_repin_evidence": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
     ),
     "//tests:test_staged_path_epoch_bytes": struct(
         tags = ["runner"],
@@ -221,6 +405,18 @@ NONHERMETIC = {
         tags = ["runner"],
         reason = "it asserts its own name appears nowhere in a sealed action environment; a runfiles path contains the target's name.",
     ),
+    "//tests:test_the_reconcile_walk_reuses_only_what_moved": struct(
+        tags = ["hosted-arm64"],
+        reason = "a renamed staged file is sometimes evicted instead of left on BuildBuddy's arm64 executors, where writable paths are mostly tmpfs (2 of 5 runs), and never on amd64 executors (8 of 8) or hosted arm64 runners (39 of 39); the cause is not isolated yet.",
+    ),
+    "//tests:test_unified_memory_commitment_fence_2089": struct(
+        tags = ["hosted-arm64"],
+        reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
+    ),
+    "//tests:test_wire_inventory": struct(
+        tags = ["hosted-arm64"],
+        reason = "its first case builds a module fixture that indexes every source file, in 7 s on a hosted arm64 runner; BuildBuddy's arm64 executors vary 2.5x in speed and took 33-35 s in 2 of 4 runs, past the 30 s its 20 s budget allows.",
+    ),
     "//tests:test_worker_loop_cooperative_shutdown": struct(
         tags = ["runner"],
         reason = "worker_loop's --all-cores sizes CPU slots from the host's sysfs, which on a remote executor exceeds the container's cpuset; a hosted runner owns all its CPUs.",
@@ -245,6 +441,10 @@ NONHERMETIC = {
         tags = ["runner"],
         reason = "worker_loop's --all-cores sizes CPU slots from the host's sysfs, which on a remote executor exceeds the container's cpuset; a hosted runner owns all its CPUs.",
     ),
+    "//tests:test_write_only_produced_output": struct(
+        tags = ["hosted-arm64"],
+        reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
+    ),
 }
 
 def nonhermetic(name):
@@ -257,6 +457,10 @@ def nonhermetic(name):
     hosted: Bazel never runs the test. The Gate workflow's hosted lane runs it
     with tools/ci/gate_run.py on a GitHub-hosted runner, prepared by
     tools/ci/gate_setup.py, whenever Bazel's selection impacts its target.
+    hosted-arm64: BuildBuddy's arm64 executors can't host the test, so the
+    post-merge arm64 pass leaves it out and the post-merge hosted lane runs it
+    on ubuntu-24.04-arm. On amd64 it runs on remote executors as usual.
+    runner tests get the same arm64 treatment: the runner VM is amd64 only.
     """
     entry = NONHERMETIC.get("//%s:%s" % (native.package_name(), name))
     if not entry:

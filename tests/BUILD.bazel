@@ -28490,11 +28490,9 @@ pb_py_test(
         "//tools:ci/bazel_gate.py",
         "//tools:ci/bazel_generated.py",
         "//tools:ci/bazel_parity.py",
-        "//tools:ci/gate_budget.json",
         "//tools:ci/gate_durations.json",
         "//tools:ci/gate_paths.py",
         "//tools:ci/gate_quarantine.json",
-        "//tools:ci/gate_run.py",
         "//tools:ci/gate_select.py",
         "//tools:ci/remote_gate.py",
         "//tools:fleet/fleet_boxes.json",
@@ -28538,6 +28536,7 @@ pb_py_library(
         "//tools/bazel:requirements.txt",
         "//tools:ci/bazel_gate.py",
         "//tools:ci/gate_requirements.txt",
+        "//tools:ci/gate_run.py",
         "//tools:ci/gate_select.py",
         "//tools:fleet/pbrun.py",
         "BUILD.bazel",
@@ -28547,6 +28546,7 @@ pb_py_library(
     deps = [
         "//src/prismabuild:core",
         "//tools:ci/bazel_gate",
+        "//tools:ci/gate_run",
         "//tools:ci/gate_select",
         "//tools:fleet/pbrun",
     ],
@@ -28650,6 +28650,32 @@ pb_py_library(
     ],
     deps = [
         "//tools:ci/bazel_parity",
+    ],
+)
+
+pb_py_test(
+    name = "test_bazel_test_sizing",
+    path = "tests/test_bazel_test_sizing.py",
+    library = ":test_bazel_test_sizing_lib",
+    deps = [
+        ":test_action_resource_profile_lib",
+        ":test_bazel_workspace_lib",
+    ],
+    timeout = "moderate",
+)
+
+pb_py_library(
+    name = "test_bazel_test_sizing_lib",
+    srcs = [
+        "test_bazel_test_sizing.py",
+    ],
+    data = [
+        "//:files",
+        "//src/prismabuild:files",
+        "//tools/bazel:files",
+        "//tools:files",
+        ":files",
+        "BUILD.bazel",
     ],
 )
 

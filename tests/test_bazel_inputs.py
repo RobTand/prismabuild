@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -125,6 +128,38 @@ def test_short_scratch_climbs_to_the_top_writable_directory_of_the_same_filesyst
         scratch.rmdir()
 
 
+@pytest.mark.parametrize('machine', ['aarch64', 'x86_64'])
+def test_tests_read_a_private_copy_of_the_interpreter(tmp_path, monkeypatch, machine):
+    # Input-cache hardlinks change metadata while other actions link and unlink
+    # the same interpreter. Every architecture needs an independent inode.
+    original = Path(getattr(sys, '_base_executable', sys.executable)).resolve()
+    monkeypatch.setenv('TEST_TMPDIR', str(tmp_path))
+    monkeypatch.delenv('PB_BAZEL_LANE', raising=False)
+    monkeypatch.setattr(sys, 'executable', sys.executable)
+    monkeypatch.setattr('platform.machine', lambda: machine)
+    copies = []
+    copyfile = runtime.shutil.copyfile
+
+    def measured_copy(source, destination, *args, **kwargs):
+        started = time.perf_counter()
+        result = copyfile(source, destination, *args, **kwargs)
+        copies.append({'bytes': Path(destination).stat().st_size,
+                       'seconds': time.perf_counter() - started})
+        return result
+
+    monkeypatch.setattr(runtime.shutil, 'copyfile', measured_copy)
+    scratch, environment = runtime.prepare_remote_test(tmp_path)
+    scratch.rmdir()
+    python = tmp_path / 'python-environment/bin/python'
+    print('PB_INTERPRETER_COPY ' + json.dumps({'machine': machine, 'copies': copies}))
+    assert Path(sys.executable) == python
+    assert not python.is_symlink()
+    assert not python.samefile(original)
+    with original.open('rb') as source, python.open('rb') as private:
+        assert hashlib.file_digest(private, 'sha256').digest() == hashlib.file_digest(source, 'sha256').digest()
+    assert subprocess.run([python, '-c', 'import json'], env=environment, check=False).returncode == 0
+
+
 def test_runner_lane_tests_need_a_git_checkout(tmp_path):
     checkout = tmp_path / 'checkout'
     (checkout / '.git').mkdir(parents=True)
@@ -136,3 +171,52 @@ def test_runner_lane_tests_need_a_git_checkout(tmp_path):
     (checkout / '.git').rmdir()
     with pytest.raises(RuntimeError, match='needs a git checkout'):
         runtime.checkout_of(runfiles)
+
+
+OVERRUN = [{'nodeid': 'tests/test_a.py::test_one', 'seconds': 138.0, 'budget_seconds': 20.0}]
+
+
+def test_a_budget_only_failure_writes_the_marker_and_fails(tmp_path, capsys):
+    status = python_runner.settle(0, {'tests/test_a.py::test_one': 'passed'}, OVERRUN, tmp_path,
+                                  'tests/test_a.py', 'budget-overrun.txt')
+    assert status == 1
+    assert 'tests/test_a.py::test_one: 138.000s > 20.000s' in (tmp_path / 'budget-overrun.txt').read_text()
+    assert 'Per-test time budget exceeded' in capsys.readouterr().err
+    assert not (tmp_path / 'inventory.json').exists()
+
+
+@pytest.mark.parametrize('status,nodes', [
+    (1, {'tests/test_a.py::test_one': 'failed'}),
+    (1, {}),
+    (2, {'tests/test_a.py::test_one': 'passed'}),
+])
+def test_any_other_failure_writes_no_marker(tmp_path, status, nodes):
+    assert python_runner.settle(status, nodes, [], tmp_path, 'tests/test_a.py', 'budget-overrun.txt') == status
+    assert not (tmp_path / 'budget-overrun.txt').exists()
+
+
+def test_the_runner_measures_budgets_only_after_every_test_passed(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(python_runner, 'budget_overruns', lambda *args: seen.append(args) or OVERRUN)
+    assert python_runner.overruns_after(1, {'tests/test_a.py::test_one': 'failed'}, tmp_path, tmp_path,
+                                        'tests/test_a.py') == []
+    assert python_runner.overruns_after(0, {}, tmp_path, tmp_path, 'tests/test_a.py') == []
+    assert seen == []
+    assert python_runner.overruns_after(0, {'tests/test_a.py::test_one': 'passed'}, tmp_path, tmp_path,
+                                        'tests/test_a.py') == OVERRUN
+
+
+def test_a_passing_file_records_its_inventory(tmp_path):
+    nodes = {'tests/test_a.py::test_one': 'passed'}
+    assert python_runner.settle(0, nodes, [], tmp_path, 'tests/test_a.py', 'budget-overrun.txt') == 0
+    assert '"tests/test_a.py::test_one": "passed"' in (tmp_path / 'inventory.json').read_text()
+
+
+def test_the_gate_finds_the_marker_the_runner_writes(tmp_path):
+    outputs = tmp_path / 'bazel-testlogs/tests/test_a/test.outputs'
+    marker = python_runner.gate_run_of(ROOT).BUDGET_MARKER
+    python_runner.settle(0, {'tests/test_a.py::test_one': 'passed'}, OVERRUN, outputs, 'tests/test_a.py', marker)
+    (tmp_path / 'tools/ci').mkdir(parents=True)
+    (tmp_path / 'tools/ci/gate_run.py').write_text((ROOT / 'tools/ci/gate_run.py').read_text())
+    gate = load('bazel_gate_for_runner', 'tools/ci/bazel_gate.py').Workspace(root=tmp_path)
+    assert gate.budget_only(['//tests:test_a'], {'//tests:test_a': 'FAILED'}) == {'//tests:test_a'}

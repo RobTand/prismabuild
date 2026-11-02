@@ -105,6 +105,22 @@ def test_the_hosted_lane_runs_what_nonhermetic_tags_hosted():
     assert table.count('tags = ["hosted"]') == len(files)
 
 
+def test_the_arm64_hosted_lane_also_runs_what_arm64_executors_cannot_host():
+    hosted = remote_gate.hosted_files(ROOT)
+    arm64 = remote_gate.hosted_files(ROOT, arch='arm64')
+    table = (ROOT / 'tools/bazel/nonhermetic.bzl').read_text()
+    extra = sum(table.count(f'tags = ["{tag}"]') for tag in remote_gate.ARM64_HOSTED)
+    assert set(hosted) < set(arm64) and len(arm64) == len(hosted) + extra
+    assert 'tests/test_git_runners_1307.py' in arm64 and 'tests/test_produced_spool.py' in arm64
+    assert remote_gate.hosted_files(ROOT, arch='amd64') == hosted
+    assert remote_gate.ARM64_HOSTED == ('runner', 'hosted-arm64')
+
+
+@pytest.mark.parametrize('architecture', ['amd64', 'arm64'])
+def test_root_owned_interpreter_observation_runs_on_hosted_runners(architecture):
+    assert 'tests/test_proof_runtime_observation.py' in remote_gate.hosted_files(ROOT, arch=architecture)
+
+
 class Client:
     def __init__(self, answers):
         self.answers = list(answers)
@@ -129,11 +145,12 @@ def test_waiting_survives_one_api_blip_and_fails_on_disconnect_or_deadline():
                                      clock=lambda: 11, sleep=lambda _: None)
 
 
-def post_merge(amd64=(), missed=(), arm64=(), **fields):
+def post_merge(amd64=(), missed=(), arm64=(), arm64_error=None, **fields):
     return {'head': HEAD, 'base': 'a' * 40, 'selection': 'impacted', 'selected': ['//tests:test_a'],
             'tests': 3, 'error': None, 'inputs': [], **fields,
-            'architectures': {'amd64': {'failed': list(amd64), 'missed': list(missed)},
-                              'arm64': {'failed': list(arm64), 'missed': []}}}
+            'architectures': {'amd64': {'failed': list(amd64), 'missed': list(missed), 'excluded': {}},
+                              'arm64': {'failed': list(arm64), 'missed': [], 'error': arm64_error,
+                                        'excluded': {'runner': 49}}}}
 
 
 @pytest.mark.parametrize('record, verdict', [
@@ -142,6 +159,16 @@ def post_merge(amd64=(), missed=(), arm64=(), **fields):
     (post_merge(amd64=['//tests:test_a']), 'selected-but-failed'),
     (post_merge(arm64=['//tests:test_a']), 'arm64-only'),
     (post_merge(error='bazel-diff exited 1'), 'gate-error'),
+    (post_merge(arm64_error='invocation x ran no tests: ERROR: no toolchain'), 'gate-error'),
 ])
 def test_post_merge_records_classify_detection(record, verdict):
     assert remote_gate.post_merge_record(record, [2593], 12.0)['verdict'] == verdict
+
+
+def test_a_post_merge_record_names_invocation_errors_and_exclusions():
+    error = 'invocation x ran no tests: ERROR: no toolchain'
+    record = remote_gate.post_merge_record(post_merge(arm64_error=error), [2593], 12.0)
+    assert record['errors'] == {'arm64': error}
+    assert record['excluded'] == {'amd64': {}, 'arm64': {'runner': 49}}
+    summary = remote_gate.explain({**post_merge(arm64_error=error), 'mode': 'main'}, [2593])
+    assert f'arm64: {error}' in summary and 'FAILED' not in summary

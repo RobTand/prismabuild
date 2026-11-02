@@ -82,6 +82,10 @@ def test_the_hosted_lane_runs_selected_files_with_the_old_gate_tooling():
     assert any('remote_gate.py hosted-files' in step.get('run', '') for step in steps('hosted'))
     matrix = JOBS['post-merge-hosted']['strategy']['matrix']['runner']
     assert matrix == ['ubuntu-24.04', 'ubuntu-24.04-arm']
+    # On arm64 it also runs what BuildBuddy's arm64 executors can't host.
+    files = next(step for step in steps('post-merge-hosted') if step.get('id') == 'files')
+    assert 'remote_gate.py hosted-files --arch "$ARCH"' in files['run']
+    assert files['env']['ARCH'] == "${{ matrix.runner == 'ubuntu-24.04-arm' && 'arm64' || 'amd64' }}"
 
 
 def test_the_queue_stays_serial_with_scopes_and_its_tl3_route():

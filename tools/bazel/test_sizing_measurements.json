@@ -1,0 +1,2574 @@
+{
+  "invocation": "c2df5862-efa0-464a-9226-9ed173029d0d",
+  "requested_cpu": 4,
+  "requested_memory": "2GB",
+  "jobs": 16,
+  "sample_interval_seconds": 0.1,
+  "measurements": [
+    {
+      "label": "//tests:test_817_root_archive_review",
+      "burst_cpu": 1.014,
+      "processes": 7,
+      "peak_memory_bytes": 346157056,
+      "average_cpu": 0.696,
+      "wall_seconds": 5.383,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_blocked_copy_goes_first_on_its_tier",
+      "burst_cpu": 1.303,
+      "processes": 6,
+      "peak_memory_bytes": 348651520,
+      "average_cpu": 0.663,
+      "wall_seconds": 7.225,
+      "queue_seconds": 0.013,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_a_busy_transition_lock_never_stops_the_tier_loop",
+      "burst_cpu": 0.991,
+      "processes": 6,
+      "peak_memory_bytes": 348250112,
+      "average_cpu": 0.514,
+      "wall_seconds": 7.444,
+      "queue_seconds": 0.06,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_hanging_test_fails_with_its_name_in_the_record",
+      "burst_cpu": 2.007,
+      "processes": 8,
+      "peak_memory_bytes": 244199424,
+      "average_cpu": 0.224,
+      "wall_seconds": 20.301,
+      "queue_seconds": 0.012,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "3",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_a_kill_between_a_movers_two_documents_blocks_nothing",
+      "burst_cpu": 1.012,
+      "processes": 5,
+      "peak_memory_bytes": 316162048,
+      "average_cpu": 0.973,
+      "wall_seconds": 3.024,
+      "queue_seconds": 0.011,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_live_tier_loop_never_reads_dead",
+      "burst_cpu": 1.159,
+      "processes": 7,
+      "peak_memory_bytes": 441745408,
+      "average_cpu": 0.755,
+      "wall_seconds": 12.607,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_measurement_admits_its_own_spool_exports",
+      "burst_cpu": 0.994,
+      "processes": 7,
+      "peak_memory_bytes": 354078720,
+      "average_cpu": 0.066,
+      "wall_seconds": 58.885,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_produced_mover_seals_the_producers_checkout_snapshot",
+      "burst_cpu": 1.353,
+      "processes": 9,
+      "peak_memory_bytes": 408580096,
+      "average_cpu": 0.793,
+      "wall_seconds": 6.12,
+      "queue_seconds": 0.099,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_a_publish_reaches_the_role_loops_too",
+      "burst_cpu": 1.007,
+      "processes": 5,
+      "peak_memory_bytes": 405536768,
+      "average_cpu": 0.912,
+      "wall_seconds": 2.626,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_rate_only_claim_is_not_a_copy",
+      "burst_cpu": 1.224,
+      "processes": 7,
+      "peak_memory_bytes": 369430528,
+      "average_cpu": 0.688,
+      "wall_seconds": 5.93,
+      "queue_seconds": 0.064,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_read_back_owners_local_group_is_committed",
+      "burst_cpu": 1.034,
+      "processes": 9,
+      "peak_memory_bytes": 363270144,
+      "average_cpu": 0.618,
+      "wall_seconds": 11.232,
+      "queue_seconds": 0.098,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_ready_consumers_lead_is_read_first",
+      "burst_cpu": 1.297,
+      "processes": 6,
+      "peak_memory_bytes": 411492352,
+      "average_cpu": 0.494,
+      "wall_seconds": 8.543,
+      "queue_seconds": 0.063,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_a_ready_gpu_action_is_not_starved_by_cpu_shards",
+      "burst_cpu": 0.996,
+      "processes": 7,
+      "peak_memory_bytes": 308588544,
+      "average_cpu": 0.508,
+      "wall_seconds": 14.257,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_released_consumer_key_races_the_claim_in_two_windows",
+      "burst_cpu": 1.357,
+      "processes": 6,
+      "peak_memory_bytes": 427261952,
+      "average_cpu": 0.823,
+      "wall_seconds": 7.769,
+      "queue_seconds": 0.063,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_a_replaced_progress_record_is_read_again",
+      "burst_cpu": 1.728,
+      "processes": 6,
+      "peak_memory_bytes": 358858752,
+      "average_cpu": 1.117,
+      "wall_seconds": 3.806,
+      "queue_seconds": 0.061,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_a_republished_key_keeps_one_terminal",
+      "burst_cpu": 1.271,
+      "processes": 7,
+      "peak_memory_bytes": 388583424,
+      "average_cpu": 0.298,
+      "wall_seconds": 15.641,
+      "queue_seconds": 0.074,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_a_retry_reclaims_its_dead_attempts_prewrite",
+      "burst_cpu": 1.006,
+      "processes": 6,
+      "peak_memory_bytes": 387641344,
+      "average_cpu": 0.527,
+      "wall_seconds": 6.783,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_second_role_refuses_the_host_role_lock",
+      "burst_cpu": 1.006,
+      "processes": 7,
+      "peak_memory_bytes": 344358912,
+      "average_cpu": 0.928,
+      "wall_seconds": 3.157,
+      "queue_seconds": 0.06,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_shared_mount_row_without_a_data_manifest_is_warned_or_refused",
+      "burst_cpu": 1.359,
+      "processes": 7,
+      "peak_memory_bytes": 410214400,
+      "average_cpu": 0.945,
+      "wall_seconds": 6.067,
+      "queue_seconds": 0.013,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_a_shared_staged_path_has_two_owners",
+      "burst_cpu": 0.999,
+      "processes": 5,
+      "peak_memory_bytes": 401395712,
+      "average_cpu": 0.636,
+      "wall_seconds": 6.33,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_staged_range_holds_its_tokens_until_an_egress_deletes_it",
+      "burst_cpu": 1.373,
+      "processes": 6,
+      "peak_memory_bytes": 307662848,
+      "average_cpu": 0.102,
+      "wall_seconds": 69.877,
+      "queue_seconds": 0.06,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_a_staged_wait_is_not_no_progress",
+      "burst_cpu": 1.739,
+      "processes": 6,
+      "peak_memory_bytes": 395763712,
+      "average_cpu": 0.911,
+      "wall_seconds": 14.695,
+      "queue_seconds": 0.059,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_a_stale_donor_declines_and_current_material_is_reused",
+      "burst_cpu": 0.999,
+      "processes": 5,
+      "peak_memory_bytes": 405446656,
+      "average_cpu": 0.686,
+      "wall_seconds": 3.593,
+      "queue_seconds": 0.068,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_stalled_mover_ends_no_progress",
+      "burst_cpu": 2.667,
+      "processes": 11,
+      "peak_memory_bytes": 408453120,
+      "average_cpu": 0.365,
+      "wall_seconds": 37.921,
+      "queue_seconds": 0.071,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "3",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_a_stopped_role_is_named_in_supervisor_health",
+      "burst_cpu": 1.012,
+      "processes": 5,
+      "peak_memory_bytes": 351735808,
+      "average_cpu": 0.986,
+      "wall_seconds": 2.783,
+      "queue_seconds": 0.097,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_successors_committed_identity_survives_a_link_back",
+      "burst_cpu": 1.422,
+      "processes": 6,
+      "peak_memory_bytes": 388780032,
+      "average_cpu": 0.832,
+      "wall_seconds": 8.453,
+      "queue_seconds": 0.104,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_a_terminal_lead_is_named_in_the_denial",
+      "burst_cpu": 1.0,
+      "processes": 6,
+      "peak_memory_bytes": 323375104,
+      "average_cpu": 0.579,
+      "wall_seconds": 3.791,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_tier_is_reserved_across_boxes",
+      "burst_cpu": 1.007,
+      "processes": 7,
+      "peak_memory_bytes": 317227008,
+      "average_cpu": 0.648,
+      "wall_seconds": 4.591,
+      "queue_seconds": 0.097,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_a_v2_read_plan_places_produced_batches",
+      "burst_cpu": 1.442,
+      "processes": 6,
+      "peak_memory_bytes": 323870720,
+      "average_cpu": 0.926,
+      "wall_seconds": 7.232,
+      "queue_seconds": 0.017,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_a_yielding_copy_neither_deadlocks_nor_stalls",
+      "burst_cpu": 1.633,
+      "processes": 6,
+      "peak_memory_bytes": 329306112,
+      "average_cpu": 0.93,
+      "wall_seconds": 7.041,
+      "queue_seconds": 0.082,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_adaptive_cpu_local_state",
+      "burst_cpu": 1.298,
+      "processes": 7,
+      "peak_memory_bytes": 314302464,
+      "average_cpu": 0.874,
+      "wall_seconds": 4.843,
+      "queue_seconds": 0.012,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_adaptive_mirror_publication",
+      "burst_cpu": 1.009,
+      "processes": 6,
+      "peak_memory_bytes": 245620736,
+      "average_cpu": 0.914,
+      "wall_seconds": 6.993,
+      "queue_seconds": 0.097,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_allowance_suite_filesystem_isolation",
+      "burst_cpu": 1.322,
+      "processes": 8,
+      "peak_memory_bytes": 455221248,
+      "average_cpu": 0.442,
+      "wall_seconds": 10.475,
+      "queue_seconds": 0.06,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.75GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_an_egress_holds_the_stage_lock_only_for_its_act",
+      "burst_cpu": 1.246,
+      "processes": 7,
+      "peak_memory_bytes": 341319680,
+      "average_cpu": 0.583,
+      "wall_seconds": 5.765,
+      "queue_seconds": 0.091,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_an_identity_refusal_names_the_entry_and_both_identities",
+      "burst_cpu": 1.108,
+      "processes": 6,
+      "peak_memory_bytes": 417710080,
+      "average_cpu": 0.594,
+      "wall_seconds": 11.566,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_an_owner_waiting_on_its_own_export_is_not_no_progress",
+      "burst_cpu": 1.418,
+      "processes": 7,
+      "peak_memory_bytes": 299536384,
+      "average_cpu": 0.993,
+      "wall_seconds": 6.105,
+      "queue_seconds": 0.012,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_batch_ledger_ownership",
+      "burst_cpu": 1.007,
+      "processes": 5,
+      "peak_memory_bytes": 424263680,
+      "average_cpu": 0.895,
+      "wall_seconds": 2.865,
+      "queue_seconds": 0.065,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_borrow_return_ownership",
+      "burst_cpu": 1.209,
+      "processes": 7,
+      "peak_memory_bytes": 297238528,
+      "average_cpu": 0.949,
+      "wall_seconds": 4.216,
+      "queue_seconds": 0.021,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_bounded_reader_ownership",
+      "burst_cpu": 0.981,
+      "processes": 7,
+      "peak_memory_bytes": 245354496,
+      "average_cpu": 0.678,
+      "wall_seconds": 2.34,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_box_prune_race_1542",
+      "burst_cpu": 1.992,
+      "processes": 8,
+      "peak_memory_bytes": 260534272,
+      "average_cpu": 0.979,
+      "wall_seconds": 3.262,
+      "queue_seconds": 0.011,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Spawned lock contenders and their multiprocessing helpers overlap the parent test."
+    },
+    {
+      "label": "//tests:test_broker_listener_restart_semantics",
+      "burst_cpu": 1.006,
+      "processes": 6,
+      "peak_memory_bytes": 337158144,
+      "average_cpu": 0.908,
+      "wall_seconds": 2.129,
+      "queue_seconds": 0.06,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_broker_read_baseline",
+      "burst_cpu": 0.995,
+      "processes": 5,
+      "peak_memory_bytes": 307712000,
+      "average_cpu": 0.826,
+      "wall_seconds": 2.609,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_c26_progress_characterization",
+      "burst_cpu": 1.13,
+      "processes": 8,
+      "peak_memory_bytes": 423112704,
+      "average_cpu": 0.817,
+      "wall_seconds": 10.128,
+      "queue_seconds": 0.064,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_canary_leg3_staged_read",
+      "burst_cpu": 1.005,
+      "processes": 7,
+      "peak_memory_bytes": 323584000,
+      "average_cpu": 0.439,
+      "wall_seconds": 14.386,
+      "queue_seconds": 0.063,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_candidate_pretransition",
+      "burst_cpu": 1.198,
+      "processes": 6,
+      "peak_memory_bytes": 304283648,
+      "average_cpu": 0.906,
+      "wall_seconds": 3.776,
+      "queue_seconds": 0.053,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_census_reuse_reader_custody_1571",
+      "burst_cpu": 1.011,
+      "processes": 6,
+      "peak_memory_bytes": 317943808,
+      "average_cpu": 0.885,
+      "wall_seconds": 3.487,
+      "queue_seconds": 0.013,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_census_reused_once_per_pass_1571",
+      "burst_cpu": 1.151,
+      "processes": 7,
+      "peak_memory_bytes": 317284352,
+      "average_cpu": 0.308,
+      "wall_seconds": 24.813,
+      "queue_seconds": 0.06,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_checkout_reaps_dead_siblings",
+      "burst_cpu": 1.012,
+      "processes": 7,
+      "peak_memory_bytes": 411832320,
+      "average_cpu": 0.873,
+      "wall_seconds": 3.661,
+      "queue_seconds": 0.018,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_claim_denial_batching",
+      "burst_cpu": 2.674,
+      "processes": 9,
+      "peak_memory_bytes": 387575808,
+      "average_cpu": 0.955,
+      "wall_seconds": 3.556,
+      "queue_seconds": 0.059,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "3",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_claim_progresses_while_a_sibling_stalls",
+      "burst_cpu": 1.427,
+      "processes": 6,
+      "peak_memory_bytes": 330899456,
+      "average_cpu": 0.869,
+      "wall_seconds": 5.486,
+      "queue_seconds": 0.132,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_claim_transaction_histories",
+      "burst_cpu": 1.085,
+      "processes": 7,
+      "peak_memory_bytes": 405110784,
+      "average_cpu": 0.463,
+      "wall_seconds": 13.316,
+      "queue_seconds": 0.098,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_cleanup_obligation_2270",
+      "burst_cpu": 1.517,
+      "processes": 7,
+      "peak_memory_bytes": 309915648,
+      "average_cpu": 1.058,
+      "wall_seconds": 8.381,
+      "queue_seconds": 0.011,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_client_process",
+      "burst_cpu": 1.012,
+      "processes": 7,
+      "peak_memory_bytes": 295493632,
+      "average_cpu": 0.983,
+      "wall_seconds": 3.992,
+      "queue_seconds": 0.06,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_client_proof_bridge_recovery",
+      "burst_cpu": 1.004,
+      "processes": 6,
+      "peak_memory_bytes": 244740096,
+      "average_cpu": 0.593,
+      "wall_seconds": 10.77,
+      "queue_seconds": 0.058,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_consumer_archived_endings",
+      "burst_cpu": 1.301,
+      "processes": 7,
+      "peak_memory_bytes": 327098368,
+      "average_cpu": 0.822,
+      "wall_seconds": 6.251,
+      "queue_seconds": 0.013,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Forked or spawned test children and their helpers overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_consumer_surface",
+      "burst_cpu": 1.699,
+      "processes": 7,
+      "peak_memory_bytes": 327507968,
+      "average_cpu": 0.778,
+      "wall_seconds": 24.332,
+      "queue_seconds": 0.015,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Forked or spawned test children and their helpers overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_contained_deadline_profile",
+      "burst_cpu": 1.719,
+      "processes": 9,
+      "peak_memory_bytes": 373403648,
+      "average_cpu": 0.874,
+      "wall_seconds": 6.289,
+      "queue_seconds": 0.062,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_controlled_action",
+      "burst_cpu": 1.012,
+      "processes": 5,
+      "peak_memory_bytes": 300601344,
+      "average_cpu": 0.972,
+      "wall_seconds": 2.858,
+      "queue_seconds": 0.016,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_core",
+      "burst_cpu": 1.608,
+      "processes": 8,
+      "peak_memory_bytes": 337666048,
+      "average_cpu": 0.206,
+      "wall_seconds": 61.589,
+      "queue_seconds": 0.059,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Core snapshot, CAS and retry tests overlap spawned processes and subprocesses with pytest."
+    },
+    {
+      "label": "//tests:test_cpu_control_plane_admission",
+      "burst_cpu": 1.632,
+      "processes": 7,
+      "peak_memory_bytes": 299749376,
+      "average_cpu": 0.96,
+      "wall_seconds": 7.454,
+      "queue_seconds": 0.134,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_dead_owner_fragment_blocks_then_retires",
+      "burst_cpu": 1.16,
+      "processes": 7,
+      "peak_memory_bytes": 371376128,
+      "average_cpu": 0.142,
+      "wall_seconds": 55.961,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_docker_shim_relays_termination_1599",
+      "burst_cpu": 1.015,
+      "processes": 9,
+      "peak_memory_bytes": 251273216,
+      "average_cpu": 0.285,
+      "wall_seconds": 50.02,
+      "queue_seconds": 0.073,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_drain_boundary_order",
+      "burst_cpu": 0.999,
+      "processes": 6,
+      "peak_memory_bytes": 400625664,
+      "average_cpu": 0.68,
+      "wall_seconds": 4.328,
+      "queue_seconds": 0.081,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_egress_reclaim_takes_one_stage_root_at_a_time",
+      "burst_cpu": 1.003,
+      "processes": 6,
+      "peak_memory_bytes": 300515328,
+      "average_cpu": 0.93,
+      "wall_seconds": 2.738,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_event_wait_baseline",
+      "burst_cpu": 0.998,
+      "processes": 5,
+      "peak_memory_bytes": 242675712,
+      "average_cpu": 0.268,
+      "wall_seconds": 7.142,
+      "queue_seconds": 0.074,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_filesystem_floor_accounting_1483",
+      "burst_cpu": 1.008,
+      "processes": 5,
+      "peak_memory_bytes": 388558848,
+      "average_cpu": 0.77,
+      "wall_seconds": 3.373,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_fixture_broker_process",
+      "burst_cpu": 1.592,
+      "processes": 7,
+      "peak_memory_bytes": 402870272,
+      "average_cpu": 0.879,
+      "wall_seconds": 4.115,
+      "queue_seconds": 0.06,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "The process-backed broker fixture and isolated queue readers run alongside pytest."
+    },
+    {
+      "label": "//tests:test_funded_window_declaration",
+      "burst_cpu": 1.563,
+      "processes": 7,
+      "peak_memory_bytes": 422342656,
+      "average_cpu": 0.584,
+      "wall_seconds": 5.368,
+      "queue_seconds": 0.062,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "The process-backed broker fixture and isolated queue readers run alongside pytest."
+    },
+    {
+      "label": "//tests:test_gang_bounded_loans_2343",
+      "burst_cpu": 1.833,
+      "processes": 7,
+      "peak_memory_bytes": 406073344,
+      "average_cpu": 0.452,
+      "wall_seconds": 255.498,
+      "queue_seconds": 0.289,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_gang_plan_stat_uncertainty",
+      "burst_cpu": 1.918,
+      "processes": 7,
+      "peak_memory_bytes": 409165824,
+      "average_cpu": 0.354,
+      "wall_seconds": 77.01,
+      "queue_seconds": 0.121,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_gang_plan_terminal_1543",
+      "burst_cpu": 1.538,
+      "processes": 7,
+      "peak_memory_bytes": 317263872,
+      "average_cpu": 0.379,
+      "wall_seconds": 20.553,
+      "queue_seconds": 0.06,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_gang_registration_1521",
+      "burst_cpu": 1.013,
+      "processes": 5,
+      "peak_memory_bytes": 302702592,
+      "average_cpu": 0.789,
+      "wall_seconds": 6.459,
+      "queue_seconds": 0.067,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_gang_residency_members",
+      "burst_cpu": 1.715,
+      "processes": 7,
+      "peak_memory_bytes": 371662848,
+      "average_cpu": 0.782,
+      "wall_seconds": 32.363,
+      "queue_seconds": 0.059,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_gang_switch_1521",
+      "burst_cpu": 1.137,
+      "processes": 6,
+      "peak_memory_bytes": 440684544,
+      "average_cpu": 0.616,
+      "wall_seconds": 5.782,
+      "queue_seconds": 0.059,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_gpu_sample_facts_profiles",
+      "burst_cpu": 1.482,
+      "processes": 7,
+      "peak_memory_bytes": 394940416,
+      "average_cpu": 0.853,
+      "wall_seconds": 5.036,
+      "queue_seconds": 0.062,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_heartbeat_liveness_2230",
+      "burst_cpu": 1.239,
+      "processes": 7,
+      "peak_memory_bytes": 334491648,
+      "average_cpu": 0.236,
+      "wall_seconds": 36.487,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_heartbeat_review_judges_2230",
+      "burst_cpu": 1.207,
+      "processes": 6,
+      "peak_memory_bytes": 413822976,
+      "average_cpu": 0.853,
+      "wall_seconds": 4.384,
+      "queue_seconds": 0.063,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_heartbeat_stamp_skew_2230",
+      "burst_cpu": 1.358,
+      "processes": 7,
+      "peak_memory_bytes": 317927424,
+      "average_cpu": 0.745,
+      "wall_seconds": 7.615,
+      "queue_seconds": 0.06,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_history_inputs",
+      "burst_cpu": 1.043,
+      "processes": 5,
+      "peak_memory_bytes": 400146432,
+      "average_cpu": 0.748,
+      "wall_seconds": 23.491,
+      "queue_seconds": 0.118,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_holder_is_named_by_device_and_inode",
+      "burst_cpu": 1.003,
+      "processes": 5,
+      "peak_memory_bytes": 339038208,
+      "average_cpu": 0.79,
+      "wall_seconds": 4.209,
+      "queue_seconds": 0.065,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_lease_lost_cleanup_pending",
+      "burst_cpu": 1.001,
+      "processes": 6,
+      "peak_memory_bytes": 398835712,
+      "average_cpu": 0.619,
+      "wall_seconds": 4.811,
+      "queue_seconds": 0.064,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_lifecycle_recovery_crashes",
+      "burst_cpu": 1.155,
+      "processes": 7,
+      "peak_memory_bytes": 297545728,
+      "average_cpu": 0.899,
+      "wall_seconds": 5.289,
+      "queue_seconds": 0.086,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_lifecycle_review_repairs",
+      "burst_cpu": 1.072,
+      "processes": 6,
+      "peak_memory_bytes": 333991936,
+      "average_cpu": 0.544,
+      "wall_seconds": 5.641,
+      "queue_seconds": 0.059,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_listener_descriptor_waits",
+      "burst_cpu": 0.986,
+      "processes": 6,
+      "peak_memory_bytes": 389746688,
+      "average_cpu": 0.72,
+      "wall_seconds": 3.543,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_local_resident_lifecycle",
+      "burst_cpu": 1.007,
+      "processes": 5,
+      "peak_memory_bytes": 340357120,
+      "average_cpu": 0.805,
+      "wall_seconds": 2.38,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_local_resident_locking",
+      "burst_cpu": 1.085,
+      "processes": 6,
+      "peak_memory_bytes": 399360000,
+      "average_cpu": 0.825,
+      "wall_seconds": 4.157,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_local_tier_receipt_recovery",
+      "burst_cpu": 1.009,
+      "processes": 6,
+      "peak_memory_bytes": 285175808,
+      "average_cpu": 0.947,
+      "wall_seconds": 9.509,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_logical_pricing_snapshot",
+      "burst_cpu": 0.996,
+      "processes": 6,
+      "peak_memory_bytes": 410501120,
+      "average_cpu": 0.649,
+      "wall_seconds": 7.032,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_measurement_census_reader_fence_1498",
+      "burst_cpu": 1.269,
+      "processes": 6,
+      "peak_memory_bytes": 391905280,
+      "average_cpu": 0.595,
+      "wall_seconds": 5.478,
+      "queue_seconds": 0.062,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_measurement_drains_gpu_backfill",
+      "burst_cpu": 1.685,
+      "processes": 7,
+      "peak_memory_bytes": 405270528,
+      "average_cpu": 0.839,
+      "wall_seconds": 19.338,
+      "queue_seconds": 0.063,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_measurement_kernel_noise_1399",
+      "burst_cpu": 1.085,
+      "processes": 7,
+      "peak_memory_bytes": 303124480,
+      "average_cpu": 0.532,
+      "wall_seconds": 9.948,
+      "queue_seconds": 0.06,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_measurement_reservation_census_1419",
+      "burst_cpu": 1.786,
+      "processes": 7,
+      "peak_memory_bytes": 391532544,
+      "average_cpu": 0.232,
+      "wall_seconds": 102.762,
+      "queue_seconds": 0.129,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_metrics_supervisor_retirement",
+      "burst_cpu": 1.085,
+      "processes": 6,
+      "peak_memory_bytes": 401252352,
+      "average_cpu": 0.879,
+      "wall_seconds": 12.266,
+      "queue_seconds": 0.067,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_missing_produced_input_terminal",
+      "burst_cpu": 1.28,
+      "processes": 6,
+      "peak_memory_bytes": 421031936,
+      "average_cpu": 0.77,
+      "wall_seconds": 8.388,
+      "queue_seconds": 0.062,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_mount_latency",
+      "burst_cpu": 0.994,
+      "processes": 6,
+      "peak_memory_bytes": 340930560,
+      "average_cpu": 0.561,
+      "wall_seconds": 4.657,
+      "queue_seconds": 0.059,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_mount_lock_identity",
+      "burst_cpu": 1.005,
+      "processes": 5,
+      "peak_memory_bytes": 245977088,
+      "average_cpu": 0.955,
+      "wall_seconds": 1.966,
+      "queue_seconds": 0.034,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_no_timing_sensitive_tests",
+      "burst_cpu": 1.067,
+      "processes": 5,
+      "peak_memory_bytes": 365776896,
+      "average_cpu": 0.94,
+      "wall_seconds": 36.99,
+      "queue_seconds": 0.097,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_operator_host_hold",
+      "burst_cpu": 1.441,
+      "processes": 7,
+      "peak_memory_bytes": 304467968,
+      "average_cpu": 0.891,
+      "wall_seconds": 11.948,
+      "queue_seconds": 0.063,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_ordinary_census_admission_2199",
+      "burst_cpu": 1.532,
+      "processes": 9,
+      "peak_memory_bytes": 407511040,
+      "average_cpu": 0.404,
+      "wall_seconds": 33.09,
+      "queue_seconds": 0.06,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Forked or spawned test children and their helpers overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_output_reconciliation_cycle",
+      "burst_cpu": 1.096,
+      "processes": 9,
+      "peak_memory_bytes": 324579328,
+      "average_cpu": 0.863,
+      "wall_seconds": 7.947,
+      "queue_seconds": 0.014,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_owned_tree",
+      "burst_cpu": 0.998,
+      "processes": 6,
+      "peak_memory_bytes": 341790720,
+      "average_cpu": 0.584,
+      "wall_seconds": 3.118,
+      "queue_seconds": 0.063,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_paced_exports_share_a_tier",
+      "burst_cpu": 1.627,
+      "processes": 9,
+      "peak_memory_bytes": 364163072,
+      "average_cpu": 0.858,
+      "wall_seconds": 10.333,
+      "queue_seconds": 0.062,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_pb_gc",
+      "burst_cpu": 1.008,
+      "processes": 7,
+      "peak_memory_bytes": 376324096,
+      "average_cpu": 0.728,
+      "wall_seconds": 13.348,
+      "queue_seconds": 0.064,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbcampaign_inflight",
+      "burst_cpu": 2.067,
+      "processes": 8,
+      "peak_memory_bytes": 359206912,
+      "average_cpu": 0.731,
+      "wall_seconds": 7.009,
+      "queue_seconds": 0.059,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "3",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_pbevidence_ships_with_the_generation_1598",
+      "burst_cpu": 1.036,
+      "processes": 6,
+      "peak_memory_bytes": 322473984,
+      "average_cpu": 0.862,
+      "wall_seconds": 10.658,
+      "queue_seconds": 0.015,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbmcp_arguments",
+      "burst_cpu": 1.137,
+      "processes": 7,
+      "peak_memory_bytes": 314929152,
+      "average_cpu": 0.332,
+      "wall_seconds": 19.841,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbmcp_bounded",
+      "burst_cpu": 1.085,
+      "processes": 7,
+      "peak_memory_bytes": 307658752,
+      "average_cpu": 0.321,
+      "wall_seconds": 15.924,
+      "queue_seconds": 0.095,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbmcp_cursors",
+      "burst_cpu": 0.999,
+      "processes": 7,
+      "peak_memory_bytes": 366100480,
+      "average_cpu": 0.113,
+      "wall_seconds": 43.39,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbmcp_protocol",
+      "burst_cpu": 1.141,
+      "processes": 7,
+      "peak_memory_bytes": 402743296,
+      "average_cpu": 0.693,
+      "wall_seconds": 12.525,
+      "queue_seconds": 0.064,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbmcp_read_only",
+      "burst_cpu": 1.002,
+      "processes": 7,
+      "peak_memory_bytes": 403484672,
+      "average_cpu": 0.439,
+      "wall_seconds": 9.979,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbmergeq",
+      "burst_cpu": 1.075,
+      "processes": 8,
+      "peak_memory_bytes": 422334464,
+      "average_cpu": 0.739,
+      "wall_seconds": 13.516,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbmergeq_gate",
+      "burst_cpu": 1.013,
+      "processes": 5,
+      "peak_memory_bytes": 254074880,
+      "average_cpu": 0.98,
+      "wall_seconds": 2.547,
+      "queue_seconds": 0.066,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbmergeq_pidfd_wait",
+      "burst_cpu": 1.004,
+      "processes": 5,
+      "peak_memory_bytes": 351227904,
+      "average_cpu": 0.917,
+      "wall_seconds": 2.766,
+      "queue_seconds": 0.06,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbmergeq_review_regressions",
+      "burst_cpu": 1.06,
+      "processes": 6,
+      "peak_memory_bytes": 271765504,
+      "average_cpu": 0.973,
+      "wall_seconds": 2.506,
+      "queue_seconds": 0.013,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbmetrics_kept_reads",
+      "burst_cpu": 1.012,
+      "processes": 5,
+      "peak_memory_bytes": 297365504,
+      "average_cpu": 0.902,
+      "wall_seconds": 3.67,
+      "queue_seconds": 0.015,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbrun_bounded_pool_wait",
+      "burst_cpu": 1.008,
+      "processes": 7,
+      "peak_memory_bytes": 397213696,
+      "average_cpu": 0.78,
+      "wall_seconds": 3.818,
+      "queue_seconds": 0.059,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbrun_observation_retry",
+      "burst_cpu": 1.004,
+      "processes": 6,
+      "peak_memory_bytes": 398315520,
+      "average_cpu": 0.647,
+      "wall_seconds": 4.841,
+      "queue_seconds": 0.133,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbrun_recovers_overwritten_generation",
+      "burst_cpu": 0.997,
+      "processes": 6,
+      "peak_memory_bytes": 402153472,
+      "average_cpu": 0.212,
+      "wall_seconds": 28.406,
+      "queue_seconds": 0.067,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbrun_retained_reader_wait",
+      "burst_cpu": 1.006,
+      "processes": 6,
+      "peak_memory_bytes": 299859968,
+      "average_cpu": 0.721,
+      "wall_seconds": 5.535,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbrun_sealed_publication",
+      "burst_cpu": 1.031,
+      "processes": 8,
+      "peak_memory_bytes": 372752384,
+      "average_cpu": 0.43,
+      "wall_seconds": 14.244,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbrun_snapshot_workspace_expires",
+      "burst_cpu": 1.007,
+      "processes": 6,
+      "peak_memory_bytes": 324763648,
+      "average_cpu": 0.928,
+      "wall_seconds": 5.437,
+      "queue_seconds": 0.069,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbstatus_cancellation_review",
+      "burst_cpu": 1.007,
+      "processes": 6,
+      "peak_memory_bytes": 401301504,
+      "average_cpu": 0.937,
+      "wall_seconds": 3.026,
+      "queue_seconds": 0.059,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbstatus_review_boundaries",
+      "burst_cpu": 1.012,
+      "processes": 7,
+      "peak_memory_bytes": 312856576,
+      "average_cpu": 0.87,
+      "wall_seconds": 4.864,
+      "queue_seconds": 0.012,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest",
+      "burst_cpu": 1.982,
+      "processes": 7,
+      "peak_memory_bytes": 394760192,
+      "average_cpu": 0.957,
+      "wall_seconds": 4.989,
+      "queue_seconds": 0.061,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_pbtest_attempt_temp_expiry",
+      "burst_cpu": 1.014,
+      "processes": 7,
+      "peak_memory_bytes": 313176064,
+      "average_cpu": 0.973,
+      "wall_seconds": 7.44,
+      "queue_seconds": 0.047,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_automatic_history_2286",
+      "burst_cpu": 0.999,
+      "processes": 5,
+      "peak_memory_bytes": 341991424,
+      "average_cpu": 0.875,
+      "wall_seconds": 1.776,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_bounds_every_test_it_shards",
+      "burst_cpu": 1.013,
+      "processes": 5,
+      "peak_memory_bytes": 315400192,
+      "average_cpu": 0.948,
+      "wall_seconds": 4.475,
+      "queue_seconds": 0.013,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_bounds_resident_clients_1348",
+      "burst_cpu": 1.004,
+      "processes": 5,
+      "peak_memory_bytes": 396840960,
+      "average_cpu": 0.614,
+      "wall_seconds": 4.041,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_empty_capability_union_1495",
+      "burst_cpu": 1.014,
+      "processes": 5,
+      "peak_memory_bytes": 345149440,
+      "average_cpu": 0.924,
+      "wall_seconds": 5.223,
+      "queue_seconds": 0.049,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_exit_completion_1530",
+      "burst_cpu": 1.998,
+      "processes": 8,
+      "peak_memory_bytes": 406056960,
+      "average_cpu": 0.859,
+      "wall_seconds": 15.168,
+      "queue_seconds": 0.102,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_pbtest_fleet_data_needs_a_manifest",
+      "burst_cpu": 0.999,
+      "processes": 5,
+      "peak_memory_bytes": 321908736,
+      "average_cpu": 0.866,
+      "wall_seconds": 3.726,
+      "queue_seconds": 0.064,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_gpu_shards_declare_their_bound",
+      "burst_cpu": 1.007,
+      "processes": 6,
+      "peak_memory_bytes": 353669120,
+      "average_cpu": 0.442,
+      "wall_seconds": 5.742,
+      "queue_seconds": 0.068,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_identifies_its_checkout_once",
+      "burst_cpu": 2.846,
+      "processes": 8,
+      "peak_memory_bytes": 341667840,
+      "average_cpu": 0.446,
+      "wall_seconds": 15.636,
+      "queue_seconds": 0.065,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "3",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_pbtest_plan_only",
+      "burst_cpu": 1.07,
+      "processes": 5,
+      "peak_memory_bytes": 401154048,
+      "average_cpu": 0.5,
+      "wall_seconds": 10.455,
+      "queue_seconds": 0.067,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_prints_its_action_keys",
+      "burst_cpu": 1.006,
+      "processes": 5,
+      "peak_memory_bytes": 339324928,
+      "average_cpu": 0.867,
+      "wall_seconds": 4.029,
+      "queue_seconds": 0.012,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_reconciles_outcomes",
+      "burst_cpu": 2.006,
+      "processes": 8,
+      "peak_memory_bytes": 409387008,
+      "average_cpu": 0.925,
+      "wall_seconds": 8.923,
+      "queue_seconds": 0.062,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "3",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_pbtest_record_privacy_1842",
+      "burst_cpu": 1.076,
+      "processes": 6,
+      "peak_memory_bytes": 421953536,
+      "average_cpu": 0.945,
+      "wall_seconds": 10.493,
+      "queue_seconds": 0.065,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_reports_whether_pytest_ran",
+      "burst_cpu": 0.997,
+      "processes": 6,
+      "peak_memory_bytes": 392249344,
+      "average_cpu": 0.851,
+      "wall_seconds": 6.031,
+      "queue_seconds": 0.098,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_requested_paths",
+      "burst_cpu": 1.003,
+      "processes": 5,
+      "peak_memory_bytes": 394199040,
+      "average_cpu": 0.907,
+      "wall_seconds": 2.786,
+      "queue_seconds": 0.059,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_reserves_disk_metadata",
+      "burst_cpu": 1.008,
+      "processes": 5,
+      "peak_memory_bytes": 343203840,
+      "average_cpu": 0.89,
+      "wall_seconds": 2.918,
+      "queue_seconds": 0.059,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_reserves_its_threads",
+      "burst_cpu": 1.004,
+      "processes": 6,
+      "peak_memory_bytes": 408879104,
+      "average_cpu": 0.648,
+      "wall_seconds": 5.902,
+      "queue_seconds": 0.133,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_retries_an_offer_discovery_timeout",
+      "burst_cpu": 1.012,
+      "processes": 5,
+      "peak_memory_bytes": 299823104,
+      "average_cpu": 0.903,
+      "wall_seconds": 3.944,
+      "queue_seconds": 0.013,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_seals_interpreter_1462",
+      "burst_cpu": 1.342,
+      "processes": 7,
+      "peak_memory_bytes": 370978816,
+      "average_cpu": 0.712,
+      "wall_seconds": 13.408,
+      "queue_seconds": 0.099,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_pbtest_seals_its_shard_deadline",
+      "burst_cpu": 0.999,
+      "processes": 6,
+      "peak_memory_bytes": 406507520,
+      "average_cpu": 0.892,
+      "wall_seconds": 2.868,
+      "queue_seconds": 0.059,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbtest_streams_pbrun_lines",
+      "burst_cpu": 1.007,
+      "processes": 6,
+      "peak_memory_bytes": 305917952,
+      "average_cpu": 0.957,
+      "wall_seconds": 2.577,
+      "queue_seconds": 0.064,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pbwait",
+      "burst_cpu": 1.34,
+      "processes": 9,
+      "peak_memory_bytes": 314511360,
+      "average_cpu": 0.769,
+      "wall_seconds": 12.22,
+      "queue_seconds": 0.065,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_pbwait_finds_a_later_submission",
+      "burst_cpu": 1.011,
+      "processes": 9,
+      "peak_memory_bytes": 331141120,
+      "average_cpu": 0.96,
+      "wall_seconds": 5.021,
+      "queue_seconds": 0.012,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_placement_can_open_the_runtime_it_seals",
+      "burst_cpu": 1.007,
+      "processes": 5,
+      "peak_memory_bytes": 411168768,
+      "average_cpu": 0.891,
+      "wall_seconds": 3.972,
+      "queue_seconds": 0.058,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_placement_prefers_resident_copy",
+      "burst_cpu": 1.506,
+      "processes": 7,
+      "peak_memory_bytes": 346771456,
+      "average_cpu": 0.732,
+      "wall_seconds": 14.437,
+      "queue_seconds": 0.059,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_pool",
+      "burst_cpu": 1.408,
+      "processes": 8,
+      "peak_memory_bytes": 408010752,
+      "average_cpu": 0.401,
+      "wall_seconds": 28.2,
+      "queue_seconds": 0.06,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_pool_action_timeout",
+      "burst_cpu": 1.885,
+      "processes": 7,
+      "peak_memory_bytes": 409694208,
+      "average_cpu": 0.865,
+      "wall_seconds": 12.265,
+      "queue_seconds": 0.06,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_pool_broker_disconnect",
+      "burst_cpu": 1.215,
+      "processes": 7,
+      "peak_memory_bytes": 355278848,
+      "average_cpu": 0.488,
+      "wall_seconds": 7.574,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pool_execution_observation",
+      "burst_cpu": 1.008,
+      "processes": 7,
+      "peak_memory_bytes": 393924608,
+      "average_cpu": 0.099,
+      "wall_seconds": 64.179,
+      "queue_seconds": 0.099,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pool_finish_cleanup_retry",
+      "burst_cpu": 1.06,
+      "processes": 6,
+      "peak_memory_bytes": 397750272,
+      "average_cpu": 0.65,
+      "wall_seconds": 5.258,
+      "queue_seconds": 0.057,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pool_observes_the_daemon_spawned_child",
+      "burst_cpu": 1.555,
+      "processes": 5,
+      "peak_memory_bytes": 406249472,
+      "average_cpu": 0.931,
+      "wall_seconds": 3.543,
+      "queue_seconds": 0.133,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_pool_receipt_reconciliation",
+      "burst_cpu": 1.644,
+      "processes": 7,
+      "peak_memory_bytes": 313421824,
+      "average_cpu": 0.938,
+      "wall_seconds": 15.862,
+      "queue_seconds": 0.012,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_pool_reset_refusal",
+      "burst_cpu": 1.329,
+      "processes": 7,
+      "peak_memory_bytes": 299921408,
+      "average_cpu": 0.645,
+      "wall_seconds": 9.529,
+      "queue_seconds": 0.065,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_pool_resource_scope",
+      "burst_cpu": 1.301,
+      "processes": 6,
+      "peak_memory_bytes": 310222848,
+      "average_cpu": 0.342,
+      "wall_seconds": 17.11,
+      "queue_seconds": 0.061,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_pool_retry_survives_a_corrupt_claimed_record_1403",
+      "burst_cpu": 1.63,
+      "processes": 6,
+      "peak_memory_bytes": 397426688,
+      "average_cpu": 0.731,
+      "wall_seconds": 5.34,
+      "queue_seconds": 0.061,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_pool_withdraw",
+      "burst_cpu": 1.531,
+      "processes": 9,
+      "peak_memory_bytes": 394051584,
+      "average_cpu": 0.225,
+      "wall_seconds": 22.59,
+      "queue_seconds": 0.063,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Forked or spawned test children and their helpers overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_pool_withdrawn_retention_1533",
+      "burst_cpu": 0.996,
+      "processes": 6,
+      "peak_memory_bytes": 394928128,
+      "average_cpu": 0.642,
+      "wall_seconds": 5.426,
+      "queue_seconds": 0.1,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_posix_lock",
+      "burst_cpu": 1.006,
+      "processes": 7,
+      "peak_memory_bytes": 289624064,
+      "average_cpu": 0.944,
+      "wall_seconds": 2.075,
+      "queue_seconds": 0.06,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_preemption_handoff_admission",
+      "burst_cpu": 1.292,
+      "processes": 8,
+      "peak_memory_bytes": 398147584,
+      "average_cpu": 0.63,
+      "wall_seconds": 8.748,
+      "queue_seconds": 0.065,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Forked or spawned test children and their helpers overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_preemption_review_boundaries",
+      "burst_cpu": 1.25,
+      "processes": 7,
+      "peak_memory_bytes": 313851904,
+      "average_cpu": 0.831,
+      "wall_seconds": 6.09,
+      "queue_seconds": 0.134,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_prepaid_output_funding",
+      "burst_cpu": 1.596,
+      "processes": 8,
+      "peak_memory_bytes": 412286976,
+      "average_cpu": 0.439,
+      "wall_seconds": 43.763,
+      "queue_seconds": 0.062,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "The process-backed broker fixture and isolated queue readers run alongside pytest."
+    },
+    {
+      "label": "//tests:test_prewarm_receipt_recovery",
+      "burst_cpu": 1.01,
+      "processes": 6,
+      "peak_memory_bytes": 336318464,
+      "average_cpu": 0.847,
+      "wall_seconds": 4.256,
+      "queue_seconds": 0.064,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_process_group_termination",
+      "burst_cpu": 1.005,
+      "processes": 7,
+      "peak_memory_bytes": 243535872,
+      "average_cpu": 0.256,
+      "wall_seconds": 8.24,
+      "queue_seconds": 0.012,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_produced_batches_keep_distinct_stage_paths",
+      "burst_cpu": 1.344,
+      "processes": 9,
+      "peak_memory_bytes": 306601984,
+      "average_cpu": 0.559,
+      "wall_seconds": 11.269,
+      "queue_seconds": 0.061,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_profile_checkpoint_deadline_determinism",
+      "burst_cpu": 1.0,
+      "processes": 7,
+      "peak_memory_bytes": 410071040,
+      "average_cpu": 0.772,
+      "wall_seconds": 3.923,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_profile_primary_checkpoint",
+      "burst_cpu": 1.005,
+      "processes": 7,
+      "peak_memory_bytes": 405639168,
+      "average_cpu": 0.56,
+      "wall_seconds": 6.85,
+      "queue_seconds": 0.06,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_profile_summary_timeout",
+      "burst_cpu": 0.995,
+      "processes": 6,
+      "peak_memory_bytes": 407801856,
+      "average_cpu": 0.179,
+      "wall_seconds": 19.332,
+      "queue_seconds": 0.093,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_profile_window_deadline",
+      "burst_cpu": 0.999,
+      "processes": 7,
+      "peak_memory_bytes": 365957120,
+      "average_cpu": 0.503,
+      "wall_seconds": 9.575,
+      "queue_seconds": 0.063,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_progress_declared_allowances",
+      "burst_cpu": 1.389,
+      "processes": 7,
+      "peak_memory_bytes": 309125120,
+      "average_cpu": 0.904,
+      "wall_seconds": 5.479,
+      "queue_seconds": 0.015,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_progress_keeps_a_working_action_alive",
+      "burst_cpu": 1.24,
+      "processes": 7,
+      "peak_memory_bytes": 415993856,
+      "average_cpu": 0.622,
+      "wall_seconds": 9.197,
+      "queue_seconds": 0.063,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_progress_reporting_boundaries",
+      "burst_cpu": 1.528,
+      "processes": 7,
+      "peak_memory_bytes": 364744704,
+      "average_cpu": 0.816,
+      "wall_seconds": 7.833,
+      "queue_seconds": 0.06,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_progress_reporting_is_reachable_from_any_action",
+      "burst_cpu": 1.546,
+      "processes": 7,
+      "peak_memory_bytes": 298524672,
+      "average_cpu": 0.352,
+      "wall_seconds": 18.037,
+      "queue_seconds": 0.035,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_proof_runtime_observation",
+      "burst_cpu": 1.466,
+      "processes": 6,
+      "peak_memory_bytes": 409083904,
+      "average_cpu": 0.974,
+      "wall_seconds": 11.981,
+      "queue_seconds": 0.061,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Forked or spawned test children and their helpers overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_publication_index",
+      "burst_cpu": 1.005,
+      "processes": 5,
+      "peak_memory_bytes": 290811904,
+      "average_cpu": 0.404,
+      "wall_seconds": 6.011,
+      "queue_seconds": 0.06,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_publication_index_compat_source",
+      "burst_cpu": 1.048,
+      "processes": 6,
+      "peak_memory_bytes": 275374080,
+      "average_cpu": 0.851,
+      "wall_seconds": 15.428,
+      "queue_seconds": 0.012,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_publication_supersession_recovery",
+      "burst_cpu": 0.988,
+      "processes": 6,
+      "peak_memory_bytes": 401039360,
+      "average_cpu": 0.824,
+      "wall_seconds": 3.33,
+      "queue_seconds": 0.129,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_pytest_temp_2449",
+      "burst_cpu": 1.006,
+      "processes": 6,
+      "peak_memory_bytes": 337469440,
+      "average_cpu": 0.922,
+      "wall_seconds": 2.465,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_queue_bell",
+      "burst_cpu": 1.01,
+      "processes": 6,
+      "peak_memory_bytes": 406339584,
+      "average_cpu": 0.679,
+      "wall_seconds": 5.947,
+      "queue_seconds": 0.063,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_reader_lease_lifetime",
+      "burst_cpu": 1.008,
+      "processes": 6,
+      "peak_memory_bytes": 309428224,
+      "average_cpu": 0.065,
+      "wall_seconds": 82.151,
+      "queue_seconds": 0.063,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_residency_is_derived_and_gates_admission",
+      "burst_cpu": 1.845,
+      "processes": 7,
+      "peak_memory_bytes": 306483200,
+      "average_cpu": 0.933,
+      "wall_seconds": 3.855,
+      "queue_seconds": 0.059,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_resource_scope",
+      "burst_cpu": 0.991,
+      "processes": 6,
+      "peak_memory_bytes": 338395136,
+      "average_cpu": 0.883,
+      "wall_seconds": 2.412,
+      "queue_seconds": 0.133,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_resumed_finish_authority",
+      "burst_cpu": 1.008,
+      "processes": 7,
+      "peak_memory_bytes": 302321664,
+      "average_cpu": 0.522,
+      "wall_seconds": 6.227,
+      "queue_seconds": 0.063,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_resumed_retry_authority",
+      "burst_cpu": 1.129,
+      "processes": 6,
+      "peak_memory_bytes": 304115712,
+      "average_cpu": 0.892,
+      "wall_seconds": 3.893,
+      "queue_seconds": 0.014,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_retained_worker_proxy",
+      "burst_cpu": 1.599,
+      "processes": 7,
+      "peak_memory_bytes": 304193536,
+      "average_cpu": 0.897,
+      "wall_seconds": 6.265,
+      "queue_seconds": 0.011,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_retired_lock_files_keep_exclusion",
+      "burst_cpu": 0.997,
+      "processes": 7,
+      "peak_memory_bytes": 317239296,
+      "average_cpu": 0.75,
+      "wall_seconds": 4.011,
+      "queue_seconds": 0.065,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_role_inherited_stdio",
+      "burst_cpu": 1.012,
+      "processes": 5,
+      "peak_memory_bytes": 299798528,
+      "average_cpu": 0.98,
+      "wall_seconds": 3.06,
+      "queue_seconds": 0.016,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_role_stop_wakeup",
+      "burst_cpu": 1.006,
+      "processes": 6,
+      "peak_memory_bytes": 338255872,
+      "average_cpu": 0.845,
+      "wall_seconds": 3.345,
+      "queue_seconds": 0.097,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_sample_profile",
+      "burst_cpu": 2.199,
+      "processes": 10,
+      "peak_memory_bytes": 309542912,
+      "average_cpu": 0.128,
+      "wall_seconds": 36.422,
+      "queue_seconds": 0.101,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "3",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_scratch_declaration_record",
+      "burst_cpu": 1.469,
+      "processes": 7,
+      "peak_memory_bytes": 396419072,
+      "average_cpu": 0.661,
+      "wall_seconds": 15.422,
+      "queue_seconds": 0.063,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Subprocess harnesses and their descendants overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_sealed_bundle_cache",
+      "burst_cpu": 3.015,
+      "processes": 11,
+      "peak_memory_bytes": 310312960,
+      "average_cpu": 1.046,
+      "wall_seconds": 21.376,
+      "queue_seconds": 0.016,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "4",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Concurrent sealers run git pack-objects and spawned cache clients alongside the parent test."
+    },
+    {
+      "label": "//tests:test_stale_mention_co_owner_cache",
+      "burst_cpu": 1.336,
+      "processes": 6,
+      "peak_memory_bytes": 400367616,
+      "average_cpu": 0.381,
+      "wall_seconds": 18.34,
+      "queue_seconds": 0.06,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_submission_ownership_c14",
+      "burst_cpu": 1.034,
+      "processes": 6,
+      "peak_memory_bytes": 323043328,
+      "average_cpu": 0.812,
+      "wall_seconds": 6.743,
+      "queue_seconds": 0.089,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_submission_phases",
+      "burst_cpu": 1.066,
+      "processes": 6,
+      "peak_memory_bytes": 289996800,
+      "average_cpu": 0.814,
+      "wall_seconds": 6.214,
+      "queue_seconds": 0.01,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_superseded_terminal_display_2190",
+      "burst_cpu": 1.135,
+      "processes": 7,
+      "peak_memory_bytes": 317243392,
+      "average_cpu": 0.621,
+      "wall_seconds": 14.124,
+      "queue_seconds": 0.056,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_supervisor_backs_off_a_refused_role",
+      "burst_cpu": 1.006,
+      "processes": 5,
+      "peak_memory_bytes": 298311680,
+      "average_cpu": 0.749,
+      "wall_seconds": 3.62,
+      "queue_seconds": 0.065,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_supervisor_graceful_stop",
+      "burst_cpu": 1.12,
+      "processes": 8,
+      "peak_memory_bytes": 290267136,
+      "average_cpu": 0.974,
+      "wall_seconds": 2.863,
+      "queue_seconds": 0.012,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_supervisor_owns_the_loops_it_signals",
+      "burst_cpu": 1.138,
+      "processes": 5,
+      "peak_memory_bytes": 390418432,
+      "average_cpu": 0.894,
+      "wall_seconds": 4.242,
+      "queue_seconds": 0.063,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_supervisor_prunes_worker_logs",
+      "burst_cpu": 1.012,
+      "processes": 5,
+      "peak_memory_bytes": 304791552,
+      "average_cpu": 0.915,
+      "wall_seconds": 3.049,
+      "queue_seconds": 0.014,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_supervisor_reaps_children",
+      "burst_cpu": 1.107,
+      "processes": 7,
+      "peak_memory_bytes": 390623232,
+      "average_cpu": 0.928,
+      "wall_seconds": 4.326,
+      "queue_seconds": 0.059,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_supervisor_reexecs_on_publish",
+      "burst_cpu": 1.012,
+      "processes": 6,
+      "peak_memory_bytes": 389169152,
+      "average_cpu": 0.91,
+      "wall_seconds": 3.58,
+      "queue_seconds": 0.076,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_supervisor_sees_a_held_claim",
+      "burst_cpu": 1.1,
+      "processes": 6,
+      "peak_memory_bytes": 313352192,
+      "average_cpu": 0.97,
+      "wall_seconds": 2.851,
+      "queue_seconds": 0.012,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_test_runtime_inventory",
+      "burst_cpu": 1.002,
+      "processes": 5,
+      "peak_memory_bytes": 323866624,
+      "average_cpu": 0.907,
+      "wall_seconds": 1.756,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_the_campaign_shape_harness",
+      "burst_cpu": 1.149,
+      "processes": 7,
+      "peak_memory_bytes": 433889280,
+      "average_cpu": 0.583,
+      "wall_seconds": 25.63,
+      "queue_seconds": 0.066,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_the_claim_pass_lists_claimed_once",
+      "burst_cpu": 1.695,
+      "processes": 6,
+      "peak_memory_bytes": 396988416,
+      "average_cpu": 0.898,
+      "wall_seconds": 6.434,
+      "queue_seconds": 0.096,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_the_claim_pass_times_its_transition_holds",
+      "burst_cpu": 1.071,
+      "processes": 6,
+      "peak_memory_bytes": 400187392,
+      "average_cpu": 0.593,
+      "wall_seconds": 5.252,
+      "queue_seconds": 0.062,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_the_landing_record_fits_its_reader_at_scale",
+      "burst_cpu": 1.009,
+      "processes": 5,
+      "peak_memory_bytes": 340705280,
+      "average_cpu": 0.92,
+      "wall_seconds": 6.576,
+      "queue_seconds": 0.057,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_the_nonfinal_window_fences_its_advance",
+      "burst_cpu": 1.292,
+      "processes": 6,
+      "peak_memory_bytes": 404336640,
+      "average_cpu": 0.814,
+      "wall_seconds": 5.185,
+      "queue_seconds": 0.059,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test."
+    },
+    {
+      "label": "//tests:test_the_prewarm_loop_boots_from_the_published_generation",
+      "burst_cpu": 1.011,
+      "processes": 6,
+      "peak_memory_bytes": 304050176,
+      "average_cpu": 0.944,
+      "wall_seconds": 5.946,
+      "queue_seconds": 0.012,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_the_pricing_log_prices_as_the_full_read",
+      "burst_cpu": 1.005,
+      "processes": 5,
+      "peak_memory_bytes": 393322496,
+      "average_cpu": 0.785,
+      "wall_seconds": 3.004,
+      "queue_seconds": 0.06,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_tia_contract",
+      "burst_cpu": 1.007,
+      "processes": 7,
+      "peak_memory_bytes": 349421568,
+      "average_cpu": 0.944,
+      "wall_seconds": 4.235,
+      "queue_seconds": 0.096,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_tier_funding",
+      "burst_cpu": 1.682,
+      "processes": 7,
+      "peak_memory_bytes": 309161984,
+      "average_cpu": 0.924,
+      "wall_seconds": 5.614,
+      "queue_seconds": 0.012,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "reason": "Forked or spawned test children and their helpers overlap the parent test process."
+    },
+    {
+      "label": "//tests:test_unmeasured_readers_are_priced_from_declarations",
+      "burst_cpu": 1.004,
+      "processes": 5,
+      "peak_memory_bytes": 391077888,
+      "average_cpu": 0.244,
+      "wall_seconds": 23.57,
+      "queue_seconds": 0.096,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_worker_interpreter_inventory",
+      "burst_cpu": 1.004,
+      "processes": 6,
+      "peak_memory_bytes": 395853824,
+      "average_cpu": 0.718,
+      "wall_seconds": 9.184,
+      "queue_seconds": 0.06,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_worker_offer_announcement_is_bounded",
+      "burst_cpu": 1.008,
+      "processes": 7,
+      "peak_memory_bytes": 425721856,
+      "average_cpu": 0.827,
+      "wall_seconds": 3.915,
+      "queue_seconds": 0.016,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_worker_signal_ownership",
+      "burst_cpu": 1.007,
+      "processes": 7,
+      "peak_memory_bytes": 255385600,
+      "average_cpu": 0.804,
+      "wall_seconds": 3.58,
+      "queue_seconds": 0.063,
+      "exec_properties": {}
+    },
+    {
+      "label": "//tests:test_worker_sweeps_its_own_dead_tmp_offers_1040",
+      "burst_cpu": 1.125,
+      "processes": 6,
+      "peak_memory_bytes": 389607424,
+      "average_cpu": 0.868,
+      "wall_seconds": 3.913,
+      "queue_seconds": 0.061,
+      "exec_properties": {}
+    }
+  ]
+}

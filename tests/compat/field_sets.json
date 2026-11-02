@@ -4341,6 +4341,11 @@
     "unresolved": "{key for key in index if not key.startswith('_')}"
   },
   {
+    "path": "tools/bazel/calibrate_tests.py",
+    "owner": "sample",
+    "unresolved": "{str(os.getpid())}"
+  },
+  {
     "path": "tools/ci/full_suite_workflow.py",
     "owner": "collect_shards",
     "unresolved": "{node.split('::', 1)[0] for node in rows}"
