@@ -37,6 +37,9 @@ def test_required_check_names_and_who_produces_them_are_unchanged():
     for job in ('pr-gate', 'gate'):
         assert JOBS[job]['needs'] == ['bazel', 'hosted']
         assert any('remote_gate.py aggregate' in step.get('run', '') for step in steps(job))
+        checkout = next(step for step in steps(job) if 'actions/checkout@' in step.get('uses', ''))
+        sparse = checkout['with'].get('sparse-checkout', '').split()
+        assert not sparse or {'tools/ci', 'tools/bazel'} <= set(sparse), 'the aggregate reads both'
     names = {job.get('name', key) for key, job in JOBS.items()}
     assert not {name for name in names if name.startswith('shard-')}
 
