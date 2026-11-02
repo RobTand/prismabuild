@@ -519,8 +519,8 @@ def _parse_gpus_fields(value: str, fields: list[str]):
     closing quote, embedded newlines/multiple records and bare quotes are all
     treated as invalid (Docker is still the final judge of the forwarded argv).
     """
-    if not _gpus_csv_is_go_strict(value):
-        return None
+    if not fields or not _gpus_csv_is_go_strict(value):
+        return None  # An empty value yields no CSV fields: reject it.
     if len(fields) == 1 and (fields[0] == 'all' or (fields[0].isascii() and fields[0].isdigit())):
         return '', []
     seen: dict[str, str] = {}

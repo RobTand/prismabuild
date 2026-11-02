@@ -48,6 +48,13 @@ def test_malformed_gpus_value_voids_valid_sibling_intent(value, sibling):
     assert intent_for(*sibling, '--gpus', value) is False
 
 
+@pytest.mark.parametrize('value', ['', 'driver=cdi,', ',', 'driver=nvidia,,count=all'])
+def test_empty_gpus_value_or_field_has_no_nvidia_intent(value):
+    assert intent_for('--gpus', value) is False
+    assert intent_for('--gpus', 'all', '--gpus', value) is False
+    assert intent_for('--gpus=' + value) is False
+
+
 @pytest.mark.parametrize('count,expected', [
     ('all', True), ('1', True), ('0', True), ('bogus', False), ('1x', False),
 ])
