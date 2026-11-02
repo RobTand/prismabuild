@@ -110,6 +110,9 @@ that differs from a hosted runner in ways some tests notice:
 - it has no network, no sudo, no `.git` and a 64 MB `/dev/shm`;
 - remote execution stages every input as executable;
 - `/tmp` is overlay, which PrismaBuild's state directories refuse.
+- inputs are hardlinks into a shared file cache. On arm64 the interpreter's
+  ctime moves while other actions link it, so there each test runs a private
+  copy of the interpreter, owned by the test user.
 
 The runner gives every test a short `TMPDIR` on the execroot's local
 filesystem. It also removes Bazel's own variables from the environment pytest
