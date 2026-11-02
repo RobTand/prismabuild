@@ -472,7 +472,7 @@ def test_workspace_reuses_both_graphs_and_fingerprints_only_a_tests_source_and_i
     workspace = bazel_gate.Workspace(root=tmp_path)
     real_module_from = bazel_gate.module_from
     def graph_module(name, path):
-        if Path(path).name == 'import_fanout.py':
+        if name != 'graph_impact_for_gate':
             pytest.fail('gate graph checks must not deepen reach through the legacy scanner path')
         return real_module_from(name, path)
     monkeypatch.setattr(bazel_gate, 'module_from', graph_module)

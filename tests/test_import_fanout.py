@@ -46,3 +46,18 @@ def test_a_cycle_library_preserves_internal_test_imports():
                                    {'//tests:cycle': {'//tests:test_a.py', '//tests:test_b.py'}})
     assert imports['test_to_test_imports'] == ['tests/test_a.py -> tests/test_b.py',
                                               'tests/test_b.py -> tests/test_a.py']
+
+
+def test_compatibility_imports_do_not_load_gate_control_code(monkeypatch):
+    import builtins
+    original_import = builtins.__import__
+    def import_module(name, *args, **kwargs):
+        if name == 'tools.ci.bazel_gate':
+            raise AssertionError('pure import rules must not load gate control/configuration code')
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', import_module)
+    spec = importlib.util.spec_from_file_location('isolated_import_rules', ROOT / 'tools/ci/import_fanout.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.bazel_imports({'//tests:a': set()}, {}) == {
+        'test_to_test_imports': [], 'conftest_source_imports': []}
