@@ -19,7 +19,7 @@ import sys
 
 import pytest
 
-from prismabuild import capability_eligibility, contracts
+from prismabuild import capability_eligibility, contracts, interpreter_inventory
 from prismabuild import core as pb, pool
 
 CAPACITY = {"cpu": 4, "mem_gb": 16}
@@ -192,7 +192,7 @@ def test_the_lookup_answers_exactly_the_paths_items_ask_about(tmp_path):
         {},
     ]
 
-    answers = capability_eligibility.observe_interpreters(items).offer_fields()
+    answers = interpreter_inventory.observe_interpreters(items).offer_fields()
     assert answers["interpreters"] == [present_a, present_b]
     assert answers["interpreters_absent"] == [str(tmp_path / "missing" / "bin" / "python"),
                                               "relative/bin/python"]
