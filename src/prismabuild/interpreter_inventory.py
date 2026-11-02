@@ -168,3 +168,7 @@ def prepare_interpreters(
         InterpreterAnswers(frozenset(present), frozenset(absent)), diagnostics,
         inventory_path, requested, {name: candidates[name] for name in window},
         cursor, last, now)
+
+
+def observe_interpreters(items: Sequence[object]) -> InterpreterAnswers:
+    return prepare_interpreters(items).answers
