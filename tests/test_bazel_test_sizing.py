@@ -45,6 +45,34 @@ def test_sized_targets_pass_the_measured_properties_to_py_test(sizing):
         assert {key: properties[key] for key in entry.exec_properties} == entry.exec_properties, label
 
 
+@pytest.mark.parametrize('name', [
+    'test_a_produced_namespace_is_not_a_consumer',
+    'test_a_ready_gpu_action_is_not_starved_by_cpu_shards',
+    'test_an_unproven_ending_is_refused_terminally_at_its_bound',
+    'test_claim_denials',
+    'test_client_proof_bridge_recovery',
+    'test_docker_shim_relays_termination_1599',
+    'test_output_reconciliation_cycle',
+    'test_pbwait_finds_a_later_submission',
+    'test_preemption_review_boundaries',
+    'test_queue_bell',
+    'test_the_claim_pass_times_its_transition_holds',
+])
+def test_quarantined_process_fixtures_reserve_cpu_and_memory(name):
+    # These fixtures launch census, installed-reader, mover or waiter children.
+    # A low whole-action average does not remove the concurrent child demand.
+    properties = rule(name)['exec_properties']
+    assert properties['EstimatedComputeUnits'] == '1'
+    assert float(properties['EstimatedCPU']) >= 2
+    assert properties['EstimatedMemory'].endswith('GB')
+    assert float(properties['EstimatedMemory'][:-2]) >= 0.5
+
+
+def test_a_quarantined_in_process_mover_keeps_dynamic_sizing():
+    properties = rule('test_a_kill_between_a_movers_two_documents_blocks_nothing')['exec_properties']
+    assert properties == {}
+
+
 def test_every_size_has_measurements_a_reason_and_an_existing_test_target(sizing):
     build = (ROOT / 'tests/BUILD.bazel').read_text()
     targets = set(re.findall(r'pb_py_test\(\n    name = "([^"]+)"', build))
