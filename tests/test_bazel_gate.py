@@ -419,25 +419,27 @@ def test_graph_failures_reach_inputs_with_mermaid_and_still_print_summary(mode, 
 
 
 def test_hash_generation_requests_a_revision_specific_dependency_file():
-    generate, _ = bazel_gate.diff_commands('java', 'diff.jar', '/repo', 'bazel',
+    generate, impacted = bazel_gate.diff_commands('/tmp/bazel-diff-v70', '/repo', 'bazel',
                                            Path('/tmp/base.json'), Path('/tmp/head.json'), '/tmp/impacted')
     command = generate(Path('/tmp/base.json'))
     assert command[command.index('--depEdgesFile') + 1] == '/tmp/base-deps.json'
+    assert command[:2] == ['/tmp/bazel-diff-v70', 'generate-hashes']
+    assert impacted[:2] == ['/tmp/bazel-diff-v70', 'get-impacted-targets']
+    assert '-jar' not in command + impacted
 
 
 def test_bazel_blame_uses_explain_not_a_second_path_finder(tmp_path, monkeypatch):
     workspace = bazel_gate.Workspace(root=tmp_path)
-    workspace.diff_java, workspace.diff_jar = 'java', Path('/tmp/diff.jar')
     workspace.hashes = {'base': Path('/tmp/base.json'), 'head': Path('/tmp/head.json')}
     workspace.deps = {'head': Path('/tmp/head-deps.json')}
-    monkeypatch.setattr(workspace, 'explain_tool', lambda: '/tmp/bazel-diff-explain-v70')
+    monkeypatch.setattr(workspace, 'diff_tool', lambda: '/tmp/bazel-diff-v70')
     calls = []
     def run_command(*args, **kwargs):
         calls.append(args)
         return 'graph TD; test --> hub'
     monkeypatch.setattr(workspace, 'run', run_command)
     assert 'graph TD; test --> hub' in workspace.explain('//tests:test_x')
-    assert calls == [('/tmp/bazel-diff-explain-v70', 'explain', '-sh', '/tmp/base.json',
+    assert calls == [('/tmp/bazel-diff-v70', 'explain', '-sh', '/tmp/base.json',
                       '-fh', '/tmp/head.json', '-d', '/tmp/head-deps.json',
                       '--target', '//tests:test_x', '--format', 'mermaid')]
 
@@ -464,7 +466,7 @@ def test_workspace_reuses_both_graphs_and_fingerprints_only_a_tests_source_and_i
     (tmp_path / 'tests/fixtures').mkdir(parents=True)
     (tmp_path / 'tests/test_t.py').write_text('unchanged\n')
     (tmp_path / 'tests/fixtures/import_fanout_baseline.json').write_text('{}')
-    (tmp_path / 'bazel-diff-v42.0.0.jar').write_bytes(b'fixture jar')
+    (tmp_path / 'bazel-diff-v70.0.2-linux-amd64').write_bytes(b'fixture binary')
     monkeypatch.setattr(bazel_gate.tempfile, 'gettempdir', lambda: str(tmp_path))
     monkeypatch.setattr(bazel_gate, 'bazel_diff_digest', lambda data: bazel_gate.BAZEL_DIFF_SHA256)
     workspace = bazel_gate.Workspace(root=tmp_path)
@@ -479,8 +481,7 @@ def test_workspace_reuses_both_graphs_and_fingerprints_only_a_tests_source_and_i
                           'attribute': [{'name': 'srcs', 'stringListValue': ['//tests:test_t.py']}]}}]
     monkeypatch.setattr(workspace, 'streamed_query', query)
     def command(*args, **kwargs):
-        if args[1:3] == ('info', 'java-home'):
-            return '/jdk\n'
+        assert args[0] == str(tmp_path / 'bazel-diff-v70.0.2-linux-amd64')
         if 'generate-hashes' in args:
             generated.append(current[-1])
             output = Path(args[-1])
@@ -495,7 +496,7 @@ def test_workspace_reuses_both_graphs_and_fingerprints_only_a_tests_source_and_i
         return ''
     monkeypatch.setattr(workspace, 'run', command)
     def unexpected_download(*args, **kwargs):
-        pytest.fail('a passing graph must not download the explain tool')
+        pytest.fail('the cached binary must serve generation and selection')
     monkeypatch.setattr(bazel_gate.urllib.request, 'urlopen', unexpected_download)
     workspace.ensure_graphs('base-sha', 'head-sha')
     assert workspace.bazel_diff('base-sha', 'head-sha') == {'//tests:test_t'}
@@ -509,33 +510,35 @@ def test_workspace_reuses_both_graphs_and_fingerprints_only_a_tests_source_and_i
 
 
 
-def test_explanation_binary_is_checksum_pinned_and_cached_only_on_demand(tmp_path, monkeypatch):
+def test_single_diff_binary_is_checksum_pinned_and_cached(tmp_path, monkeypatch):
     from io import BytesIO
     monkeypatch.setattr(bazel_gate.tempfile, 'gettempdir', lambda: str(tmp_path))
-    monkeypatch.setattr(bazel_gate, 'bazel_diff_digest', lambda data: bazel_gate.BAZEL_EXPLAIN_SHA256)
+    monkeypatch.setattr(bazel_gate, 'bazel_diff_digest', lambda data: bazel_gate.BAZEL_DIFF_SHA256)
     downloads = []
     def fetch(url, **kwargs):
         downloads.append(url)
-        return BytesIO(b'native explain tool')
+        return BytesIO(b'native diff tool')
     monkeypatch.setattr(bazel_gate.urllib.request, 'urlopen', fetch)
     workspace = bazel_gate.Workspace(root=tmp_path)
     assert downloads == []
-    binary = Path(workspace.explain_tool())
-    assert binary.read_bytes() == b'native explain tool'
+    binary = Path(workspace.diff_tool())
+    assert binary.read_bytes() == b'native diff tool'
     assert binary.stat().st_mode & 0o111
-    assert Path(workspace.explain_tool()) == binary
-    assert downloads == [bazel_gate.BAZEL_EXPLAIN_URL]
+    assert Path(workspace.diff_tool()) == binary
+    assert downloads == [bazel_gate.BAZEL_DIFF_URL]
+    assert '/v70.0.2/bazel-diff-rust-linux-amd64' in downloads[0]
+    assert bazel_gate.BAZEL_DIFF_SHA256 == '44226a1d1d5239abc8bc6158de1f886fcbbf58e44479ec178df8c01e7e32102e'
 
 
-def test_an_explanation_checksum_mismatch_refuses_the_binary(tmp_path, monkeypatch):
+def test_a_diff_checksum_mismatch_refuses_the_binary(tmp_path, monkeypatch):
     from io import BytesIO
     monkeypatch.setattr(bazel_gate.tempfile, 'gettempdir', lambda: str(tmp_path))
     monkeypatch.setattr(bazel_gate, 'bazel_diff_digest', lambda data: 'wrong checksum')
     monkeypatch.setattr(bazel_gate.urllib.request, 'urlopen', lambda *args, **kwargs: BytesIO(b'wrong tool'))
     workspace = bazel_gate.Workspace(root=tmp_path)
     with pytest.raises(bazel_gate.GateError, match='checksum mismatch'):
-        workspace.explain_tool()
-    assert not (tmp_path / 'bazel-diff-explain-v70.0.2-linux-amd64').exists()
+        workspace.diff_tool()
+    assert not (tmp_path / 'bazel-diff-v70.0.2-linux-amd64').exists()
 
 
 
