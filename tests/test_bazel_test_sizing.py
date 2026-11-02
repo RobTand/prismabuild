@@ -1,6 +1,7 @@
 """Measured test sizes reach the py_test rule without changing other tests."""
 from pathlib import Path
 import importlib.util
+import json
 import re
 from types import SimpleNamespace
 
@@ -86,6 +87,41 @@ def test_runner_calibration_excludes_preexisting_and_incomplete_cgroups(tmp_path
         (group / 'cpu.stat').write_text('usage_usec 0\n')
     assert calibration.runner_cgroups(tmp_path, {existing}) == [current]
     assert calibration.runner_cgroups(tmp_path / 'absent', set()) == []
+
+
+def test_interrupted_calibration_retains_its_last_measured_peak(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location('calibrate_tests', ROOT / 'tools/bazel/calibrate_tests.py')
+    calibration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(calibration)
+    group = tmp_path / 'group'
+    group.mkdir()
+    (group / 'memory.peak').write_text('123456')
+    outputs = tmp_path / 'outputs'
+    monkeypatch.setenv('TEST_UNDECLARED_OUTPUTS_DIR', str(outputs))
+    monkeypatch.setattr(calibration, 'cgroup', lambda: group)
+    observations = iter([(10., 2., 5), (11., 2.8, 6), (12., 4.8, 5)])
+    monkeypatch.setattr(calibration, 'sample', lambda root: next(observations))
+    monkeypatch.setattr(calibration.sys, 'argv', ['calibrate_tests', 'test-command'])
+
+    class Child:
+        calls = 0
+
+        def wait(self, timeout):
+            self.calls += 1
+            if self.calls == 3:
+                raise KeyboardInterrupt
+            raise calibration.subprocess.TimeoutExpired('test-command', timeout)
+
+    monkeypatch.setattr(calibration.subprocess, 'Popen', lambda command: Child())
+    with pytest.raises(KeyboardInterrupt):
+        calibration.main()
+    result = json.loads((outputs / 'sizing.json').read_text())
+    assert result['complete'] is False and result['exit_code'] is None
+    assert result['samples'] == 2
+    assert result['wall_seconds'] == 2.0
+    assert result['cpu_seconds'] == pytest.approx(2.8)
+    assert result['burst_cpu'] == 2.0
+    assert result['processes'] == 6
 
 
 def test_every_size_has_measurements_a_reason_and_an_existing_test_target(sizing):

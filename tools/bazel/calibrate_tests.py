@@ -38,6 +38,29 @@ def runner_cgroups(base, existing):
                   if path not in existing and (path / 'cpu.stat').is_file())
 
 
+def record(root, first, current, burst, processes, samples, status, *, runner):
+    """Keep a checkpoint even when Bazel terminates the wrapper at timeout."""
+    settings = {name: (root / name).read_text().strip() for name in
+                ('cpu.max', 'cpu.weight', 'memory.max', 'cpuset.cpus.effective') if (root / name).exists()}
+    complete = status is not None
+    result = dict(wall_seconds=current[0] - first[0], cpu_seconds=current[1] - first[1],
+                  burst_cpu=burst, processes=processes, samples=samples,
+                  interval_seconds=0.1, cgroup_settings=settings, exit_code=status,
+                  complete=complete,
+                  isolation='runner-delegated-cgroup' if runner else 'remote-action-cgroup')
+    peak = root / 'memory.peak'
+    if peak.exists():
+        result['peak_memory_bytes'] = int(peak.read_text())
+    outputs = Path(os.environ['TEST_UNDECLARED_OUTPUTS_DIR'])
+    outputs.mkdir(parents=True, exist_ok=True)
+    temporary = outputs / 'sizing.json.tmp'
+    temporary.write_text(json.dumps(result, indent=2) + '\n')
+    temporary.replace(outputs / 'sizing.json')
+    if complete or samples % 10 == 0:
+        prefix = 'PB_TEST_SIZING ' if complete else 'PB_TEST_SIZING_PARTIAL '
+        print(prefix + json.dumps(result), flush=True)
+
+
 def main():
     command = sys.argv[1:]
     runner = command[:1] == ['--runner-cgroup']
@@ -70,23 +93,12 @@ def main():
         processes = max(processes, current[2])
         samples += 1
         previous = current
+        if root is not None:
+            record(root, first, current, burst, processes, samples, status, runner=runner)
         if status is not None:
             break
     if root is None:
         raise RuntimeError(measurement_error or 'no new delegated test cgroup')
-    settings = {name: (root / name).read_text().strip() for name in
-                ('cpu.max', 'cpu.weight', 'memory.max', 'cpuset.cpus.effective') if (root / name).exists()}
-    result = dict(wall_seconds=current[0] - first[0], cpu_seconds=current[1] - first[1],
-                  burst_cpu=burst, processes=processes, samples=samples,
-                  interval_seconds=0.1, cgroup_settings=settings, exit_code=status)
-    result['isolation'] = 'runner-delegated-cgroup' if runner else 'remote-action-cgroup'
-    peak = root / 'memory.peak'
-    if peak.exists():
-        result['peak_memory_bytes'] = int(peak.read_text())
-    outputs = Path(os.environ['TEST_UNDECLARED_OUTPUTS_DIR'])
-    outputs.mkdir(parents=True, exist_ok=True)
-    (outputs / 'sizing.json').write_text(json.dumps(result, indent=2) + '\n')
-    print('PB_TEST_SIZING ' + json.dumps(result), flush=True)
     return status
 
 
