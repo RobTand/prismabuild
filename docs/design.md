@@ -6733,6 +6733,33 @@ The terminal release writes its receipt after it frees tokens, so a crash
 between the two can lose the journal counts; a write-ahead release receipt
 is a follow-up before the multi-tier turn becomes live.
 
+## Gate GPU leases
+
+**Client.** `tools/gpu_lease/pb_gpu_lease.py` is a single-file, stdlib-only
+Linux client (Python >= 3.8) for `prismabuild.gpu_lease.v1` (Refs #2630).
+PrismaQuant and Tessera can vendor it and sha256-pin their copies against
+this repository; the consumer wiring and pin tests are separate work.
+`python3 pb_gpu_lease.py run [--holder H] [--mem-gb N] [--cpus N]
+[--optional] [--max-wait-s S] -- CMD [ARGS...]` acquires a lease for a child;
+`with pb_gpu_lease.lease(holder=None, mem_gb=16, cpus=4, directory=None,
+optional=False, max_wait_s=None) as grant:` exposes `lease_id`, `waited_s`,
+and `pb_state` to Python callers. `WaitExceeded` maps to CLI exit 75.
+The directory defaults to `/run/prismabuild-gpu-lease`, overridden by
+`PB_GPU_LEASE_DIR` or the API's `directory`. Missing provisioning exits 3,
+unless optional mode runs without a lease (`pb_state=None`).
+
+The client holds an exclusive flock before atomically publishing its JSON,
+renews every 5 seconds while waiting or held, and only grants for a fresh
+state listing its id in `ready`, an absent state, or a state older than
+30 seconds. Fencing alone is not a grant; malformed state fails closed.
+Clean release records the reason before closing the fd and leaves both
+files for PB. The CLI forwards TERM/INT/HUP and sets the direct child's
+Linux parent-death signal to KILL; it does not contain detached descendants.
+Main-thread API contexts release on those signals; API callers in other
+threads own their main-thread signal policy. These are client-side protocol
+contracts from #2630, not evidence that the PB worker side (#2626), the
+shared tmpfs/bind mounts, or consumer integration is deployed or verified.
+
 ## Physical and adaptive GPU admission
 
 Both current GB10 workers have one physical GPU. Their fleet shape uses the
