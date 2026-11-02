@@ -14,6 +14,8 @@ SPEC.loader.exec_module(bazel_gate)
 
 TESTS = {'//tests:test_core', '//tests:test_pbrun', '//tests:test_fixture_reader'}
 HOSTED = {'//tests:test_pbrun_placement'}
+# Tests BuildBuddy's arm64 executors can't host, by nonhermetic.bzl tag.
+ARM64_EXCLUDED = {'runner': {'//tests:test_pbrun'}, 'hosted-arm64': {'//tests:test_fixture_reader'}}
 USED = {'src/prismabuild/core.py', 'tools/fleet/pbrun.py', 'tests/fixtures/one.json',
         'tests/test_core.py', 'tests/BUILD.bazel', 'src/prismabuild/BUILD.bazel', 'docs/policy.md'}
 
@@ -26,9 +28,11 @@ class FakeWorkspace:
     """Records calls; answers from canned git and Bazel facts."""
 
     def __init__(self, changed, impacted=(), statuses=None, diff_error=None, build_ok=True,
-                 inputs=(), budgets=()):
+                 inputs=(), budgets=(), broken=()):
         self.changed, self.impacted, self.statuses = set(changed), set(impacted), statuses or {}
         self.diff_error, self.build_ok, self.inputs, self.budgets = diff_error, build_ok, inputs, budgets
+        # Configs whose invocation fails before any test runs.
+        self.broken = set(broken)
         self.ran, self.built = [], []
 
     def ensure_commit(self, sha):
@@ -55,9 +59,16 @@ class FakeWorkspace:
     def hosted_tests(self):
         return set(HOSTED)
 
+    def arm64_excluded(self):
+        return {tag: set(labels) for tag, labels in ARM64_EXCLUDED.items()}
+
     def test(self, targets, config, metadata, log_name):
         self.ran.append((config, list(targets)))
-        return {label: self.statuses.get(label, 'PASSED') for label in targets}
+        if config in self.broken:
+            return {'statuses': {}, 'invocation': f'{config}-id',
+                    'error': '(15:48:14) ERROR: no matching toolchains found'}
+        return {'statuses': {label: self.statuses.get(label, 'PASSED') for label in targets},
+                'invocation': f'{config}-id', 'error': None}
 
     def build(self, targets, config, metadata, log_name):
         self.built.append((config, list(targets)))
@@ -178,7 +189,7 @@ def test_a_failing_or_missing_test_status_fails(tmp_path, monkeypatch):
     status, result = run(workspace, tmp_path, monkeypatch)
     assert status == 1 and result['failed'] == ['//tests:test_core']
     workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'])
-    workspace.test = lambda targets, *rest: {}
+    workspace.test = lambda targets, *rest: {'statuses': {}, 'invocation': 'id', 'error': None}
     status, result = run(workspace, tmp_path, monkeypatch)
     assert status == 1 and result['failed'] == ['//tests:test_core']
 
@@ -210,9 +221,52 @@ def test_main_mode_tests_everything_on_both_architectures_and_names_misses(tmp_p
                               statuses={'//tests:test_pbrun': 'FAILED'})
     status, result = run(workspace, tmp_path, monkeypatch, mode='main')
     assert [config for config, _ in workspace.ran if config != 'checks'] == ['remote', 'remote-arm64']
-    assert all(targets == sorted(TESTS) for config, targets in workspace.ran if config != 'checks')
+    assert dict(workspace.ran)['remote'] == sorted(TESTS)
     assert result['architectures']['amd64']['missed'] == ['//tests:test_pbrun']
     assert status == 1
+
+
+def test_main_mode_runs_on_arm64_only_what_its_executors_can_host_and_records_the_rest(tmp_path, monkeypatch):
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'],
+                              statuses={'//tests:test_pbrun': 'FAILED'})
+    status, result = run(workspace, tmp_path, monkeypatch, mode='main')
+    assert dict(workspace.ran)['remote-arm64'] == ['//tests:test_core']
+    arm64, amd64 = result['architectures']['arm64'], result['architectures']['amd64']
+    assert arm64['tests'] == 1 and arm64['failed'] == []
+    assert arm64['excluded'] == {'runner': 1, 'hosted-arm64': 1}
+    assert arm64['excluded_tests'] == {'runner': ['//tests:test_pbrun'],
+                                       'hosted-arm64': ['//tests:test_fixture_reader']}
+    assert amd64['tests'] == len(TESTS) and amd64['excluded'] == {}
+    assert bazel_gate.ARM64_EXCLUDED == tuple(ARM64_EXCLUDED)
+
+
+def test_an_architecture_whose_invocation_ran_no_test_is_an_error_not_failures(tmp_path, monkeypatch):
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'], broken={'remote-arm64'})
+    status, result = run(workspace, tmp_path, monkeypatch, mode='main')
+    arm64 = result['architectures']['arm64']
+    assert arm64['verdict'] == 'error' and arm64['failed'] == [] and arm64['missed'] == []
+    assert 'remote-arm64-id' in arm64['error'] and 'no matching toolchains found' in arm64['error']
+    assert result['architectures']['amd64']['verdict'] == 'pass'
+    assert status == 1
+
+
+def bep(*events):
+    return '\n'.join(json.dumps(event) for event in events) + '\n'
+
+
+def test_build_events_give_statuses_the_invocation_and_the_first_error_line():
+    started = {'id': {'started': {}}, 'started': {'uuid': 'b8bda915-aeb6-44e3-9232-a3073a498838'}}
+    progress = {'id': {'progress': {'opaqueCount': 1}},
+                'progress': {'stderr': '(15:48:13) INFO: Analyzed 1 target\n'
+                                       '(15:48:14) ERROR: /x/BUILD.bazel:3:8: no matching toolchains\n'
+                                       '(15:48:14) ERROR: No test targets were found\n'}}
+    run = bazel_gate.bep_run(bep(started, progress))
+    assert run == {'statuses': {}, 'invocation': 'b8bda915-aeb6-44e3-9232-a3073a498838',
+                   'error': '(15:48:14) ERROR: /x/BUILD.bazel:3:8: no matching toolchains'}
+    summary = {'id': {'testSummary': {'label': '//tests:test_core'}},
+               'testSummary': {'overallStatus': 'PASSED'}}
+    assert bazel_gate.bep_run(bep(started, summary))['statuses'] == {'//tests:test_core': 'PASSED'}
+    assert bazel_gate.bep_run('') == {'statuses': {}, 'invocation': None, 'error': None}
 
 
 def test_remote_executor_configs_are_named_in_bazelrc():
