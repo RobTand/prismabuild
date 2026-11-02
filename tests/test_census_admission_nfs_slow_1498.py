@@ -17,7 +17,6 @@ from fleet_world import reopen_queue
 import fcntl
 import json
 import math
-import multiprocessing
 import os
 import sys
 import threading
@@ -79,16 +78,18 @@ def test_slow_census_over_concluded_sidecars_refuses_ordinary_work_until_swept(
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     ordinary = publish("ordinary-cpu-row", priority=-10, gpu=0)
     orphans = [_conclude(queue, index) for index in range(300)]
-    context = multiprocessing.get_context("fork")
-    entered, release = context.Event(), context.Event()
+    entered = queue.root / "stalled-sidecar-read"
+    gate = queue.root / "sidecar-read.fifo"
+    os.mkfifo(gate)
     real_read = reservation._read
     sidecars = {queue.records.passes_path(key) for key in orphans}
 
     def stalled_sidecar(path, **kwargs):
         value = real_read(path, **kwargs)
         if path in sidecars:
-            entered.set()
-            assert release.wait(60), "fixture did not release its NFS read"
+            entered.touch()
+            with gate.open("rb") as stream:
+                stream.read()
         return value
 
     # A real sidecar read cannot finish before the real reader deadline.
@@ -96,13 +97,10 @@ def test_slow_census_over_concluded_sidecars_refuses_ordinary_work_until_swept(
     # a synthetic sleep for every record and every admission proof.
     with monkeypatch.context() as patch:
         patch.setattr(reservation, "_read", stalled_sidecar)
-        try:
-            assert _claim(queue, ordinary,
-                cpu_sampler=lambda: cpu_sample(clock, readings),
-                gpu_sampler=lambda: gpu_sample(sample, readings)) is None
-        finally:
-            release.set()
-    assert entered.is_set(), "the census never read a concluded sidecar"
+        assert _claim(queue, ordinary,
+            cpu_sampler=lambda: cpu_sample(clock, readings),
+            gpu_sampler=lambda: gpu_sample(sample, readings)) is None
+    assert entered.exists(), "the census never read a concluded sidecar"
     refusal = denial(ordinary)
     assert refusal["reason"] == "measurement_census_unavailable"
     assert "timed_out" in refusal["evidence"]["unavailable"], refusal
