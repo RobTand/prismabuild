@@ -49,9 +49,8 @@ def test_a_module_already_loaded_is_patched_at_once(probe_module):
 def test_the_store_built_without_pbrun_names_pbruns_runtime_and_roster():
     import pbrun
 
-    entrypoint = str(conftest._FLEET_TOOLS / "pbrun.py")
-    assert runtime_paths.generation_root(entrypoint) == pbrun.RUNTIME_ROOT
-    assert fleet_roster.Roster.beside(entrypoint) == fleet_roster.Roster.beside(pbrun.__file__)
+    assert runtime_paths.generation_root(conftest._FLEET_ROSTER) == pbrun.RUNTIME_ROOT
+    assert fleet_roster.Roster.beside(conftest._FLEET_ROSTER) == fleet_roster.Roster.beside(pbrun.__file__)
 
 
 def test_a_loaded_pbrun_reads_the_tests_explicit_store(tmp_path, d38_config):
