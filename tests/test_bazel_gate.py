@@ -470,6 +470,12 @@ def test_workspace_reuses_both_graphs_and_fingerprints_only_a_tests_source_and_i
     monkeypatch.setattr(bazel_gate.tempfile, 'gettempdir', lambda: str(tmp_path))
     monkeypatch.setattr(bazel_gate, 'bazel_diff_digest', lambda data: bazel_gate.BAZEL_DIFF_SHA256)
     workspace = bazel_gate.Workspace(root=tmp_path)
+    real_module_from = bazel_gate.module_from
+    def graph_module(name, path):
+        if Path(path).name == 'import_fanout.py':
+            pytest.fail('gate graph checks must not deepen reach through the legacy scanner path')
+        return real_module_from(name, path)
+    monkeypatch.setattr(bazel_gate, 'module_from', graph_module)
     current, generated = [], []
     monkeypatch.setattr(workspace, 'checkout', lambda sha: current.append(sha))
     monkeypatch.setattr(workspace, 'tests', lambda: {'//tests:test_t'})
@@ -591,6 +597,7 @@ def test_graph_only_baseline_writer_keeps_history_and_never_runs_test_population
         calls.append(record_gains)
         return {'summary': 'U 100.0% → 100.0%, SCC max 1 → 1', 'errors': []}
     monkeypatch.setattr(workspace, 'graph_check', check)
+    monkeypatch.setattr(workspace, 'ensure_commit', lambda sha: None)
     monkeypatch.setattr(workspace, 'run', lambda *args, **kwargs: pytest.fail('graph mode must not run test populations'))
     monkeypatch.setenv('BUILDBUDDY_ARTIFACTS_DIRECTORY', str(tmp_path / 'artifacts'))
     path = tmp_path / 'tests/fixtures/import_fanout_baseline.json'
@@ -606,3 +613,11 @@ def test_graph_only_baseline_writer_keeps_history_and_never_runs_test_population
     monkeypatch.setattr(workspace, 'graph_check', lambda *args, **kwargs: {'summary': 'loss', 'errors': ['SCC grew']})
     assert bazel_gate.main(['graph', '--base', 'base', '--head', 'head', '--write-baseline'], workspace) == 1
     assert path.read_bytes() == original
+
+
+def test_native_cycle_blame_targets_the_reported_cycle_even_without_a_test_path():
+    head = {'reach': {'//tests:unrelated': []}, 'loc': {},
+            'edges': [['//new:a', '//new:b'], ['//new:b', '//new:a']]}
+    assert bazel_gate.blame_target('SCC grew or merged (2 nodes): //new:a, //new:b', head, []) == '//new:a'
+    head['reach']['//tests:affected'] = []
+    assert bazel_gate.blame_target('existing test reach grew: //tests:affected +1', head, []) == '//tests:affected'
