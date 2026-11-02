@@ -9,6 +9,7 @@ from test_gang_reservation_1517 import HOSTS, gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
 from prismabuild import _gang, _measurement_reservation as reservation, pool
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 
 def _damage(queue, group, fault):

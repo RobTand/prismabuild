@@ -11,6 +11,7 @@ from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_gang_teardown_with_prelaunch_1543 import _fail_lead
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 from test_prelaunch_admission_1594 import TIER, _consumer_sha, _gang_pair
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 
 @pytest.mark.parametrize("signature_number", [None, 1, 2, 3],
