@@ -63,7 +63,12 @@ class FakeWorkspace:
         self.built.append((config, list(targets)))
         return self.build_ok
 
-    def inputs_check(self):
+    def start_generated_checks(self):
+        self.ran.append(('checks', []))
+        return ['started']
+
+    def inputs_check(self, started=None):
+        assert started == ['started'] or started is None
         return list(self.inputs)
 
     def budget_check(self, base):
@@ -193,12 +198,19 @@ def test_stale_inputs_or_growing_budgets_fail_a_passing_run(tmp_path, monkeypatc
         assert status == 1 and result['verdict'] == 'pass' and result['inputs']
 
 
+def test_generated_input_checks_start_before_the_tests_and_finish_after(tmp_path, monkeypatch):
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'])
+    status, result = run(workspace, tmp_path, monkeypatch)
+    assert [config for config, _ in workspace.ran] == ['checks', 'remote']
+    assert status == 0 and set(result['durations']) == {'selection', 'tests', 'total'}
+
+
 def test_main_mode_tests_everything_on_both_architectures_and_names_misses(tmp_path, monkeypatch):
     workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'],
                               statuses={'//tests:test_pbrun': 'FAILED'})
     status, result = run(workspace, tmp_path, monkeypatch, mode='main')
-    assert [config for config, _ in workspace.ran] == ['remote', 'remote-arm64']
-    assert all(targets == sorted(TESTS) for _, targets in workspace.ran)
+    assert [config for config, _ in workspace.ran if config != 'checks'] == ['remote', 'remote-arm64']
+    assert all(targets == sorted(TESTS) for config, targets in workspace.ran if config != 'checks')
     assert result['architectures']['amd64']['missed'] == ['//tests:test_pbrun']
     assert status == 1
 

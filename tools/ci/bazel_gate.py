@@ -255,13 +255,25 @@ class Workspace:
             return [f'per-test budgets: {error}']
         return []
 
-    def inputs_check(self):
-        """Generated inputs and population parity on the head tree."""
+    def start_generated_checks(self):
+        """Start the generated-input checks, which need no Bazel server, so they
+        run while the tests do. Returns (command, process) pairs for inputs_check."""
         generated = module_from('bazel_generated_for_gate', self.root / 'tools/ci/bazel_generated.py')
+        started = []
+        for command in generated.commands():
+            print('$ ' + shlex.join(map(str, command)) + ' &', flush=True)
+            started.append((command, subprocess.Popen(list(map(str, command)), cwd=self.root)))
+        return started
+
+    def inputs_check(self, started=None):
+        """Population parity on the head tree, then the generated-input checks:
+        those started earlier are awaited, the rest run now."""
         problems = []
-        for command in [[sys.executable, 'tools/ci/bazel_parity.py', 'static', '--bazel', self.bazel],
-                        *generated.commands()]:
-            if self.run(*command, capture=False, check=False):
+        parity = [sys.executable, 'tools/ci/bazel_parity.py', 'static', '--bazel', self.bazel]
+        if self.run(*parity, capture=False, check=False):
+            problems.append(shlex.join(map(str, parity)))
+        for command, process in self.start_generated_checks() if started is None else started:
+            if process.wait():
                 problems.append(shlex.join(map(str, command)))
         return problems
 
@@ -294,14 +306,18 @@ def gate_pr(workspace, base, head, metadata):
     tests, hosted = workspace.tests(), workspace.hosted_tests()
     decision = gate_decision(changed, deleted, impacted, used, tests, hosted)
     selected_seconds = time.monotonic() - started
+    # The generated-input checks need no Bazel server: they run beside the tests.
+    checks = workspace.start_generated_checks()
     statuses = workspace.test(decision['selected'], CONFIGS['amd64'], metadata, 'pr')
+    tested_seconds = time.monotonic() - started
     verdict, failed = verdict_of(decision['selected'], statuses)
-    inputs = workspace.inputs_check() + workspace.budget_check(base)
+    inputs = workspace.inputs_check(checks) + workspace.budget_check(base)
     if not workspace.build(decision['build'], CONFIGS['amd64'], metadata, 'pr'):
         inputs.append('bazel build of impacted targets failed: ' + ' '.join(decision['build']))
     return {**decision, 'verdict': verdict, 'failed': failed, 'inputs': inputs,
             'changed': sorted(changed | deleted),
             'durations': {'selection': round(selected_seconds, 1),
+                          'tests': round(tested_seconds - selected_seconds, 1),
                           'total': round(time.monotonic() - started, 1)}}
 
 
