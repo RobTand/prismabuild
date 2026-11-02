@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = 'prismabuild.bazel-gate.v1'
@@ -170,6 +171,30 @@ def arm64_population(population, excluded):
     return sorted(label for label in population if label not in skipped), left_out
 
 
+def has_output(outputs, name):
+    """Whether a test.outputs directory holds name, as a file or inside outputs.zip."""
+    if (outputs / name).is_file():
+        return True
+    archive = outputs / 'outputs.zip'
+    if not archive.is_file():
+        return False
+    with zipfile.ZipFile(archive) as zipped:
+        return name in zipped.namelist()
+
+
+def rerun_budget_only(workspace, labels, statuses, config, metadata, log_name):
+    """Rerun once, uncached, the targets that failed only a time budget. A second
+    overrun fails; real failures are never retried."""
+    failed = [label for label in labels if statuses.get(label) != 'PASSED']
+    budget = sorted(workspace.budget_only(failed, statuses))
+    if not budget:
+        return statuses, {}
+    again = workspace.test(budget, config, metadata, f'{log_name}-budget-rerun',
+                           extra=['--nocache_test_results'])['statuses']
+    reruns = {label: again.get(label, 'NO_STATUS') for label in budget}
+    return {**statuses, **reruns}, reruns
+
+
 def canonical_label(label):
     return label[1:] if label.startswith('@//') else label.removeprefix('@@')
 
@@ -256,7 +281,7 @@ class Workspace:
         self.run(*query)
         return {canonical_label(line) for line in impacted.read_text().split() if line}
 
-    def test(self, targets, config, metadata, log_name):
+    def test(self, targets, config, metadata, log_name, extra=()):
         """Run targets; return bep_run's statuses, invocation and first ERROR line.
         Build failures leave labels without status."""
         if not targets:
@@ -267,10 +292,28 @@ class Workspace:
         bep.unlink(missing_ok=True)
         self.run(self.bazel, 'test', f'--config={config}', '--config=ci', '--keep_going',
                  f'--target_pattern_file={patterns}', f'--build_event_json_file={bep}',
-                 *diagnostic_logs(log_name),
+                 *diagnostic_logs(log_name), *extra,
                  *[f'--build_metadata={key}={value}' for key, value in metadata.items()],
                  capture=False, check=False)
         return bep_run(bep.read_text() if bep.exists() else '')
+
+    def budget_only(self, labels, statuses):
+        """Failed labels to rerun once: a Bazel TIMEOUT, or the runner's budget marker
+        in every shard that did not pass. A shard that passed left inventory.json."""
+        marker = module_from('gate_run_for_bazel_gate', self.root / 'tools/ci/gate_run.py').BUDGET_MARKER
+        found = set()
+        for label in labels:
+            if statuses.get(label) == 'TIMEOUT':
+                found.add(label)
+                continue
+            package, _, name = label.removeprefix('//').partition(':')
+            logs = self.root / 'bazel-testlogs' / package / name
+            runs = sorted(logs.glob('shard_*_of_*/test.outputs')) or [logs / 'test.outputs']
+            marked = [has_output(run, marker) for run in runs]
+            if any(marked) and all(mark or has_output(run, 'inventory.json')
+                                   for mark, run in zip(marked, runs)):
+                found.add(label)
+        return found
 
     def build(self, targets, config, metadata, log_name):
         """Build targets; True when every one built."""
@@ -346,12 +389,14 @@ def gate_pr(workspace, base, head, metadata):
     # The generated-input checks need no Bazel server: they run beside the tests.
     checks = workspace.start_generated_checks()
     statuses = workspace.test(decision['selected'], CONFIGS['amd64'], metadata, 'pr')['statuses']
+    statuses, reruns = rerun_budget_only(workspace, decision['selected'], statuses, CONFIGS['amd64'],
+                                         metadata, 'pr')
     tested_seconds = time.monotonic() - started
     verdict, failed = verdict_of(decision['selected'], statuses)
     inputs = workspace.inputs_check(checks) + workspace.budget_check(base)
     if not workspace.build(decision['build'], CONFIGS['amd64'], metadata, 'pr'):
         inputs.append('bazel build of impacted targets failed: ' + ' '.join(decision['build']))
-    return {**decision, 'verdict': verdict, 'failed': failed, 'inputs': inputs,
+    return {**decision, 'verdict': verdict, 'failed': failed, 'inputs': inputs, 'budget_reruns': reruns,
             'changed': sorted(changed | deleted),
             'durations': {'selection': round(selected_seconds, 1),
                           'tests': round(tested_seconds - selected_seconds, 1),
@@ -383,10 +428,13 @@ def gate_main(workspace, base, head, metadata):
         begun = time.monotonic()
         targets, excluded = runnable[architecture]
         run = workspace.test(targets, config, metadata, f'main-{architecture}')
+        run['statuses'], reruns = rerun_budget_only(workspace, targets, run['statuses'], config, metadata,
+                                                   f'main-{architecture}')
         architectures[architecture] = {
             **architecture_result(targets, run, selection['selected']), 'invocation': run['invocation'],
             'tests': len(targets), 'excluded': {tag: len(labels) for tag, labels in excluded.items()},
-            'excluded_tests': excluded, 'seconds': round(time.monotonic() - begun, 1)}
+            'excluded_tests': excluded, 'budget_reruns': reruns,
+            'seconds': round(time.monotonic() - begun, 1)}
     return {'selection': selection['selection'], 'reason': selection['reason'],
             'selected': selection['selected'], 'tests': len(population),
             'hosted': sorted(workspace.hosted_tests()),

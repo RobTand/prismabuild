@@ -13,6 +13,9 @@ import xml.etree.ElementTree as ET
 
 NO_VERDICT = 75
 BUDGET_ENFORCEMENT_TOLERANCE = 1.5
+# Bazel's runner writes this into a test's outputs when every test passed and only a
+# budget overran; tools/ci/bazel_gate.py reruns exactly those targets once.
+BUDGET_MARKER = 'budget-overrun.txt'
 
 
 class BudgetFailure(ValueError):
