@@ -28654,6 +28654,28 @@ pb_py_library(
 )
 
 pb_py_test(
+    name = "test_bazel_test_sizing",
+    path = "tests/test_bazel_test_sizing.py",
+    library = ":test_bazel_test_sizing_lib",
+    timeout = "moderate",
+)
+
+pb_py_library(
+    name = "test_bazel_test_sizing_lib",
+    srcs = [
+        "test_bazel_test_sizing.py",
+    ],
+    data = [
+        "//:files",
+        "//src/prismabuild:files",
+        "//tools/bazel:files",
+        "//tools:files",
+        ":files",
+        "BUILD.bazel",
+    ],
+)
+
+pb_py_test(
     name = "test_bazel_workspace",
     path = "tests/test_bazel_workspace.py",
     library = ":test_bazel_workspace_lib",

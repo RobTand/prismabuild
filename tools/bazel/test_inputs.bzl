@@ -8,6 +8,10 @@ the reason true.
 """
 
 TEST_INPUTS = {
+    "//tests:test_bazel_test_sizing": struct(
+        data = ["//tests:BUILD.bazel"],
+        reason = "it checks that each measured size names a generated pb_py_test, reading the BUILD file which the source generator excludes from inferred inputs.",
+    ),
     "//tests:test_allowance_suite_filesystem_isolation": struct(
         data = ["//tests:test_a_producers_exports_run_on_its_allowance_lib"],
         reason = "it runs tests/test_a_producers_exports_run_on_its_allowance.py in a child pytest, which needs that module's imports.",
