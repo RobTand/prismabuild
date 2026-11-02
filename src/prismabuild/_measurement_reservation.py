@@ -1228,7 +1228,15 @@ def locked_census(queue: PoolQueue, ledger: ResourceLedger, controller):
             busy: set[str] = set()
             for key in sorted(key for key, chosen in discovered["selections"].items()
                               if chosen["host"] == here):
-                if not held.enter_context(queue.action_transition_lock(key, blocking=False)):
+                try:
+                    acquired = held.enter_context(
+                        queue.action_transition_lock(key, blocking=False))
+                except OSError as exc:
+                    # An unopenable lock file is a named refusal, never a
+                    # skipped key: skipping would weaken transition exclusion.
+                    raise CensusUnavailable(
+                        f"transition lock unavailable for {key}: {exc}") from exc
+                if not acquired:
                     busy.add(key)
             held.enter_context(queue._admission_lock(controller))
             try:
