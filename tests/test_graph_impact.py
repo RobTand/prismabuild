@@ -69,9 +69,9 @@ def test_changed_and_new_tests_use_the_recorded_budget_and_bazel_blame():
     assert any('t reach 2 exceeds budget 0' in e for e in errors)
 
 
-def test_transitive_reach_change_counts_as_a_changed_test():
+def test_direct_dependency_change_counts_as_a_changed_test():
     before = graph({'t': {'a'}}, {'t': {'t'}}, {'a': 1, 'b': 1})
-    after = graph({'t': {'a'}, 'a': {'b'}}, before.roots, before.loc)
+    after = graph({'t': {'a', 'b'}}, before.roots, before.loc)
     assert any('t reach 2 exceeds budget 1' in e for e in impact.compare(before, after, record(before)))
 
 
@@ -144,3 +144,22 @@ def test_summary_has_metrics_budget_and_added_edge_attribution():
     assert impact.summary(before, after, 1) == (
         'U 100.0% → 50.0%, SCC max 1 → 1, new tests 1 (reach 0 ≤ budget 1), new edges 0, none to a hub')
     assert 'no base available' in impact.summary(None, after, 0)
+
+
+def test_inherited_reach_growth_uses_uniform_check_without_reclassifying_the_test():
+    before = graph({'t': {'a'}}, {'t': {'t'}}, {'a': 1, 'b': 1}, {'t': 'same test'})
+    after = graph({'t': {'a'}, 'a': {'b'}}, before.roots, before.loc, before.contents)
+    errors = impact.compare(before, after, record(before))
+    assert not any('exceeds budget' in error for error in errors)
+    assert any('u_pct rose' in error for error in errors)
+
+
+def test_uniform_message_names_the_largest_gains_and_keeps_the_full_diff():
+    sources = {'a': 1, **{f's{n}': 1 for n in range(10)}}
+    before = graph({'t': {'a'}}, {'t': {'t'}}, sources)
+    after = graph({'t': {'a'}, 'a': {f's{n}' for n in range(10)}}, before.roots, sources)
+    error = next(e for e in impact.compare(before, after, record(before, reach_budget=100)) if 'u_pct rose' in e)
+    assert 's0 +1' in error and 's4 +1' in error
+    assert 's5 +1' not in error
+    assert '5 more in graph_impact.fanout_growth' in error
+    assert impact.changes(before, after)[1]['s9'] == 1

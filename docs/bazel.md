@@ -309,3 +309,53 @@ line, not a failure of every test. A failure names the merged pull
 requests and says whether their selection included the failing test. The job
 summary and the `post-merge-<sha>` artifact hold one `POST_MERGE_RECORD`
 JSON line per run.
+
+## Graph impact
+
+Every PR and main gate compares both revisions' Bazel graphs, including when
+selection falls back to all tests. `graph_impact` in `gate-result.json` records
+U, LOC-weighted U, every test's source reach count, reach percentiles, SCC members,
+added edges and failures. The log always prints one summary line.
+
+bazel-diff v42's `--depEdgesFile` omits source files. The adapter therefore runs
+one batched `kind("source file", deps(tests(//...)))` query per revision with
+`--output=streamed_jsonproto`, plus one rule-metadata query to attach those
+files to their consuming rules. Reach counts repository source-file labels,
+including declared data. External repository labels are excluded. The test
+population is `tests(//...)` minus `manual`. Cycles already collapsed into a
+Bazel library remain one graph node; Bazel rejects rule dependency cycles.
+
+`tools/ci/graph_impact.py` is the stdlib core to vendor unchanged in other repos.
+`Snapshot`, `measure` and `compare` accept graph facts without discovering
+Python imports. `import_fanout.py` is a thin adapter that checks the two import restrictions
+using library edges from the same graph. It replaces the old imports/gate
+evidence report.
+Data references and test wrappers do not count as library imports.
+
+The existing `tests/fixtures/import_fanout_baseline.json` keeps its history and
+adds `graph_impact` limits. U and LOC-weighted U have a tolerance of one
+percentage point. The reach budget is the p90, rounded up. Changed tests
+include tests whose own source fingerprint, library imports or direct dependencies changed. Every SCC
+that grows or merges fails, even when the largest SCC is unchanged. Every
+failure includes native `bazel-diff explain --format mermaid` output. Generation
+and selection keep the existing v42 JAR. Explanations alone use a URL- and
+SHA-256-pinned v70.0.2 binary, downloaded only on a failure. Its v42 input
+compatibility is verified by the real-graph proof. The gate runs on amd64
+Remote Bazel runners, including for arm64 test actions.
+
+Gains beyond the U tolerance, a smaller SCC maximum or a lower p90 must be
+recorded. Download the graph artifacts from the BuildBuddy gate invocation,
+then update the baseline with:
+
+```sh
+python tools/ci/graph_impact.py \
+  --base-deps base-deps.json --base-metadata base-metadata.json \
+  --head-deps head-deps.json --head-metadata head-metadata.json \
+  --baseline tests/fixtures/import_fanout_baseline.json --write-baseline
+```
+
+The writer refuses regressions and keeps each recorded minimum, including
+when a rise is within tolerance. The gate also refuses an increased or deleted
+limit compared with the base revision. Exceptions are keyed by check, such as
+`reach://tests:test_name`, in `tests/fixtures/graph_impact_allowlist.json`.
+Every entry needs a reason, and a PR may only remove existing entries.

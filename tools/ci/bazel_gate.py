@@ -12,6 +12,7 @@ import argparse
 from fnmatch import fnmatch
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -29,6 +30,8 @@ RESULT = 'gate-result.json'
 
 BAZEL_DIFF_URL = 'https://github.com/Tinder/bazel-diff/releases/download/v42.0.0/bazel-diff_deploy.jar'
 BAZEL_DIFF_SHA256 = '0170b70fe2f24477ab056c11f5c3240d8b45a1dca5ab73ad252c096679c5500c'
+BAZEL_EXPLAIN_URL = 'https://github.com/Tinder/bazel-diff/releases/download/v70.0.2/bazel-diff-rust-linux-amd64'
+BAZEL_EXPLAIN_SHA256 = '44226a1d1d5239abc8bc6158de1f886fcbbf58e44479ec178df8c01e7e32102e'
 
 # A change to any of these can move every target: test everything. Patterns
 # without '/' name root files. The selector's evidence code decides the graph.
@@ -86,6 +89,7 @@ def diff_commands(java, jar, root, bazel, base_hashes, head_hashes, impacted):
     def generate(output):
         return [str(java), '-jar', str(jar), 'generate-hashes', '--workspacePath', str(root),
                 '--bazelPath', str(bazel), '--excludeExternalTargets', '--includeTargetType',
+                '--depEdgesFile', str(Path(output).with_name(Path(output).stem + '-deps.json')),
                 str(output)]
     return generate, [str(java), '-jar', str(jar), 'get-impacted-targets',
                       '--workspacePath', str(root), '--bazelPath', str(bazel),
@@ -206,11 +210,54 @@ def module_from(name, path):
     return module
 
 
+def source_edges(edges, rows):
+    """Restore source inputs omitted by bazel-diff v42, using Bazel metadata."""
+    sources = {canonical_label(row['sourceFile']['name']) for row in rows if 'sourceFile' in row
+               and canonical_label(row['sourceFile']['name']).startswith('//')}
+    result, owners = {node: set(deps) for node, deps in edges.items()}, {}
+    for row in rows:
+        rule = row.get('rule')
+        if not rule:
+            continue
+        label = canonical_label(rule['name'])
+        if label not in result:
+            continue
+        result[label].update(canonical_label(dep) for dep in rule.get('ruleInput', ())
+                             if canonical_label(dep) in sources)
+        kind = rule.get('ruleClass', 'py_library')
+        if kind.endswith('_test') or kind == 'filegroup':
+            continue
+        srcs = {canonical_label(dep) for attr in rule.get('attribute', ()) if attr['name'] == 'srcs'
+                for dep in attr.get('stringListValue', ()) if canonical_label(dep) in sources}
+        if srcs:
+            owners[label] = srcs
+    return result, owners
+
+
+def graph_metrics(measured):
+    """Keep the gate record small; full closures can be read from the graph artifacts."""
+    return {**{key: value for key, value in measured.items() if key not in ('reach', 'sccs')},
+            'reach_sizes': {test: len(files) for test, files in measured['reach'].items()},
+            'cycles': [group for group in measured['sccs'] if len(group) > 1]}
+
+
+def graph_baseline_errors(current, previous):
+    errors = []
+    for key in ('u_pct', 'loc_u_pct', 'scc_max', 'reach_budget'):
+        value = current.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            errors.append(f'graph baseline needs a finite nonnegative {key}')
+        elif key in previous and value > previous[key]:
+            errors.append(f'graph baseline may only tighten: {key} ({previous[key]} -> {value})')
+    return errors
+
+
 class Workspace:
     """Git and Bazel on the runner. Every failure raises GateError."""
 
     def __init__(self, root=ROOT, bazel='bazel'):
         self.root, self.bazel = root, bazel
+        self.graph_revisions = None
 
     def run(self, *command, capture=True, check=True):
         print('$ ' + shlex.join(map(str, command)), flush=True)
@@ -261,7 +308,12 @@ class Workspace:
         return {label.removeprefix('//').replace(':', '/').lstrip('/') for label in map(canonical_label, labels)
                 if label.startswith('//')}
 
-    def bazel_diff(self, base, head):
+    def ensure_graphs(self, base, head):
+        """Freeze both revisions once, even when selection tests everything."""
+        if self.graph_revisions == (base, head):
+            return
+        impact = module_from('graph_impact_for_gate', ROOT / 'tools/ci/graph_impact.py')
+        fanout = module_from('import_fanout_for_gate', ROOT / 'tools/ci/import_fanout.py')
         jar = Path(tempfile.gettempdir(), 'bazel-diff-v42.0.0.jar')
         if not jar.exists() or bazel_diff_digest(jar.read_bytes()) != BAZEL_DIFF_SHA256:
             with urllib.request.urlopen(BAZEL_DIFF_URL, timeout=120) as response:
@@ -269,17 +321,145 @@ class Workspace:
             if bazel_diff_digest(data) != BAZEL_DIFF_SHA256:
                 raise GateError('bazel-diff jar checksum mismatch')
             jar.write_bytes(data)
-        java = Path(self.run(self.bazel, 'info', 'java-home').strip(), 'bin/java')
-        hashes = {name: Path(tempfile.gettempdir(), f'{name}-hashes.json') for name in ['base', 'head']}
-        impacted = Path(tempfile.gettempdir(), 'impacted.txt')
-        impacted.unlink(missing_ok=True)
-        generate, query = diff_commands(java, jar, self.root, self.bazel,
-                                        hashes['base'], hashes['head'], impacted)
-        for name, sha in [('base', base), ('head', head)]:
-            self.checkout(sha)
-            self.run(*generate(hashes[name]))
-        self.run(*query)
-        return {canonical_label(line) for line in impacted.read_text().split() if line}
+        self.diff_java = str(Path(self.run(self.bazel, 'info', 'java-home').strip(), 'bin/java'))
+        self.diff_jar = jar
+        self.graph_directory = tempfile.TemporaryDirectory(prefix='graph-impact-')
+        directory = Path(self.graph_directory.name)
+        self.hashes = {name: directory / f'{name}.json' for name in ('base', 'head')}
+        self.deps = {name: directory / f'{name}-deps.json' for name in ('base', 'head')}
+        self.impacted_path = directory / 'impacted.txt'
+        generate, self.impact_command = diff_commands(self.diff_java, jar, self.root, self.bazel,
+                                                       self.hashes['base'], self.hashes['head'],
+                                                       self.impacted_path)
+        self.snapshots, self.graph_baselines, self.graph_allowlists, self.graph_imports = {}, {}, {}, {}
+        self.graph_owners = {}
+        try:
+            for name, sha in [('base', base), ('head', head)]:
+                self.checkout(sha)
+                self.run(*generate(self.hashes[name]))
+                raw = json.loads(self.deps[name].read_text())
+                edges = {canonical_label(node): {canonical_label(dep) for dep in deps
+                                                 if canonical_label(dep).startswith('//')}
+                         for node, deps in raw.items() if canonical_label(node).startswith('//')}
+                source_rows = self.streamed_query('kind("source file", deps(tests(//...)))')
+                # The source-only query cannot say which rule owns each file.
+                # One batched rule query supplies source ownership and inputs.
+                rule_rows = self.streamed_query('kind(".* rule", //...)')
+                edges, owners = source_edges(edges, source_rows + rule_rows)
+                loc = {}
+                for row in source_rows:
+                    label = canonical_label(row['sourceFile']['name'])
+                    if label.startswith('//'):
+                        path = self.root / label.removeprefix('//').replace(':', '/').lstrip('/')
+                        loc[label] = len(path.read_bytes().splitlines())
+                tests = self.tests()
+                if tests - edges.keys():
+                    raise GateError('graph missing test labels: ' + ', '.join(sorted(tests - edges.keys())))
+                hashes = json.loads(self.hashes[name].read_text())['hashes']
+                library_imports = {
+                    canonical_label(row['rule']['name']): sorted(
+                        canonical_label(dep) for attr in row['rule'].get('attribute', ())
+                        if attr['name'] == 'deps' for dep in attr.get('stringListValue', ())
+                        if canonical_label(dep).startswith('//'))
+                    for row in rule_rows if 'rule' in row}
+                contents = {test: {
+                    'source': hashes.get(test + '.py'),
+                    'imports': library_imports.get(test + '_lib', []),
+                } for test in tests}
+                self.deps[name].write_text(json.dumps({node: sorted(deps) for node, deps in edges.items()}))
+                metadata = {'tests': sorted(tests), 'loc': loc, 'contents': contents}
+                (directory / f'{name}-metadata.json').write_text(json.dumps(metadata))
+                self.snapshots[name] = impact.Snapshot(edges, {test: {test} for test in tests}, loc, contents)
+                self.graph_owners[name] = owners
+                self.graph_imports[name] = fanout.bazel_imports(edges, owners)
+                baseline = self.root / 'tests/fixtures/import_fanout_baseline.json'
+                self.graph_baselines[name] = json.loads(baseline.read_text())
+                if not isinstance(self.graph_baselines[name].get('graph_impact', {}), dict):
+                    raise GateError('graph_impact baseline must be an object')
+                allowlist = self.root / 'tests/fixtures/graph_impact_allowlist.json'
+                self.graph_allowlists[name] = json.loads(allowlist.read_text()) if allowlist.exists() else {}
+                if not isinstance(self.graph_allowlists[name], dict):
+                    raise GateError('graph impact allowlist must be an object')
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise GateError(f'graph impact inputs: {error}') from error
+        finally:
+            self.checkout(head)
+        artifacts = os.environ.get('BUILDBUDDY_ARTIFACTS_DIRECTORY')
+        if artifacts:
+            output = Path(artifacts) / 'graph-impact'
+            output.mkdir(parents=True, exist_ok=True)
+            for path in directory.glob('*.json'):
+                (output / path.name).write_bytes(path.read_bytes())
+        self.graph_revisions = (base, head)
+        self.graph_impact, self.import_fanout = impact, fanout
+
+    def streamed_query(self, expression):
+        return [json.loads(line) for line in self.run(self.bazel, 'query', expression,
+                '--output=streamed_jsonproto', '--keep_going=false').splitlines() if line.strip()]
+
+    def bazel_diff(self, base, head):
+        self.ensure_graphs(base, head)
+        self.run(*self.impact_command)
+        return {canonical_label(line) for line in self.impacted_path.read_text().split() if line}
+
+    def explain_tool(self):
+        """v70 reads v42 hashes; it is used only for native explanations."""
+        binary = Path(tempfile.gettempdir(), 'bazel-diff-explain-v70.0.2-linux-amd64')
+        if not binary.exists() or bazel_diff_digest(binary.read_bytes()) != BAZEL_EXPLAIN_SHA256:
+            with urllib.request.urlopen(BAZEL_EXPLAIN_URL, timeout=120) as response:
+                data = response.read()
+            if bazel_diff_digest(data) != BAZEL_EXPLAIN_SHA256:
+                raise GateError('bazel-diff explain binary checksum mismatch')
+            binary.write_bytes(data)
+        binary.chmod(0o755)
+        return str(binary)
+
+    def explain(self, target):
+        try:
+            output = self.run(self.explain_tool(), 'explain',
+                              '-sh', str(self.hashes['base']), '-fh', str(self.hashes['head']),
+                              '-d', str(self.deps['head']), '--target', target, '--format', 'mermaid')
+        except (GateError, OSError) as error:
+            return f'bazel-diff blame unavailable: {error}'
+        return '```mermaid\n' + output.strip() + '\n```'
+
+    def graph_check(self, base, head):
+        try:
+            self.ensure_graphs(base, head)
+            impact = self.graph_impact
+            before, after = self.snapshots['base'], self.snapshots['head']
+            previous = self.graph_baselines['base'].get('graph_impact', {})
+            baseline = self.graph_baselines['head'].get('graph_impact', {})
+            policy_errors = graph_baseline_errors(baseline, previous) if baseline else []
+            policy_errors += impact.allowlist_errors(self.graph_allowlists['head'], self.graph_allowlists['base'])
+            live = impact.measure(after)
+            if not baseline:
+                baseline = impact.baseline_record(impact.measure(before))
+                policy_errors.append('graph impact baseline missing: record graph_impact in import_fanout_baseline.json')
+            if graph_baseline_errors(baseline, {}):
+                baseline = impact.baseline_record(impact.measure(before))
+            errors = impact.compare(before, after, baseline, self.graph_allowlists['head'], self.explain)
+            if policy_errors:
+                target = '//tools:ci/bazel_gate' if '//tools:ci/bazel_gate' in after.edges else next(iter(after.roots))
+                blame = self.explain(target)
+                errors.extend(error + '\n' + blame for error in policy_errors)
+            for error in self.import_fanout.bazel_regressions(self.graph_imports['head'], self.graph_imports['base']):
+                # Blame the new edge's consuming library, whose source spelling
+                # is printed by the existing import policy.
+                path = error.split('entry: ', 1)[1].split(' -> ', 1)[0]
+                label = next(node for node, sources in sorted(self.graph_owners['head'].items())
+                             if any(source.removeprefix('//').replace(':', '/').lstrip('/') == path
+                                    for source in sources))
+                key = error.split(' entry:', 1)[0].removeprefix('new ')
+                entry = error.split('entry: ', 1)[1]
+                if f'{key}:{entry}' not in self.graph_allowlists['head']:
+                    errors.append(error + '\n' + self.explain(label))
+            return {'summary': impact.summary(before, after, baseline['reach_budget']),
+                    'base': graph_metrics(impact.measure(before)), 'head': graph_metrics(live),
+                    'added_edges': sorted(impact.changes(before, after)[0]),
+                    'fanout_growth': impact.changes(before, after)[1], 'errors': errors}
+        except GateError as error:
+            return {'summary': 'U unavailable, SCC max unavailable: ' + str(error), 'errors': [str(error)]}
 
     def test(self, targets, config, metadata, log_name, extra=()):
         """Run targets; return bep_run's statuses, invocation and first ERROR line.
@@ -379,12 +559,17 @@ def gate_pr(workspace, base, head, metadata):
     changed, deleted = workspace.changes(base, head)
     workspace.checkout(head)
     used = workspace.used_sources()
-    forced = fallback_files(changed | deleted)
-    skip = forced or needs_no_diff(changed, deleted, used)
-    impacted = set() if skip else workspace.bazel_diff(base, head)
-    workspace.checkout(head)
-    tests, hosted = workspace.tests(), workspace.hosted_tests()
-    decision = gate_decision(changed, deleted, impacted, used, tests, hosted)
+    graph_impact = workspace.graph_check(base, head)
+    print(graph_impact['summary'], flush=True)
+    try:
+        forced = fallback_files(changed | deleted)
+        skip = forced or needs_no_diff(changed, deleted, used)
+        impacted = set() if skip else workspace.bazel_diff(base, head)
+        workspace.checkout(head)
+        tests, hosted = workspace.tests(), workspace.hosted_tests()
+        decision = gate_decision(changed, deleted, impacted, used, tests, hosted)
+    except GateError as error:
+        return {'error': str(error), 'inputs': graph_impact['errors'], 'graph_impact': graph_impact}
     selected_seconds = time.monotonic() - started
     # The generated-input checks need no Bazel server: they run beside the tests.
     checks = workspace.start_generated_checks()
@@ -393,10 +578,11 @@ def gate_pr(workspace, base, head, metadata):
                                          metadata, 'pr')
     tested_seconds = time.monotonic() - started
     verdict, failed = verdict_of(decision['selected'], statuses)
-    inputs = workspace.inputs_check(checks) + workspace.budget_check(base)
+    inputs = workspace.inputs_check(checks) + workspace.budget_check(base) + graph_impact['errors']
     if not workspace.build(decision['build'], CONFIGS['amd64'], metadata, 'pr'):
         inputs.append('bazel build of impacted targets failed: ' + ' '.join(decision['build']))
     return {**decision, 'verdict': verdict, 'failed': failed, 'inputs': inputs, 'budget_reruns': reruns,
+            'graph_impact': graph_impact,
             'changed': sorted(changed | deleted),
             'durations': {'selection': round(selected_seconds, 1),
                           'tests': round(tested_seconds - selected_seconds, 1),
@@ -410,6 +596,8 @@ def gate_main(workspace, base, head, metadata):
     for sha in [base, head]:
         workspace.ensure_commit(sha)
     changed, deleted = workspace.changes(base, head)
+    graph_impact = workspace.graph_check(base, head)
+    print(graph_impact['summary'], flush=True)
     try:
         forced = fallback_files(changed | deleted)
         impacted = set() if forced else workspace.bazel_diff(base, head)
@@ -438,7 +626,8 @@ def gate_main(workspace, base, head, metadata):
     return {'selection': selection['selection'], 'reason': selection['reason'],
             'selected': selection['selected'], 'tests': len(population),
             'hosted': sorted(workspace.hosted_tests()),
-            'architectures': architectures, 'inputs': workspace.inputs_check(),
+            'architectures': architectures, 'inputs': workspace.inputs_check() + graph_impact['errors'],
+            'graph_impact': graph_impact,
             'changed': sorted(changed | deleted),
             'durations': {'total': round(time.monotonic() - started, 1)}}
 
@@ -464,9 +653,12 @@ def main(argv=None, workspace=None):
     try:
         gate = gate_pr if args.mode == 'pr' else gate_main
         result.update(gate(workspace or Workspace(), args.base, args.head, metadata))
-        result['error'] = None
+        result.setdefault('error', None)
     except GateError as error:
         result['error'] = str(error)
+        report = {'summary': 'U unavailable, SCC max unavailable: ' + str(error), 'errors': [str(error)]}
+        result['graph_impact'] = report
+        print(report['summary'], flush=True)
     write_result(result, output)
     print(json.dumps({key: result.get(key) for key in ['selection', 'error', 'verdict', 'inputs']}))
     return 0 if passed(result) else 1

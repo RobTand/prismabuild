@@ -969,5 +969,11 @@
     "tests/test_write_only_produced_output.py -> tests/test_pbrun_residency_stage_submission.py",
     "tests/test_write_only_produced_output.py -> tests/test_prepaid_writer_integration.py",
     "tests/tier_receipt_fixture.py -> tests/test_prewarm_requires_known_receipts.py"
-  ]
+  ],
+  "graph_impact": {
+    "u_pct": 15.19905648988234,
+    "loc_u_pct": 19.33397616366193,
+    "scc_max": 1,
+    "reach_budget": 2036
+  }
 }
