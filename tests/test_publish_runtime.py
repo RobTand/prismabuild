@@ -12,6 +12,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from movement_publication_support import publication_store  # noqa: E402,F401
 
 
 ROOT = Path(__file__).resolve().parents[1]

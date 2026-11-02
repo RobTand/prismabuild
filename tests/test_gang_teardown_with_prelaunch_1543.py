@@ -21,6 +21,7 @@ from test_prelaunch_admission_1594 import (
     TIER, _compose_maps, _consumer_sha, _gang_pair, _publish_lead, _stage_lead)
 
 from prismabuild import _gang, pool
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 
 def _fail_lead(queue, clock, monkeypatch, lead: str, sha: str) -> None:

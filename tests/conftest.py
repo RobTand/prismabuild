@@ -68,8 +68,14 @@ TEST_RUNTIME_EVIDENCE_PREFIX = "prismabuild-test-runtime: "
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """Keep unavailable runtime observations separate from test outcomes."""
+    import hashlib
     import json
     import platform
+
+    def raw_sha256(data: bytes) -> str:
+        # ``prismabuild.core.raw_sha256``'s recipe, without making every test
+        # depend on core through this conftest (#2582).
+        return hashlib.sha256(data).hexdigest()
 
     record = dict(complete=False, version=list(sys.version_info[:3]),
                   description=sys.version, files=list(config.args))
@@ -77,20 +83,23 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         executable = Path(sys.executable).resolve()
         running = Path("/proc/self/exe").read_bytes()
         source_root = Path(__file__).resolve().parents[1]
-        selected = sorted({str(item.path.relative_to(source_root))
-                           for item in terminalreporter._session.items
-                           if item.path.is_relative_to(source_root)})
+        # Each selected file is read through its own item path, which static
+        # dependency evidence cannot mistake for the whole repository (#2582).
+        selected_paths = {str(item.path.relative_to(source_root)): item.path
+                          for item in terminalreporter._session.items
+                          if item.path.is_relative_to(source_root)}
+        selected = sorted(selected_paths)
         record.update(complete=True,
             executable=dict(path=sys.executable, resolved_path=str(executable),
-                bytes=len(running), sha256=pb_core.raw_sha256(running)),
+                bytes=len(running), sha256=raw_sha256(running)),
             executable_path_matches_running=executable.read_bytes() == running,
             affinity=sorted(os.sched_getaffinity(0)),
             native_threads={name: os.environ.get(name) for name in (
                 "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")},
-            conftest_sha256=pb_core.raw_sha256(Path(__file__).read_bytes()),
+            conftest_sha256=raw_sha256(Path(__file__).read_bytes()),
             kernel=platform.uname()._asdict(),
             selected_files=selected,
-            selected_source_sha256={name: pb_core.raw_sha256((source_root / name).read_bytes())
+            selected_source_sha256={name: raw_sha256(selected_paths[name].read_bytes())
                                     for name in selected},
             exitstatus=int(exitstatus))
     except (OSError, RuntimeError, AttributeError) as exc:
@@ -98,14 +107,17 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         record["reason"] = f"{type(exc).__name__}: {exc}"
     terminalreporter.write_line(TEST_RUNTIME_EVIDENCE_PREFIX + json.dumps(record))
 
-# The status reader already owns the fleet's bounded fork-and-abandon contract.
-# Reuse it here rather than adding a second timeout shape for a hard-mounted
-# store. The root conftest adds ``src``; this test-only hook also needs the
-# script directory because ``pbstatus`` is intentionally not a package module.
+# Tests import the fleet's script modules by bare name (``import pbrun``), so
+# the script directory goes on ``sys.path`` for every test. The root conftest
+# adds ``src``.
 _FLEET_TOOLS = Path(__file__).resolve().parents[1] / "tools" / "fleet"
 if str(_FLEET_TOOLS) not in sys.path:
     sys.path.insert(0, str(_FLEET_TOOLS))
-import pbstatus  # noqa: E402
+# The fleet's bounded fork-and-abandon reader, which ``pbstatus.bounded`` wraps
+# unchanged. Reuse it here rather than adding a second timeout shape for a
+# hard-mounted store. It is imported directly rather than through ``pbstatus``,
+# whose imports would make every test depend on most of the fleet (#2582).
+from prismabuild import _bounded_reader  # noqa: E402
 import prismabuild.core as pb_core  # noqa: E402
 from prismabuild import immutable_files  # noqa: E402
 # A private consumer suite can reuse this conftest through a symlink.
@@ -113,9 +125,6 @@ from prismabuild import immutable_files  # noqa: E402
 _TEST_HELPERS = str(Path(__file__).resolve().parent)
 if _TEST_HELPERS not in sys.path:
     sys.path.append(_TEST_HELPERS)
-# Shared by the gang tests, whichever module imports ``gang_fleet``: a host that
-# holds the protected copy of the generation it runs (#1579, #1659).
-from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 from record_compat_namespace import RecordCompatNamespacePreflight  # noqa: E402
 
 #: The mount the fleet executes against. The environment override exists so
@@ -377,7 +386,7 @@ def _live_store_refusals(request: pytest.FixtureRequest):
 #: for over 330 s. The guard is a convenience and the suite is not, so an
 #: unreachable store costs this many seconds and then the guard stands down.
 def _positive_timeout(value: object, *, name: str) -> float:
-    """Reject a timeout spelling that would select pbstatus's unbounded path."""
+    """Reject a timeout spelling that would select the bounded reader's unbounded path."""
 
     timeout_s = float(value)
     if not math.isfinite(timeout_s) or timeout_s <= 0:
@@ -700,7 +709,7 @@ def _census(live_root: Path) -> dict:
 
 
 def _census_payload(live_root: Path) -> dict:
-    """Make the set-based inventory safe to carry over ``pbstatus.bounded``."""
+    """Make the set-based inventory safe to carry over the bounded reader."""
 
     census = _census(live_root)
     return {
@@ -715,7 +724,7 @@ def bounded_listing(live_root: Path = LIVE_ROOT,
                     timeout_s: float = LIVE_CENSUS_TIMEOUT_S) -> dict:
     """Return a complete live-store census, or explicit incomplete evidence.
 
-    The entire recursive traversal runs in ``pbstatus.bounded``.  A hard NFS
+    The entire recursive traversal runs in the bounded reader.  A hard NFS
     read can stall after the root probe succeeds, so placing only ``reachable``
     in an abandonable child does not protect this test session.
 
@@ -728,9 +737,9 @@ def bounded_listing(live_root: Path = LIVE_ROOT,
 
     timeout_s = _positive_timeout(timeout_s, name="live-store census timeout")
     abandoned: list[dict] = []
-    observed = pbstatus.bounded(
+    observed = _bounded_reader.bounded(
         "pytest live-store census", lambda: _census_payload(Path(live_root)),
-        deadline=pbstatus.Deadline(timeout_s), abandoned=abandoned,
+        deadline=_bounded_reader.Deadline(timeout_s), abandoned=abandoned,
     )
     if observed["status"] != "ok":
         return {
@@ -903,9 +912,9 @@ def bounded_leaked_entries(
         return {"complete": complete, "errors": errors, "leaked": leaked,
                 "unattributed": unattributed}
 
-    observed = pbstatus.bounded(
+    observed = _bounded_reader.bounded(
         "pytest live-store leak check", read,
-        deadline=pbstatus.Deadline(timeout_s), abandoned=abandoned,
+        deadline=_bounded_reader.Deadline(timeout_s), abandoned=abandoned,
     )
     if observed["status"] != "ok":
         return {"status": "unavailable", "reason": observed["status"],
@@ -1073,105 +1082,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             + ", ".join(leaked[:10])
         )
         session.exitstatus = 1
-
-
-# --------------------------------------------------------------------------
-# Decomposition: a stand-in for what pbrun's Stage A freezes
-#
-# A decomposition parent is keyed on the half of a sealed action that its
-# children all share, which ``pbrun.template_action_common`` produces off a
-# real checkout.  The batcher, the refusal surface and the merge do not need a
-# real tree to be tested against, but they do need that half to be *shaped*
-# like the real one, because that is what ``freeze_common`` validates.  So this
-# is the miniature: the same six sections, plausible values, and nothing a
-# caller cannot vary when the point of the test is that varying it moves the
-# parent.
-# --------------------------------------------------------------------------
-
-#: Two digests that stand for a source tree and a data manifest.  Named rather
-#: than inlined so a test that means "another tree" says so.
-DECOMPOSITION_SNAPSHOT = "a" * 64
-DECOMPOSITION_MANIFEST = "b" * 64
-
-
-def action_common(
-    *,
-    snapshot: str = DECOMPOSITION_SNAPSHOT,
-    cwd: str = ".",
-    manifest: str | None = None,
-    variables: dict[str, str] | None = None,
-    **params: object,
-) -> dict[str, object]:
-    """The sealed half of an action, as a template would hand it over."""
-
-    sealed: dict[str, object] = {
-        "cwd": cwd,
-        "demand": {"cpu": 1, "mem_gb": 4},
-        "placement": {"required_tags": []},
-        "retry_policy": {"max_attempts": 1, "retry_safe": False},
-        "checkout_snapshot": {
-            "input": {"id": "pbrun.checkout-snapshot", "sha256": snapshot,
-                      "bytes": 4096},
-        },
-        **params,
-    }
-    if manifest is not None:
-        sealed["data_manifest"] = {
-            "input": {"id": "pbcampaign.data-manifest", "sha256": manifest,
-                      "bytes": 512},
-            "mount_prefix": "/mnt/shared",
-            "entry_count": 1,
-            "total_bytes": 512,
-        }
-    return {
-        "task": {
-            "definition_id": "fleet/pbrun",
-            "definition_version": "v1",
-            "task_class": "generation",
-            "determinism": "stochastic",
-            "artifact_family": "generic",
-            "artifact_kind": "generic",
-            "working_directory": ".",
-        },
-        "params": sealed,
-        "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": snapshot,
-                    "bytes": 4096}],
-        "code_closure": {"schema": "prismaquant.prismabuild.code_closure.v1",
-                         "files": [], "closure_sha256": "c" * 64},
-        "environment": {
-            "variables": {"PATH": "/usr/local/bin:/usr/bin:/bin",
-                          **(variables or {})},
-            "toolchain": {},
-        },
-        "execution_scope": {"kind": "platform_keyed",
-                            "platform_key": "linux-aarch64-sm121"},
-    }
-
-
-def frozen_common(
-    request: dict,
-    *,
-    snapshot: str = DECOMPOSITION_SNAPSHOT,
-    cwd: str = ".",
-    variables: dict[str, str] | None = None,
-    **sealed: object,
-) -> dict:
-    """Freeze a logical request against the shared synthetic action fixture."""
-    from prismabuild import decomposition
-
-    common = request["common"]
-    if common["gpu_memory_gb"] is not None:
-        sealed.setdefault("gpu_memory_gb", common["gpu_memory_gb"])
-    return decomposition.freeze_common(
-        common,
-        action_common=action_common(
-            snapshot=snapshot,
-            cwd=cwd,
-            manifest=None if common["data_manifest"] is None else DECOMPOSITION_MANIFEST,
-            variables={**common["env"], **(variables or {})},
-            **sealed,
-        ),
-    )
 
 
 @pytest.fixture(autouse=True)

@@ -29,6 +29,7 @@ import pbwait
 import pool_reset
 from prismabuild import stage_release
 from prismabuild import staged_path
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 
 @pytest.fixture

@@ -15,6 +15,7 @@ from prismabuild import _bounded_reader as reader
 from fleet_world import Clock
 from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 
 @pytest.fixture

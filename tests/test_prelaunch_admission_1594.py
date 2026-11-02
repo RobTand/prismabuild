@@ -18,6 +18,7 @@ from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
 from prismabuild import _gang, candidate_policy, core as pb, pool, residency_map, residency_plan
 from prismabuild import data_manifest as manifest_codec
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 TIER = "prismabuild-stage:sparklina"
 STAGE_KIND = f"stage_gib@{TIER}"
