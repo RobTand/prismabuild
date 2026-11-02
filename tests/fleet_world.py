@@ -99,3 +99,8 @@ class FleetWorld:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(raw)
         return path
+
+
+def queue_world(root, monkeypatch, **options):
+    """Build a private world at the caller's clock boundary."""
+    return FleetWorld(root, **options)
