@@ -59,6 +59,7 @@ from functools import wraps
 from pathlib import Path, PurePosixPath
 import sys
 from threading import local
+from types import ModuleType
 
 import pytest
 
@@ -113,6 +114,9 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 _FLEET_TOOLS = Path(__file__).resolve().parents[1] / "tools" / "fleet"
 if str(_FLEET_TOOLS) not in sys.path:
     sys.path.insert(0, str(_FLEET_TOOLS))
+#: The fleet roster beside those scripts: what ``pbrun`` reads its roster and
+#: runtime root from, for a test store built before ``pbrun`` is loaded.
+_FLEET_ROSTER = _FLEET_TOOLS / "fleet_boxes.json"
 # The fleet's bounded fork-and-abandon reader, which ``pbstatus.bounded`` wraps
 # unchanged. Reuse it here rather than adding a second timeout shape for a
 # hard-mounted store. It is imported directly rather than through ``pbstatus``,
@@ -335,26 +339,52 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
         item._pb_live_guard_failed = True  # type: ignore[attr-defined]
 
 
+#: Patches that the autouse fixtures below apply to a module only once a test
+#: has loaded it, keyed by module name. Conftest imports none of these modules,
+#: so a test that never loads one does not depend on it (#2582). A fixture
+#: patches a module already in ``sys.modules`` at once, and
+#: ``_off_the_live_store``'s loader hook patches one the test loads later.
+#: ``monkeypatch.setitem`` drops each registration when its test ends.
+_LOAD_PATCHES: dict[str, tuple[Callable[[ModuleType], None], ...]] = {}
+
+#: ``fixture_store``'s default root: the test's explicit store root, which is
+#: only known once something asks for the store.
+_STORE_ROOT = object()
+
+
+def _when_loaded(monkeypatch: pytest.MonkeyPatch, name: str,
+                 patch: Callable[[ModuleType], None]) -> None:
+    """Apply ``patch`` to module ``name`` for this test, whenever the test loads it."""
+
+    module = sys.modules.get(name)
+    if module is not None:
+        patch(module)
+    monkeypatch.setitem(_LOAD_PATCHES, name, (*_LOAD_PATCHES.get(name, ()), patch))
+
+
 @pytest.fixture(autouse=True)
 def _ample_queue_space(monkeypatch):
     """Queue diagnostics depend on explicit samples, never the test host."""
-    from prismabuild import filesystem_capacity
     from queue_space_support import queue_space_os
 
-    monkeypatch.setattr(filesystem_capacity, "os", queue_space_os())
+    # Taken now, as before: the sample defers to an ``os.statvfs`` a test
+    # installs later, and compares against the one in force at this point.
+    sample_os = queue_space_os()
+    _when_loaded(monkeypatch, "prismabuild.filesystem_capacity",
+                 lambda module: monkeypatch.setattr(module, "os", sample_os))
 
 
 @pytest.fixture(autouse=True)
 def d38_config(monkeypatch, tmp_path):
     """Private record-only fleet setting; enforcement tests opt in explicitly."""
 
-    from prismabuild import d38_gate
-
     directory = tmp_path / "d38-config"
     directory.mkdir()
     path = directory / "fleet_boxes.json"
     path.write_text('{"d38_enforce": false}', encoding="utf-8")
-    monkeypatch.setattr(d38_gate, "__file__", str(directory / "d38_gate.py"))
+    _when_loaded(monkeypatch, "prismabuild.d38_gate",
+                 lambda module: monkeypatch.setattr(
+                     module, "__file__", str(directory / Path(module.__file__).name)))
     return path
 
 
@@ -524,8 +554,10 @@ LIVE_ENV = (
 
 
 def _isolate_pbtest_scratch_registry(module, root: Path, assign) -> None:
-    if (Path(getattr(module, "__file__", "") or "").name == "pbtest.py"
-            and hasattr(module, "ROOTS_PROGRAM")):
+    # Matched by file name on a module some test loaded; conftest itself
+    # neither loads nor names a path to pbtest (#2582).
+    filename = Path(getattr(module, "__file__", "") or "")
+    if (filename.stem, filename.suffix) == ("pbtest", ".py") and hasattr(module, "ROOTS_PROGRAM"):
         # Carried programs execute in another interpreter. Repoint their
         # registry too, without adding an action-controlled runtime override.
         assign(module, "ROOTS_PROGRAM", module.ROOTS_PROGRAM +
@@ -550,7 +582,9 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         _isolate_pbtest_scratch_registry(module, root, setattr)
         stem = Path(getattr(module, "__file__", "") or "").stem
         if hasattr(module, "configured_store"):
-            from prismabuild.submission_frontend import store_for
+            # A module that defines ``configured_store`` has loaded the
+            # frontend it builds the store with.
+            store_for = sys.modules["prismabuild.submission_frontend"].store_for
             configured = store_for(module.__file__, root=root / "fleet")
             setattr(module, "configured_store", lambda: configured)
         for module_name, attr, sub in LIVE_DEFAULTS:
@@ -560,6 +594,10 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             if isinstance(getattr(module, attr), str):
                 replacement = str(replacement)
             setattr(module, attr, replacement)
+        # Last, so a fixture's patch wins as it did when the fixture ran after
+        # the module was already loaded.
+        for patch in _LOAD_PATCHES.get(module.__name__, ()):
+            patch(module)
     monkeypatch.setattr(importlib.machinery.SourceFileLoader, "exec_module",
                         isolated_import)
     for module in tuple(sys.modules.values()):
@@ -1086,20 +1124,47 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
 @pytest.fixture(autouse=True)
 def _explicit_submission_store(monkeypatch, tmp_path, _off_the_live_store, d38_config):
-    import pbrun
-    from prismabuild import submission
-    from submission_support import repoint_stores
-    from prismabuild.submission_types import FleetStore
+    """One explicit fleet store for every submission entry point the test loads.
+
+    Built from the loaded modules, on first use: only a loaded entry point
+    asks for it, and each one has already loaded ``submission_types``,
+    ``fleet_roster`` and ``runtime_paths``. Without ``pbrun`` loaded, the store
+    reads the runtime root and roster beside the roster file itself, which
+    names the same two that ``pbrun`` takes from its own file. Conftest imports
+    none of these modules (#2582).
+    """
+    from store_repoint import repoint_stores
+
     root = tmp_path / "fleet"
-    store = FleetStore(root, pbrun.RUNTIME_ROOT,
-        pbrun.fleet_roster.Roster.beside(pbrun.__file__),
-        runtime_version=root / "repo" / "RUNTIME_VERSION.json", d38_config_path=d38_config)
-    monkeypatch.setattr(pbrun, "configured_store", lambda: store)
-    from prismabuild import submission_frontend
-    def fixture_store(entrypoint, *, root=store.root):
-        if Path(root) == Path("/mnt/shared/prismabuild-fleet"):
+    built = []
+
+    def configured_store():
+        if not built:
+            pbrun = sys.modules.get("pbrun")
+            entrypoint = pbrun.__file__ if pbrun is not None else str(_FLEET_ROSTER)
+            runtime_root = (pbrun.RUNTIME_ROOT if pbrun is not None else
+                            sys.modules["prismabuild.runtime_paths"].generation_root(entrypoint))
+            FleetStore = sys.modules["prismabuild.submission_types"].FleetStore
+            built.append(FleetStore(
+                root, runtime_root, sys.modules["prismabuild.fleet_roster"].Roster.beside(entrypoint),
+                runtime_version=root / "repo" / "RUNTIME_VERSION.json", d38_config_path=d38_config))
+        return built[0]
+
+    def fixture_store(entrypoint, *, root=_STORE_ROOT):
+        store = configured_store()
+        if root is _STORE_ROOT or Path(root) == Path("/mnt/shared/prismabuild-fleet"):
             root = store.root
-        return FleetStore(root, store.runtime_root, store.roster_path,
-                          runtime_version=store.runtime_version, d38_config_path=store.d38_config_path)
-    monkeypatch.setattr(submission_frontend, "store_for", fixture_store)
-    repoint_stores(monkeypatch, configured_store=lambda: store, store_for=fixture_store)
+        return type(store)(root, store.runtime_root, store.roster_path,
+                           runtime_version=store.runtime_version, d38_config_path=store.d38_config_path)
+
+    def point_store_for(module):
+        if getattr(module, "store_for", None) is not None:
+            monkeypatch.setattr(module, "store_for", fixture_store)
+
+    # The three entry points conftest used to load for every test, patched
+    # whenever the test loads them; any other loaded one gets the sweep below.
+    _when_loaded(monkeypatch, "pbrun",
+                 lambda module: monkeypatch.setattr(module, "configured_store", configured_store))
+    _when_loaded(monkeypatch, "prismabuild.submission_frontend", point_store_for)
+    _when_loaded(monkeypatch, "prismabuild.fleet_submit", point_store_for)
+    repoint_stores(monkeypatch, configured_store=configured_store, store_for=fixture_store)
