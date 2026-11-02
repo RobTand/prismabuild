@@ -28,10 +28,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = 'prismabuild.bazel-gate.v1'
 RESULT = 'gate-result.json'
 
-BAZEL_DIFF_URL = 'https://github.com/Tinder/bazel-diff/releases/download/v42.0.0/bazel-diff_deploy.jar'
-BAZEL_DIFF_SHA256 = '0170b70fe2f24477ab056c11f5c3240d8b45a1dca5ab73ad252c096679c5500c'
-BAZEL_EXPLAIN_URL = 'https://github.com/Tinder/bazel-diff/releases/download/v70.0.2/bazel-diff-rust-linux-amd64'
-BAZEL_EXPLAIN_SHA256 = '44226a1d1d5239abc8bc6158de1f886fcbbf58e44479ec178df8c01e7e32102e'
+BAZEL_DIFF_URL = 'https://github.com/Tinder/bazel-diff/releases/download/v70.0.2/bazel-diff-rust-linux-amd64'
+BAZEL_DIFF_SHA256 = '44226a1d1d5239abc8bc6158de1f886fcbbf58e44479ec178df8c01e7e32102e'
 
 # A change to any of these can move every target: test everything. Patterns
 # without '/' name root files. The selector's evidence code decides the graph.
@@ -84,14 +82,14 @@ def needs_no_diff(changed, deleted, used_sources):
     return not deleted and all(irrelevant(path) and path not in used_sources for path in changed)
 
 
-def diff_commands(java, jar, root, bazel, base_hashes, head_hashes, impacted):
-    """bazel-diff v42 command lines: a hash generator, then the impacted query."""
+def diff_commands(binary, root, bazel, base_hashes, head_hashes, impacted):
+    """bazel-diff v70.0.2 command lines: a hash generator, then the impacted query."""
     def generate(output):
-        return [str(java), '-jar', str(jar), 'generate-hashes', '--workspacePath', str(root),
+        return [str(binary), 'generate-hashes', '--workspacePath', str(root),
                 '--bazelPath', str(bazel), '--excludeExternalTargets', '--includeTargetType',
                 '--depEdgesFile', str(Path(output).with_name(Path(output).stem + '-deps.json')),
                 str(output)]
-    return generate, [str(java), '-jar', str(jar), 'get-impacted-targets',
+    return generate, [str(binary), 'get-impacted-targets',
                       '--workspacePath', str(root), '--bazelPath', str(bazel),
                       '--targetType', 'Rule', '--startingHashes', str(base_hashes),
                       '--finalHashes', str(head_hashes), '--output', str(impacted)]
@@ -211,7 +209,7 @@ def module_from(name, path):
 
 
 def source_edges(edges, rows):
-    """Restore source inputs omitted by bazel-diff v42, using Bazel metadata."""
+    """Attach source inputs and library ownership from Bazel metadata."""
     sources = {canonical_label(row['sourceFile']['name']) for row in rows if 'sourceFile' in row
                and canonical_label(row['sourceFile']['name']).startswith('//')}
     result, owners = {node: set(deps) for node, deps in edges.items()}, {}
@@ -314,21 +312,13 @@ class Workspace:
             return
         impact = module_from('graph_impact_for_gate', ROOT / 'tools/ci/graph_impact.py')
         fanout = module_from('import_fanout_for_gate', ROOT / 'tools/ci/import_fanout.py')
-        jar = Path(tempfile.gettempdir(), 'bazel-diff-v42.0.0.jar')
-        if not jar.exists() or bazel_diff_digest(jar.read_bytes()) != BAZEL_DIFF_SHA256:
-            with urllib.request.urlopen(BAZEL_DIFF_URL, timeout=120) as response:
-                data = response.read()
-            if bazel_diff_digest(data) != BAZEL_DIFF_SHA256:
-                raise GateError('bazel-diff jar checksum mismatch')
-            jar.write_bytes(data)
-        self.diff_java = str(Path(self.run(self.bazel, 'info', 'java-home').strip(), 'bin/java'))
-        self.diff_jar = jar
+        binary = self.diff_tool()
         self.graph_directory = tempfile.TemporaryDirectory(prefix='graph-impact-')
         directory = Path(self.graph_directory.name)
         self.hashes = {name: directory / f'{name}.json' for name in ('base', 'head')}
         self.deps = {name: directory / f'{name}-deps.json' for name in ('base', 'head')}
         self.impacted_path = directory / 'impacted.txt'
-        generate, self.impact_command = diff_commands(self.diff_java, jar, self.root, self.bazel,
+        generate, self.impact_command = diff_commands(binary, self.root, self.bazel,
                                                        self.hashes['base'], self.hashes['head'],
                                                        self.impacted_path)
         self.snapshots, self.graph_baselines, self.graph_allowlists, self.graph_imports = {}, {}, {}, {}
@@ -402,21 +392,21 @@ class Workspace:
         self.run(*self.impact_command)
         return {canonical_label(line) for line in self.impacted_path.read_text().split() if line}
 
-    def explain_tool(self):
-        """v70 reads v42 hashes; it is used only for native explanations."""
-        binary = Path(tempfile.gettempdir(), 'bazel-diff-explain-v70.0.2-linux-amd64')
-        if not binary.exists() or bazel_diff_digest(binary.read_bytes()) != BAZEL_EXPLAIN_SHA256:
-            with urllib.request.urlopen(BAZEL_EXPLAIN_URL, timeout=120) as response:
+    def diff_tool(self):
+        """One checksum-pinned native tool for generation, selection and blame."""
+        binary = Path(tempfile.gettempdir(), 'bazel-diff-v70.0.2-linux-amd64')
+        if not binary.exists() or bazel_diff_digest(binary.read_bytes()) != BAZEL_DIFF_SHA256:
+            with urllib.request.urlopen(BAZEL_DIFF_URL, timeout=120) as response:
                 data = response.read()
-            if bazel_diff_digest(data) != BAZEL_EXPLAIN_SHA256:
-                raise GateError('bazel-diff explain binary checksum mismatch')
+            if bazel_diff_digest(data) != BAZEL_DIFF_SHA256:
+                raise GateError('bazel-diff binary checksum mismatch')
             binary.write_bytes(data)
         binary.chmod(0o755)
         return str(binary)
 
     def explain(self, target):
         try:
-            output = self.run(self.explain_tool(), 'explain',
+            output = self.run(self.diff_tool(), 'explain',
                               '-sh', str(self.hashes['base']), '-fh', str(self.hashes['head']),
                               '-d', str(self.deps['head']), '--target', target, '--format', 'mermaid')
         except (GateError, OSError) as error:

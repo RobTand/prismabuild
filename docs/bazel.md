@@ -317,8 +317,8 @@ selection falls back to all tests. `graph_impact` in `gate-result.json` records
 U, LOC-weighted U, every test's source reach count, reach percentiles, SCC members,
 added edges and failures. The log always prints one summary line.
 
-bazel-diff v42's `--depEdgesFile` omits source files. The adapter therefore runs
-one batched `kind("source file", deps(tests(//...)))` query per revision with
+The original v42 source-edge probe found no source files in `--depEdgesFile`.
+The adapter supplements the dependency file with one batched `kind("source file", deps(tests(//...)))` query per revision with
 `--output=streamed_jsonproto`, plus one rule-metadata query to attach those
 files to their consuming rules. Reach counts repository source-file labels,
 including declared data. External repository labels are excluded. The test
@@ -337,10 +337,11 @@ adds `graph_impact` limits. U and LOC-weighted U have a tolerance of one
 percentage point. The reach budget is the p90, rounded up. Changed tests
 include tests whose own source fingerprint, library imports or direct dependencies changed. Every SCC
 that grows or merges fails, even when the largest SCC is unchanged. Every
-failure includes native `bazel-diff explain --format mermaid` output. Generation
-and selection keep the existing v42 JAR. Explanations alone use a URL- and
-SHA-256-pinned v70.0.2 binary, downloaded only on a failure. Its v42 input
-compatibility is verified by the real-graph proof. The gate runs on amd64
+failure includes native `bazel-diff explain --format mermaid` output.
+Generation, selection and explanations all use the same URL- and
+SHA-256-pinned bazel-diff v70.0.2 native binary. Historical selection-parity
+proofs compare its complete impacted Rule sets with v42 on two ranges.
+The gate runs on amd64
 Remote Bazel runners, including for arm64 test actions.
 
 Gains beyond the U tolerance, a smaller SCC maximum or a lower p90 must be
