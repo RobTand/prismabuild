@@ -30,6 +30,14 @@ To run less, replace `//...` with one test file's target, such as
 `//tests:test_core`. Read the verdict from the command's exit status and the
 invocation it links, not from the start message.
 
+Each remote test runs a private copy of the Python interpreter, on amd64 and
+arm64. Executors hardlink inputs from a shared cache; other actions linking or
+unlinking the shared interpreter change its ctime while PrismaBuild hashes it,
+even when its contents stay the same. A private interpreter keeps this metadata
+independent. `test_proof_runtime_observation`, which requires a root-owned
+interpreter, runs in the hosted lane because the private copy belongs to the
+remote test user.
+
 Use local Bazel only for short generation and query commands. Pass
 `--max_idle_secs=300` (for example `bazel --max_idle_secs=300 query ...`) so
 the server doesn't stay on a fleet host.

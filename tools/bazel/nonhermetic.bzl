@@ -310,8 +310,8 @@ NONHERMETIC = {
         reason = "the produced spool refuses a tmpfs root; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4.",
     ),
     "//tests:test_proof_runtime_observation": struct(
-        tags = ["hosted-arm64"],
-        reason = "it needs the running interpreter root-owned, as on hosted runners and amd64 executors; on arm64 executors each test runs a private copy owned by the test user (tools/bazel/runtime.py).",
+        tags = ["hosted"],
+        reason = "it needs the running interpreter root-owned, as on hosted runners; on remote executors each test runs a private copy owned by the test user (tools/bazel/runtime.py).",
     ),
     "//tests:test_publish_runtime": struct(
         tags = ["runner"],

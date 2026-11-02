@@ -3,7 +3,6 @@ import fcntl
 import json
 import os
 from pathlib import Path
-import platform
 import shutil
 import subprocess
 import sys
@@ -117,13 +116,12 @@ def prepare_remote_test(root):
     # Bazel dependencies for children that clear their environment.
     environment = Path(os.environ['TEST_TMPDIR']).resolve() / 'python-environment'
     if not (environment / 'pyvenv.cfg').exists():
-        # arm64 executors hardlink inputs from a shared file cache, and the
+        # Executors hardlink inputs from a shared file cache, and the
         # runfiles interpreter's ctime moves while other actions link and
         # unlink it; PrismaBuild refuses an action executable that changes
-        # while it is read. There each test runs a private copy. Elsewhere it
-        # runs the root-owned original, as hosted runners do.
-        copy = platform.machine() == 'aarch64'
-        venv.EnvBuilder(with_pip=False, symlinks=not copy).create(environment)
+        # while it is read. Each test therefore runs a private copy on both
+        # architectures, independent of other actions' cache activity.
+        venv.EnvBuilder(with_pip=False, symlinks=False).create(environment)
     site = next(environment.glob('lib/python*/site-packages'))
     paths = [str(Path(path).resolve()) for path in sys.path if path]
     (site / 'bazel-runfiles.pth').write_text('\n'.join(paths) + '\n')
