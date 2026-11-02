@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -125,18 +128,35 @@ def test_short_scratch_climbs_to_the_top_writable_directory_of_the_same_filesyst
         scratch.rmdir()
 
 
-@pytest.mark.parametrize('machine, copied', [('aarch64', True), ('x86_64', False)])
-def test_arm64_tests_read_their_own_copy_of_the_interpreter(tmp_path, monkeypatch, machine, copied):
-    # arm64 executors' shared file cache moves the runfiles interpreter's ctime
-    # while other actions link and unlink it; elsewhere the root-owned original stays.
+@pytest.mark.parametrize('machine', ['aarch64', 'x86_64'])
+def test_tests_read_a_private_copy_of_the_interpreter(tmp_path, monkeypatch, machine):
+    # Input-cache hardlinks change metadata while other actions link and unlink
+    # the same interpreter. Every architecture needs an independent inode.
+    original = Path(getattr(sys, '_base_executable', sys.executable)).resolve()
     monkeypatch.setenv('TEST_TMPDIR', str(tmp_path))
     monkeypatch.delenv('PB_BAZEL_LANE', raising=False)
     monkeypatch.setattr(sys, 'executable', sys.executable)
     monkeypatch.setattr('platform.machine', lambda: machine)
+    copies = []
+    copyfile = runtime.shutil.copyfile
+
+    def measured_copy(source, destination, *args, **kwargs):
+        started = time.perf_counter()
+        result = copyfile(source, destination, *args, **kwargs)
+        copies.append({'bytes': Path(destination).stat().st_size,
+                       'seconds': time.perf_counter() - started})
+        return result
+
+    monkeypatch.setattr(runtime.shutil, 'copyfile', measured_copy)
     scratch, environment = runtime.prepare_remote_test(tmp_path)
     scratch.rmdir()
     python = tmp_path / 'python-environment/bin/python'
-    assert Path(sys.executable) == python and python.is_symlink() != copied
+    print('PB_INTERPRETER_COPY ' + json.dumps({'machine': machine, 'copies': copies}))
+    assert Path(sys.executable) == python
+    assert not python.is_symlink()
+    assert not python.samefile(original)
+    with original.open('rb') as source, python.open('rb') as private:
+        assert hashlib.file_digest(private, 'sha256').digest() == hashlib.file_digest(source, 'sha256').digest()
     assert subprocess.run([python, '-c', 'import json'], env=environment, check=False).returncode == 0
 
 
