@@ -8,6 +8,7 @@ from test_gang_reservation_1517 import CAPACITY, TIERS, gang_fleet
 from test_measurement_drains_gpu_backfill import (
     cpu_sample, fleet, gpu_sample,
 )
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 
 def unknown(sample):

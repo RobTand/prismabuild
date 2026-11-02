@@ -47,6 +47,7 @@ from prismabuild import manifest_promotion  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from prismabuild import staged_path
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 ROOT = Path(__file__).resolve().parents[1]
 TIER = "prismabuild-stage:sparklina"

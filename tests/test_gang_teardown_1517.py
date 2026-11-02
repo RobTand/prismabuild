@@ -17,6 +17,7 @@ from prismabuild import _gang, immutable_files, pool
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 
 def _both_claimed(queue, publish, finish, gclaim, members, **kwargs):

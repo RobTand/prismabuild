@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from prismabuild import contracts, core as pb, movement_actions, pool
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 
 DEMAND = {"cpu": 1, "mem_gb": 1}
