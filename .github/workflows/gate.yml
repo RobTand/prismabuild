@@ -176,7 +176,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          sparse-checkout: tools/ci
+          # The aggregate reads tools/bazel/nonhermetic.bzl for the hosted lane's files.
+          sparse-checkout: |
+            tools/ci
+            tools/bazel
           persist-credentials: false
       - name: Require Bazel's verdict, scopes and the hosted lane
         env:
@@ -194,7 +197,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          sparse-checkout: tools/ci
+          # The aggregate reads tools/bazel/nonhermetic.bzl for the hosted lane's files.
+          sparse-checkout: |
+            tools/ci
+            tools/bazel
           persist-credentials: false
       - name: Require Bazel's verdict, scopes and the hosted lane
         env:
