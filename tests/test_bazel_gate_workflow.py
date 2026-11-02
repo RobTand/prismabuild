@@ -101,3 +101,21 @@ def test_the_queue_stays_serial_with_scopes_and_its_tl3_route():
     names = [rule['name'] for rule in MERGIFY['pull_request_rules']]
     assert 'Queue TL3-approved PRs' in names
     assert 'direct_merge' not in yaml.safe_dump(MERGIFY)
+
+
+def test_every_artifact_upload_requires_a_successful_secret_scan():
+    groups = [job['steps'] for job in JOBS.values()] + [HOSTED_LANE['runs']['steps']]
+    uploads = 0
+    for group in groups:
+        for index, step in enumerate(group):
+            if not step.get('uses', '').startswith('actions/upload-artifact@'):
+                continue
+            uploads += 1
+            scan = group[index - 1]
+            assert scan['if'] == 'always()'
+            assert scan.get('continue-on-error', False) is False
+            assert 'python3 tools/ci/check_no_secret_leak.py ' + step['with']['path'] in scan['run']
+            assert f"steps.{scan['id']}.outcome == 'success'" in step['if']
+            # Pending PrismaQuant's published SHA; a missing scanner blocks uploads.
+            assert 'Pending PrismaQuant' in scan['run']
+    assert uploads == 3
