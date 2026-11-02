@@ -280,11 +280,13 @@ def test_rebuilt_sampler_keeps_local_io_after_shared_copy_failure(tmp_path, monk
     """A failed diagnostic copy must not discard the last local accounting."""
     shared = tmp_path / "shared.json"
     local = tmp_path / "local.json"
+    # A live PID makes an unstubbed membership recheck expose real-/proc dependence.
+    pid = os.getpid()
     group = _fake_cgroup(tmp_path / "cgroup", usage_usec=1, user_usec=1,
-                         system_usec=0, pids=[4242])
-    monkeypatch.setattr(resource_scope, "scope_pids", lambda _, **kw: [4242])
+                         system_usec=0, pids=[pid])
+    monkeypatch.setattr(resource_scope, "scope_pids", lambda _, **kw: [pid])
     monkeypatch.setattr(resource_scope, "read_process_io", lambda _: (
-        "4242:1", 1, {name: 9 * MIB for name in resource_scope.IO_COUNTERS}))
+        f"{pid}:1", 1, {name: 9 * MIB for name in resource_scope.IO_COUNTERS}))
     first = resource_scope.ResourceScope(
         "a" * 64, "b" * 32, 1 << 30, shared, authority_path=local)
     first.cgroup_path = group
@@ -306,6 +308,7 @@ def test_rebuilt_sampler_keeps_local_io_after_shared_copy_failure(tmp_path, monk
     # The process has gone by the final sample. Its bytes survive in local
     # authority, while the shared copy never learned about them.
     monkeypatch.setattr(resource_scope, "scope_pids", lambda _, **kw: [])
+    monkeypatch.setattr(resource_scope, "_process_in_scope", lambda *a: False)
     second = resource_scope.ResourceScope(
         "a" * 64, "b" * 32, 1 << 30, shared, authority_path=local)
     second.cgroup_path = group
