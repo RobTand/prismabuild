@@ -147,9 +147,9 @@ class BepStream:
         self.pending = b''
 
     def feed(self, data, *, final=False):
-        self.pending += data
-        while b'\n' in self.pending:
-            line, self.pending = self.pending.split(b'\n', 1)
+        lines = (self.pending + data).split(b'\n')
+        self.pending = lines.pop()
+        for line in lines:
             if line.strip():
                 yield json.loads(line)
         if final and self.pending.strip():
@@ -168,14 +168,14 @@ def update_bep(run, event):
     if 'started' in identity:
         run['invocation'] = event.get('started', {}).get('uuid')
     attempt = identity.get('testResult')
-    if attempt:
+    if attempt and 'testResult' in event:
         # A failed attempt remains visible if cancellation prevents its summary.
         label = canonical_label(attempt['label'])
         status = event.get('testResult', {}).get('status', 'NO_STATUS')
         if status != 'PASSED':
             run['statuses'][label] = status
     summary = identity.get('testSummary')
-    if summary:
+    if summary and 'testSummary' in event:
         run['statuses'][canonical_label(summary['label'])] = event.get(
             'testSummary', {}).get('overallStatus', 'NO_STATUS')
     if run['error'] is None:
@@ -222,7 +222,7 @@ class FailFast:
             if action:
                 self.pending.add(action)
         attempt = identity.get('testResult')
-        if attempt:
+        if attempt and 'testResult' in event:
             self.ran.add(canonical_label(attempt['label']))
         if self.failure or self.mode in ('main', 'off'):
             return
@@ -232,7 +232,7 @@ class FailFast:
             if not self.budget_marker(label, event):
                 reason = 'FAILED'
         for key, payload in [('targetCompleted', 'completed'), ('actionCompleted', 'action')]:
-            if key in identity and not event.get(payload, {}).get('success', False):
+            if key in identity and payload in event and not event[payload].get('success', False):
                 # Bazel's failed TestRunner action is classified by testResult,
                 # where TIMEOUT and the budget marker are available.
                 if event.get(payload, {}).get('type') != 'TestRunner':
