@@ -315,7 +315,7 @@ def regressions(live: dict, baseline: dict) -> list[str]:
     """What the live graph adds to the baseline. Each one fails the ratchet."""
     found = []
     for key in RATCHETED_LISTS:
-        for entry in sorted(set(live[key]) - set(baseline[key])):
+        for entry in sorted(set(live[key]).difference(baseline[key])):
             found.append(f'new {key} entry: {entry}')
     for key, tolerance in RATCHETED_FIGURES.items():
         if live[key] > baseline[key] + tolerance:
@@ -327,7 +327,7 @@ def stale_entries(live: dict, baseline: dict) -> list[str]:
     """Gains the baseline does not record yet. Each one must shrink it in the same change."""
     found = []
     for key in RATCHETED_LISTS:
-        for entry in sorted(set(baseline[key]) - set(live[key])):
+        for entry in sorted(set(baseline[key]).difference(live[key])):
             found.append(f'{key} entry is gone: {entry}')
     for key, tolerance in RATCHETED_FIGURES.items():
         if live[key] < baseline[key] - tolerance:
