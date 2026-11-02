@@ -118,6 +118,10 @@ def test_recovery_main_result_bytes_and_nonfinite_refusal_match_main(monkeypatch
 
 
 def test_gang_main_result_bytes_match_main(monkeypatch, capsys, tmp_path):
+    # pbgang imports prismabuild.submission lazily, and submission subclasses
+    # pool.PoolQueue as it loads. Load it before PoolQueue is patched below, or
+    # it subclasses the patch. conftest no longer imports it for every test.
+    importlib.import_module("prismabuild.submission")
     module = fleet_module("pbgang")
     historical_pool = SimpleNamespace(**vars(module.pool))
     historical_pool.PoolQueue = lambda path: SimpleNamespace(
