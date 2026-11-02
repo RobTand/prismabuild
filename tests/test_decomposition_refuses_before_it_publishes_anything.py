@@ -19,7 +19,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-import conftest  # noqa: E402
+import decomposition_support  # noqa: E402
 from prismabuild import decomposition as dc  # noqa: E402
 
 
@@ -71,7 +71,7 @@ def _common(**overrides: object) -> dict:
 
 
 def _plan(request: dict) -> dict:
-    return dc.build_plan(request, conftest.frozen_common(request))
+    return dc.build_plan(request, decomposition_support.frozen_common(request))
 
 
 def _request(**overrides: object) -> dict:

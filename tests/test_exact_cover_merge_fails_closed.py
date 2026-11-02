@@ -19,7 +19,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-import conftest  # noqa: E402
+import decomposition_support  # noqa: E402
 from prismabuild import decomposition as dc  # noqa: E402
 
 
@@ -86,7 +86,7 @@ def _manifests(request: dict, plan: dict) -> list[dict]:
 @pytest.fixture
 def planned() -> tuple[dict, dict, list[dict]]:
     request = _request()
-    plan = dc.build_plan(request, conftest.frozen_common(request))
+    plan = dc.build_plan(request, decomposition_support.frozen_common(request))
     assert len(plan["partitions"]) >= 3, "fixture needs several children"
     return request, plan, _manifests(request, plan)
 
@@ -166,7 +166,7 @@ def test_a_manifest_from_another_plan_is_refused(planned) -> None:
 
     request, plan, manifests = planned
     request_88 = _request(count=88)
-    other = dc.build_plan(request_88, conftest.frozen_common(request_88))
+    other = dc.build_plan(request_88, decomposition_support.frozen_common(request_88))
     manifests[0] = {**manifests[0], "plan_key": other["plan_key"]}
     with pytest.raises(dc.ActionContractError, match="reports plan"):
         dc.verify_exact_cover(request, plan, manifests)
@@ -175,7 +175,7 @@ def test_a_manifest_from_another_plan_is_refused(planned) -> None:
 def test_a_manifest_from_another_parent_is_refused(planned) -> None:
     request, plan, manifests = planned
     request_88 = _request(count=88)
-    other = dc.build_plan(request_88, conftest.frozen_common(request_88))
+    other = dc.build_plan(request_88, decomposition_support.frozen_common(request_88))
     manifests[0] = {**manifests[0], "parent_key": other["parent_key"]}
     with pytest.raises(dc.ActionContractError, match="reports parent"):
         dc.verify_exact_cover(request, plan, manifests)

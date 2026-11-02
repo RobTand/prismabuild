@@ -9,6 +9,7 @@ from prismabuild import _gang, fleet_roster, pool
 from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 from test_gang_fence_backfill import waiting
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 
 @pytest.fixture
