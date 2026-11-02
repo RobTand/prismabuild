@@ -43,6 +43,7 @@ class GuestFleet:
 
     def publish(self, digit, *, gpu=False, cpu=2, priority=0, **fields):
         key = digit * 64
+        self.clock.advance(.001)
         self.queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
             worker_script="/w.py", resources={"cpu": cpu, "mem_gb": cpu,
                                                **({"gpu": 1} if gpu else {})},
@@ -107,6 +108,7 @@ def test_victims_are_lowest_priority_then_youngest_and_converge(guest_fleet):
         fleet.publish(digit, priority=priority)
         row = fleet.claim()
         guests.append(row)
+    assert guests[1]["claimed_unix"] < guests[2]["claimed_unix"]
     gpu = fleet.publish("d", gpu=True, cpu=8, priority=-20)
     for victim in (guests[2], guests[1], guests[0]):
         assert fleet.claim() is None
