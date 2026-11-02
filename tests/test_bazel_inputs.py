@@ -125,6 +125,21 @@ def test_short_scratch_climbs_to_the_top_writable_directory_of_the_same_filesyst
         scratch.rmdir()
 
 
+@pytest.mark.parametrize('machine, copied', [('aarch64', True), ('x86_64', False)])
+def test_arm64_tests_read_their_own_copy_of_the_interpreter(tmp_path, monkeypatch, machine, copied):
+    # arm64 executors' shared file cache moves the runfiles interpreter's ctime
+    # while other actions link and unlink it; elsewhere the root-owned original stays.
+    monkeypatch.setenv('TEST_TMPDIR', str(tmp_path))
+    monkeypatch.delenv('PB_BAZEL_LANE', raising=False)
+    monkeypatch.setattr(sys, 'executable', sys.executable)
+    monkeypatch.setattr('platform.machine', lambda: machine)
+    scratch, environment = runtime.prepare_remote_test(tmp_path)
+    scratch.rmdir()
+    python = tmp_path / 'python-environment/bin/python'
+    assert Path(sys.executable) == python and python.is_symlink() != copied
+    assert subprocess.run([python, '-c', 'import json'], env=environment, check=False).returncode == 0
+
+
 def test_runner_lane_tests_need_a_git_checkout(tmp_path):
     checkout = tmp_path / 'checkout'
     (checkout / '.git').mkdir(parents=True)
