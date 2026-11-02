@@ -129,8 +129,8 @@ reason:
   runner, exactly as the old gate did, whenever Bazel's selection impacts it.
   Parity counts it as run.
 - **`hosted-arm64`:** BuildBuddy's arm64 executors can't host the test. Most
-  of these need a disk: the executors keep every writable path on an unsized
-  tmpfs, which PrismaBuild's disk checks refuse and `statvfs` reports as 0
+  of these need a disk: most arm64 executor hosts keep every writable path on
+  an unsized tmpfs, which PrismaBuild's disk checks refuse and `statvfs` reports as 0
   bytes free, and Firecracker isolation, which would give a disk, fails to
   start there. The executors' speed also varies enough to push a test past its
   time budget. The test runs on amd64 executors as usual. After a merge, the hosted lane runs it on
