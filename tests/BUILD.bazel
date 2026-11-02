@@ -57456,6 +57456,28 @@ pb_py_library(
 )
 
 pb_py_test(
+    name = "test_graph_impact",
+    path = "tests/test_graph_impact.py",
+    library = ":test_graph_impact_lib",
+    deps = [
+        ":conftest",
+    ],
+    timeout = "moderate",
+)
+
+pb_py_library(
+    name = "test_graph_impact_lib",
+    srcs = [
+        "test_graph_impact.py",
+    ],
+    data = [
+        "//:conftest.py",
+        "conftest.py",
+        "test_graph_impact.py",
+    ],
+)
+
+pb_py_test(
     name = "test_heartbeat_liveness_2230",
     path = "tests/test_heartbeat_liveness_2230.py",
     library = ":test_heartbeat_liveness_2230_lib",

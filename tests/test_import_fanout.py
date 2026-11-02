@@ -205,3 +205,30 @@ def test_the_import_fanout_does_not_regress(live_fanout):
 def test_the_import_fanout_baseline_records_every_gain(live_fanout):
     assert not fanout.stale_entries(live_fanout, baseline()), (
         'record the gain: python tools/ci/import_fanout.py --write-baseline')
+
+
+def test_bazel_library_edges_preserve_the_two_import_rules():
+    edges = {'//tests:a_lib': {'//tests:a.py', '//tests:b_lib'},
+             '//tests:b_lib': {'//tests:test_b.py'},
+             '//tests:conftest': {'//tests:conftest.py', '//src/prismabuild:core'},
+             '//src/prismabuild:core': {'//src/prismabuild:core.py'},
+             '//tests:test_a': {'//tests:a_lib', '//tests:b_lib'}}
+    owners = {'//tests:a_lib': {'//tests:a.py'}, '//tests:b_lib': {'//tests:test_b.py'},
+              '//tests:conftest': {'//tests:conftest.py'},
+              '//src/prismabuild:core': {'//src/prismabuild:core.py'}}
+    imports = fanout.bazel_imports(edges, owners)
+    assert imports == {'test_to_test_imports': ['tests/a.py -> tests/test_b.py'],
+                       'conftest_source_imports': ['tests/conftest.py -> src/prismabuild/core.py']}
+    before = {key: [] for key in imports}
+    errors = fanout.bazel_regressions(imports, before)
+    assert errors == ['new conftest_source_imports entry: tests/conftest.py -> src/prismabuild/core.py',
+                      'new test_to_test_imports entry: tests/a.py -> tests/test_b.py']
+
+
+def test_bazel_data_edges_and_test_target_ownership_are_not_imports():
+    edges = {'//tests:a_lib': {'//tests:test_b.py'},
+             '//tests:test_a': {'//tests:a_lib', '//tests:b_lib'},
+             '//tests:b_lib': {'//tests:test_b.py'}}
+    assert fanout.bazel_imports(edges, {'//tests:a_lib': {'//tests:test_a.py'},
+                                       '//tests:b_lib': {'//tests:test_b.py'}}) == {
+        'test_to_test_imports': [], 'conftest_source_imports': []}
