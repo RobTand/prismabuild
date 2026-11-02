@@ -325,38 +325,45 @@ including declared data. External repository labels are excluded. The test
 population is `tests(//...)` minus `manual`. Cycles already collapsed into a
 Bazel library remain one graph node; Bazel rejects rule dependency cycles.
 
-`tools/ci/graph_impact.py` is the stdlib core to vendor unchanged in other repos.
-`Snapshot`, `measure` and `compare` accept graph facts without discovering
-Python imports. `import_fanout.py` is a thin adapter that checks the two import restrictions
-using library edges from the same graph. It replaces the old imports/gate
-evidence report.
-Data references and test wrappers do not count as library imports.
+`tools/ci/graph_impact.py` is vendored byte-identically from PrismaQuant commit
+`75aff74ae1351a279eff79dd45947623d956faa4`. A test pins SHA-256
+`44b136779589d8ce26d3f321f714120e071405e77b913fc76e6fc2cefc751e19`.
+Its `measure` and `compare` functions accept graph facts. PrismaBuild keeps
+the default strict test-to-test policy without an override. The gate supplies
+each test's Bazel package, the base maximum reach per package, and added and
+removed `rule_to_rule` and `rule_to_source` edges classified by Bazel kinds.
+`import_fanout.py` remains a thin compatibility wrapper. The gate and wrapper use the
+pure `bazel_imports.py` adapter on the same library edges. This keeps the
+checks independent of gate configuration inputs and the old scanner path. Data references and
+test wrappers are not library imports.
 
-The existing `tests/fixtures/import_fanout_baseline.json` keeps its history and
-adds `graph_impact` limits. U and LOC-weighted U have a tolerance of one
-percentage point. The reach budget is the p90, rounded up. Changed tests
-include tests whose own source fingerprint, library imports or direct dependencies changed. Every SCC
-that grows or merges fails, even when the largest SCC is unchanged. Every
-failure includes native `bazel-diff explain --format mermaid` output.
-Generation, selection and explanations all use the same URL- and
-SHA-256-pinned bazel-diff v70.0.2 native binary. Historical selection-parity
-proofs compare its complete impacted Rule sets with v42 on two ranges.
-The gate runs on amd64
-Remote Bazel runners, including for arm64 test actions.
+New or changed tests may inherit their package's base maximum reach. New
+packages use the global p90 budget; edited tests may keep their own base
+reach. A structural regression adds edges that increase existing-source
+fanout or existing-test reach. New tests and sources that inherit their
+package's reach are reported without failing. U and LOC-weighted U are trend
+figures: explicit baseline writes keep their minima, and their rise never
+fails a PR. SCC maximum and edge rules still fail. Every growing, merged or
+entirely new cycle fails even when an unrelated larger cycle masks the maximum.
 
-Gains beyond the U tolerance, a smaller SCC maximum or a lower p90 must be
-recorded. Download the graph artifacts from the BuildBuddy gate invocation,
-then update the baseline with:
+Every failure includes native `bazel-diff explain --format mermaid` output.
+Generation, selection and explanations use the same URL- and SHA-256-pinned
+bazel-diff v70.0.2 native binary. Historical proofs compare its complete impacted
+Rule sets with v42 on two ranges. The gate runs on amd64 Remote Bazel runners,
+including for arm64 test actions.
+
+The existing `tests/fixtures/import_fanout_baseline.json` keeps its original
+history and the recorded graph minima. A smaller SCC maximum must be recorded.
+The graph-only mode executes generation and queries without running test or
+build populations. On an admitted runner, update the baseline with:
 
 ```sh
-python tools/ci/graph_impact.py \
-  --base-deps base-deps.json --base-metadata base-metadata.json \
-  --head-deps head-deps.json --head-metadata head-metadata.json \
-  --baseline tests/fixtures/import_fanout_baseline.json --write-baseline
+python tools/ci/bazel_gate.py graph --base BASE_SHA --head HEAD_SHA --write-baseline
 ```
 
-The writer refuses regressions and keeps each recorded minimum, including
-when a rise is within tolerance. The gate also refuses an increased or deleted
-limit compared with the base revision. Exceptions are keyed by check, such as
-`reach://tests:test_name`, in `tests/fixtures/graph_impact_allowlist.json`.
-Every entry needs a reason, and a PR may only remove existing entries.
+The writer refuses structural regressions, preserves baseline history and emits the updated
+baseline as an artifact. A PR may only tighten the baseline. Exceptions such as
+`reach://tests:test_name` or `scc:<comma-separated sorted members>` live in
+`tests/fixtures/graph_impact_allowlist.json`. Each entry needs a reason, and a PR
+may only remove existing entries. Run graph-only development work on BuildBuddy
+with `--jobs=16`, or through PrismaBuild admission on fleet machines.

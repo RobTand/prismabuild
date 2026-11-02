@@ -208,6 +208,11 @@ def module_from(name, path):
     return module
 
 
+_import_rules = module_from('bazel_import_rules_for_gate', ROOT / 'tools/ci/bazel_imports.py')
+bazel_imports = _import_rules.bazel_imports
+bazel_regressions = _import_rules.bazel_regressions
+
+
 def source_edges(edges, rows):
     """Attach source inputs and library ownership from Bazel metadata."""
     sources = {canonical_label(row['sourceFile']['name']) for row in rows if 'sourceFile' in row
@@ -232,22 +237,77 @@ def source_edges(edges, rows):
     return result, owners
 
 
+def typed_edges(edges, rules, sources):
+    """Classify only queried Bazel rules and source files, including extensionless ones."""
+    return {kind: {(node, dep) for node, deps in edges.items() if node in rules
+                   for dep in deps if dep in targets}
+            for kind, targets in [('rule_to_rule', rules), ('rule_to_source', sources)]}
+
+
+def graph_policy_inputs(before, after, old_edges, new_edges):
+    maxima = {}
+    for test, files in before['reach'].items():
+        package = before['test_packages'][test]
+        maxima[package] = max(maxima.get(package, 0), len(files))
+    return {'test_packages': after['test_packages'], 'base_package_max_reach': maxima,
+            'edge_diff': {direction: {kind: [list(edge) for edge in sorted(left[kind] - right[kind])]
+                                      for kind in ('rule_to_rule', 'rule_to_source')}
+                          for direction, left, right in [('added', new_edges, old_edges),
+                                                         ('removed', old_edges, new_edges)]}}
+
+
 def graph_metrics(measured):
-    """Keep the gate record small; full closures can be read from the graph artifacts."""
-    return {**{key: value for key, value in measured.items() if key not in ('reach', 'sccs')},
+    """Keep closures, raw edges and source weights in graph artifacts, not the gate record."""
+    return {**{key: value for key, value in measured.items()
+               if key not in ('reach', 'components', 'edges', 'loc', 'edge_diff',
+                              'test_packages', 'base_package_max_reach')},
             'reach_sizes': {test: len(files) for test, files in measured['reach'].items()},
-            'cycles': [group for group in measured['sccs'] if len(group) > 1]}
+            'cycles': [group for group in measured['components'] if len(group) > 1]}
+
+
+def graph_baseline(record):
+    """Migrate the original flat graph limits while preserving their recorded minima."""
+    if not record or record.get('schema') == 'graph-impact.v1':
+        return record
+    return {'schema': 'graph-impact.v1',
+            'figures': {key: record[key] for key in ('u_pct', 'loc_u_pct', 'scc_max') if key in record},
+            'tolerances': {'u_pct': 1.0, 'loc_u_pct': 1.0, 'scc_max': 0},
+            'reach_budget': record.get('reach_budget'), 'edge_groups': {}}
 
 
 def graph_baseline_errors(current, previous):
+    current, previous = graph_baseline(current), graph_baseline(previous)
     errors = []
     for key in ('u_pct', 'loc_u_pct', 'scc_max', 'reach_budget'):
-        value = current.get(key)
+        value = current.get('reach_budget') if key == 'reach_budget' else current.get('figures', {}).get(key)
+        old = previous.get('reach_budget') if key == 'reach_budget' else previous.get('figures', {}).get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
             errors.append(f'graph baseline needs a finite nonnegative {key}')
-        elif key in previous and value > previous[key]:
-            errors.append(f'graph baseline may only tighten: {key} ({previous[key]} -> {value})')
+        elif old is not None and value > old:
+            errors.append(f'graph baseline may only tighten: {key} ({old} -> {value})')
+    if current.get('test_to_test', 'strict') != 'strict':
+        errors.append('PrismaBuild test_to_test policy must stay strict')
+    if current.get('schema') != 'graph-impact.v1':
+        errors.append('graph baseline schema must be graph-impact.v1')
+    if current.get('tolerances') != {'u_pct': 1.0, 'loc_u_pct': 1.0, 'scc_max': 0}:
+        errors.append('graph baseline tolerances changed')
+    for group, entries in current.get('edge_groups', {}).items():
+        if set(entries) - set(previous.get('edge_groups', {}).get(group, ())):
+            errors.append(f'graph baseline {group} exceptions may only shrink')
     return errors
+
+
+def blame_target(error, head, affected):
+    """Select a reported label; bazel-diff alone explains its dependency paths."""
+    labels = {word.rstrip(')') for word in error.replace(',', ' ').replace(';', ' ').split()
+              if word.startswith('//')}
+    tests = set(head['reach'])
+    nodes = {node for edge in head['edges'] for node in edge}
+    rules = nodes - head['loc'].keys()
+    for candidates in (labels & tests, set(affected), labels & rules, labels & nodes, tests):
+        if candidates:
+            return min(candidates)
+    return '//tools:ci/bazel_gate'
 
 
 class Workspace:
@@ -311,7 +371,6 @@ class Workspace:
         if self.graph_revisions == (base, head):
             return
         impact = module_from('graph_impact_for_gate', ROOT / 'tools/ci/graph_impact.py')
-        fanout = module_from('import_fanout_for_gate', ROOT / 'tools/ci/import_fanout.py')
         binary = self.diff_tool()
         self.graph_directory = tempfile.TemporaryDirectory(prefix='graph-impact-')
         directory = Path(self.graph_directory.name)
@@ -322,7 +381,7 @@ class Workspace:
                                                        self.hashes['base'], self.hashes['head'],
                                                        self.impacted_path)
         self.snapshots, self.graph_baselines, self.graph_allowlists, self.graph_imports = {}, {}, {}, {}
-        self.graph_owners = {}
+        self.graph_owners, self.graph_contents, self.graph_edge_types = {}, {}, {}
         try:
             for name, sha in [('base', base), ('head', head)]:
                 self.checkout(sha)
@@ -355,13 +414,22 @@ class Workspace:
                 contents = {test: {
                     'source': hashes.get(test + '.py'),
                     'imports': library_imports.get(test + '_lib', []),
+                    'deps': sorted(edges[test]),
                 } for test in tests}
                 self.deps[name].write_text(json.dumps({node: sorted(deps) for node, deps in edges.items()}))
-                metadata = {'tests': sorted(tests), 'loc': loc, 'contents': contents}
+                metadata = {'tests': sorted(tests), 'loc': loc, 'contents': contents,
+                            'test_packages': {test: test.rsplit(':', 1)[0] for test in tests}}
                 (directory / f'{name}-metadata.json').write_text(json.dumps(metadata))
-                self.snapshots[name] = impact.Snapshot(edges, {test: {test} for test in tests}, loc, contents)
+                packages = {test: test.rsplit(':', 1)[0] for test in tests}
+                self.snapshots[name] = impact.measure(
+                    *impact.read_deps(self.deps[name], tests, loc, loc=loc), test_packages=packages)
+                self.graph_contents[name] = contents
+                rules = {canonical_label(row['rule']['name']) for row in rule_rows if 'rule' in row}
+                sources = set(loc) | {canonical_label(label) for label, value in hashes.items()
+                                      if isinstance(value, str) and value.startswith('SourceFile#')}
+                self.graph_edge_types[name] = typed_edges(edges, rules, sources)
                 self.graph_owners[name] = owners
-                self.graph_imports[name] = fanout.bazel_imports(edges, owners)
+                self.graph_imports[name] = bazel_imports(edges, owners)
                 baseline = self.root / 'tests/fixtures/import_fanout_baseline.json'
                 self.graph_baselines[name] = json.loads(baseline.read_text())
                 if not isinstance(self.graph_baselines[name].get('graph_impact', {}), dict):
@@ -380,8 +448,11 @@ class Workspace:
             output.mkdir(parents=True, exist_ok=True)
             for path in directory.glob('*.json'):
                 (output / path.name).write_bytes(path.read_bytes())
+        self.graph_inputs = graph_policy_inputs(self.snapshots['base'], self.snapshots['head'],
+                                                self.graph_edge_types['base'], self.graph_edge_types['head'])
+        self.snapshots['head'].update(self.graph_inputs)
         self.graph_revisions = (base, head)
-        self.graph_impact, self.import_fanout = impact, fanout
+        self.graph_impact = impact
 
     def streamed_query(self, expression):
         return [json.loads(line) for line in self.run(self.bazel, 'query', expression,
@@ -413,27 +484,39 @@ class Workspace:
             return f'bazel-diff blame unavailable: {error}'
         return '```mermaid\n' + output.strip() + '\n```'
 
-    def graph_check(self, base, head):
+    def graph_check(self, base, head, *, record_gains=False):
         try:
             self.ensure_graphs(base, head)
             impact = self.graph_impact
             before, after = self.snapshots['base'], self.snapshots['head']
-            previous = self.graph_baselines['base'].get('graph_impact', {})
-            baseline = self.graph_baselines['head'].get('graph_impact', {})
+            previous = graph_baseline(self.graph_baselines['base'].get('graph_impact', {}))
+            baseline = graph_baseline(self.graph_baselines['head'].get('graph_impact', {}))
             policy_errors = graph_baseline_errors(baseline, previous) if baseline else []
             policy_errors += impact.allowlist_errors(self.graph_allowlists['head'], self.graph_allowlists['base'])
-            live = impact.measure(after)
+            live = after
             if not baseline:
-                baseline = impact.baseline_record(impact.measure(before))
+                baseline = impact.baseline_record(before)
                 policy_errors.append('graph impact baseline missing: record graph_impact in import_fanout_baseline.json')
             if graph_baseline_errors(baseline, {}):
-                baseline = impact.baseline_record(impact.measure(before))
-            errors = impact.compare(before, after, baseline, self.graph_allowlists['head'], self.explain)
+                baseline = impact.baseline_record(before)
+            changed = {test for test, fingerprint in self.graph_contents['head'].items()
+                       if fingerprint != self.graph_contents['base'].get(test)}
+            errors = impact.compare(before, after, baseline, changed_tests=changed,
+                                    allowlist=self.graph_allowlists['head'], record_gains=record_gains,
+                                    **self.graph_inputs)
+            affected = sorted(test for test, files in after['reach'].items()
+                              if files != before['reach'].get(test) or test in changed)
+            diagrams = {}
+            for index, error in enumerate(errors):
+                target = blame_target(error, after, affected)
+                if target not in diagrams:
+                    diagrams[target] = self.explain(target)
+                errors[index] = error + '\n' + diagrams[target]
             if policy_errors:
-                target = '//tools:ci/bazel_gate' if '//tools:ci/bazel_gate' in after.edges else next(iter(after.roots))
+                target = next(iter(sorted(after['reach'])), '//tools:ci/bazel_gate')
                 blame = self.explain(target)
                 errors.extend(error + '\n' + blame for error in policy_errors)
-            for error in self.import_fanout.bazel_regressions(self.graph_imports['head'], self.graph_imports['base']):
+            for error in bazel_regressions(self.graph_imports['head'], self.graph_imports['base']):
                 # Blame the new edge's consuming library, whose source spelling
                 # is printed by the existing import policy.
                 path = error.split('entry: ', 1)[1].split(' -> ', 1)[0]
@@ -445,9 +528,12 @@ class Workspace:
                 if f'{key}:{entry}' not in self.graph_allowlists['head']:
                     errors.append(error + '\n' + self.explain(label))
             return {'summary': impact.summary(before, after, baseline['reach_budget']),
-                    'base': graph_metrics(impact.measure(before)), 'head': graph_metrics(live),
-                    'added_edges': sorted(impact.changes(before, after)[0]),
-                    'fanout_growth': impact.changes(before, after)[1], 'errors': errors}
+                    'base': graph_metrics(before), 'head': graph_metrics(live),
+                    'edge_diff': self.graph_inputs['edge_diff'],
+                    'base_package_max_reach': self.graph_inputs['base_package_max_reach'],
+                    'fanout_growth': {source: count - before['dependents'].get(source, 0)
+                                      for source, count in after['dependents'].items()
+                                      if count > before['dependents'].get(source, 0)}, 'errors': errors}
         except GateError as error:
             return {'summary': 'U unavailable, SCC max unavailable: ' + str(error), 'errors': [str(error)]}
 
@@ -632,17 +718,37 @@ def passed(result):
 
 def main(argv=None, workspace=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['pr', 'main'])
+    parser.add_argument('mode', choices=['pr', 'main', 'graph'])
+    parser.add_argument('--write-baseline', action='store_true', help='graph mode only: record gains')
     parser.add_argument('--base', required=True)
     parser.add_argument('--head', required=True)
     parser.add_argument('--branch', default='')
     args = parser.parse_args(argv)
+    if args.write_baseline and args.mode != 'graph':
+        parser.error('--write-baseline requires graph mode')
     output = Path(os.environ.get('BUILDBUDDY_ARTIFACTS_DIRECTORY', ROOT / 'gate-artifacts'))
     metadata = {'COMMIT_SHA': args.head, 'BRANCH_NAME': args.branch}
     result = {'schema': SCHEMA, 'mode': args.mode, 'base': args.base, 'head': args.head}
     try:
-        gate = gate_pr if args.mode == 'pr' else gate_main
-        result.update(gate(workspace or Workspace(), args.base, args.head, metadata))
+        workspace = workspace or Workspace()
+        if args.mode == 'graph':
+            workspace.ensure_commit(args.base)
+            workspace.ensure_commit(args.head)
+            report = workspace.graph_check(args.base, args.head, record_gains=args.write_baseline)
+            print(report['summary'], flush=True)
+            result.update(graph_impact=report, inputs=report['errors'],
+                          verdict='fail' if report['errors'] else 'pass')
+            if args.write_baseline and not report['errors']:
+                baseline = dict(workspace.graph_baselines['head'])
+                baseline['graph_impact'] = workspace.graph_impact.baseline_record(
+                    workspace.snapshots['head'], graph_baseline(baseline.get('graph_impact', {})))
+                path = workspace.root / 'tests/fixtures/import_fanout_baseline.json'
+                path.write_text(json.dumps(baseline, indent=2) + '\n')
+                output.mkdir(parents=True, exist_ok=True)
+                (output / path.name).write_bytes(path.read_bytes())
+        else:
+            gate = gate_pr if args.mode == 'pr' else gate_main
+            result.update(gate(workspace, args.base, args.head, metadata))
         result.setdefault('error', None)
     except GateError as error:
         result['error'] = str(error)

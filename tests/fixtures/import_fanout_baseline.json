@@ -971,9 +971,14 @@
     "tests/tier_receipt_fixture.py -> tests/test_prewarm_requires_known_receipts.py"
   ],
   "graph_impact": {
-    "u_pct": 15.19905648988234,
-    "loc_u_pct": 19.33397616366193,
-    "scc_max": 1,
-    "reach_budget": 2036
+    "schema": "graph-impact.v1",
+    "figures": {
+      "u_pct": 15.19905648988234,
+      "loc_u_pct": 19.33397616366193,
+      "scc_max": 1
+    },
+    "tolerances": {"u_pct": 1.0, "loc_u_pct": 1.0, "scc_max": 0},
+    "reach_budget": 2036,
+    "edge_groups": {}
   }
 }

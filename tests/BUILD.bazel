@@ -28495,7 +28495,6 @@ pb_py_test(
         "//tools:ci/gate_paths.py",
         "//tools:ci/gate_quarantine.json",
         "//tools:ci/gate_select.py",
-        "//tools:ci/import_fanout.py",
         "//tools:ci/remote_gate.py",
         "//tools:fleet/fleet_boxes.json",
         "//tools:fleet/local_scratch_profile.py",
@@ -28540,6 +28539,7 @@ pb_py_library(
         "//tools:ci/gate_requirements.txt",
         "//tools:ci/gate_run.py",
         "//tools:ci/gate_select.py",
+        "//tools:ci/graph_impact.py",
         "//tools:fleet/pbrun.py",
         "BUILD.bazel",
         "fixtures/import_fanout_baseline.json",
@@ -28551,6 +28551,7 @@ pb_py_library(
         "//tools:ci/bazel_gate",
         "//tools:ci/gate_run",
         "//tools:ci/gate_select",
+        "//tools:ci/graph_impact",
         "//tools:fleet/pbrun",
     ],
 )
@@ -57464,7 +57465,6 @@ pb_py_test(
     library = ":test_graph_impact_lib",
     deps = [
         "//tools:ci/graph_impact",
-        ":conftest",
     ],
     timeout = "moderate",
 )
@@ -57475,9 +57475,7 @@ pb_py_library(
         "test_graph_impact.py",
     ],
     data = [
-        "//:conftest.py",
         "//tools:ci/graph_impact.py",
-        "conftest.py",
         "test_graph_impact.py",
     ],
     deps = [
@@ -58911,6 +58909,7 @@ pb_py_test(
     path = "tests/test_import_fanout.py",
     library = ":test_import_fanout_lib",
     deps = [
+        "//tools:ci/bazel_imports",
         "//tools:ci/import_fanout",
     ],
     timeout = "moderate",

@@ -135,16 +135,17 @@ pb_py_library(
         "//tests:fixtures/import_fanout_baseline.json",
         "ci/bazel_gate.py",
         "ci/bazel_generated.py",
+        "ci/bazel_imports.py",
         "ci/bazel_parity.py",
         "ci/gate_paths.py",
         "ci/gate_requirements.txt",
         "ci/gate_run.py",
         "ci/gate_select.py",
         "ci/graph_impact.py",
-        "ci/import_fanout.py",
         "ci/remote_gate.py",
     ],
     deps = [
+        ":ci/bazel_imports",
         ":ci/graph_impact",
     ],
 )
@@ -159,6 +160,16 @@ pb_py_library(
         "//tools/bazel:generate.sh",
         "//tools/bazel:requirements.py",
         "ci/bazel_generated.py",
+    ],
+)
+
+pb_py_library(
+    name = "ci/bazel_imports",
+    srcs = [
+        "ci/bazel_imports.py",
+    ],
+    data = [
+        "//:conftest.py",
     ],
 )
 
@@ -384,8 +395,8 @@ pb_py_library(
     srcs = [
         "ci/import_fanout.py",
     ],
-    data = [
-        "//:conftest.py",
+    deps = [
+        ":ci/bazel_imports",
     ],
 )
 
