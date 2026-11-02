@@ -198,6 +198,7 @@ def explain(result, prs):
     if result['mode'] == 'pr':
         lines.append(f"Selection: {result.get('selection')}, {len(result.get('selected', []))} tests")
         lines.extend(f'FAILED: {label}' for label in result.get('failed', []))
+        lines.extend(f'FLAKY (quarantine): {label}' for label in sorted(result.get('flaky_passes', {})))
     else:
         lines.append(f"Merged PRs: {', '.join(f'#{pr}' for pr in prs) or 'unknown'}")
         for arch, info in result.get('architectures', {}).items():
@@ -211,6 +212,8 @@ def explain(result, prs):
                 if arch == 'arm64':
                     caught = 'arm64 runs only after merge'
                 lines.append(f'FAILED on {arch}: {label} ({caught})')
+            lines.extend(f'FLAKY on {arch} (quarantine): {label}'
+                         for label in sorted(info.get('flaky_passes', {})))
     return '\n'.join(lines)
 
 

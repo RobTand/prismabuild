@@ -38,6 +38,20 @@ pb_py_library(
 )
 
 pb_py_library(
+    name = "bazel_macro_support",
+    srcs = [
+        "bazel_macro_support.py",
+    ],
+    data = [
+        "//:files",
+        "//src/prismabuild:files",
+        "//tools/bazel:files",
+        "//tools:files",
+        ":files",
+    ],
+)
+
+pb_py_library(
     name = "bench_move_pricing",
     srcs = [
         "bench_move_pricing.py",
@@ -28483,19 +28497,13 @@ pb_py_test(
         "//src/prismabuild:submission_types.py",
         "//src/prismabuild:tier_holdings.py",
         "//src/prismabuild:window_credit.py",
-        "//tools/bazel:build_files.py",
         "//tools/bazel:generate.sh",
-        "//tools/bazel:nonhermetic.bzl",
         "//tools/bazel:python_runner.py",
-        "//tools/bazel:requirements.py",
-        "//tools:ci/bazel_gate.py",
-        "//tools:ci/bazel_generated.py",
         "//tools:ci/bazel_parity.py",
         "//tools:ci/gate_durations.json",
         "//tools:ci/gate_paths.py",
         "//tools:ci/gate_quarantine.json",
         "//tools:ci/gate_select.py",
-        "//tools:ci/remote_gate.py",
         "//tools:fleet/fleet_boxes.json",
         "//tools:fleet/local_scratch_profile.py",
         "//tools:fleet/local_tier_policy.json",
@@ -28533,13 +28541,16 @@ pb_py_library(
         "//src/prismabuild:BUILD.bazel",
         "//src/prismabuild:core.py",
         "//tools/bazel:generate.sh",
+        "//tools/bazel:nonhermetic.bzl",
         "//tools/bazel:python.bzl",
         "//tools/bazel:requirements.txt",
         "//tools:ci/bazel_gate.py",
+        "//tools:ci/bazel_quarantine.py",
         "//tools:ci/gate_requirements.txt",
         "//tools:ci/gate_run.py",
         "//tools:ci/gate_select.py",
         "//tools:ci/graph_impact.py",
+        "//tools:ci/remote_gate.py",
         "//tools:fleet/pbrun.py",
         "BUILD.bazel",
         "fixtures/import_fanout_baseline.json",
@@ -28549,9 +28560,11 @@ pb_py_library(
     deps = [
         "//src/prismabuild:core",
         "//tools:ci/bazel_gate",
+        "//tools:ci/bazel_quarantine",
         "//tools:ci/gate_run",
         "//tools:ci/gate_select",
         "//tools:ci/graph_impact",
+        "//tools:ci/remote_gate",
         "//tools:fleet/pbrun",
     ],
 )
@@ -28658,6 +28671,37 @@ pb_py_library(
 )
 
 pb_py_test(
+    name = "test_bazel_quarantine",
+    path = "tests/test_bazel_quarantine.py",
+    library = ":test_bazel_quarantine_lib",
+    deps = [
+        "//tools:ci/bazel_quarantine",
+    ],
+    timeout = "moderate",
+)
+
+pb_py_library(
+    name = "test_bazel_quarantine_lib",
+    srcs = [
+        "test_bazel_quarantine.py",
+    ],
+    data = [
+        "//:BUILD.bazel",
+        "//:files",
+        "//src/prismabuild:BUILD.bazel",
+        "//src/prismabuild:files",
+        "//tools/bazel:files",
+        "//tools:BUILD.bazel",
+        "//tools:files",
+        ":files",
+        "BUILD.bazel",
+    ],
+    deps = [
+        ":bazel_macro_support",
+    ],
+)
+
+pb_py_test(
     name = "test_bazel_test_sizing",
     path = "tests/test_bazel_test_sizing.py",
     library = ":test_bazel_test_sizing_lib",
@@ -28680,6 +28724,9 @@ pb_py_library(
         "//tools:files",
         ":files",
         "BUILD.bazel",
+    ],
+    deps = [
+        ":bazel_macro_support",
     ],
 )
 

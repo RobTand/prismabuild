@@ -6,17 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from bazel_macro_support import starlark
+
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def starlark(path, **bindings):
-    # These macros use the Python-compatible subset of Starlark. Execute the
-    # real functions, replacing only Bazel's rule and package primitives.
-    source = (ROOT / path).read_text()
-    source = re.sub(r'^load\([^\n]*\)\n', '', source, flags=re.MULTILINE)
-    namespace = {'struct': SimpleNamespace, **bindings}
-    exec(compile(source, path, 'exec'), namespace)
-    return namespace
 
 
 @pytest.fixture

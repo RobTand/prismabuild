@@ -8,6 +8,8 @@ import zipfile
 
 import pytest
 
+from tools.ci import bazel_quarantine
+
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('bazel_gate', ROOT / 'tools/ci/bazel_gate.py')
 bazel_gate = importlib.util.module_from_spec(SPEC)
@@ -29,7 +31,7 @@ class FakeWorkspace:
     """Records calls; answers from canned git and Bazel facts."""
 
     def __init__(self, changed, impacted=(), statuses=None, diff_error=None, build_ok=True,
-                 inputs=(), budgets=(), broken=(), budget_only=(), reruns=None):
+                 inputs=(), budgets=(), broken=(), budget_only=(), reruns=None, quarantine=()):
         self.changed, self.impacted, self.statuses = set(changed), set(impacted), statuses or {}
         self.diff_error, self.build_ok, self.inputs, self.budgets = diff_error, build_ok, inputs, budgets
         # Configs whose invocation fails before any test runs.
@@ -38,6 +40,7 @@ class FakeWorkspace:
         self.ran, self.built, self.extras = [], [], []
         self.graph_revisions, self.diff_revisions = [], []
         self.graph_errors = []
+        self.quarantined = set(quarantine)
 
     def ensure_commit(self, sha):
         if not sha:
@@ -71,6 +74,9 @@ class FakeWorkspace:
 
     def arm64_excluded(self):
         return {tag: set(labels) for tag, labels in ARM64_EXCLUDED.items()}
+
+    def quarantine(self):
+        return self.quarantined
 
     def test(self, targets, config, metadata, log_name, extra=()):
         self.ran.append((config, list(targets)))
@@ -327,6 +333,133 @@ def test_a_clean_run_records_no_reruns(tmp_path, monkeypatch):
     workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'])
     status, result = run(workspace, tmp_path, monkeypatch)
     assert status == 0 and result['budget_reruns'] == {} and workspace.extras == [[]]
+
+
+@pytest.mark.parametrize('mode', ['pr', 'main'])
+def test_quarantined_flaky_passes_are_recorded_without_a_budget_rerun(
+        mode, tmp_path, monkeypatch, capsys):
+    label = '//tests:test_core'
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], [label],
+                              statuses={label: 'FLAKY'}, quarantine={label}, budget_only={label})
+    status, result = run(workspace, tmp_path, monkeypatch, mode=mode)
+    summary = json.loads(capsys.readouterr().out.splitlines()[-1])
+    records = [result] if mode == 'pr' else list(result['architectures'].values())
+    summaries = [summary] if mode == 'pr' else list(summary['architectures'].values())
+    assert status == 0
+    for record in records:
+        assert record['verdict'] == 'pass' and record['failed'] == []
+        assert record['flaky_passes'] == {label: 'FLAKY'}
+        assert record['budget_reruns'] == {}
+        assert record.get('missed', []) == []
+    for entry in summaries:
+        assert entry['flaky_passes'] == {label: 'FLAKY'}
+    assert workspace.extras == ([[]] if mode == 'pr' else [[], []])
+    controller = bazel_gate.module_from('remote_gate_summary', ROOT / 'tools/ci/remote_gate.py')
+    explanation = controller.explain(result, [])
+    if mode == 'pr':
+        assert f'FLAKY (quarantine): {label}' in explanation
+    else:
+        for architecture in ('amd64', 'arm64'):
+            assert f'FLAKY on {architecture} (quarantine): {label}' in explanation
+
+
+@pytest.mark.parametrize('mode', ['pr', 'main'])
+def test_unlisted_flaky_fails_and_names_the_target_even_with_a_budget_marker(
+        mode, tmp_path, monkeypatch, capsys):
+    label = '//tests:test_core'
+    # Main's selection omits this target, so an unexpected FLAKY is also a miss.
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_pbrun'],
+                              statuses={label: 'FLAKY'}, budget_only={label})
+    if mode == 'pr':
+        workspace.impacted = {label}
+    status, result = run(workspace, tmp_path, monkeypatch, mode=mode)
+    summary = json.loads(capsys.readouterr().out.splitlines()[-1])
+    records = [result] if mode == 'pr' else list(result['architectures'].values())
+    summaries = [summary] if mode == 'pr' else list(summary['architectures'].values())
+    assert status == 1
+    for record in records:
+        assert record['failed'] == [label] and record['flaky_passes'] == {}
+        assert record['budget_reruns'] == {}
+        if mode == 'main':
+            assert record['missed'] == [label]
+    assert all(entry['failed'] == [label] for entry in summaries)
+    assert workspace.extras == ([[]] if mode == 'pr' else [[], []])
+
+
+@pytest.mark.parametrize('mode', ['pr', 'main'])
+@pytest.mark.parametrize('overall', ['FAILED', 'TIMEOUT'])
+def test_quarantine_does_not_accept_a_failed_budget_rerun(mode, overall, tmp_path, monkeypatch):
+    label = '//tests:test_core'
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], [label], statuses={label: overall},
+                              quarantine={label}, budget_only={label}, reruns={label: overall})
+    status, result = run(workspace, tmp_path, monkeypatch, mode=mode)
+    records = [result] if mode == 'pr' else list(result['architectures'].values())
+    assert status == 1
+    for record in records:
+        assert record['failed'] == [label] and record['flaky_passes'] == {}
+        assert record['budget_reruns'] == {label: overall}
+
+
+@pytest.mark.parametrize('mode', ['pr', 'main'])
+def test_quarantined_flaky_outside_selection_is_never_a_main_mode_miss(mode, tmp_path, monkeypatch):
+    label = '//tests:test_core'
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_pbrun'],
+                              statuses={label: 'FLAKY'}, quarantine={label})
+    status, result = run(workspace, tmp_path, monkeypatch, mode=mode)
+    assert status == 0
+    if mode == 'main':
+        for record in result['architectures'].values():
+            assert record['flaky_passes'] == {label: 'FLAKY'}
+            assert record['failed'] == [] and record['missed'] == []
+    else:
+        assert result['flaky_passes'] == {}
+
+
+def test_main_keeps_each_architectures_flaky_passes_separate(tmp_path, monkeypatch):
+    label = '//tests:test_core'
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_pbrun'], quarantine={label})
+    test = workspace.test
+
+    def architecture_test(targets, config, *args, **kwargs):
+        record = test(targets, config, *args, **kwargs)
+        record['statuses'][label] = 'FLAKY' if config == 'remote' else 'FAILED'
+        return record
+
+    monkeypatch.setattr(workspace, 'test', architecture_test)
+    status, result = run(workspace, tmp_path, monkeypatch, mode='main')
+    amd64, arm64 = result['architectures']['amd64'], result['architectures']['arm64']
+    assert status == 1
+    assert amd64['flaky_passes'] == {label: 'FLAKY'}
+    assert amd64['failed'] == [] and amd64['missed'] == []
+    assert arm64['flaky_passes'] == {} and arm64['failed'] == [label] and arm64['missed'] == [label]
+    assert arm64['budget_reruns'] == {}
+
+
+def test_workspace_reads_the_controller_quarantine_loader_at_its_own_root(tmp_path, monkeypatch):
+    table_path = tmp_path / 'tools/bazel/nonhermetic.bzl'
+    table_path.parent.mkdir(parents=True)
+    table_path.write_text("QUARANTINE = {'//tests:test_fixture': {'issue': 2670, 'reason': 'timeout'}}\n")
+    calls = []
+    read = bazel_quarantine.read_quarantine
+
+    def load(path):
+        calls.append(path)
+        return read(path)
+
+    module_from = bazel_gate.module_from
+
+    def controller(name, path):
+        if path == ROOT / 'tools/ci/bazel_quarantine.py':
+            return bazel_quarantine
+        return module_from(name, path)
+
+    monkeypatch.setattr(bazel_quarantine, 'read_quarantine', load)
+    monkeypatch.setattr(bazel_gate, 'module_from', controller)
+    workspace = bazel_gate.Workspace(root=tmp_path)
+    assert workspace.quarantine() == {'//tests:test_fixture': {'issue': 2670, 'reason': 'timeout'}}
+    assert calls == [table_path]
+    table_path.write_text('QUARANTINE = {}\n')
+    assert workspace.quarantine() == {}
 
 
 def test_main_mode_reruns_budget_only_failures_per_architecture(tmp_path, monkeypatch):

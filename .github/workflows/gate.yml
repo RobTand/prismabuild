@@ -38,6 +38,9 @@ env:
 jobs:
   bazel:
     name: Bazel
+    permissions:
+      contents: read
+      issues: read
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -52,6 +55,11 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - id: quarantine
+        name: Require open Bazel quarantine issues
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 tools/ci/bazel_quarantine.py
       - id: refs
         name: Queue-aware base and head
         uses: Mergifyio/gha-mergify-ci@392d123d84a27960993927aec1f2cbb059fb95c1 # v27

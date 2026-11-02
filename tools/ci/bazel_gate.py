@@ -132,10 +132,13 @@ def gate_decision(changed, deleted, impacted, used_sources, tests, hosted=frozen
             'scopes': scopes, 'all_scopes': False}
 
 
-def verdict_of(selected, statuses):
-    """Every selected test must report PASSED; a missing status fails."""
-    failed = sorted(label for label in selected if statuses.get(label) != 'PASSED')
-    return ('fail' if failed else 'pass' if selected else 'skipped'), failed
+def verdict_of(selected, statuses, quarantine=()):
+    """Accept recovered flaky attempts only for issue-backed quarantine entries."""
+    flaky_passes = {label: 'FLAKY' for label in sorted(selected)
+                    if statuses.get(label) == 'FLAKY' and label in quarantine}
+    failed = sorted(label for label in selected
+                    if statuses.get(label) != 'PASSED' and label not in flaky_passes)
+    return ('fail' if failed else 'pass' if selected else 'skipped'), failed, flaky_passes
 
 
 def bep_run(text):
@@ -154,15 +157,15 @@ def bep_run(text):
     return {'statuses': statuses, 'invocation': invocation, 'error': error}
 
 
-def architecture_result(population, run, selected):
+def architecture_result(population, run, selected, quarantine=()):
     """One architecture's verdict. An invocation that ran no test failed as a
     whole, before any test: an error naming it, not a failure per label."""
     if population and not run['statuses']:
-        return {'verdict': 'error', 'failed': [], 'missed': [],
+        return {'verdict': 'error', 'failed': [], 'missed': [], 'flaky_passes': {},
                 'error': f"invocation {run['invocation'] or '(unknown)'} ran no tests: "
                          f"{run['error'] or 'its build events hold no ERROR line'}"}
-    verdict, failed = verdict_of(population, run['statuses'])
-    return {'verdict': verdict, 'failed': failed,
+    verdict, failed, flaky_passes = verdict_of(population, run['statuses'], quarantine)
+    return {'verdict': verdict, 'failed': failed, 'flaky_passes': flaky_passes,
             'missed': sorted(label for label in failed if label not in selected)}
 
 
@@ -184,11 +187,14 @@ def has_output(outputs, name):
         return name in zipped.namelist()
 
 
-def rerun_budget_only(workspace, labels, statuses, config, metadata, log_name):
+def rerun_budget_only(workspace, labels, statuses, config, metadata, log_name, quarantine=()):
     """Rerun once, uncached, the targets that failed only a time budget. A second
     overrun fails; real failures are never retried."""
-    failed = [label for label in labels if statuses.get(label) != 'PASSED']
-    budget = sorted(workspace.budget_only(failed, statuses))
+    _, failed, _ = verdict_of(labels, statuses, quarantine)
+    # An unlisted FLAKY is an unexpected result, even if an earlier attempt
+    # left a budget marker. A separate rerun must not hide it.
+    eligible = [label for label in failed if statuses.get(label) in ('FAILED', 'TIMEOUT')]
+    budget = sorted(workspace.budget_only(eligible, statuses))
     if not budget:
         return statuses, {}
     again = workspace.test(budget, config, metadata, f'{log_name}-budget-rerun',
@@ -372,6 +378,14 @@ class Workspace:
     def hosted_tests(self):
         """Manual targets the workflow's hosted lane runs instead of Bazel."""
         return set(map(canonical_label, self.query(f'attr(tags, "\\b{HOSTED}\\b", {TESTS})')))
+
+    def quarantine(self):
+        """Use the hosted issue controller's loader against the checked-out table."""
+        controller = module_from('bazel_quarantine_for_gate', ROOT / 'tools/ci/bazel_quarantine.py')
+        try:
+            return controller.read_quarantine(self.root / 'tools/bazel/nonhermetic.bzl')
+        except (OSError, ValueError, SyntaxError, TypeError) as error:
+            raise GateError(f'cannot read Bazel quarantine ({type(error).__name__})') from None
 
     def arm64_excluded(self):
         """Tests in lanes arm64 executors can't host, by nonhermetic.bzl tag."""
@@ -666,16 +680,18 @@ def gate_pr(workspace, base, head, metadata):
         return {'error': str(error), 'inputs': graph_impact['errors'], 'graph_impact': graph_impact}
     selected_seconds = time.monotonic() - started
     # The generated-input checks need no Bazel server: they run beside the tests.
+    quarantine = workspace.quarantine()
     checks = workspace.start_generated_checks()
     statuses = workspace.test(decision['selected'], CONFIGS['amd64'], metadata, 'pr')['statuses']
     statuses, reruns = rerun_budget_only(workspace, decision['selected'], statuses, CONFIGS['amd64'],
-                                         metadata, 'pr')
+                                         metadata, 'pr', quarantine)
     tested_seconds = time.monotonic() - started
-    verdict, failed = verdict_of(decision['selected'], statuses)
+    verdict, failed, flaky_passes = verdict_of(decision['selected'], statuses, quarantine)
     inputs = workspace.inputs_check(checks) + workspace.budget_check(base) + graph_impact['errors']
     if not workspace.build(decision['build'], CONFIGS['amd64'], metadata, 'pr'):
         inputs.append('bazel build of impacted targets failed: ' + ' '.join(decision['build']))
-    return {**decision, 'verdict': verdict, 'failed': failed, 'inputs': inputs, 'budget_reruns': reruns,
+    return {**decision, 'verdict': verdict, 'failed': failed, 'flaky_passes': flaky_passes,
+            'inputs': inputs, 'budget_reruns': reruns,
             'graph_impact': graph_impact,
             'changed': sorted(changed | deleted),
             'durations': {'selection': round(selected_seconds, 1),
@@ -703,6 +719,7 @@ def gate_main(workspace, base, head, metadata):
         workspace.checkout(head)
         tests = workspace.tests()
         selection = {'selection': 'error', 'reason': [str(error)], 'selected': sorted(tests)}
+    quarantine = workspace.quarantine()
     population = sorted(tests)
     runnable = {'amd64': (population, {}), 'arm64': arm64_population(population, workspace.arm64_excluded())}
     architectures = {}
@@ -711,9 +728,10 @@ def gate_main(workspace, base, head, metadata):
         targets, excluded = runnable[architecture]
         run = workspace.test(targets, config, metadata, f'main-{architecture}')
         run['statuses'], reruns = rerun_budget_only(workspace, targets, run['statuses'], config, metadata,
-                                                   f'main-{architecture}')
+                                                   f'main-{architecture}', quarantine)
         architectures[architecture] = {
-            **architecture_result(targets, run, selection['selected']), 'invocation': run['invocation'],
+            **architecture_result(targets, run, selection['selected'], quarantine),
+            'invocation': run['invocation'],
             'tests': len(targets), 'excluded': {tag: len(labels) for tag, labels in excluded.items()},
             'excluded_tests': excluded, 'budget_reruns': reruns,
             'seconds': round(time.monotonic() - begun, 1)}
@@ -777,7 +795,15 @@ def main(argv=None, workspace=None):
         result['graph_impact'] = report
         print(report['summary'], flush=True)
     write_result(result, output)
-    print(json.dumps({key: result.get(key) for key in ['selection', 'error', 'verdict', 'inputs']}))
+    summary = {key: result.get(key) for key in ['selection', 'error', 'verdict', 'inputs']}
+    if args.mode == 'pr':
+        summary.update(failed=result.get('failed', []), flaky_passes=result.get('flaky_passes', {}))
+    elif args.mode == 'main':
+        summary['architectures'] = {
+            architecture: {key: record.get(key) for key in
+                           ('verdict', 'failed', 'missed', 'error', 'flaky_passes')}
+            for architecture, record in result.get('architectures', {}).items()}
+    print(json.dumps(summary))
     return 0 if passed(result) else 1
 
 

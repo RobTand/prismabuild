@@ -101,3 +101,15 @@ def test_the_queue_stays_serial_with_scopes_and_its_tl3_route():
     names = [rule['name'] for rule in MERGIFY['pull_request_rules']]
     assert 'Queue TL3-approved PRs' in names
     assert 'direct_merge' not in yaml.safe_dump(MERGIFY)
+
+
+def test_quarantine_issues_are_checked_on_the_hosted_controller():
+    job = JOBS['bazel']
+    assert job['runs-on'] == 'ubuntu-24.04'
+    assert job['permissions'] == {'contents': 'read', 'issues': 'read'}
+    check = next(step for step in steps('bazel') if step.get('id') == 'quarantine')
+    assert check['run'] == 'python3 tools/ci/bazel_quarantine.py'
+    assert check['env'] == {'GITHUB_TOKEN': '${{ github.token }}'}
+    assert 'if' not in check and 'continue-on-error' not in check
+    assert steps('bazel').index(check) < next(index for index, step in enumerate(steps('bazel'))
+                                          if step.get('id') == 'gate')

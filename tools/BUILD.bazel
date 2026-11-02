@@ -133,10 +133,12 @@ pb_py_library(
         "//src/prismabuild:digest_primitives.py",
         "//tests:fixtures/graph_impact_allowlist.json",
         "//tests:fixtures/import_fanout_baseline.json",
+        "//tools/bazel:nonhermetic.bzl",
         "ci/bazel_gate.py",
         "ci/bazel_generated.py",
         "ci/bazel_imports.py",
         "ci/bazel_parity.py",
+        "ci/bazel_quarantine.py",
         "ci/gate_paths.py",
         "ci/gate_requirements.txt",
         "ci/gate_run.py",
@@ -145,6 +147,7 @@ pb_py_library(
         "ci/remote_gate.py",
     ],
     deps = [
+        ":ci/bazel_generated",
         ":ci/bazel_imports",
         ":ci/gate_run",
         ":ci/graph_impact",
@@ -189,6 +192,17 @@ pb_py_library(
     ],
     deps = [
         ":ci/gate_select",
+    ],
+)
+
+pb_py_library(
+    name = "ci/bazel_quarantine",
+    srcs = [
+        "ci/bazel_quarantine.py",
+    ],
+    data = [
+        "//tools/bazel:nonhermetic.bzl",
+        "ci/bazel_quarantine.py",
     ],
 )
 
