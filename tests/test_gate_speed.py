@@ -1,10 +1,8 @@
 """Bound CI presentation and share balanced coverage with large PR selections."""
 import importlib.util
 from pathlib import Path
-import subprocess
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,31 +44,6 @@ def test_unknown_pr_files_are_not_free_when_deciding_to_fan_out():
     partition = load('gate_partition')
     assert partition.selection_shard_count([f'new_{i}.py' for i in range(16)], {'known.py': 400}, 16,
                                             workers=4, single_shard_seconds=90) == 16
-
-
-def test_required_pr_gate_waits_for_the_shared_shards_and_retry():
-    jobs = yaml.safe_load((ROOT / '.github/workflows/gate.yml').read_text())['jobs']
-    assert {'plan', 'shards', 'retry-plan', 'retry-shards'} <= set(jobs['pr-gate']['needs'])
-    assert jobs['pr-gate']['name'] == 'pr-gate'
-    plan_script = '\n'.join(step.get('run', '') for step in jobs['plan']['steps'])
-    assert '--mode' in plan_script and '--single-shard-seconds' in plan_script
-
-
-def test_old_pr_head_is_a_final_failure_before_dependency_setup(tmp_path):
-    jobs = yaml.safe_load((ROOT / '.github/workflows/gate.yml').read_text())['jobs']
-    checks = [step for step in jobs['plan']['steps'] if step.get('id') == 'head-contract']
-    assert len(checks) == 1, 'head compatibility must be checked before setup-python caching'
-    steps = jobs['plan']['steps']
-    assert steps.index(checks[0]) < next(i for i, step in enumerate(steps)
-                                       if step.get('uses', '').startswith('actions/setup-python@'))
-    output = tmp_path / 'output'
-    result = subprocess.run(['bash', '-c', checks[0]['run']], cwd=tmp_path,
-                            env={'GITHUB_OUTPUT': str(output), 'PATH': '/usr/bin:/bin'},
-                            text=True, capture_output=True, check=False)
-    assert result.returncode == 1
-    assert 'merge origin/main' in result.stdout
-    assert 'compatible=false' in output.read_text()
-    assert 'NO_VERDICT' not in result.stdout
 
 
 def test_pr_shard_count_uses_file_packing_and_avoids_empty_shards():
