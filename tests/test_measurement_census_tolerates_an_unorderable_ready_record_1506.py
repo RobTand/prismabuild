@@ -33,6 +33,7 @@ POISON = "c" * 64
 
 
 from fleet_world import FleetWorld
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 
 @pytest.fixture()

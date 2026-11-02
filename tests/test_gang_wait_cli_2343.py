@@ -12,6 +12,7 @@ from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbgang
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 
 def test_cli_deadline_overrides_manifest_and_cancels_registered_members(

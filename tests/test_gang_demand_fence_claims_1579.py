@@ -29,6 +29,7 @@ from prismabuild import movement_actions as ma, resource_scope, runtime_publicat
 
 REASONS = ("deferred_for_gang_reservation",)
 from test_gang_residency_members import GIB, MANIFEST, STAGE_KIND, TIER  # noqa: E402
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 RANGE = {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER, "manifest_sha256": MANIFEST,
          "manifest_bytes": 6 * GIB, "range_start_bytes": 0, "range_end_bytes": 2 * GIB}

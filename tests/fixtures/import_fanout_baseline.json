@@ -8,16 +8,15 @@
     "conftest.py -> src/prismabuild/__init__.py",
     "conftest.py -> src/prismabuild/pytest_test_bound.py",
     "tests/conftest.py -> src/prismabuild/__init__.py",
+    "tests/conftest.py -> src/prismabuild/_bounded_reader.py",
     "tests/conftest.py -> src/prismabuild/core.py",
     "tests/conftest.py -> src/prismabuild/d38_gate.py",
-    "tests/conftest.py -> src/prismabuild/decomposition.py",
     "tests/conftest.py -> src/prismabuild/filesystem_capacity.py",
     "tests/conftest.py -> src/prismabuild/immutable_files.py",
     "tests/conftest.py -> src/prismabuild/submission.py",
     "tests/conftest.py -> src/prismabuild/submission_frontend.py",
     "tests/conftest.py -> src/prismabuild/submission_types.py",
     "tests/conftest.py -> tools/fleet/pbrun.py",
-    "tests/conftest.py -> tools/fleet/pbstatus.py",
     "tests/conftest.py -> tools/fleet/pbtest.py"
   ],
   "test_to_test_imports": [
