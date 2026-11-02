@@ -29,6 +29,7 @@ from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 from test_measurement_reservation_backfill_1419 import (
     _bounded_measurement_wait, _observe_real_sharing_permission)
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 CAPACITY = {"cpu": 20, "gpu": 1, "mem_gb": 120}
 TIERS = {"preferred": list(range(20)), "fallback": []}

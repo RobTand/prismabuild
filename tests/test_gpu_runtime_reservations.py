@@ -8,6 +8,7 @@ from prismabuild import _gang, _measurement_reservation as reservation
 from prismabuild import contracts, core, gpu_capacity, gpu_runtime_gate, movement_actions, pool
 from test_gang_reservation_1517 import CAPACITY, HOSTS, TIERS, _busy_both, gang_fleet
 from test_measurement_drains_gpu_backfill import cpu_sample, fleet, gpu_sample
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 __all__ = ['fleet', 'gang_fleet']
 

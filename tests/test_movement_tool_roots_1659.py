@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, produced_spool, resource_scope, runtime_publication, storage_tiers  # noqa: E402
 from prismabuild import tier_cycle as tier_loop  # noqa: E402
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 TIER = "prismabuild-stage:dl380g10"
 
