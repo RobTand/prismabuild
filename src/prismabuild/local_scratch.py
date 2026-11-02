@@ -180,7 +180,7 @@ def _scratch_time(value: object, field: str) -> float:
 
 
 def _scratch_attempt(value: object, key: str) -> dict[str, str]:
-    from .produced_output import _broker_scope_id
+    from .resource_scope import _broker_scope_id
 
     if not isinstance(value, Mapping) or set(value) != {"nonce", "scope_id"}:
         raise LocalScratchError("owner_attempt must contain nonce and scope_id")
