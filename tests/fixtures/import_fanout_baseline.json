@@ -1,10 +1,12 @@
 {
   "evidence": "imports",
-  "median_selected_pct": 7.4,
+  "median_selected_pct": 7.6,
   "p90_selected_pct": 100.0,
-  "modules_over_half": 156,
-  "conftest_source_modules": 156,
+  "modules_over_half": 157,
+  "conftest_source_modules": 157,
   "conftest_source_imports": [
+    "conftest.py -> src/prismabuild/__init__.py",
+    "conftest.py -> src/prismabuild/pytest_test_bound.py",
     "tests/conftest.py -> src/prismabuild/__init__.py",
     "tests/conftest.py -> src/prismabuild/core.py",
     "tests/conftest.py -> src/prismabuild/d38_gate.py",

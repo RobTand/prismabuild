@@ -17,7 +17,8 @@ Two kinds of evidence are available:
 - ``imports`` is the default, and the ratchet holds it. It counts import
   statements anywhere in a file, including function-local imports and
   imports in embedded Python snippets. It also counts literal
-  ``import_module`` and ``__import__`` names, and string literals that name a
+  ``import_module`` and ``__import__`` names, the modules ``pytest_plugins``
+  names, and string literals that name a
   ``.py`` file. A ``.py`` literal matches every module path that ends with
   it. A matched source module is followed like an import, because a test that
   runs a tool by path needs the tool's own imports. Any other matched file is
@@ -70,6 +71,8 @@ STATEMENT_START = re.compile(r'^[ \t]*((?:from[ \t]+\.*[\w.]*[ \t]+import|import
 # newline rather than starting a line.
 SNIPPET_IMPORT = re.compile(r'''(?:['";]|\\n)[ \t]*(?:from[ \t]+([A-Za-z_][\w.]*)[ \t]+import[ \t]+([\w., \t]+)'''
                             r'''|import[ \t]+([\w., \t]+))''')
+# ``pytest_plugins`` names modules pytest imports for every test under the conftest.
+PLUGINS = re.compile(r'^pytest_plugins[ \t]*=', re.M)
 DYNAMIC_IMPORT = re.compile(r'''\b(?:import_module|__import__)\(\s*(?:name\s*=\s*)?['"]([A-Za-z_][\w.]*)['"]''')
 PY_LITERAL = re.compile(r'''['"]((?:[\w.-]+/)*[\w-][\w.-]*\.py)['"]''')
 
@@ -152,6 +155,13 @@ def imported_names(source: str, path: str = '') -> set[str]:
         else:
             names.update(name for name in listed if re.fullmatch(r'[A-Za-z_][\w.]*', name))
     names.update(DYNAMIC_IMPORT.findall(source))
+    for match in PLUGINS.finditer(source):
+        try:
+            tree = ast.parse(_logical_statement(source, match.start()))
+        except SyntaxError:
+            continue
+        names.update(node.value for node in ast.walk(tree)
+                     if isinstance(node, ast.Constant) and isinstance(node.value, str))
     return names
 
 

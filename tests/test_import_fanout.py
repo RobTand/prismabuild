@@ -42,13 +42,15 @@ def test_every_spelling_of_an_import_is_found():
         '    import pbrun\n'
         'CODE = "import sys; from prismabuild import lease"\n'
         'loaded = importlib.import_module("worker_loop")\n'
+        'pytest_plugins = ("prismabuild.test_bound",)\n'
         '"""\n'
         'import the data, then read it.\n'
         '"""\n'
     )
     names = fanout.imported_names(source, 'tests/test_x.py')
     assert {'prismabuild', 'prismabuild.pool', 'prismabuild.core', 'prismabuild.census',
-            'prismabuild.census.reader', 'pbrun', 'sys', 'prismabuild.lease', 'worker_loop'} <= names
+            'prismabuild.census.reader', 'pbrun', 'sys', 'prismabuild.lease', 'worker_loop',
+            'prismabuild.test_bound'} <= names
     assert 'the' not in names
 
 
