@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from prismabuild import capability_eligibility as eligibility, contracts, pool
+from prismabuild import capability_eligibility as eligibility, contracts, interpreter_inventory, pool
 
 
 @pytest.mark.parametrize("capacity", [None, {"cpu": 2, "mem_gb": 2}])
@@ -131,7 +131,7 @@ def test_combined_offer_and_claim_use_current_evidence_at_each_capability_gate(t
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.announce(host="observed", tags=tags, has_gpu=False, capacity={"cpu": 1},
                    capabilities=eligibility.OfferCapabilities(
-                       interpreters=eligibility.observe_interpreters([declarations]),
+                       interpreters=interpreter_inventory.observe_interpreters([declarations]),
                        dependencies=eligibility.observe_dependencies([declarations], python=str(interpreter)),
                        images=eligibility.ImageAnswers.from_observed([image], None)))
     queue.publish(action_key="a" * 64, cas_root="/cas", checkout_root="/checkout",

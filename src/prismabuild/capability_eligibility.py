@@ -151,12 +151,6 @@ class LiveInterpreters:
 
 
 
-def observe_interpreters(items: Sequence[object]) -> InterpreterAnswers:
-    from .interpreter_inventory import prepare_interpreters
-
-    return prepare_interpreters(items).answers
-
-
 @dataclass(frozen=True)
 class DependencyAnswers:
     local_paths: Mapping[str, object] | None = None
