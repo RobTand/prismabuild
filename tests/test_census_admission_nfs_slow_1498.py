@@ -8,8 +8,8 @@ single reader fence while every sibling loop's census was refused "reader
 busy" -- ordinary CPU and GPU rows included.
 
 Reproduced here with the real fence, the real bounded census child and the
-real claim path: per-record latency is injected into the census child's reads
-(the NFS round trip), nothing in the census, fence, fork or lock is mocked.
+real claim path: read stalls are injected into the census child (the NFS
+round trip), nothing in the census, fence, fork or lock is mocked.
 """
 from __future__ import annotations
 from fleet_world import reopen_queue
@@ -17,6 +17,7 @@ from fleet_world import reopen_queue
 import fcntl
 import json
 import math
+import multiprocessing
 import os
 import sys
 import threading
@@ -78,12 +79,30 @@ def test_slow_census_over_concluded_sidecars_refuses_ordinary_work_until_swept(
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     ordinary = publish("ordinary-cpu-row", priority=-10, gpu=0)
     orphans = [_conclude(queue, index) for index in range(300)]
-    # 300 records x 20 ms > READ_BUDGET_S: the production shape, scaled down.
-    _slow_reads(monkeypatch, 0.02)
+    context = multiprocessing.get_context("fork")
+    entered, release = context.Event(), context.Event()
+    real_read = reservation._read
+    sidecars = {queue.records.passes_path(key) for key in orphans}
 
-    assert _claim(queue, ordinary,
-        cpu_sampler=lambda: cpu_sample(clock, readings),
-        gpu_sampler=lambda: gpu_sample(sample, readings)) is None
+    def stalled_sidecar(path, **kwargs):
+        value = real_read(path, **kwargs)
+        if path in sidecars:
+            entered.set()
+            assert release.wait(60), "fixture did not release its NFS read"
+        return value
+
+    # A real sidecar read cannot finish before the real reader deadline.
+    # Restore normal reads before sweeping so sweep cost is independent of
+    # a synthetic sleep for every record and every admission proof.
+    with monkeypatch.context() as patch:
+        patch.setattr(reservation, "_read", stalled_sidecar)
+        try:
+            assert _claim(queue, ordinary,
+                cpu_sampler=lambda: cpu_sample(clock, readings),
+                gpu_sampler=lambda: gpu_sample(sample, readings)) is None
+        finally:
+            release.set()
+    assert entered.is_set(), "the census never read a concluded sidecar"
     refusal = denial(ordinary)
     assert refusal["reason"] == "measurement_census_unavailable"
     assert "timed_out" in refusal["evidence"]["unavailable"], refusal
