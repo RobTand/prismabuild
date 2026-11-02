@@ -275,6 +275,24 @@ def graph_baseline(record):
             'reach_budget': record.get('reach_budget'), 'edge_groups': {}}
 
 
+def refuse_stored_edge_lists(value, path='baseline'):
+    """Persist figures and history; edge rules always compare the two live graphs."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            edge_key = key in ('edges', 'imports') or key.endswith(('_edges', '_imports'))
+            edge_rows = isinstance(child, list) and any(
+                isinstance(row, str) and (' -> ' in row or ' → ' in row)
+                or isinstance(row, list) and len(row) == 2 and all(isinstance(node, str) for node in row)
+                for row in child)
+            if key in ('test_to_test_imports', 'conftest_source_imports') or (
+                    isinstance(child, list) and (edge_key or edge_rows or path.endswith('.edge_groups'))):
+                raise GateError(f'baseline refuses stored edge lists: {path}.{key}; use the base-against-head graph diff')
+            refuse_stored_edge_lists(child, f'{path}.{key}')
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            refuse_stored_edge_lists(child, f'{path}[{index}]')
+
+
 def graph_baseline_errors(current, previous):
     current, previous = graph_baseline(current), graph_baseline(previous)
     errors = []
@@ -740,8 +758,11 @@ def main(argv=None, workspace=None):
                           verdict='fail' if report['errors'] else 'pass')
             if args.write_baseline and not report['errors']:
                 baseline = dict(workspace.graph_baselines['head'])
+                refuse_stored_edge_lists(baseline)
                 baseline['graph_impact'] = workspace.graph_impact.baseline_record(
                     workspace.snapshots['head'], graph_baseline(baseline.get('graph_impact', {})))
+                baseline['graph_impact'].pop('edge_groups', None)
+                refuse_stored_edge_lists(baseline)
                 path = workspace.root / 'tests/fixtures/import_fanout_baseline.json'
                 path.write_text(json.dumps(baseline, indent=2) + '\n')
                 output.mkdir(parents=True, exist_ok=True)

@@ -352,8 +352,10 @@ bazel-diff v70.0.2 native binary. Historical proofs compare its complete impacte
 Rule sets with v42 on two ranges. The gate runs on amd64 Remote Bazel runners,
 including for arm64 test actions.
 
-The existing `tests/fixtures/import_fanout_baseline.json` keeps its original
-history and the recorded graph minima. A smaller SCC maximum must be recorded.
+The existing `tests/fixtures/import_fanout_baseline.json` keeps its figures
+and the recorded graph minima. Import edge rules use only the base-against-head
+graph diff. Stored edge lists are removed; `--write-baseline` refuses a head
+baseline containing them and leaves the baseline untouched. A smaller SCC maximum must be recorded.
 The graph-only mode executes generation and queries without running test or
 build populations. On an admitted runner, update the baseline with:
 
