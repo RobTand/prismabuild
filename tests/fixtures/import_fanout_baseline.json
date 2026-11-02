@@ -935,6 +935,8 @@
     "tests/test_tier_receipt_recovery.py -> tests/test_prewarm_requires_known_receipts.py",
     "tests/test_tier_requires_known_receipts.py -> tests/test_prewarm_requires_known_receipts.py",
     "tests/test_tombstone_stat_outage_retains_work.py -> tests/test_an_unverifiable_attempt_link_does_not_stop_the_reaper.py",
+    "tests/test_transition_lock_denial_1515.py -> tests/test_measurement_drains_gpu_backfill.py",
+    "tests/test_transition_lock_denial_1515.py -> tests/test_measurement_reservation_backfill_1419.py",
     "tests/test_typed_pool_client.py -> tests/test_pbrun_bounded_pool_wait.py",
     "tests/test_uncharged_dead_owners_give_room_under_pressure.py -> tests/test_dead_owner_fragment_blocks_then_retires.py",
     "tests/test_uncharged_dead_owners_give_room_under_pressure.py -> tests/test_stale_material_done_owner_retires.py",
