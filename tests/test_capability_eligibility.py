@@ -9,7 +9,7 @@ import sys
 import pytest
 
 from prismabuild import (capability_eligibility as eligibility, container_images,
-                        contracts, dependency_digest, pool)
+                        contracts, dependency_digest, interpreter_inventory, pool)
 
 
 TAG = contracts.INTERPRETER_TAG
@@ -41,7 +41,7 @@ def test_worker_offer_and_live_claim_agree_on_observed_paths(tmp_path, kind):
     elif kind == "dangling":
         path.symlink_to(tmp_path / "missing-target")
     named = str(path)
-    answers = eligibility.observe_interpreters([
+    answers = interpreter_inventory.observe_interpreters([
         {"interpreter": named}, {"interpreter": named}, {}, None])
     fields = answers.offer_fields()
     queue = pool.PoolQueue(tmp_path / "queue")
