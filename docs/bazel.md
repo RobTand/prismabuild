@@ -148,3 +148,39 @@ also fails when Bazel's tests differ from the hosted gate's population
 
 Pass the API key header from the environment or a private rc file. Never commit
 it.
+
+## CI
+
+The Merge gate workflow (`.github/workflows/gate.yml`) starts
+`tools/ci/bazel_gate.py` on a Remote Bazel runner through
+`tools/ci/remote_gate.py`. It reads back `gate-result.json`, which the runner
+leaves as a BuildBuddy artifact.
+
+- **Ordinary pull requests** test GitHub's merge commit against its first
+  parent, current `main` (#2540). Their check is `pr-gate`.
+- **Mergify's batch drafts** test their exact head against the queue-aware base
+  that `gha-mergify-ci`'s `scopes-git-refs` returns. Their check is `gate`.
+- **Both checks** require the Bazel verdict, a scope list that reached Mergify,
+  and the hosted lane whenever selection impacted one of its targets.
+
+Selection fails closed. The gate fails when:
+- the base or head is missing;
+- bazel-diff fails;
+- a changed file is read by no target and isn't in `IRRELEVANT`;
+- build-relevant changes impact no target;
+- the remote result is missing or malformed;
+- Mergify doesn't receive the scope list.
+
+Some changes test everything and mark the pull request as touching every
+scope:
+- changes matching `FALLBACK`: Bazel files, `tools/bazel/`, the requirements,
+  workflows, and the selector's evidence code;
+- a `BUILD.bazel` edit that moves no rule.
+
+Impacted targets that no test depends on are built.
+
+Each push to `main` runs every test on amd64, then on arm64 remote executors,
+and the hosted lane on both architectures. A failure names the merged pull
+requests and says whether their selection included the failing test. The job
+summary and the `post-merge-<sha>` artifact hold one `POST_MERGE_RECORD`
+JSON line per run.

@@ -75,7 +75,8 @@ def test_the_hosted_lane_runs_selected_files_with_the_old_gate_tooling():
     for needed in ('tools/ci/gate_requirements.txt', 'tools/ci/gate_select.py', 'tools/ci/gate_setup.py',
                    'tools/ci/gate_run.py'):
         assert needed in lane
-    assert 'needs.bazel.outputs.hosted' in JOBS['hosted']['if']
+    assert 'needs' not in JOBS['hosted'], 'the hosted lane must not wait for the Bazel job'
+    assert any('remote_gate.py hosted-files' in step.get('run', '') for step in steps('hosted'))
     matrix = JOBS['post-merge-hosted']['strategy']['matrix']['runner']
     assert matrix == ['ubuntu-24.04', 'ubuntu-24.04-arm']
 
