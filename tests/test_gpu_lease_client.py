@@ -30,9 +30,9 @@ def lease_dir(tmp_path):
     return directory
 
 
-@pytest.fixture
-def client():
-    # Keep an absent implementation an assertion failure, not a collection error.
+def load_client():
+    # Call from the test body: an absent implementation must be an assertion
+    # failure, not a collection error or a fixture/setup error.
     assert CLIENT.is_file(), "the single-file GPU lease client is missing"
     spec = importlib.util.spec_from_file_location("pb_gpu_lease", CLIENT)
     module = importlib.util.module_from_spec(spec)
@@ -121,7 +121,8 @@ def test_module_is_stdlib_only_parses_as_py38_and_documents_cli_and_api():
     assert "PB_GPU_LEASE_DIR" in doc and "/run/prismabuild-gpu-lease" in doc
 
 
-def test_acquire_writes_lock_and_full_protocol_json(client, monkeypatch, lease_dir):
+def test_acquire_writes_lock_and_full_protocol_json(monkeypatch, lease_dir):
+    client = load_client()
     writes = []
     real_write = client._atomic_write
 
@@ -158,7 +159,8 @@ def test_mem_gb_and_cpus_appear_in_lease_json(lease_dir):
     assert (value["mem_gb"], value["cpus"]) == (8, 2)
 
 
-def test_waits_while_not_ready_including_fencing_only_then_grants_ready(client, monkeypatch, lease_dir, capsys):
+def test_waits_while_not_ready_including_fencing_only_then_grants_ready(monkeypatch, lease_dir, capsys):
+    client = load_client()
     clock = Clock()
     clock.install(monkeypatch, client)
     state(lease_dir, updated=clock.time())
@@ -208,7 +210,8 @@ def test_waits_while_not_ready_including_fencing_only_then_grants_ready(client, 
     assert "gpu-lease: granted after 1.5s (pb_state=ready)" in capsys.readouterr().err
 
 
-def test_absent_state_grants_at_once_as_absent(client, monkeypatch, lease_dir, capsys):
+def test_absent_state_grants_at_once_as_absent(monkeypatch, lease_dir, capsys):
+    client = load_client()
     clock = Clock()
     clock.install(monkeypatch, client)
     with client.lease(directory=lease_dir) as grant:
@@ -218,7 +221,8 @@ def test_absent_state_grants_at_once_as_absent(client, monkeypatch, lease_dir, c
     assert "(pb_state=absent)" in capsys.readouterr().err
 
 
-def test_state_older_than_30s_grants_as_stale(client, monkeypatch, lease_dir):
+def test_state_older_than_30s_grants_as_stale(monkeypatch, lease_dir):
+    client = load_client()
     clock = Clock()
     clock.install(monkeypatch, client)
     state(lease_dir, updated=969)
@@ -228,7 +232,8 @@ def test_state_older_than_30s_grants_as_stale(client, monkeypatch, lease_dir):
         assert record(lease_dir)["pb_state_at_grant"] == "stale"
 
 
-def test_waiting_message_is_printed_on_the_30s_cadence(client, monkeypatch, lease_dir, capsys):
+def test_waiting_message_is_printed_on_the_30s_cadence(monkeypatch, lease_dir, capsys):
+    client = load_client()
     clock = Clock()
     clock.install(monkeypatch, client)
     state(lease_dir, updated=clock.time(), tokens=7)
@@ -262,7 +267,8 @@ def test_max_wait_exceeded_exits_75_and_records_wait_exceeded(lease_dir):
     unlocked(lease_dir / (value["lease_id"] + ".lock"))
 
 
-def test_zero_max_wait_allows_initial_immediate_grant(client, monkeypatch, lease_dir):
+def test_zero_max_wait_allows_initial_immediate_grant(monkeypatch, lease_dir):
+    client = load_client()
     # Reading state takes some time even when no waiting is necessary.
     moments = iter([0.0, 0.01])
     monkeypatch.setattr(client, "_monotonic", lambda: next(moments))
@@ -271,7 +277,8 @@ def test_zero_max_wait_allows_initial_immediate_grant(client, monkeypatch, lease
         assert grant.waited_s == 0.01
 
 
-def test_api_raises_wait_exceeded(client, monkeypatch, lease_dir):
+def test_api_raises_wait_exceeded(monkeypatch, lease_dir):
+    client = load_client()
     clock = Clock()
     clock.install(monkeypatch, client)
     state(lease_dir, updated=clock.time())
@@ -301,7 +308,8 @@ class RenewalSteps:
         self.ticks.release()
 
 
-def test_renewed_unix_advances_while_held(client, monkeypatch, lease_dir):
+def test_renewed_unix_advances_while_held(monkeypatch, lease_dir):
+    client = load_client()
     clock = Clock()
     clock.install(monkeypatch, client)
     steps = RenewalSteps(1)
@@ -327,7 +335,8 @@ def test_renewed_unix_advances_while_held(client, monkeypatch, lease_dir):
         assert renewal_threads[0] is not threading.current_thread()
 
 
-def test_renewal_write_failure_is_reported_and_retried(client, monkeypatch, lease_dir, capsys):
+def test_renewal_write_failure_is_reported_and_retried(monkeypatch, lease_dir, capsys):
+    client = load_client()
     clock = Clock()
     clock.install(monkeypatch, client)
     steps = RenewalSteps(2)
@@ -361,7 +370,8 @@ def test_renewal_write_failure_is_reported_and_retried(client, monkeypatch, leas
     assert attempts[:2] == [1005, 1010]
 
 
-def test_renewal_also_runs_while_waiting(client, monkeypatch, lease_dir):
+def test_renewal_also_runs_while_waiting(monkeypatch, lease_dir):
+    client = load_client()
     clock = Clock()
     clock.install(monkeypatch, client)
     renewed = threading.Event()
@@ -390,7 +400,8 @@ def test_renewal_also_runs_while_waiting(client, monkeypatch, lease_dir):
         assert record(lease_dir)["renewed_unix"] == 1005
 
 
-def test_release_on_normal_exit_keeps_both_files(client, lease_dir):
+def test_release_on_normal_exit_keeps_both_files(lease_dir):
+    client = load_client()
     with client.lease(directory=lease_dir) as grant:
         lock = lease_dir / (grant.lease_id + ".lock")
         locked(lock)
@@ -402,7 +413,8 @@ def test_release_on_normal_exit_keeps_both_files(client, lease_dir):
     assert sorted(p.suffix for p in lease_dir.iterdir()) == [".json", ".lock"]
 
 
-def test_api_releases_when_body_raises(client, lease_dir):
+def test_api_releases_when_body_raises(lease_dir):
+    client = load_client()
     with pytest.raises(RuntimeError, match="body error"):
         with client.lease(directory=lease_dir) as grant:
             raise RuntimeError("body error")
@@ -410,7 +422,8 @@ def test_api_releases_when_body_raises(client, lease_dir):
     unlocked(lease_dir / (grant.lease_id + ".lock"))
 
 
-def test_wait_exceeded_raised_by_body_is_a_normal_release(client, lease_dir):
+def test_wait_exceeded_raised_by_body_is_a_normal_release(lease_dir):
+    client = load_client()
     with pytest.raises(client.WaitExceeded):
         with client.lease(directory=lease_dir):
             raise client.WaitExceeded("body failure, not acquisition timeout")
@@ -432,7 +445,8 @@ def test_run_signalled_child_exits_128_plus_signal(lease_dir):
     assert record(lease_dir)["release_reason"] == "released"
 
 
-def test_holder_defaults_to_test_target_then_hostname_pid(client, monkeypatch, lease_dir):
+def test_holder_defaults_to_test_target_then_hostname_pid(monkeypatch, lease_dir):
+    client = load_client()
     monkeypatch.setenv("TEST_TARGET", "//gate:gpu_test")
     monkeypatch.setenv("PB_GPU_LEASE_DIR", str(lease_dir))
     with client.lease():
@@ -555,14 +569,16 @@ def test_optional_runs_command_without_lease_when_directory_missing(lease_dir):
     assert not (lease_dir / "missing").exists()
 
 
-def test_api_optional_yields_pb_state_none(client, lease_dir):
+def test_api_optional_yields_pb_state_none(lease_dir):
+    client = load_client()
     with client.lease(directory=lease_dir / "missing", optional=True) as grant:
         assert grant.pb_state is None
         assert grant.lease_id is None
         assert grant.waited_s == 0
 
 
-def test_api_yields_lease_id_waited_s_and_pb_state(client, lease_dir):
+def test_api_yields_lease_id_waited_s_and_pb_state(lease_dir):
+    client = load_client()
     with client.lease(holder="api-test", mem_gb=8, cpus=2, directory=lease_dir) as grant:
         assert re.fullmatch(r"[0-9a-f]{32}", grant.lease_id)
         assert grant.waited_s >= 0
@@ -591,14 +607,16 @@ def test_spawn_failure_releases_lease(lease_dir):
 
 
 @pytest.mark.parametrize("name", ["mem_gb", "cpus", "max_wait_s"])
-def test_negative_resources_or_wait_rejected(client, lease_dir, name):
+def test_negative_resources_or_wait_rejected(lease_dir, name):
+    client = load_client()
     with pytest.raises(ValueError):
         with client.lease(directory=lease_dir, **{name: -1}):
             pytest.fail("invalid lease should not grant")
     assert not list(lease_dir.iterdir())
 
 
-def test_atomic_publication_and_readable_host_files(client, monkeypatch, lease_dir):
+def test_atomic_publication_and_readable_host_files(monkeypatch, lease_dir):
+    client = load_client()
     replaced = []
     real_replace = os.replace
 
@@ -622,7 +640,8 @@ def test_atomic_publication_and_readable_host_files(client, monkeypatch, lease_d
 
 
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
-def test_api_signal_releases_and_restores_handlers(client, lease_dir, sig):
+def test_api_signal_releases_and_restores_handlers(lease_dir, sig):
+    client = load_client()
     previous = signal.getsignal(sig)
     with pytest.raises(SystemExit) as result:
         with client.lease(directory=lease_dir) as grant:
@@ -635,7 +654,8 @@ def test_api_signal_releases_and_restores_handlers(client, lease_dir, sig):
     unlocked(lease_dir / (grant.lease_id + ".lock"))
 
 
-def test_signal_during_spawn_is_forwarded_after_pid_is_known(client, monkeypatch):
+def test_signal_during_spawn_is_forwarded_after_pid_is_known(monkeypatch):
+    client = load_client()
     child = client._Child()
     forwarded = []
 
@@ -659,7 +679,8 @@ def test_signal_during_spawn_is_forwarded_after_pid_is_known(client, monkeypatch
     assert child.run(["unused"]) == 143
 
 
-def test_release_write_failure_still_closes_lock(client, monkeypatch, lease_dir, capsys):
+def test_release_write_failure_still_closes_lock(monkeypatch, lease_dir, capsys):
+    client = load_client()
     original = client._atomic_write
 
     def fail_release(path, value):
@@ -674,7 +695,8 @@ def test_release_write_failure_still_closes_lock(client, monkeypatch, lease_dir,
     assert "injected release failure" in capsys.readouterr().err
 
 
-def test_malformed_state_is_not_a_grant(client, monkeypatch, lease_dir):
+def test_malformed_state_is_not_a_grant(monkeypatch, lease_dir):
+    client = load_client()
     clock = Clock()
     clock.install(monkeypatch, client)
     (lease_dir / "pb-state.json").write_text("{")
