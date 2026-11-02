@@ -30,7 +30,7 @@
       "binding": "fields"
     },
     "count": 1,
-    "reason": "This symbolic fields binding is a CSV row of Docker --gpus options, not a closed record schema. The shim extracts only driver intent and reuses container_requests_nvidia; it neither changes forwarded argv nor grants host-fault authority."
+    "reason": "This symbolic fields binding is a CSV row of Docker --gpus options, not a closed record schema. The shim validates the full Docker --gpus grammar (keys, duplicate keys, counts, CSV quoting), returns no intent for any value Docker would reject, and reuses container_requests_nvidia; it neither changes forwarded argv nor grants host-fault authority."
   },
   {
     "change": "added",
