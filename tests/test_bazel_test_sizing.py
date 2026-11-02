@@ -119,5 +119,15 @@ def test_derivation_uses_bursts_instead_of_averages_and_rounds_memory():
     }]
     samples['//tests:test_example'][0]['burst_cpu'] = 1.05
     assert report.summarize(execution, samples)[0]['exec_properties'] == {}
+    # Source-confirmed child work needs room even when a short sample misses
+    # overlap. Launcher counts alone must not opt every target into this rule.
+    assert report.summarize(
+        execution, samples, multi_process_labels={'//tests:test_example'},
+    )[0]['exec_properties'] == {
+        'EstimatedComputeUnits': '1', 'EstimatedCPU': '2', 'EstimatedMemory': '1.5GB',
+    }
+    assert report.summarize(
+        execution, samples, multi_process_labels={'//tests:test_other'},
+    )[0]['exec_properties'] == {}
     # An unisolated runner sample has no remote TestRunner execution record.
     assert report.summarize({'execution': []}, samples) == []
