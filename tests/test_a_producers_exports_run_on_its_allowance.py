@@ -128,10 +128,18 @@ def _producer(tmp_path: Path, monkeypatch, *, measurement: bool = False,
     does, and nothing else about the allowance: the default applies.
     """
 
-    Clock().install(monkeypatch)
+    clock = Clock()
+    clock.install(monkeypatch)
     (published, cas) = _publish_producer(tmp_path, measurement=measurement,
                                          demand=demand, timeout_s=timeout_s)
     queue, owner = published.queue, published.owner
+    real_publish = queue.queue.publish
+
+    def publish_next(*args, **kwargs):
+        clock.advance(.001)
+        return real_publish(*args, **kwargs)
+
+    monkeypatch.setattr(queue.queue, "publish", publish_next)
     template, cas_root = published.template, published.cas_root
     cpu_sampler = _sample(psi=0.)
     claimed = queue.claim(owner="spool-producer", capacity=CAPACITY,
@@ -267,6 +275,8 @@ def test_host_pressure_on_the_producers_cpus_does_not_refuse_its_export(
     spool, cas = _producer(tmp_path, monkeypatch)
     foreign = _foreign(spool, cas, "one-cpu", {"cpu": 1, "mem_gb": 1})
     export_key = _export(spool, "g0")
+    ready = {row["action_key"]: row for row in spool.queue.ready_items()}
+    assert ready[foreign]["published_unix"] < ready[export_key]["published_unix"]
     cpu_sampler = _running(spool, monkeypatch, psi=0.12, busy_housekeeping=tuple(
         cpu for cpu in CPU_TIERS["fallback"] if cpu != 0))
 
