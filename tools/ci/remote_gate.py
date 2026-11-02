@@ -37,6 +37,9 @@ SCHEMA = 'prismabuild.bazel-gate.v1'
 DIAGNOSTICS = ('bazel-remote-grpc.log', 'execution_log.binpb.zst')
 DONE = 'COMPLETE_INVOCATION_STATUS'
 LOST = 'DISCONNECTED_INVOCATION_STATUS'
+# bazel_gate.py's ARM64_EXCLUDED: lanes main mode leaves out of its arm64 pass,
+# whose files the arm64 post-merge hosted lane runs instead.
+ARM64_HOSTED = ('runner', 'hosted-arm64')
 
 
 class RemoteError(RuntimeError):
@@ -163,9 +166,11 @@ def outputs(result):
 
 def post_merge_record(result, prs, seconds):
     """One machine-readable line per post-merge run."""
-    failures = {arch: info['failed'] for arch, info in result.get('architectures', {}).items()}
-    missed = {arch: info['missed'] for arch, info in result.get('architectures', {}).items()}
-    if result.get('error') or result.get('inputs'):
+    architectures = result.get('architectures', {})
+    failures = {arch: info['failed'] for arch, info in architectures.items()}
+    missed = {arch: info['missed'] for arch, info in architectures.items()}
+    errors = {arch: info['error'] for arch, info in architectures.items() if info.get('error')}
+    if result.get('error') or result.get('inputs') or errors:
         verdict = 'gate-error'
     elif missed.get('amd64'):
         verdict = 'detection-miss'
@@ -178,8 +183,9 @@ def post_merge_record(result, prs, seconds):
     return {'merge_sha': result['head'], 'base_sha': result['base'], 'prs': prs,
             'verdict': verdict, 'selection': result.get('selection'),
             'selected': len(result.get('selected', [])), 'tests': result.get('tests'),
-            'failures': failures, 'missed': missed, 'seconds': round(seconds, 1),
-            'error': result.get('error'), 'inputs': result.get('inputs')}
+            'failures': failures, 'missed': missed, 'errors': errors,
+            'excluded': {arch: info.get('excluded', {}) for arch, info in architectures.items()},
+            'seconds': round(seconds, 1), 'error': result.get('error'), 'inputs': result.get('inputs')}
 
 
 def explain(result, prs):
@@ -195,6 +201,11 @@ def explain(result, prs):
     else:
         lines.append(f"Merged PRs: {', '.join(f'#{pr}' for pr in prs) or 'unknown'}")
         for arch, info in result.get('architectures', {}).items():
+            if info.get('error'):
+                lines.append(f"{arch}: {info['error']}")
+            if info.get('excluded'):
+                lines.append(f"{arch} left out, by lane: "
+                             + ', '.join(f'{tag} {count}' for tag, count in info['excluded'].items()))
             for label in info['failed']:
                 caught = 'not selected: detection miss' if label in info['missed'] else 'was selected'
                 if arch == 'arm64':
@@ -203,12 +214,15 @@ def explain(result, prs):
     return '\n'.join(lines)
 
 
-def hosted_files(root=Path(__file__).resolve().parents[2]):
+def hosted_files(root=Path(__file__).resolve().parents[2], arch='amd64'):
     """Test files tools/bazel/nonhermetic.bzl sends to the hosted lane. The lane
-    runs them on every gate, beside the Bazel job, so it never waits for it."""
+    runs them on every gate, beside the Bazel job, so it never waits for it.
+    On arm64 (post-merge only) it also runs the ARM64_HOSTED lanes' files."""
     table = (root / 'tools/bazel/nonhermetic.bzl').read_text()
-    return sorted(f'{package}/{name}.py' for package, name in
-                  re.findall(r'"//([\w/]+):(\w+)": struct\(\n        tags = \[[^\]]*"hosted"', table))
+    lanes = {'hosted', *(ARM64_HOSTED if arch == 'arm64' else ())}
+    return sorted(f'{package}/{name}.py' for package, name, tags in
+                  re.findall(r'"//([\w/]+):(\w+)": struct\(\n        tags = \[([^\]]*)\]', table)
+                  if lanes & set(re.findall(r'"([^"]+)"', tags)))
 
 
 def aggregate(needs, hosted):
@@ -235,7 +249,9 @@ def write_github(path_variable, text):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ['hosted-files']:
-        print(json.dumps(hosted_files()))
+        lane = argparse.ArgumentParser(prog='remote_gate.py hosted-files')
+        lane.add_argument('--arch', choices=['amd64', 'arm64'], default='amd64')
+        print(json.dumps(hosted_files(arch=lane.parse_args(argv[1:]).arch)))
         return 0
     if argv[:1] == ['aggregate']:
         try:

@@ -9,6 +9,16 @@ gate's own files stay the sources of truth:
 - `tools/ci/gate_quarantine.json`, `tools/verify.py` and
   `tests/proof_execution.json` decide which files run.
 - `tools/ci/gate_budget.json` sets per-test budgets.
+
+A contended executor can push a passing test over its budget. When every test in a
+file passed and only a budget overran, `tools/bazel/python_runner.py` fails the
+target and writes `budget-overrun.txt` (`gate_run.BUDGET_MARKER`) into its outputs.
+`tools/ci/bazel_gate.py` reruns exactly the targets that carry the marker in every
+shard that did not pass, or that Bazel stopped with `TIMEOUT`, once, with
+`--nocache_test_results`. The rerun's status replaces the first, so a second overrun
+fails. Any other failure is never rerun. The gate result lists reruns as
+`budget_reruns` (`{label: status}`): at the top level for a pull request, and per
+architecture after a merge.
 - `tools/ci/gate_requirements.txt` pins the packages.
 
 ## Running tests
@@ -29,6 +39,14 @@ BUILDBUDDY_API_KEY="$(cat ~/.config/buildbuddy/api_key)" GIT_REPO_DEFAULT_BRANCH
 To run less, replace `//...` with one test file's target, such as
 `//tests:test_core`. Read the verdict from the command's exit status and the
 invocation it links, not from the start message.
+
+Each remote test runs a private copy of the Python interpreter, on amd64 and
+arm64. Executors hardlink inputs from a shared cache; other actions linking or
+unlinking the shared interpreter change its ctime while PrismaBuild hashes it,
+even when its contents stay the same. A private interpreter keeps this metadata
+independent. `test_proof_runtime_observation`, which requires a root-owned
+interpreter, runs in the hosted lane because the private copy belongs to the
+remote test user.
 
 Use local Bazel only for short generation and query commands. Pass
 `--max_idle_secs=300` (for example `bazel --max_idle_secs=300 query ...`) so
@@ -110,6 +128,9 @@ that differs from a hosted runner in ways some tests notice:
 - it has no network, no sudo, no `.git` and a 64 MB `/dev/shm`;
 - remote execution stages every input as executable;
 - `/tmp` is overlay, which PrismaBuild's state directories refuse.
+- inputs are hardlinks into a shared file cache. On arm64 the interpreter's
+  ctime moves while other actions link it, so there each test runs a private
+  copy of the interpreter, owned by the test user.
 
 The runner gives every test a short `TMPDIR` on the execroot's local
 filesystem. It also removes Bazel's own variables from the environment pytest
@@ -128,6 +149,13 @@ reason:
   workflow's hosted lane runs it with `tools/ci/gate_run.py` on a GitHub-hosted
   runner, exactly as the old gate did, whenever Bazel's selection impacts it.
   Parity counts it as run.
+- **`hosted-arm64`:** BuildBuddy's arm64 executors can't host the test. Most
+  of these need a disk: most arm64 executor hosts keep every writable path on
+  an unsized tmpfs, which PrismaBuild's disk checks refuse and `statvfs` reports as 0
+  bytes free, and Firecracker isolation, which would give a disk, fails to
+  start there. The executors' speed also varies enough to push a test past its
+  time budget. The test runs on amd64 executors as usual. After a merge, the hosted lane runs it on
+  `ubuntu-24.04-arm` instead of the arm64 executors.
 - **`requires-network`:** the remote executor gets a network.
 
 CI fails when a generated input is stale (`tools/ci/bazel_generated.py`). It
@@ -148,6 +176,98 @@ also fails when Bazel's tests differ from the hosted gate's population
 
 Pass the API key header from the environment or a private rc file. Never commit
 it.
+
+## Measured test sizes
+
+`tools/bazel/test_sizing.bzl` lists remote test actions whose measured CPU
+bursts exceed the default one CPU. `pb_py_test` adds each entry's execution
+properties to the properties from `nonhermetic()`. Tests without an entry
+keep their existing properties, tags, and environment.
+
+Use all three properties when reserving a measured size on BuildBuddy Cloud:
+
+```python
+exec_properties = {
+    "EstimatedComputeUnits": "1",
+    "EstimatedCPU": "2",
+    "EstimatedMemory": "0.5GB",
+}
+```
+
+A nonzero `EstimatedComputeUnits` disables both measured and predicted task
+sizing. The explicit CPU and memory values override its coupled defaults of
+one CPU and 2.5 GB per compute unit. Always specify memory too, to avoid
+reserving that default for a small test.
+
+`EstimatedCPU` alone does not force the scheduler to use that size. In the
+2026-11-02 calibration, an action requested 4000m CPU and 2 GB, but the
+scheduler chose a prediction of 1000m and 448,631,104 bytes. With the three
+properties above, the second calibration's receipts showed the requested
+4000m and 2,147,483,648 bytes as the effective size, with no prediction or
+measurement replacing them.
+
+Read the execution receipt, rather than inferring allocation from the action's
+platform. Request `rpc/BuildBuddyService/GetExecution` with
+`{"executionLookup":{"invocationId":"<test invocation>"},"inlineExecuteResponse":true}`.
+For each test action, inspect
+`executeResponse.result.executionMetadata.auxiliaryMetadata` for the
+`execution_stats.ExecutionAuxiliaryMetadata` record. Its
+`schedulingMetadata.requestedTaskSize` is the request;
+`schedulingMetadata.taskSize` is the effective allocation. CPU is in
+`estimatedMilliCpu`, memory in `estimatedMemoryBytes`. The same record gives
+the execution priority and `cgroupSettings`.
+
+Cloud's default isolation is OCI. In both calibrations its cgroups had
+`cpu.max = 3000000 100000`, a global 30-core quota, and
+`memory.max = max`. The requested size controls scheduling, CPU weight, and
+the leased cpuset; it is not a per-request CPU hard cap. Firecracker treats
+sizes as hard limits and needs a separate calibration. Do not assume every
+cloud executor configuration matches the sampled OCI containers.
+
+To repeat calibration, select the problem targets and tests which launch
+children, including users of process-backed broker fixtures. Exclude hosted
+targets. Runner-lane tests share the runner VM's cgroup, so their samples do
+not justify remote-executor reservations. Use the Remote Bazel command above
+with `--jobs=16`, `--nocache_test_results`,
+`--run_under=//tools/bazel:calibrate_tests`, and temporary overrides:
+
+```sh
+--remote_exec_header=x-buildbuddy-platform.EstimatedComputeUnits=1 \
+--remote_exec_header=x-buildbuddy-platform.EstimatedCPU=4 \
+--remote_exec_header=x-buildbuddy-platform.EstimatedMemory=2GB
+```
+
+Verify the effective size in the receipts before using the measurements.
+The wrapper samples cgroup CPU usage every 100 ms, including children which
+exit between samples. It records the maximum CPU burst, peak memory, and
+sampled live process count in `test.outputs/sizing.json` and the test log.
+Process counts exclude the sampler and include the test launcher and pytest;
+they are lower bounds because short-lived children can escape sampling.
+
+Save those records as a JSON object mapping target labels to lists of
+samples, and save the `GetExecution` response. Derive the requests with:
+
+```sh
+python3 tools/bazel/sizing_report.py \
+  --executions executions.json --samples samples.json > measurements.json
+```
+
+The derivation rounds bursts above 1.25 CPUs up to whole CPUs. It leaves
+smaller bursts at the default, allowing for the sampler's overhead. Memory
+gets 25 percent headroom, rounded up to 0.25 GB with a 0.5 GB minimum, only
+for targets receiving CPU overrides. Each table entry records its burst,
+sampled process count, and source-based reason. Calibration wall times are
+observations, never test assertions.
+
+The [2026-11-02 measurements](../tools/bazel/test_sizing_measurements.json)
+cover 220 isolated remote targets from a 236-target calibration. Sixteen
+runner-lane targets were observed but excluded from per-action sizing.
+The table reserves two CPUs for 65 targets, three for seven, and four for
+one. The other 147 measured targets keep dynamic sizing. Memory requests
+are 0.5 GB except `test_allowance_suite_filesystem_isolation`, which needs
+0.75 GB after headroom. The source evidence has 15 assertion-failing targets
+and eight timeouts, or 23 distinct targets, despite the original README's
+count of 24; calibration includes all 90 baseline failures and timeouts.
 
 ## CI
 
@@ -180,7 +300,12 @@ scope:
 Impacted targets that no test depends on are built.
 
 Each push to `main` runs every test on amd64, then on arm64 remote executors,
-and the hosted lane on both architectures. A failure names the merged pull
+and the hosted lane on both architectures. The arm64 pass leaves out the
+`runner` tests (Remote Bazel runners are amd64 only) and the `hosted-arm64`
+tests; `gate-result.json` counts them under `architectures.arm64.excluded`, and
+the arm64 hosted lane runs their files. An architecture whose Bazel invocation
+runs no test at all is an error naming the invocation and its first `ERROR`
+line, not a failure of every test. A failure names the merged pull
 requests and says whether their selection included the failing test. The job
 summary and the `post-merge-<sha>` artifact hold one `POST_MERGE_RECORD`
 JSON line per run.
