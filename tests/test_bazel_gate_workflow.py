@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import shlex
 
 import yaml
 
@@ -112,10 +113,35 @@ def test_every_artifact_upload_requires_a_successful_secret_scan():
                 continue
             uploads += 1
             scan = group[index - 1]
-            assert scan['if'] == 'always()'
+            assert scan['if'].startswith('always() && ')
             assert scan.get('continue-on-error', False) is False
-            assert 'python3 tools/ci/check_no_secret_leak.py ' + step['with']['path'] in scan['run']
+            assert shlex.split(scan['run']) == [
+                'python3', 'tools/ci/check_no_secret_leak.py', step['with']['path'],
+                '--env', 'BUILDBUDDY_API_KEY', '--env', 'MERGIFY_TOKEN', '--env', 'GITHUB_TOKEN']
+            assert set(scan['env']) == {'BUILDBUDDY_API_KEY', 'MERGIFY_TOKEN', 'GITHUB_TOKEN'}
+            assert scan['env']['GITHUB_TOKEN'] == '${{ github.token }}'
+            composite = group is HOSTED_LANE['runs']['steps']
+            context = 'inputs' if composite else 'secrets'
+            key = 'buildbuddy-api-key' if composite else 'BUILDBUDDY_API_KEY'
+            token = 'mergify-token' if composite else 'MERGIFY_TOKEN'
+            assert scan['env']['BUILDBUDDY_API_KEY'] == '${{ ' + context + '.' + key + ' }}'
+            assert scan['env']['MERGIFY_TOKEN'] == '${{ ' + context + '.' + token + ' }}'
+            setup = next(row for row in group if row.get('id') == ('python' if composite else 'scan-python'))
+            assert setup['uses'].startswith('actions/setup-python@')
+            assert setup['with']['python-version'] == '3.14'
+            assert f"steps.{setup['id']}.outcome == 'success'" in scan['if']
             assert f"steps.{scan['id']}.outcome == 'success'" in step['if']
-            # Pending PrismaQuant's published SHA; a missing scanner blocks uploads.
-            assert 'Pending PrismaQuant' in scan['run']
     assert uploads == 3
+
+
+def test_hosted_lane_credentials_are_scoped_to_the_scanner():
+    for job in ('hosted', 'post-merge-hosted'):
+        lane = next(step for step in steps(job) if step.get('uses') == './.github/actions/hosted-lane')
+        assert lane['with']['buildbuddy-api-key'] == '${{ secrets.BUILDBUDDY_API_KEY }}'
+        assert lane['with']['mergify-token'] == '${{ secrets.MERGIFY_TOKEN }}'
+        assert 'BUILDBUDDY_API_KEY' not in lane.get('env', {})
+        assert 'MERGIFY_TOKEN' not in lane.get('env', {})
+    for step in HOSTED_LANE['runs']['steps']:
+        if step.get('id') != 'secret-scan':
+            assert 'BUILDBUDDY_API_KEY' not in step.get('env', {})
+            assert 'MERGIFY_TOKEN' not in step.get('env', {})
