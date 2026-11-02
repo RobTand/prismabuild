@@ -50,9 +50,11 @@ def test_a_cycle_library_preserves_internal_test_imports():
 
 def test_compatibility_imports_do_not_load_gate_control_code(monkeypatch):
     import builtins
+    import sys
+    monkeypatch.delitem(sys.modules, 'tools.ci.bazel_imports', raising=False)
     original_import = builtins.__import__
     def import_module(name, *args, **kwargs):
-        if name == 'tools.ci.bazel_gate':
+        if name.startswith('tools.ci.') and name != 'tools.ci.bazel_imports':
             raise AssertionError('pure import rules must not load gate control/configuration code')
         return original_import(name, *args, **kwargs)
     monkeypatch.setattr(builtins, '__import__', import_module)

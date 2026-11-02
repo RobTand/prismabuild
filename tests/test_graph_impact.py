@@ -228,7 +228,7 @@ def test_exact_coordinator_input_contract_is_accepted():
 
 def test_vendored_core_is_the_reviewed_prismaquant_file():
     assert hashlib.sha256((ROOT / 'tools/ci/graph_impact.py').read_bytes()).hexdigest() == (
-        '50dd4ca0b6d77a5fee57e06ea2a435b75a8a7e473e80bd6863bdda9bb7c4c16b')
+        '44b136779589d8ce26d3f321f714120e071405e77b913fc76e6fc2cefc751e19')
 
 
 @pytest.mark.parametrize('old_edges, added', [
@@ -253,3 +253,7 @@ def test_deliberate_new_cycle_uses_its_exact_reasoned_exception():
     assert impact.compare(before, after, baseline(before), allowlist={'scc:a,b': 'intentional fixture cycle'}) == []
     assert any('SCC grew or merged' in e for e in impact.compare(
         before, after, baseline(before), allowlist={'scc:other': 'unrelated exception'}))
+
+
+def test_shared_test_edge_policy_defaults_to_strict():
+    assert impact.policy_mode({}) == 'strict'

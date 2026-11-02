@@ -621,3 +621,9 @@ def test_native_cycle_blame_targets_the_reported_cycle_even_without_a_test_path(
     assert bazel_gate.blame_target('SCC grew or merged (2 nodes): //new:a, //new:b', head, []) == '//new:a'
     head['reach']['//tests:affected'] = []
     assert bazel_gate.blame_target('existing test reach grew: //tests:affected +1', head, []) == '//tests:affected'
+
+
+def test_prismabuild_baseline_cannot_enable_transitional_test_imports():
+    baseline = bazel_gate.graph_baseline({'u_pct': 20, 'loc_u_pct': 30, 'scc_max': 1, 'reach_budget': 9})
+    assert any('strict' in error for error in bazel_gate.graph_baseline_errors(
+        {**baseline, 'test_to_test': 'reach'}, baseline))
