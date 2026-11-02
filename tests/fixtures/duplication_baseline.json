@@ -347,6 +347,38 @@
    ],
    "name": "utc_now",
    "reason": "GitHub receipt collection records ISO UTC strings with a Z suffix. The D38 evidence gate returns aware datetime objects for freshness arithmetic; importing that domain gate would couple unrelated contracts."
+  },
+  {
+   "modules": [
+    "tools/ci/graph_impact.py",
+    "tools/fleet/mount_latency.py"
+   ],
+   "name": "_attribution",
+   "reason": "tools/ci/graph_impact.py is vendored byte-identical from PrismaQuant 75aff74ae1351a279eff79dd45947623d956faa4, pinned by SHA-256 44b136779589d8ce26d3f321f714120e071405e77b913fc76e6fc2cefc751e19. The graph helper attributes dependency edges and source fanout. The mount-latency helper attributes NFS probe RPC and timing costs; their inputs and evidence are different. This exception covers only these exact name and file pairs; any other module remains subject to the duplication guard."
+  },
+  {
+   "modules": [
+    "tools/ci/bazel_generated.py",
+    "tools/ci/graph_impact.py"
+   ],
+   "name": "check",
+   "reason": "tools/ci/graph_impact.py is vendored byte-identical from PrismaQuant 75aff74ae1351a279eff79dd45947623d956faa4, pinned by SHA-256 44b136779589d8ce26d3f321f714120e071405e77b913fc76e6fc2cefc751e19. The graph check evaluates graph metrics against baseline and allowlist policy. The generated-input check executes regeneration commands and rejects stale files; these are different validation contracts. This exception covers only these exact name and file pairs; any other module remains subject to the duplication guard."
+  },
+  {
+   "modules": [
+    "src/prismabuild/generation_receipt.py",
+    "tools/ci/graph_impact.py"
+   ],
+   "name": "compare",
+   "reason": "tools/ci/graph_impact.py is vendored byte-identical from PrismaQuant 75aff74ae1351a279eff79dd45947623d956faa4, pinned by SHA-256 44b136779589d8ce26d3f321f714120e071405e77b913fc76e6fc2cefc751e19. The graph comparison judges source reach and structural changes. The generation-receipt comparison returns typed Match, Drift or Unknown decisions for receipt observations; their contracts are unrelated. This exception covers only these exact name and file pairs; any other module remains subject to the duplication guard."
+  },
+  {
+   "modules": [
+    "tools/ci/gate_select.py",
+    "tools/ci/graph_impact.py"
+   ],
+   "name": "summary",
+   "reason": "tools/ci/graph_impact.py is vendored byte-identical from PrismaQuant 75aff74ae1351a279eff79dd45947623d956faa4, pinned by SHA-256 44b136779589d8ce26d3f321f714120e071405e77b913fc76e6fc2cefc751e19. The graph summary renders reach, uniformity and cycle metrics. The gate-selection summary renders a Markdown preview of selected tests and selection reasons; their report inputs and outputs differ. This exception covers only these exact name and file pairs; any other module remains subject to the duplication guard."
   }
  ],
  "same_name_helpers": {

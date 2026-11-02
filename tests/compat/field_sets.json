@@ -4346,6 +4346,16 @@
     "unresolved": "{str(os.getpid())}"
   },
   {
+    "path": "tools/ci/bazel_gate.py",
+    "owner": "graph_baseline_errors",
+    "unresolved": "set(previous.get('edge_groups', {}).get(group, ()))"
+  },
+  {
+    "path": "tools/ci/bazel_imports.py",
+    "owner": "bazel_regressions",
+    "unresolved": "set(baseline[key])"
+  },
+  {
     "path": "tools/ci/full_suite_workflow.py",
     "owner": "collect_shards",
     "unresolved": "{node.split('::', 1)[0] for node in rows}"
@@ -4381,6 +4391,76 @@
     "path": "tools/ci/gate_shadow.py",
     "owner": "audit",
     "unresolved": "full"
+  },
+  {
+    "path": "tools/ci/graph_impact.py",
+    "owner": "_attribution",
+    "unresolved": "set(base['reach'].get(test, ()))"
+  },
+  {
+    "path": "tools/ci/graph_impact.py",
+    "owner": "_bazel_inputs",
+    "unresolved": "set(manual_tests)"
+  },
+  {
+    "path": "tools/ci/graph_impact.py",
+    "owner": "baseline_errors",
+    "unresolved": "set(previous.get('edge_groups', {}).get(group, ()))"
+  },
+  {
+    "path": "tools/ci/graph_impact.py",
+    "owner": "check",
+    "unresolved": "base['reach'].keys() if base else set()"
+  },
+  {
+    "path": "tools/ci/graph_impact.py",
+    "owner": "check",
+    "unresolved": "set(map(tuple, base['edges']))"
+  },
+  {
+    "path": "tools/ci/graph_impact.py",
+    "owner": "compare",
+    "unresolved": "base['reach'].keys() if base else set()"
+  },
+  {
+    "path": "tools/ci/graph_impact.py",
+    "owner": "compare",
+    "unresolved": "inherited.keys()"
+  },
+  {
+    "path": "tools/ci/graph_impact.py",
+    "owner": "compare",
+    "unresolved": "inherited.keys()"
+  },
+  {
+    "path": "tools/ci/graph_impact.py",
+    "owner": "compare",
+    "unresolved": "inherited.keys()"
+  },
+  {
+    "path": "tools/ci/graph_impact.py",
+    "owner": "compare",
+    "unresolved": "set(base.get('edge_groups', {}).get(group, ()))"
+  },
+  {
+    "path": "tools/ci/graph_impact.py",
+    "owner": "regressions",
+    "unresolved": "set(baseline.get('edge_groups', {}).get(group, ()))"
+  },
+  {
+    "path": "tools/ci/graph_impact.py",
+    "owner": "stale_entries",
+    "unresolved": "set(live.get('edge_groups', {}).get(group, ()))"
+  },
+  {
+    "path": "tools/ci/graph_impact.py",
+    "owner": "summary",
+    "unresolved": "base['reach'].keys() if base else set()"
+  },
+  {
+    "path": "tools/ci/graph_impact.py",
+    "owner": "summary",
+    "unresolved": "set(map(tuple, base['edges'])) if base else set()"
   },
   {
     "path": "tools/ci/issue_link.py",
