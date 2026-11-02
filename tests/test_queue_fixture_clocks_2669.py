@@ -37,26 +37,26 @@ def test_owned_census_survives_descheduling_before_release(delayed_world, monkey
     world.actions.publish(key, resources={"cpu": 1})
     capture = reader._capture_ownership
     scans = queue.root / "real-census-scans"
-    real_scan = reservation._capture
+    real_scan = reservation._ordinary_selection_sources
 
-    def scan(active):
+    def scan(active, cached, *, recheck=False):
         with scans.open("a") as stream:
-            stream.write("scan\n")
-        return real_scan(active)
+            stream.write("recheck\n" if recheck else "discovery\n")
+        return real_scan(active, cached, recheck=recheck)
 
     def delayed_ownership(*args, **kwargs):
         identity = capture(*args, **kwargs)
         wall.advance(6.)
         return identity
 
-    monkeypatch.setattr(reservation, "_capture", scan)
+    monkeypatch.setattr(reservation, "_ordinary_selection_sources", scan)
     monkeypatch.setattr(reader, "_capture_ownership", delayed_ownership)
     claimed = queue.claim(capacity={"cpu": 2})
     if claimed is None:
         print("census refusal:", denial(queue, key))
     assert claimed is not None, "claim() returned None after census deadline scheduling delay"
     assert claimed["action_key"] == key
-    assert scans.read_text().splitlines() == ["scan", "scan"]
+    assert scans.read_text().splitlines() == ["discovery", "recheck"]
     assert queue.ledger().holder_tokens(key) == {"cpu": 1}
     assert queue.records.item_path(pool.record_store.CLAIMED, key).exists()
 
@@ -85,14 +85,19 @@ def test_event_controlled_unavailable_census_still_denies(delayed_world, monkeyp
     world.actions.publish(key, resources={"cpu": 1})
     context = multiprocessing.get_context("fork")
     entered, release = context.Event(), context.Event()
-    capture = reservation._capture
+    def unavailable(read):
+        def parked(*args, **kwargs):
+            read(*args, **kwargs)
+            entered.set()
+            assert release.wait(60), "test did not release the census callback"
+            raise OSError("event-controlled census unavailable")
+        return parked
 
-    def parked(active):
-        entered.set()
-        assert release.wait(60), "test did not release the census callback"
-        return capture(active)
-
-    monkeypatch.setattr(reservation, "_capture", parked)
+    # The ordinary proof may fall back to the full census. Both real reads
+    # execute, and neither can authorize admission after the injected fault.
+    monkeypatch.setattr(reservation, "_ordinary_selection_sources",
+                        unavailable(reservation._ordinary_selection_sources))
+    monkeypatch.setattr(reservation, "_capture", unavailable(reservation._capture))
     with ThreadPoolExecutor(max_workers=1) as executor:
         claim = executor.submit(queue.claim, capacity={"cpu": 2})
         try:
@@ -103,7 +108,7 @@ def test_event_controlled_unavailable_census_still_denies(delayed_world, monkeyp
         assert claim.result(timeout=60) is None
     refused = denial(queue, key)
     assert refused["reason"] == "measurement_census_unavailable"
-    assert "timed_out" in refused["evidence"]["unavailable"]
+    assert "event-controlled census unavailable" in refused["evidence"]["unavailable"]
     assert not queue.ledger().held_keys()
     assert queue.records.item_path(pool.record_store.READY, key).exists()
 
