@@ -161,6 +161,15 @@ def test_a_gain_must_be_recorded():
     assert fanout.stale_entries({**BASE, 'median_selected_pct': 9.5}, BASE) == []
 
 
+def test_recording_a_gain_never_records_a_tolerated_rise():
+    # Otherwise each unrelated gain would bank the rise within tolerance, and the
+    # next change could rise again: the ratchet would loosen itself.
+    live = {**BASE, 'median_selected_pct': 9.0, 'p90_selected_pct': 50.9, 'modules_over_half': 6}
+    record = fanout.baseline_record(live, BASE)
+    assert (record['median_selected_pct'], record['p90_selected_pct'], record['modules_over_half']) == (
+        9.0, BASE['p90_selected_pct'], BASE['modules_over_half'])
+
+
 def test_write_baseline_records_a_gain_and_refuses_a_loss(tmp_path, monkeypatch, capsys):
     root = write_tree(tmp_path, {'tests/test_a.py': 'from test_b import X\n', 'tests/test_b.py': 'X = 1\n'})
     monkeypatch.setattr(fanout, 'gate_population', lambda root: ['tests/test_a.py', 'tests/test_b.py'])
