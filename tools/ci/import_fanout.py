@@ -19,8 +19,10 @@ Two kinds of evidence are available:
   imports in embedded Python snippets. It also counts literal
   ``import_module`` and ``__import__`` names, and string literals that name a
   ``.py`` file. A ``.py`` literal matches every module path that ends with
-  it, and the match is a leaf: Bazel reads such a file as data and does not
-  follow its imports. Names resolve the way the gate's selector resolves them
+  it. A matched source module is followed like an import, because a test that
+  runs a tool by path needs the tool's own imports. Any other matched file is
+  a leaf: a test file named by path is read or matched by name, not run.
+  Names resolve the way the gate's selector resolves them
   (``gate_select.module_names``).
 - ``gate`` is the selector's own ``gate_select.dependencies``, which the
   Bazel BUILD generator also uses. It adds module names written as strings
@@ -197,8 +199,9 @@ class ImportGraph:
 
     def _import_evidence(self, source: str, path: str) -> tuple[set[str], set[str]]:
         edges = set().union(*(self.resolve(name) for name in imported_names(source, path)))
-        leaves = set().union(*(self._suffix_matches(literal) for literal in named_files(source)))
-        return edges - {path}, leaves - {path}
+        named = set().union(*(self._suffix_matches(literal) for literal in named_files(source)))
+        edges |= {file for file in named if is_source(file)}
+        return edges - {path}, named - edges - {path}
 
     def _gate_evidence(self, source: str, path: str) -> tuple[set[str], set[str]]:
         test_side = path.startswith('tests/') or path == 'conftest.py'

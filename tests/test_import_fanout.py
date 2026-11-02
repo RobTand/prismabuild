@@ -85,18 +85,21 @@ def test_a_conftest_selects_every_test_beneath_it(tmp_path):
     assert (live['median_selected_pct'], live['p90_selected_pct'], live['modules_over_half']) == (33.3, 100.0, 2)
 
 
-def test_a_file_named_by_path_is_a_leaf_and_a_cycle_terminates(tmp_path):
+def test_a_tool_named_by_path_brings_its_imports_and_a_named_test_does_not(tmp_path):
     root = write_tree(tmp_path, {
         'tests/test_runs_a_tool.py': 'TOOL = ROOT / "tools/fleet/runner.py"\n',
+        'tests/test_names_a_test.py': 'MATCHED = item.path.name == "test_cycle.py"\n',
         'tests/test_cycle.py': 'import alpha\n',
         'tools/fleet/runner.py': 'import heavy\n',
         'tools/heavy.py': '',
         'tools/alpha.py': 'import beta\n',
         'tools/beta.py': 'import alpha\n',
     })
-    live = fanout.measure(root, population=['tests/test_runs_a_tool.py', 'tests/test_cycle.py'])
+    live = fanout.measure(root, population=['tests/test_runs_a_tool.py', 'tests/test_names_a_test.py',
+                                            'tests/test_cycle.py'])
+    # the alpha/beta cycle terminates, and the named test file's import of alpha is not followed
     assert live['dependents'] == {'tools/alpha.py': 1, 'tools/beta.py': 1,
-                                  'tools/fleet/runner.py': 1, 'tools/heavy.py': 0}
+                                  'tools/fleet/runner.py': 1, 'tools/heavy.py': 1}
 
 
 def test_only_imports_of_test_modules_are_test_to_test(tmp_path):
