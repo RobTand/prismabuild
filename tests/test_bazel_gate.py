@@ -375,12 +375,6 @@ def test_a_sharded_target_reruns_only_when_every_failed_shard_is_marked(tmp_path
     assert workspace.budget_only(sorted(failed), failed) == {'//tests:test_all'}
 
 
-def test_the_marker_name_is_the_runners(tmp_path):
-    gate_run = bazel_gate.module_from('gate_run_marker', ROOT / 'tools/ci/gate_run.py')
-    assert gate_run.BUDGET_MARKER == 'budget-overrun.txt'
-    assert 'gate_run.BUDGET_MARKER' in (ROOT / 'tools/bazel/python_runner.py').read_text()
-
-
 def test_remote_executor_configs_are_named_in_bazelrc():
     config = (ROOT / '.bazelrc').read_text()
     for name in bazel_gate.CONFIGS.values():

@@ -210,3 +210,13 @@ def test_a_passing_file_records_its_inventory(tmp_path):
     nodes = {'tests/test_a.py::test_one': 'passed'}
     assert python_runner.settle(0, nodes, [], tmp_path, 'tests/test_a.py', 'budget-overrun.txt') == 0
     assert '"tests/test_a.py::test_one": "passed"' in (tmp_path / 'inventory.json').read_text()
+
+
+def test_the_gate_finds_the_marker_the_runner_writes(tmp_path):
+    outputs = tmp_path / 'bazel-testlogs/tests/test_a/test.outputs'
+    marker = python_runner.gate_run_of(ROOT).BUDGET_MARKER
+    python_runner.settle(0, {'tests/test_a.py::test_one': 'passed'}, OVERRUN, outputs, 'tests/test_a.py', marker)
+    (tmp_path / 'tools/ci').mkdir(parents=True)
+    (tmp_path / 'tools/ci/gate_run.py').write_text((ROOT / 'tools/ci/gate_run.py').read_text())
+    gate = load('bazel_gate_for_runner', 'tools/ci/bazel_gate.py').Workspace(root=tmp_path)
+    assert gate.budget_only(['//tests:test_a'], {'//tests:test_a': 'FAILED'}) == {'//tests:test_a'}

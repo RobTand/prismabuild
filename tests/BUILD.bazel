@@ -28381,7 +28381,6 @@ pb_py_test(
     library = ":test_bazel_gate_lib",
     deps = [
         "//tools:ci/bazel_gate",
-        "//tools:ci/gate_run",
     ],
     data = [
         "//:.github/workflows/gate.yml",
@@ -28534,7 +28533,6 @@ pb_py_library(
         "//src/prismabuild:core.py",
         "//tools/bazel:generate.sh",
         "//tools/bazel:python.bzl",
-        "//tools/bazel:python_runner.py",
         "//tools/bazel:requirements.txt",
         "//tools:ci/bazel_gate.py",
         "//tools:ci/gate_requirements.txt",
