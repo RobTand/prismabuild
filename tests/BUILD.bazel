@@ -28658,6 +28658,35 @@ pb_py_library(
 )
 
 pb_py_test(
+    name = "test_bazel_quarantine",
+    path = "tests/test_bazel_quarantine.py",
+    library = ":test_bazel_quarantine_lib",
+    timeout = "moderate",
+)
+
+pb_py_library(
+    name = "test_bazel_quarantine_lib",
+    srcs = [
+        "test_bazel_quarantine.py",
+    ],
+    data = [
+        "//:BUILD.bazel",
+        "//:files",
+        "//src/prismabuild:BUILD.bazel",
+        "//src/prismabuild:files",
+        "//tools/bazel:BUILD.bazel",
+        "//tools/bazel:files",
+        "//tools:BUILD.bazel",
+        "//tools:files",
+        ":files",
+        "BUILD.bazel",
+    ],
+    deps = [
+        ":test_bazel_test_sizing_lib",
+    ],
+)
+
+pb_py_test(
     name = "test_bazel_test_sizing",
     path = "tests/test_bazel_test_sizing.py",
     library = ":test_bazel_test_sizing_lib",
