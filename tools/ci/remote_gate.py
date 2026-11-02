@@ -69,6 +69,8 @@ def run_request(args):
         raise RemoteError('empty base or head: the queue-aware refs were unavailable')
     command = ['tools/ci/bazel_gate.py', args.mode, '--base', args.base,
                '--head', args.head, '--branch', args.branch]
+    fail_fast = 'off' if args.mode == 'main' else 'batch' if os.environ.get('BATCH_DRAFT') == 'true' else 'pr'
+    command.append(f'--fail-fast={fail_fast}')
     return {
         'repo': args.repo,
         'branch': args.branch,
@@ -159,7 +161,7 @@ def outputs(result):
         'all_scopes': str(bool(result.get('all_scopes'))).lower(),
     }
     if result.get('mode') == 'pr':
-        ok = not result.get('error') and not result.get('inputs')
+        ok = not result.get('error') and not result.get('inputs') and not result.get('aborted_early')
         values['tests'] = 'success' if ok and result.get('verdict') in ('pass', 'skipped') else 'failure'
     return values
 
@@ -198,6 +200,10 @@ def explain(result, prs):
     if result['mode'] == 'pr':
         lines.append(f"Selection: {result.get('selection')}, {len(result.get('selected', []))} tests")
         lines.extend(f'FAILED: {label}' for label in result.get('failed', []))
+        if result.get('aborted_early'):
+            failure = result['aborted_early']
+            lines.append(f"Aborted early: {failure['label']} ({failure['reason']})")
+            lines.extend(f'NOT RUN: {label}' for label in result.get('not_run', []))
     else:
         lines.append(f"Merged PRs: {', '.join(f'#{pr}' for pr in prs) or 'unknown'}")
         for arch, info in result.get('architectures', {}).items():
@@ -282,8 +288,6 @@ def main(argv=None):
             raise RemoteError('BuildBuddy Run returned no invocation id')
         print(f'Remote Bazel run: https://app.buildbuddy.io/invocation/{invocation_id}', flush=True)
         invocation = await_invocation(client, invocation_id, started + (args.timeout + 10) * 60)
-        for name, data in diagnostics(client, invocation):
-            (args.output_dir / name).write_bytes(data)
         result = parse_result(fetch(client, invocation, RESULT), args.head)
     except RemoteError as error:
         print(f'::error::{error}', flush=True)

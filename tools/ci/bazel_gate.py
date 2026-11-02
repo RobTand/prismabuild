@@ -17,6 +17,8 @@ import os
 from pathlib import Path
 import re
 import shlex
+import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -138,20 +140,116 @@ def verdict_of(selected, statuses):
     return ('fail' if failed else 'pass' if selected else 'skipped'), failed
 
 
+class BepStream:
+    """Decode complete JSON lines only. Keep partial UTF-8 and JSON between reads."""
+
+    def __init__(self):
+        self.pending = b''
+
+    def feed(self, data, *, final=False):
+        self.pending += data
+        while b'\n' in self.pending:
+            line, self.pending = self.pending.split(b'\n', 1)
+            if line.strip():
+                yield json.loads(line)
+        if final and self.pending.strip():
+            # SIGINT may leave the last event incomplete. Complete earlier events
+            # remain evidence; selected targets without a result still fail.
+            try:
+                event = json.loads(self.pending)
+            except (ValueError, UnicodeDecodeError):
+                return
+            self.pending = b''
+            yield event
+
+
+def update_bep(run, event):
+    identity = event.get('id', {})
+    if 'started' in identity:
+        run['invocation'] = event.get('started', {}).get('uuid')
+    attempt = identity.get('testResult')
+    if attempt:
+        # A failed attempt remains visible if cancellation prevents its summary.
+        label = canonical_label(attempt['label'])
+        status = event.get('testResult', {}).get('status', 'NO_STATUS')
+        if status != 'PASSED':
+            run['statuses'][label] = status
+    summary = identity.get('testSummary')
+    if summary:
+        run['statuses'][canonical_label(summary['label'])] = event.get(
+            'testSummary', {}).get('overallStatus', 'NO_STATUS')
+    if run['error'] is None:
+        run['error'] = next((line for line in event.get('progress', {}).get('stderr', '').splitlines()
+                             if ERROR_LINE.match(line)), None)
+
+
 def bep_run(text):
-    """Per-label test status, the invocation ID and Bazel's first ERROR line, from a JSON BEP file."""
-    statuses, invocation, error = {}, None, None
-    for line in text.splitlines():
-        event = json.loads(line)
-        if 'started' in event.get('id', {}):
-            invocation = event.get('started', {}).get('uuid')
-        summary = event.get('id', {}).get('testSummary')
-        if summary:
-            statuses[summary['label']] = event.get('testSummary', {}).get('overallStatus', 'NO_STATUS')
-        if error is None:
-            error = next((output for output in event.get('progress', {}).get('stderr', '').splitlines()
-                          if ERROR_LINE.match(output)), None)
-    return {'statuses': statuses, 'invocation': invocation, 'error': error}
+    """Per-label status, invocation ID and first ERROR, using the streaming decoder."""
+    run = {'statuses': {}, 'invocation': None, 'error': None}
+    for event in BepStream().feed(text.encode(), final=True):
+        update_bep(run, event)
+    return run
+
+
+class FailFast:
+    """Failure policy and PR grace. Clock and marker lookup are injectable.
+
+    BEP announces result/action IDs before publishing their completion. These
+    include queued work, so draining the snapshot is a conservative bound on
+    work in flight, with an unconditional 60-second maximum grace.
+    """
+
+    def __init__(self, mode, quarantine, budget_marker, clock):
+        self.mode, self.quarantine = mode, quarantine
+        self.budget_marker, self.clock = budget_marker, clock
+        self.failure, self.deadline = None, None
+        self.pending, self.draining = set(), set()
+        self.ran = set()
+
+    @staticmethod
+    def action_id(identity):
+        if 'testResult' in identity or 'actionCompleted' in identity:
+            return json.dumps(identity, sort_keys=True)
+        return None
+
+    def observe(self, event):
+        identity = event.get('id', {})
+        completed = self.action_id(identity)
+        self.pending.discard(completed)
+        self.draining.discard(completed)
+        for child in event.get('children', []):
+            action = self.action_id(child)
+            if action:
+                self.pending.add(action)
+        attempt = identity.get('testResult')
+        if attempt:
+            self.ran.add(canonical_label(attempt['label']))
+        if self.failure or self.mode in ('main', 'off'):
+            return
+        reason, label = None, None
+        if attempt and event.get('testResult', {}).get('status') == 'FAILED':
+            label = canonical_label(attempt['label'])
+            if not self.budget_marker(label, event):
+                reason = 'FAILED'
+        for key, payload in [('targetCompleted', 'completed'), ('actionCompleted', 'action')]:
+            if key in identity and not event.get(payload, {}).get('success', False):
+                # Bazel's failed TestRunner action is classified by testResult,
+                # where TIMEOUT and the budget marker are available.
+                if event.get(payload, {}).get('type') != 'TestRunner':
+                    label = canonical_label(identity[key].get('label', '(build)'))
+                    reason = 'BUILD_FAILURE'
+        if event.get('aborted', {}).get('reason') in ('ANALYSIS_FAILURE', 'LOADING_FAILURE'):
+            label = next((canonical_label(value['label']) for value in identity.values()
+                          if isinstance(value, dict) and 'label' in value), '(build)')
+            reason = 'BUILD_FAILURE'
+        if reason and label not in self.quarantine:
+            self.failure = {'label': label, 'reason': reason}
+            self.deadline = self.clock() + 60
+            self.draining = self.pending.copy()
+
+    def cancel_due(self):
+        return self.failure is not None and (self.mode == 'batch' or
+                self.mode == 'pr' and (not self.draining or self.clock() >= self.deadline))
 
 
 def architecture_result(population, run, selected):
@@ -328,16 +426,25 @@ def blame_target(error, head, affected):
     return '//tools:ci/bazel_gate'
 
 
+def child_environment(command):
+    """Bazel owns runner auth. Non-Bazel children cannot inherit credentials."""
+    return {name: value for name, value in os.environ.items()
+            if Path(str(command[0])).name in ('bazel', 'bazelisk')
+            or not (name.endswith(('_API_KEY', '_TOKEN')) or name == 'GITHUB_TOKEN')}
+
+
 class Workspace:
     """Git and Bazel on the runner. Every failure raises GateError."""
 
-    def __init__(self, root=ROOT, bazel='bazel'):
+    def __init__(self, root=ROOT, bazel='bazel', *, clock=time.monotonic, process_factory=subprocess.Popen):
         self.root, self.bazel = root, bazel
+        self.clock, self.process_factory = clock, process_factory
         self.graph_revisions = None
 
     def run(self, *command, capture=True, check=True):
         print('$ ' + shlex.join(map(str, command)), flush=True)
         result = subprocess.run(list(map(str, command)), cwd=self.root, text=True,
+                                env=child_environment(command),
                                 stdout=subprocess.PIPE if capture else None)
         if check and result.returncode:
             raise GateError(f'{shlex.join(map(str, command))} exited {result.returncode}')
@@ -347,7 +454,7 @@ class Workspace:
         if not sha:
             raise GateError('empty base or head; the queue-aware refs were unavailable')
         present = subprocess.run(['git', 'cat-file', '-e', f'{sha}^{{commit}}'], cwd=self.root,
-                                 stderr=subprocess.DEVNULL)
+                                 stderr=subprocess.DEVNULL, env=child_environment(['git']))
         if present.returncode:
             self.run('git', 'fetch', '--quiet', '--no-tags', 'origin', sha)
 
@@ -555,21 +662,75 @@ class Workspace:
         except GateError as error:
             return {'summary': 'U unavailable, SCC max unavailable: ' + str(error), 'errors': [str(error)]}
 
-    def test(self, targets, config, metadata, log_name, extra=()):
-        """Run targets; return bep_run's statuses, invocation and first ERROR line.
-        Build failures leave labels without status."""
+    def test(self, targets, config, metadata, log_name, extra=(), *, fail_fast='off', quarantine=None):
+        """Watch a private BEP stream while the Bazel client owns remote work."""
         if not targets:
             return bep_run('')
-        patterns = Path(tempfile.gettempdir(), f'{log_name}-targets.txt')
-        patterns.write_text('\n'.join(targets) + '\n')
-        bep = Path(tempfile.gettempdir(), f'{log_name}-bep.json')
-        bep.unlink(missing_ok=True)
-        self.run(self.bazel, 'test', f'--config={config}', '--config=ci', '--keep_going',
-                 f'--target_pattern_file={patterns}', f'--build_event_json_file={bep}',
-                 *diagnostic_logs(log_name), *extra,
-                 *[f'--build_metadata={key}={value}' for key, value in metadata.items()],
-                 capture=False, check=False)
-        return bep_run(bep.read_text() if bep.exists() else '')
+        if quarantine is None:
+            quarantine = set()
+            if fail_fast != 'off':
+                try:
+                    loader = module_from('quarantine_for_gate', self.root / 'tools/ci/bazel_quarantine.py')
+                    quarantine = set(loader.read_quarantine(self.root / 'tools/bazel/nonhermetic.bzl'))
+                except (OSError, ValueError, SyntaxError, TypeError) as error:
+                    raise GateError('cannot read Bazel quarantine table') from error
+        with tempfile.TemporaryDirectory(prefix='bazel-gate-') as directory:
+            patterns, path = Path(directory) / 'targets.txt', Path(directory) / 'bep.json'
+            patterns.write_text('\n'.join(targets) + '\n')
+            command = [self.bazel, 'test', f'--config={config}', '--config=ci', '--keep_going',
+                       f'--target_pattern_file={patterns}', f'--build_event_json_file={path}',
+                       *diagnostic_logs(str(Path(directory) / log_name)), *extra,
+                       *[f'--build_metadata={key}={value}' for key, value in metadata.items()]]
+            print('$ ' + shlex.join(command), flush=True)
+            stream, run, offset = BepStream(), bep_run(''), 0
+            watch = FailFast(fail_fast, quarantine, self.budget_marker, self.clock)
+            process = self.process_factory(command, cwd=self.root)
+            aborted = None
+            try:
+                while True:
+                    ended = process.poll() is not None
+                    if path.exists():
+                        with path.open('rb') as handle:
+                            handle.seek(offset)
+                            chunk = handle.read()
+                            offset = handle.tell()
+                    else:
+                        chunk = b''
+                    for event in stream.feed(chunk, final=ended):
+                        update_bep(run, event)
+                        watch.observe(event)
+                        if not ended and aborted is None and watch.cancel_due():
+                            process.send_signal(signal.SIGINT)
+                            aborted = dict(watch.failure)
+                    if ended:
+                        break
+                    if aborted is None and watch.cancel_due():
+                        process.send_signal(signal.SIGINT)
+                        aborted = dict(watch.failure)
+                    try:
+                        process.wait(timeout=0.1)
+                    except subprocess.TimeoutExpired:
+                        pass
+            finally:
+                if process.poll() is None:
+                    process.send_signal(signal.SIGINT)
+                    process.wait()
+            if aborted:
+                run.update(aborted_early=aborted, not_run=sorted(set(targets) - watch.ran))
+            return run
+
+    def budget_marker(self, label, event):
+        """Inspect this result's shard, not other unfinished shards of the target.
+
+        ci's remote_download_regex materializes test.outputs before testResult.
+        A budget-only marker is distinct from an assertion failure (#2637).
+        """
+        package, _, name = label.removeprefix('//').partition(':')
+        logs = self.root / 'bazel-testlogs' / package / name
+        shard = event['id']['testResult'].get('shard', 0)
+        outputs = list(logs.glob(f'shard_{shard + 1}_of_*/test.outputs')) or [logs / 'test.outputs']
+        marker = module_from('gate_run_for_bazel_gate', self.root / 'tools/ci/gate_run.py').BUDGET_MARKER
+        return any(has_output(path, marker) for path in outputs)
 
     def budget_only(self, labels, statuses):
         """Failed labels to rerun once: a Bazel TIMEOUT, or the runner's budget marker
@@ -616,7 +777,8 @@ class Workspace:
         started = []
         for command in generated.commands():
             print('$ ' + shlex.join(map(str, command)) + ' &', flush=True)
-            started.append((command, subprocess.Popen(list(map(str, command)), cwd=self.root)))
+            started.append((command, subprocess.Popen(list(map(str, command)), cwd=self.root,
+                                                       env=child_environment(command))))
         return started
 
     def inputs_check(self, started=None):
@@ -641,12 +803,9 @@ def diagnostic_logs(prefix):
 def write_result(result, directory, root=ROOT):
     directory.mkdir(parents=True, exist_ok=True)
     (directory / RESULT).write_text(json.dumps(result, indent=2) + '\n')
-    for suffix in DIAGNOSTICS:
-        for log in root.glob(f'*{suffix}'):
-            log.replace(directory / log.name)
 
 
-def gate_pr(workspace, base, head, metadata):
+def gate_pr(workspace, base, head, metadata, *, fail_fast='pr'):
     started = time.monotonic()
     for sha in [base, head]:
         workspace.ensure_commit(sha)
@@ -667,15 +826,20 @@ def gate_pr(workspace, base, head, metadata):
     selected_seconds = time.monotonic() - started
     # The generated-input checks need no Bazel server: they run beside the tests.
     checks = workspace.start_generated_checks()
-    statuses = workspace.test(decision['selected'], CONFIGS['amd64'], metadata, 'pr')['statuses']
-    statuses, reruns = rerun_budget_only(workspace, decision['selected'], statuses, CONFIGS['amd64'],
-                                         metadata, 'pr')
+    run = workspace.test(decision['selected'], CONFIGS['amd64'], metadata, 'pr', fail_fast=fail_fast)
+    statuses, reruns = run['statuses'], {}
+    if not run.get('aborted_early'):
+        statuses, reruns = rerun_budget_only(workspace, decision['selected'], statuses, CONFIGS['amd64'],
+                                             metadata, 'pr')
     tested_seconds = time.monotonic() - started
     verdict, failed = verdict_of(decision['selected'], statuses)
     inputs = workspace.inputs_check(checks) + workspace.budget_check(base) + graph_impact['errors']
-    if not workspace.build(decision['build'], CONFIGS['amd64'], metadata, 'pr'):
+    if run.get('aborted_early'):
+        verdict = 'fail'
+    elif not workspace.build(decision['build'], CONFIGS['amd64'], metadata, 'pr'):
         inputs.append('bazel build of impacted targets failed: ' + ' '.join(decision['build']))
-    return {**decision, 'verdict': verdict, 'failed': failed, 'inputs': inputs, 'budget_reruns': reruns,
+    return {**decision, **{key: run[key] for key in ('aborted_early', 'not_run') if key in run},
+            'verdict': verdict, 'failed': failed, 'inputs': inputs, 'budget_reruns': reruns,
             'graph_impact': graph_impact,
             'changed': sorted(changed | deleted),
             'durations': {'selection': round(selected_seconds, 1),
@@ -727,7 +891,7 @@ def gate_main(workspace, base, head, metadata):
 
 
 def passed(result):
-    if result.get('error') or result.get('inputs'):
+    if result.get('error') or result.get('inputs') or result.get('aborted_early'):
         return False
     if result['mode'] == 'main':
         return all(not arch['failed'] and not arch.get('error') for arch in result['architectures'].values())
@@ -741,6 +905,7 @@ def main(argv=None, workspace=None):
     parser.add_argument('--base', required=True)
     parser.add_argument('--head', required=True)
     parser.add_argument('--branch', default='')
+    parser.add_argument('--fail-fast', choices=['batch', 'pr', 'off'], default='pr')
     args = parser.parse_args(argv)
     if args.write_baseline and args.mode != 'graph':
         parser.error('--write-baseline requires graph mode')
@@ -768,8 +933,10 @@ def main(argv=None, workspace=None):
                 output.mkdir(parents=True, exist_ok=True)
                 (output / path.name).write_bytes(path.read_bytes())
         else:
-            gate = gate_pr if args.mode == 'pr' else gate_main
-            result.update(gate(workspace, args.base, args.head, metadata))
+            if args.mode == 'pr':
+                result.update(gate_pr(workspace, args.base, args.head, metadata, fail_fast=args.fail_fast))
+            else:
+                result.update(gate_main(workspace, args.base, args.head, metadata))
         result.setdefault('error', None)
     except GateError as error:
         result['error'] = str(error)
@@ -781,5 +948,29 @@ def main(argv=None, workspace=None):
     return 0 if passed(result) else 1
 
 
+def scan_output():
+    """CI uploads only scanned summaries; bbrun wraps its own final scan."""
+    if os.environ.get('BBRUN_FINAL_SCAN') == '1':
+        return
+    output = Path(os.environ.get('BUILDBUDDY_ARTIFACTS_DIRECTORY', ROOT / 'gate-artifacts'))
+    output.mkdir(parents=True, exist_ok=True)
+    try:
+        scanner = module_from('secret_scan_for_gate', ROOT / 'tools/ci/check_no_secret_leak.py')
+        code = scanner.main(['--require', 'BUILDBUDDY_API_KEY', '--env', 'MERGIFY_TOKEN',
+                             '--env', 'GITHUB_TOKEN', str(output)])
+    except BaseException:
+        shutil.rmtree(output)
+        output.mkdir(parents=True)
+        raise
+    if code:
+        shutil.rmtree(output)
+        output.mkdir(parents=True)
+        raise SystemExit(75)
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        code = main()
+    finally:
+        scan_output()
+    sys.exit(code)

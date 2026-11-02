@@ -72,7 +72,7 @@ class FakeWorkspace:
     def arm64_excluded(self):
         return {tag: set(labels) for tag, labels in ARM64_EXCLUDED.items()}
 
-    def test(self, targets, config, metadata, log_name, extra=()):
+    def test(self, targets, config, metadata, log_name, extra=(), **kwargs):
         self.ran.append((config, list(targets)))
         self.extras.append(list(extra))
         if config in self.broken:
@@ -207,7 +207,7 @@ def test_a_failing_or_missing_test_status_fails(tmp_path, monkeypatch):
     status, result = run(workspace, tmp_path, monkeypatch)
     assert status == 1 and result['failed'] == ['//tests:test_core']
     workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'])
-    workspace.test = lambda targets, *rest: {'statuses': {}, 'invocation': 'id', 'error': None}
+    workspace.test = lambda targets, *rest, **kwargs: {'statuses': {}, 'invocation': 'id', 'error': None}
     status, result = run(workspace, tmp_path, monkeypatch)
     assert status == 1 and result['failed'] == ['//tests:test_core']
 
@@ -832,3 +832,57 @@ def test_raw_diagnostics_never_move_to_uploaded_artifacts(tmp_path):
         (root / name).write_text('not for upload')
     bazel_gate.write_result({'verdict': 'fail'}, upload, root)
     assert sorted(path.name for path in upload.iterdir()) == [bazel_gate.RESULT]
+
+
+def test_budget_marker_is_specific_to_the_completed_shard(tmp_path):
+    workspace = _real_workspace(tmp_path)
+    _outputs(tmp_path, '//tests:test_core', ['budget-overrun.txt'], shard='shard_1_of_2', zipped=True)
+    assert workspace.budget_marker('//tests:test_core', result_event(shard=0))
+    assert not workspace.budget_marker('//tests:test_core', result_event(shard=1))
+    _outputs(tmp_path, '//tests:test_core', ['junit.xml'], shard='shard_2_of_2')
+    assert not workspace.budget_marker('//tests:test_core', result_event(shard=1))
+
+
+@pytest.mark.parametrize('mode, signals, expected', [
+    ('batch', 1, ['//tests:test_pbrun']), ('pr', 1, []), ('off', 0, []),
+])
+def test_workspace_modes_use_the_stream_and_injected_clock(mode, signals, expected):
+    clock, processes = FakeClock(), []
+    frames = [(0, [announced('//tests:test_core', '//tests:test_pbrun'), result_event()]),
+              (20, [result_event('//tests:test_pbrun')]), (61, [])]
+    def launch(command, **kwargs):
+        process = ScriptedBazel(command, frames=frames, clock=clock, **kwargs)
+        original = process.send_signal
+        def cancel(signal):
+            original(signal)
+            process.frames = iter([])
+        process.send_signal = cancel
+        processes.append(process)
+        return process
+    workspace = bazel_gate.Workspace(root=ROOT, clock=clock, process_factory=launch)
+    result = workspace.test(['//tests:test_core', '//tests:test_pbrun'], 'remote', {}, 'fake-modes',
+                            fail_fast=mode, quarantine=set())
+    assert len(processes[0].signals) == signals
+    assert result.get('not_run', []) == expected
+    assert result['statuses']['//tests:test_core'] == 'FAILED'
+    if mode == 'pr':
+        assert result['statuses']['//tests:test_pbrun'] == 'FAILED'
+
+
+def test_failed_test_runner_action_does_not_bypass_timeout_and_budget_rules():
+    watch = bazel_gate.FailFast('batch', set(), lambda *args: True, FakeClock())
+    watch.observe({'id': {'actionCompleted': {'label': '//tests:test_core'}},
+                   'action': {'success': False, 'type': 'TestRunner'}})
+    watch.observe(result_event(status='TIMEOUT'))
+    assert not watch.cancel_due()
+    watch.observe(result_event(status='FAILED'))
+    assert not watch.cancel_due()
+
+
+def test_non_bazel_children_do_not_inherit_secret_variables(monkeypatch):
+    monkeypatch.setenv('EXAMPLE_API_KEY', 'fake-value')
+    monkeypatch.setenv('GITHUB_TOKEN', 'fake-token')
+    monkeypatch.setenv('PATH', '/fake/bin')
+    environment = bazel_gate.child_environment(['python3', 'tool.py'])
+    assert 'EXAMPLE_API_KEY' not in environment and 'GITHUB_TOKEN' not in environment
+    assert environment['PATH'] == '/fake/bin'
