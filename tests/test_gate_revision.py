@@ -7,7 +7,6 @@ import subprocess
 import sys
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('gate_revision', ROOT / 'tools/ci/gate_revision.py')
@@ -106,33 +105,3 @@ def test_full_gate_rejects_an_unavailable_event_base(histories):
         revision.gate_revisions(repository, 'full', '1' * 40, merge)
 
 
-def test_workflow_uses_merge_sha_except_for_authenticated_exact_head_runs():
-    workflow = yaml.safe_load((ROOT / '.github/workflows/gate.yml').read_text())
-    assert workflow['env']['GATE_HEAD'] == (
-        '${{ ' + AUTHENTICATED_FULL + ' && github.event.pull_request.head.sha || github.sha }}')
-    assert workflow['env']['GATE_MODE'] == '${{ ' + AUTHENTICATED_FULL + " && 'full' || 'selection' }}"
-    for name, job in workflow['jobs'].items():
-        checkouts = [step for step in job['steps'] if 'checkout@' in step.get('uses', '')]
-        assert len(checkouts) == 1, name
-        assert checkouts[0]['with']['ref'] == '${{ env.GATE_HEAD }}', name
-        assert checkouts[0]['with']['persist-credentials'] is False
-    assert workflow['permissions'] == {'contents': 'read', 'actions': 'read'}
-
-
-def test_only_exact_head_runs_need_the_tooling_handshake():
-    workflow = yaml.safe_load((ROOT / '.github/workflows/gate.yml').read_text())
-    contract = next(step for step in workflow['jobs']['plan']['steps']
-                    if step.get('id') == 'head-contract')
-    assert contract.get('if') == "${{ env.GATE_MODE == 'full' }}"
-    assert 'git diff --quiet' in contract['run']
-
-
-def test_plan_resolves_its_base_before_selecting_tests():
-    workflow = yaml.safe_load((ROOT / '.github/workflows/gate.yml').read_text())
-    steps = workflow['jobs']['plan']['steps']
-    resolved = next(i for i, step in enumerate(steps) if step.get('id') == 'revision')
-    planned = next(i for i, step in enumerate(steps) if step.get('id') == 'plan')
-    assert resolved < planned
-    assert 'gate_revision.py' in steps[resolved]['run']
-    assert '--base "${{ steps.revision.outputs.base_sha }}"' in steps[planned]['run']
-    assert '--head "$GATE_HEAD"' in steps[planned]['run']

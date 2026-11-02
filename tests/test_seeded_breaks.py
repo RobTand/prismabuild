@@ -13,16 +13,16 @@ SPEC.loader.exec_module(seeded_breaks)
 
 
 def test_an_expected_failure_inside_the_selection_is_caught():
-    row = seeded_breaks.verdict(['//tests:test_core', '//tests:test_pool'],
+    row = seeded_breaks.seed_verdict(['//tests:test_core', '//tests:test_pool'],
                                 {'//tests:test_core': 'FAILED', '//tests:test_pool': 'PASSED'}, ['//tests:test_core'])
     assert row == {'impacted_tests': 2, 'failing_selected': ['//tests:test_core'], 'caught': True,
                    'example': '//tests:test_core'}
 
 
 def test_an_unexpected_failure_or_an_unselected_test_is_not():
-    assert not seeded_breaks.verdict(['//tests:test_pool'], {'//tests:test_pool': 'FAILED'},
+    assert not seeded_breaks.seed_verdict(['//tests:test_pool'], {'//tests:test_pool': 'FAILED'},
                                      ['//tests:test_core'])['caught']
-    assert not seeded_breaks.verdict([], {}, ['//tests:test_core'])['caught']
+    assert not seeded_breaks.seed_verdict([], {}, ['//tests:test_core'])['caught']
 
 
 def test_seeds_cover_eight_places_and_name_existing_files():
