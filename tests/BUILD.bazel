@@ -158379,6 +158379,7 @@ pb_py_test(
     library = ":test_tia_contract_lib",
     deps = [
         "//src/prismabuild:__init__",
+        "//tools:ci/gate_env",
         "//tools:ci/gate_paths",
         "//tools:ci/gate_select",
         "//tools:ci/tia_diff",
