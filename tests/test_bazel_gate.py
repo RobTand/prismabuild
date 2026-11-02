@@ -588,6 +588,7 @@ def test_graph_only_baseline_writer_keeps_history_and_never_runs_test_population
     workspace = bazel_gate.Workspace(root=tmp_path)
     snapshot = impact.measure({'//pkg:t': {'//pkg:a'}}, {('//pkg:t', '//pkg:a')}, {'//pkg:a': 1})
     baseline = impact.baseline_record(snapshot)
+    baseline.pop('edge_groups')
     baseline['figures']['u_pct'] = 200
     workspace.snapshots = {'base': snapshot, 'head': snapshot}
     workspace.graph_impact = impact
@@ -607,6 +608,7 @@ def test_graph_only_baseline_writer_keeps_history_and_never_runs_test_population
     written = json.loads(path.read_text())
     assert written['history'] == ['preserved']
     assert written['graph_impact']['figures']['u_pct'] == 100
+    assert 'edge_groups' not in written['graph_impact']
     assert calls == [True]
     assert 'U 100.0% → 100.0%' in capsys.readouterr().out
     original = path.read_bytes()
@@ -621,6 +623,47 @@ def test_native_cycle_blame_targets_the_reported_cycle_even_without_a_test_path(
     assert bazel_gate.blame_target('SCC grew or merged (2 nodes): //new:a, //new:b', head, []) == '//new:a'
     head['reach']['//tests:affected'] = []
     assert bazel_gate.blame_target('existing test reach grew: //tests:affected +1', head, []) == '//tests:affected'
+
+
+@pytest.mark.parametrize('stored', [
+    {'test_to_test_imports': ['tests/test_a.py -> tests/test_b.py']},
+    {'test_to_test_imports': []},
+    {'conftest_source_imports': ['conftest.py -> src/prismabuild/core.py']},
+    {'conftest_source_imports': []},
+    {'test_to_test_imports': [], 'conftest_source_imports': []},
+    {'future_relationships': ['//pkg:a -> //pkg:b']},
+    {'future_relationships': [['//pkg:a', '//pkg:b']]},
+    {'future_edges': []},
+    {'graph_impact': {'edge_groups': {'test_to_test': []}}},
+    {'metadata': {'future_relationships': [['//pkg:a', '//pkg:b']]}},
+])
+def test_baseline_writer_refuses_stored_edges_in_head_without_writing(tmp_path, monkeypatch, stored):
+    impact = bazel_gate.module_from('core_for_edge_baseline_test', ROOT / 'tools/ci/graph_impact.py')
+    snapshot = impact.measure({'//pkg:t': {'//pkg:a'}}, {('//pkg:t', '//pkg:a')}, {'//pkg:a': 1})
+    baseline = impact.baseline_record(snapshot)
+    baseline.pop('edge_groups')
+    head = {'history': ['preserved'], 'graph_impact': baseline, **stored}
+    head['graph_impact'] = {**baseline, **head['graph_impact']}
+    workspace = bazel_gate.Workspace(root=tmp_path)
+    workspace.snapshots = {'head': snapshot}
+    workspace.graph_impact = impact
+    workspace.graph_baselines = {'head': head}
+    monkeypatch.setattr(workspace, 'ensure_commit', lambda sha: None)
+    monkeypatch.setattr(workspace, 'graph_check', lambda *args, **kwargs: {
+        'summary': 'U 100.0% → 100.0%, SCC max 1 → 1', 'errors': []})
+    monkeypatch.setattr(workspace, 'run', lambda *args, **kwargs: pytest.fail('graph mode ran a population'))
+    output = tmp_path / 'artifacts'
+    monkeypatch.setenv('BUILDBUDDY_ARTIFACTS_DIRECTORY', str(output))
+    path = tmp_path / 'tests/fixtures/import_fanout_baseline.json'
+    path.parent.mkdir(parents=True)
+    original = json.dumps(head)
+    path.write_text(original)
+
+    assert bazel_gate.main(['graph', '--base', 'base', '--head', 'head', '--write-baseline'], workspace) == 1
+    result = json.loads((output / bazel_gate.RESULT).read_text())
+    assert 'stored edge lists' in result['error']
+    assert path.read_text() == original
+    assert not (output / path.name).exists()
 
 
 def test_prismabuild_baseline_cannot_enable_transitional_test_imports():

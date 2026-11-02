@@ -1,11 +1,26 @@
 """PrismaBuild's two import restrictions use Bazel library dependency edges."""
 import importlib.util
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('import_fanout', ROOT / 'tools/ci/import_fanout.py')
 fanout = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(fanout)
+
+
+def test_committed_baseline_has_no_stored_edge_lists():
+    baseline = json.loads((ROOT / 'tests/fixtures/import_fanout_baseline.json').read_text())
+    assert 'test_to_test_imports' not in baseline
+    assert 'conftest_source_imports' not in baseline
+
+    def check(value, path):
+        assert not isinstance(value, list), f'baseline must not store lists at {path}'
+        if isinstance(value, dict):
+            for key, child in value.items():
+                check(child, f'{path}.{key}')
+
+    check(baseline, 'baseline')
 
 
 def test_bazel_library_edges_preserve_the_two_import_rules():

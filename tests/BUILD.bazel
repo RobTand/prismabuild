@@ -58922,6 +58922,7 @@ pb_py_library(
     ],
     data = [
         "//tools:ci/import_fanout.py",
+        "fixtures/import_fanout_baseline.json",
         "test_import_fanout.py",
     ],
     deps = [
