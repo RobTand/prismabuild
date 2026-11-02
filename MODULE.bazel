@@ -1,0 +1,25 @@
+module(name = "prismabuild")
+
+bazel_dep(name = "rules_python", version = "2.4.6")
+bazel_dep(name = "platforms", version = "1.1.0")
+
+# The hosted gate runs Python 3.14 (actions/setup-python); so does Bazel.
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.defaults(python_version = "3.14")
+python.toolchain(python_version = "3.14")
+use_repo(python, "python_3_14", "pythons_hub")
+register_toolchains("@pythons_hub//:all")
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "pb_pip",
+    python_version = "3.14",
+    # amd64 for PR gates, arm64 for the post-merge run.
+    requirements_by_platform = {"//tools/bazel:requirements.txt": "linux_x86_64,linux_aarch64"},
+    target_platforms = ["linux_x86_64", "linux_aarch64"],
+)
+use_repo(pip, "pb_pip")
+
+# The hosted gate has no tests/__init__.py; an implicit one would change imports.
+rules_python_config = use_extension("@rules_python//python/extensions:config.bzl", "config")
+rules_python_config.explicit_init_py(default = True)
