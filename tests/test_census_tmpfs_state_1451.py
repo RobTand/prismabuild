@@ -226,6 +226,7 @@ def test_the_census_guard_is_the_same_tmpfs_directory(
     fleet, tmpfs_state: Path, monkeypatch
 ):
     queue, *_ = fleet
+    queue.census_scheduler = None  # This node injects an already-expired deadline.
     state = tmpfs_state / "box-state"
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", state)
     census = reservation.CensusReader(queue, queue.ledger())

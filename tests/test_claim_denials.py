@@ -16,6 +16,7 @@ from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from fleet_world import queue_world
 
 KEY_A, KEY_B = "a" * 64, "b" * 64
 
@@ -219,12 +220,13 @@ def test_a_row_behind_a_whole_box_withhold_says_so(tmp_path):
     assert not queue.records.passes_path(KEY_B).exists()      # held back, not refused
 
 
-def test_separate_queues_use_their_own_injected_cpu_observations(tmp_path):
+def test_separate_queues_use_their_own_injected_cpu_observations(tmp_path, monkeypatch):
+    world = queue_world(tmp_path, monkeypatch, queue_name="blocked")
     hot = {"sampled_unix": time.time(), "busy_cpus": 2., "psi_some": .2,
            "cpu_count": 2, "interval_s": 1.}
     idle = {**hot, "busy_cpus": 0., "psi_some": 0.}
-    blocked = pool.PoolQueue(tmp_path / "blocked")
-    available = pool.PoolQueue(tmp_path / "available")
+    blocked = world.queue
+    available = queue_world(tmp_path, monkeypatch, queue_name="available", clock=world.clock).queue
     for queue in (blocked, available):
         publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1})
     args = {"capacity": {"cpu": 2, "mem_gb": 2},

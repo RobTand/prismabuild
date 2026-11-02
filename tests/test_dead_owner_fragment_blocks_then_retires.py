@@ -15,7 +15,7 @@ for the refusal, and the real `sweep`/`evict` for housekeeping. No payload is
 hashed beyond the small fixture bytes.
 """
 from __future__ import annotations
-from fleet_world import ActionRows
+from fleet_world import ActionRows, FleetWorld
 
 import os
 import uuid
@@ -46,7 +46,7 @@ def _key() -> str:
 
 @pytest.fixture()
 def fleet(tmp_path: Path):
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = FleetWorld(tmp_path).queue
     queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()

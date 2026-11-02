@@ -17,6 +17,7 @@ unchanged, and a refused fence still denies the pass nonblocking before any
 M/H investment.
 """
 from __future__ import annotations
+from fleet_world import reopen_queue
 
 import contextlib
 import fcntl
@@ -65,7 +66,7 @@ def test_the_reader_fence_holds_across_discovery_and_refresh(
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
     _fill_ready(queue, 2500)
-    other = pool.PoolQueue(queue.root)
+    other = reopen_queue(queue)
 
     publish("fence-measurement", measurement=True, priority=-100)
     candidate = publish("fence-candidate", measurement=True, priority=-10)

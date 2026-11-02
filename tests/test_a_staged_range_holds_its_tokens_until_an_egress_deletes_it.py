@@ -17,7 +17,7 @@ names any more is swept.
 from __future__ import annotations
 
 from claim_denial_reader import latest_claim_denial
-from fleet_world import ActionRows
+from fleet_world import ActionRows, FleetWorld
 
 import errno
 import json
@@ -44,7 +44,7 @@ DIGEST = "1" * 64
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q = FleetWorld(tmp_path).queue
     q.records.ensure_layout()
     q.tier(TIER).mint({'stage_gib': 8})
     return q

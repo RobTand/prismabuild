@@ -153,7 +153,7 @@ def test_elected_identity_or_evidence_loss_never_authorizes_refill(fleet, fault,
         queue.records.item_path(pool.record_store.READY, measurement).write_text("{")
     elif fault == "cpu_unknown":
         cpu_sampler = lambda: {}
-    assert claim(q=pool.PoolQueue(queue.root), cpu_sampler=cpu_sampler) is None
+    assert claim(q=reopen_queue(queue), cpu_sampler=cpu_sampler) is None
     assert _chosen(queue, measurement) == chosen
     assert queue.ledger().held_keys() == [holder]
     assert queue.records.item_path(pool.record_store.READY, lower).exists()
@@ -208,7 +208,7 @@ def test_two_host_election_is_one_persisted_generation_choice(fleet, monkeypatch
         token = host_context.set(host)
         try:
             start.wait(timeout=5)
-            return pool.PoolQueue(queue.root).claim(
+            return reopen_queue(queue).claim(
                 capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
                 cpu_tiers={"preferred": list(range(20)), "fallback": []},
                 adaptive_cpu=True, has_gpu=True, tags=["gb10", host], ready=[row],
@@ -241,7 +241,7 @@ def test_claim_defer_retry_preserves_one_election(fleet):
     assert _chosen(queue, measurement) == chosen
     assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     tick(11)
-    assert claim(q=pool.PoolQueue(queue.root)) == measurement
+    assert claim(q=reopen_queue(queue)) == measurement
     assert _chosen(queue, measurement) == chosen
     queue.finish(measurement, status="failed", detail={"returncode": 1})
     retry = pool.record_store.value_or_raise(
@@ -250,7 +250,7 @@ def test_claim_defer_retry_preserves_one_election(fleet):
     assert isinstance(retry, dict) and retry["attempts"] == 1
     assert _chosen(queue, measurement) == chosen
     tick(11)
-    assert claim(q=pool.PoolQueue(queue.root)) == measurement
+    assert claim(q=reopen_queue(queue)) == measurement
     assert _chosen(queue, measurement) == chosen
 
 
@@ -313,7 +313,7 @@ def test_mixed_capacity_claim_cannot_bypass_an_adaptive_election(fleet):
     holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
     lower = publish("nonadaptive-no-refill", timeout_s=5)
     row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, lower))
-    assert _legacy_claim(pool.PoolQueue(queue.root), row) is None
+    assert _legacy_claim(reopen_queue(queue), row) is None
     assert denial(lower)["reason"] == "deferred_for_measurement_reservation"
     assert queue.ledger().held_keys() == [holder]
 
@@ -379,7 +379,7 @@ def test_claimed_tombstone_ready_defer_gap_never_loses_election(fleet, monkeypat
             assert gap.wait(5)
             assert not queue.records.item_path(pool.record_store.READY, measurement).exists()
             assert not queue.records.item_path(pool.record_store.CLAIMED, measurement).exists()
-            assert _legacy_claim(pool.PoolQueue(queue.root), candidate) is None
+            assert _legacy_claim(reopen_queue(queue), candidate) is None
             assert _chosen(queue, measurement) == chosen
         finally:
             proceed.set()
@@ -399,7 +399,7 @@ def test_persisted_live_reader_blocks_restart_before_another_fork(fleet, monkeyp
         raise AssertionError("live retained identity spawned a second reader")
     monkeypatch.setattr(reader.os, "fork", no_fork)
     with pytest.raises(reservation.CensusUnavailable, match="unresolved"):
-        reservation.CensusReader(pool.PoolQueue(queue.root), queue.ledger()).capture()
+        reservation.CensusReader(reopen_queue(queue), queue.ledger()).capture()
 
 
 @pytest.mark.parametrize("field", ["generation", "host", "opportunity_unix"])

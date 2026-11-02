@@ -9,13 +9,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from prismabuild import pool
+from census_scheduler import FixtureCensusScheduler
 
 _OMITTED = object()
 
 
 class AdmittedQueueFixture:
     def __init__(self, queue: pool.PoolQueue, *, capacity: Mapping[str, int],
-                 default_demand: Mapping[str, int]) -> None:
+                 default_demand: Mapping[str, int], real_deadlines: bool = False) -> None:
         if not capacity or not default_demand:
             raise ValueError("simulated admission requires fixed positive declared inputs")
         if (any(type(value) is not int or value < 0 for value in capacity.values())
@@ -26,6 +27,10 @@ class AdmittedQueueFixture:
         object.__setattr__(self, "queue", queue)
         object.__setattr__(self, "capacity", dict(capacity))
         object.__setattr__(self, "default_demand", dict(default_demand))
+        if real_deadlines:
+            queue.census_scheduler = None
+        elif queue.census_scheduler is None:
+            queue.census_scheduler = FixtureCensusScheduler()
 
     def __getattr__(self, name):
         return getattr(self.queue, name)

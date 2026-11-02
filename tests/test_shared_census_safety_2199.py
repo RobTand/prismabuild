@@ -21,10 +21,8 @@ from test_ordinary_census_admission_2199 import _fixture_selection
 
 
 @pytest.fixture
-def shared_age_clock(monkeypatch):
-    # Only cache age uses this clock; bounded readers keep their real deadlines.
-    monkeypatch.setattr(reservation, "time", SimpleNamespace(
-        monotonic=lambda: 100.0, time=reservation.time.time, sleep=reservation.time.sleep))
+def shared_age_clock(fleet, monkeypatch):
+    monkeypatch.setattr(fleet[0].census_scheduler, "monotonic", lambda: 100.)
 
 
 @pytest.mark.parametrize("cache", ["stale", "sibling-omission"])
@@ -260,6 +258,7 @@ def _take_host_gate(ledger):
 def test_stalled_optional_source_read_is_bounded_and_restart_owned(
         fleet, tmpfs_state, monkeypatch, phase):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    queue.census_scheduler = None  # The stalled source must hit its real deadline.
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
     monkeypatch.setattr(reservation, "SHARED_CENSUS_MAX_AGE_S", 60)
     ledger = queue.ledger()

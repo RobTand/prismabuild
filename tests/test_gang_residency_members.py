@@ -37,6 +37,7 @@ from pathlib import Path
 import sys
 
 import pytest  # noqa: F401
+from fleet_world import reopen_queue
 from test_gang_reservation_1517 import HOSTS, gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
@@ -977,7 +978,7 @@ def test_failed_unlink_and_replacement_require_a_new_confirmation_window(
         assert mark_path.read_bytes() == old_mark, "the reset failure must retain the old bytes"
 
     if restart:
-        recovered = pool.PoolQueue(queue.root)
+        recovered = reopen_queue(queue)
         monkeypatch.setattr(queue, "_gang_terminal_confirmed",
                             recovered._gang_terminal_confirmed)
     clock.now += 1

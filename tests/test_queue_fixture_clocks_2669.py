@@ -1,5 +1,7 @@
 """Scheduling delay must not change logical admission in shared fixtures."""
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+import multiprocessing
 import time
 
 import pytest
@@ -74,3 +76,51 @@ def test_hot_cpu_sample_stays_hot_across_descheduling(delayed_world):
     assert claimed is None, "stale hot sample admitted the action"
     assert denial(queue, key)["reason"] == "adaptive_cpu_refused"
     assert not queue.ledger().held_keys()
+
+
+def test_event_controlled_unavailable_census_still_denies(delayed_world, monkeypatch):
+    world, _ = delayed_world
+    queue = world.queue
+    key = "c" * 64
+    world.actions.publish(key, resources={"cpu": 1})
+    context = multiprocessing.get_context("fork")
+    entered, release = context.Event(), context.Event()
+    capture = reservation._capture
+
+    def parked(active):
+        entered.set()
+        assert release.wait(60), "test did not release the census callback"
+        return capture(active)
+
+    monkeypatch.setattr(reservation, "_capture", parked)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        claim = executor.submit(queue.claim, capacity={"cpu": 2})
+        try:
+            assert entered.wait(60), "the real census callback did not enter"
+            queue.census_scheduler.sleep(reservation.READ_BUDGET_S + 1)
+        finally:
+            release.set()
+        assert claim.result(timeout=60) is None
+    refused = denial(queue, key)
+    assert refused["reason"] == "measurement_census_unavailable"
+    assert "timed_out" in refused["evidence"]["unavailable"]
+    assert not queue.ledger().held_keys()
+    assert queue.records.item_path(pool.record_store.READY, key).exists()
+
+
+@pytest.mark.parametrize("age,admitted", [(0., False), (6., True), (-1., True)])
+def test_freshness_changes_only_with_the_fixture_clock(delayed_world, age, admitted):
+    world, _ = delayed_world
+    queue = world.queue
+    key = "d" * 64
+    world.actions.publish(key, resources={"cpu": 1, "mem_gb": 1})
+    observed = {"sampled_unix": world.clock.now - age, "busy_cpus": 2., "psi_some": .2,
+                "cpu_count": 2, "interval_s": 1.}
+    claimed = queue.claim(capacity={"cpu": 2, "mem_gb": 2},
+                          cpu_tiers={"preferred": [0, 1], "fallback": []},
+                          adaptive_cpu=True, cpu_sampler=lambda: observed)
+    if admitted:
+        assert claimed is not None and claimed["action_key"] == key
+    else:
+        assert claimed is None
+        assert denial(queue, key)["reason"] == "adaptive_cpu_refused"

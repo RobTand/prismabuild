@@ -15,6 +15,7 @@ pb_py_library(
     deps = [
         "//src/prismabuild:__init__",
         "//src/prismabuild:_gang_cycle",
+        ":census_scheduler",
     ],
 )
 
@@ -138,6 +139,18 @@ pb_py_library(
     deps = [
         ":proof_capture_capacity",
         ":proof_container_runtime",
+    ],
+)
+
+pb_py_library(
+    name = "census_scheduler",
+    srcs = [
+        "census_scheduler.py",
+    ],
+    deps = [
+        "//src/prismabuild:__init__",
+        "//src/prismabuild:_bounded_reader",
+        "//src/prismabuild:_gang_cycle",
     ],
 )
 
@@ -1140,6 +1153,7 @@ pb_py_library(
         "//src/prismabuild:__init__",
         "//src/prismabuild:_gang_cycle",
         ":admitted_queue_fixture",
+        ":census_scheduler",
         ":queue_contention_2669",
         ":residency_publication",
     ],
@@ -1498,6 +1512,7 @@ pb_py_library(
     deps = [
         "//src/prismabuild:__init__",
         "//src/prismabuild:_bounded_reader",
+        "//src/prismabuild:adaptive_cpu",
     ],
 )
 
@@ -11674,6 +11689,7 @@ pb_py_library(
         "//src/prismabuild:output_contract",
         "//tools:fleet/stage_release",
         "//tools:prismabuild_worker",
+        ":fleet_world",
         ":test_prepaid_writer_integration_lib",
         ":test_produced_spool_lib",
     ],
@@ -33669,6 +33685,7 @@ pb_py_library(
         "//src/prismabuild:_gang_cycle",
         "//src/prismabuild:adaptive_cpu",
         "//src/prismabuild:core",
+        ":fleet_world",
         ":test_census_tmpfs_state_1451_lib",
         ":test_measurement_drains_gpu_backfill_lib",
         ":test_measurement_reservation_backfill_1419_lib",
@@ -37092,6 +37109,7 @@ pb_py_library(
         "//src/prismabuild:census",
         "//tools:fleet/pbstatus",
         ":admitted_queue_fixture",
+        ":fleet_world",
     ],
 )
 
@@ -43452,6 +43470,7 @@ pb_py_library(
         "//src/prismabuild:_gang_cycle",
         "//src/prismabuild:adaptive_cpu",
         "//src/prismabuild:control_cpu",
+        ":fleet_world",
     ],
 )
 
@@ -53608,6 +53627,7 @@ pb_py_library(
         "//src/prismabuild:residency_map",
         "//src/prismabuild:stage_release",
         "//src/prismabuild:tier_cycle",
+        ":fleet_world",
         ":movement_publication_support",
         ":test_gang_reservation_1517_lib",
         ":test_measurement_drains_gpu_backfill_lib",
@@ -56140,6 +56160,7 @@ pb_py_library(
         "//src/prismabuild:__init__",
         "//src/prismabuild:_gang_cycle",
         "//src/prismabuild:action_wait",
+        ":fleet_world",
         ":test_pbtest_seals_its_shard_deadline_lib",
         ":test_pool_cpu_work_yields_gpu_host_lib",
     ],
@@ -66591,6 +66612,7 @@ pb_py_library(
         "//src/prismabuild:__init__",
         "//src/prismabuild:_gang_cycle",
         "//src/prismabuild:adaptive_cpu",
+        ":fleet_world",
         ":test_census_tmpfs_state_1451_lib",
         ":test_measurement_drains_gpu_backfill_lib",
     ],
@@ -110015,6 +110037,7 @@ pb_py_library(
         "//src/prismabuild:core",
         "//src/prismabuild:d38_gate_cycle",
         "//tools:fleet/pbrun",
+        ":fleet_world",
         ":submission_support",
         ":test_core_lib",
     ],
@@ -150036,6 +150059,8 @@ pb_py_library(
         "//tools:fleet/pbrun",
         "//tools:fleet/shape_gate",
         "//tools:fleet/stage_move",
+        ":census_scheduler",
+        ":queue_contention_2669",
     ],
 )
 

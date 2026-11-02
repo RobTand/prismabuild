@@ -311,6 +311,17 @@ not a hard kernel-I/O bound: the supported root MUST remain local/protected and
 preserved while a reader survives. Clearing/repointing that root requires stopped
 readers; an interrupted local ownership write is fail-closed, not silently erased.
 
+`PoolQueue` accepts an optional `census_scheduler` for controlled fixture
+execution (#2669). Its default retains real monotonic deadlines, bounded pipe
+waits and fence polling. The scheduler supplies the deadline clock, pipe
+readiness wait, owned-child exit wait, fence polling and shared-cache age clock for that queue,
+including its ordinary-proof and source-generation readers. A fixture can wait
+for actual child pipe and pidfd readiness while advancing deadline time explicitly.
+Reader ownership, durable grant, parsing, settlement, election checks and
+claim commits still use the production path. Independent fixture observers
+carry the same scheduler when reopening a queue; it is never persisted as an
+admission policy. Real expiry and abandonment tests opt out of fixture scheduling.
+
 A claim pass lists `claimed/` once, and discovery reads `passes/` only for
 records the box could place (#993). Before this, `_claim` listed `claimed/`
 under each ready item's transition lock, so a pass over 40 ready items was 40

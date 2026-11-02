@@ -72,6 +72,10 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from prismabuild._measurement_reservation import CensusScheduler
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 _PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
@@ -552,7 +556,7 @@ class ShapeGate:
                  shared_root: Path,
                  host_profile: Mapping[str, object] = HOST_PROFILE,
                  require_chunk_edge: bool = True,
-                 seed: int = 965) -> None:
+                 seed: int = 965, census_scheduler: CensusScheduler | None = None) -> None:
         from prismabuild import tier_cycle as tier_loop
 
         if storage_tiers.GIB * int(shape["scale"]) != 1 << 30:     # type: ignore[arg-type]
@@ -574,7 +578,7 @@ class ShapeGate:
         self.stage_dir = self.root / "stage"
         self.ram_dir = self.root / "ram"
         self.host_dir = self.root / "host-facts"
-        self.queue = pool.PoolQueue(self.shared / "pb-queue")
+        self.queue = pool.PoolQueue(self.shared / "pb-queue", census_scheduler=census_scheduler)
         self.cas = pb.PrismaBuildCAS(self.shared / "cas")
         # The policy ``cycle`` reads on every pass, from this checkout: the
         # window and chunk the gate reasons about are the ones it mints.
@@ -1159,7 +1163,8 @@ class ShapeGate:
 def run_gate(table: Mapping[str, object], *, root: Path, shared_root: Path,
              scale: int = SCALE,
              host_profile: Mapping[str, object] = HOST_PROFILE,
-             require_chunk_edge: bool = True) -> dict[str, object]:
+             require_chunk_edge: bool = True,
+             census_scheduler: CensusScheduler | None = None) -> dict[str, object]:
     """Scale ``table``, stage it through both tiers, read it back, and judge.
 
     Returns the result on a pass.  Raises :class:`ShapeGateFailure` otherwise:
@@ -1172,7 +1177,7 @@ def run_gate(table: Mapping[str, object], *, root: Path, shared_root: Path,
     shape = scaled_shape(table, scale=scale)
     gate = ShapeGate(shape, root=root, shared_root=shared_root,
                      host_profile=host_profile,
-                     require_chunk_edge=require_chunk_edge)
+                     require_chunk_edge=require_chunk_edge, census_scheduler=census_scheduler)
     result = gate.run()
     total = int(result["manifest_bytes"])
     reads = int(result["read_bytes"])

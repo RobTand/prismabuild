@@ -7,6 +7,7 @@ import pytest
 
 from prismabuild import pool
 from prismabuild.action_wait import await_ending
+from fleet_world import queue_world
 
 
 class GuestFleet:
@@ -15,7 +16,8 @@ class GuestFleet:
 
     def __init__(self, tmp_path, monkeypatch):
         self.patch = monkeypatch
-        self.queue = pool.PoolQueue(tmp_path / "queue")
+        world = queue_world(tmp_path, monkeypatch, queue_name="queue")
+        self.queue, self.clock = world.queue, world.clock
         self.host = "sparky"
         self.use(self.host)
         monkeypatch.setattr(pool.cpu_admission, "action_identity", lambda row: ("shape", False))

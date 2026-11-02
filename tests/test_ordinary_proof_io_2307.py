@@ -21,6 +21,7 @@ from test_ordinary_census_admission_2199 import _fixture_selection
 def test_stalled_ordinary_proof_releases_locks_and_preserves_reader_custody(
         fleet, tmpfs_state, monkeypatch, phase):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    queue.census_scheduler = None  # This node controls actual reader expiry via IPC.
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
     selected = publish("ordinary-io-retired", measurement=True, priority=10, gpu=0)
     chosen = _fixture_selection(queue, selected)

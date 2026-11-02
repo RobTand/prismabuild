@@ -98,18 +98,19 @@ class Deadline:
     which is the same waiting-forever this class exists to end.
     """
 
-    def __init__(self, timeout_s: float) -> None:
+    def __init__(self, timeout_s: float, *, clock: Callable[[], float] | None = None) -> None:
         self.timeout_s = float(timeout_s)
         if not math.isfinite(self.timeout_s):
             raise ValueError(
                 f"a deadline must be a finite number of seconds, not {timeout_s!r}")
         self.bounded = self.timeout_s > 0
-        self._expires = time.monotonic() + self.timeout_s if self.bounded else None
+        self._clock = (lambda: time.monotonic()) if clock is None else clock
+        self._expires = self._clock() + self.timeout_s if self.bounded else None
 
     def remaining(self) -> float | None:
         if self._expires is None:
             return None
-        return self._expires - time.monotonic()
+        return self._expires - self._clock()
 
 
 def _proc_stat_fields(pid: int, proc: Path) -> list[bytes] | None:
@@ -441,7 +442,9 @@ def _isolate_child_fds(write_fd: int, *, keep_fds: tuple[int, ...] = ()) -> int:
 def bounded(section: str, read, *, deadline: Deadline, abandoned: list,
             cap_s: float | None = None, announce_retained: bool = True,
             on_spawn: Callable[[ReaderOwnership], None] | None = None,
-            pool_identity: str | None = None) -> dict:
+            pool_identity: str | None = None,
+            wait_readable: Callable[[int, float], bool] | None = None,
+            wait_for_exit: Callable[[int], None] | None = None) -> dict:
     """Run one read of the shared mount in a child this process can abandon.
 
     A stat on a hard NFS mount need not return at the caller's deadline, even
@@ -467,6 +470,12 @@ def bounded(section: str, read, *, deadline: Deadline, abandoned: list,
     callback or an uninterruptible parent filesystem call. Do not put an NFS
     or CAS operation here and advertise it as bounded. Persistence exceptions
     unwind exact-child cleanup; the caller retains any partially written fence.
+
+    An injected ``wait_readable`` controls pipe readiness scheduling for a
+    caller-owned deadline clock. The default uses the remaining real budget.
+    ``wait_for_exit`` can schedule owned-child exit after a complete payload,
+    before the existing pidfd reaper proves settlement. Both default to the
+    bounded real-time path. Ownership and read release use the same checks.
     """
     if on_spawn is not None:
         if (not deadline.bounded or not isinstance(pool_identity, str)
@@ -496,10 +505,12 @@ def bounded(section: str, read, *, deadline: Deadline, abandoned: list,
         try:
             if on_spawn is None:
                 return _bounded_reader(section, read, deadline=deadline,
-                                       abandoned=abandoned, cap_s=cap_s)
+                                       abandoned=abandoned, cap_s=cap_s,
+                                       wait_readable=wait_readable, wait_for_exit=wait_for_exit)
             return _bounded_reader(section, read, deadline=deadline,
                                    abandoned=abandoned, cap_s=cap_s,
-                                   on_spawn=on_spawn, pool_identity=pool_identity)
+                                   on_spawn=on_spawn, pool_identity=pool_identity,
+                                   wait_readable=wait_readable, wait_for_exit=wait_for_exit)
         finally:
             _ANNOUNCE_RETAINED.reset(token)
 
@@ -524,7 +535,9 @@ def _stop_reader(pid: int, section: str, started: float, abandoned: list) -> Non
 def _bounded_reader(section: str, read, *, deadline: Deadline, abandoned: list,
                     cap_s: float | None,
                     on_spawn: Callable[[ReaderOwnership], None] | None = None,
-                    pool_identity: str | None = None) -> dict:
+                    pool_identity: str | None = None,
+                    wait_readable: Callable[[int, float], bool] | None = None,
+                    wait_for_exit: Callable[[int], None] | None = None) -> dict:
     # A child may run before fork returns in the parent. Defer cancellation
     # until the parent's finally owns every descriptor and the child PID.
     previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
@@ -653,7 +666,8 @@ def _bounded_reader(section: str, read, *, deadline: Deadline, abandoned: list,
             if left <= 0:
                 break
             try:
-                ready, _, _ = select.select([read_fd], [], [], left)
+                ready = (wait_readable(read_fd, left) if wait_readable is not None else
+                         bool(select.select([read_fd], [], [], left)[0]))
             except OSError:
                 break
             if not ready:
@@ -671,6 +685,8 @@ def _bounded_reader(section: str, read, *, deadline: Deadline, abandoned: list,
         # Only EOF proves the whole payload; a partial reply is a timeout,
         # not an error parsing an incomplete census.
         if saw_eof:
+            if pidfd is not None and wait_for_exit is not None:
+                wait_for_exit(pidfd)
             if chunks:
                 try:
                     result = json.loads(b"".join(chunks).decode("utf-8"))

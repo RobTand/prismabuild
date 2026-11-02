@@ -4,6 +4,7 @@ import time
 import pytest
 
 from prismabuild import adaptive_cpu, pool
+from fleet_world import queue_world
 
 
 def sample(cpus, busy):
@@ -14,7 +15,7 @@ def sample(cpus, busy):
 
 def test_23_small_actions_pass_busy_first_free_cpu(tmp_path, monkeypatch):
     """80 CPUs, 11 held, CPU11 at .17: later free preferred cores can run."""
-    q = pool.PoolQueue(tmp_path / 'queue')
+    q = queue_world(tmp_path, monkeypatch, queue_name="queue").queue
     tiers = {'preferred': list(range(40)), 'fallback': list(range(40, 80))}
     ledger = q.ledger()
     ledger.configure_cpu_tiers(tiers)
@@ -87,7 +88,7 @@ def test_control_identity_is_not_an_inherited_environment_exemption(tmp_path, ma
 
 @pytest.mark.parametrize('foreign,expected', [(.02, 11), (.08, 12), (float('nan'), None), (-.1, None)])
 def test_control_accounting_preserves_remaining_foreign_work(tmp_path, monkeypatch, foreign, expected):
-    q = pool.PoolQueue(tmp_path / 'queue')
+    q = queue_world(tmp_path, monkeypatch, queue_name="queue").queue
     observed = sample([11, 12], {11: .17})
     observed['foreign_per_cpu_busy'] = {'11': foreign, '12': 0.}
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda _: ('shape', False))
@@ -146,7 +147,7 @@ def test_control_collector_refuses_unproven_identity(tmp_path, fault):
 @pytest.mark.parametrize('busy,expected', [({8: .2}, [10]), ({8: .2, 10: .2}, [2]),
                                          ({8: .2, 10: .2, 2: .2, 4: .2}, None)])
 def test_skip_busy_uses_ordinal_mapping_and_preferred_tier(tmp_path, monkeypatch, busy, expected):
-    q = pool.PoolQueue(tmp_path / 'queue')
+    q = queue_world(tmp_path, monkeypatch, queue_name="queue").queue
     tiers = {'preferred': [8, 10], 'fallback': [2, 4]}
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda _: ('shape', False))
     cpu_sampler = lambda: sample([8, 10, 2, 4], busy)
@@ -164,7 +165,7 @@ def test_skip_busy_uses_ordinal_mapping_and_preferred_tier(tmp_path, monkeypatch
 @pytest.mark.parametrize('measurement,need,busy', [(False, 1, {11: 1., 12: 1.}),
                                                  (True, 1, {11: .9}), (False, 2, {11: .9})])
 def test_control_attribution_never_discounts_raw_saturation_or_isolation(tmp_path, monkeypatch, measurement, need, busy):
-    q = pool.PoolQueue(tmp_path / 'queue')
+    q = queue_world(tmp_path, monkeypatch, queue_name="queue").queue
     observed = sample([11, 12], busy)
     observed['foreign_per_cpu_busy'] = {'11': 0., '12': 0.}
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda _: ('shape', measurement))

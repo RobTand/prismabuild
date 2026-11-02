@@ -117,6 +117,7 @@ def test_discovery_excludes_reuse_before_transition_and_admission_locks(
 def test_a_retained_refresh_reader_keeps_its_marker_and_refuses_all_readers(
         fleet, tmpfs_state, monkeypatch):
     queue, *_ = fleet
+    queue.census_scheduler = None  # Exercise real expiry and retained ownership.
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
     monkeypatch.setattr(reservation, "REFRESH_BUDGET_S", 0.2)
     saved = _saved_pass(queue)

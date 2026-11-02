@@ -234,6 +234,7 @@ from . import filesystem_floor
 
 if TYPE_CHECKING:
     from .record_store import KeyStanding
+    from ._measurement_reservation import CensusScheduler
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
@@ -5874,12 +5875,14 @@ class _ClaimScanReads:
 class PoolQueue:
     """A directory on a shared filesystem that two or more boxes pull from."""
 
-    def __init__(self, root: str | Path | None = None) -> None:
+    def __init__(self, root: str | Path | None = None, *,
+                 census_scheduler: CensusScheduler | None = None) -> None:
         # Read the module attribute at call time, not at definition time, so
         # a caller (or the test guard) that re-points ``DEFAULT_POOL_ROOT``
         # after import gets the root it named rather than the live store.
         defaulted = root is None
         self.root = Path(DEFAULT_POOL_ROOT if defaulted else root)
+        self.census_scheduler = census_scheduler
         self.records = record_store.RecordStore(self.root)
         self.funding = funding.FundingLedger(self)
         self._placement_history = _peer_placement.PlacementHistory()

@@ -12,33 +12,16 @@ import pytest
 
 from prismabuild import _measurement_reservation as reservation, adaptive_cpu, pool
 from prismabuild import _bounded_reader as reader
-from fleet_world import Clock
+from fleet_world import Clock, reopen_queue
 from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 
 @pytest.fixture
-def cache_clock(monkeypatch):
-    clock, fence_clock = Clock(), Clock()
-
-    class FenceDeadline:
-        def __init__(self, seconds):
-            self.timeout_s = seconds
-            self.expires = fence_clock.now + seconds
-
-        def remaining(self):
-            return self.expires - fence_clock.now
-
-    def bounded_with_reader_deadline(section, read, *, deadline, **kwargs):
-        return reader.bounded(section, read, deadline=reader.Deadline(deadline.timeout_s),
-                              **kwargs)
-
-    monkeypatch.setattr(reservation, "reader", SimpleNamespace(
-        **{**vars(reader), "Deadline": FenceDeadline,
-           "bounded": bounded_with_reader_deadline}))
-    monkeypatch.setattr(reservation, "time", SimpleNamespace(
-        monotonic=lambda: clock.now, time=time.time, sleep=fence_clock.advance))
+def cache_clock(fleet, monkeypatch):
+    clock = Clock()
+    monkeypatch.setattr(fleet[0].census_scheduler, "monotonic", lambda: clock.now)
     return clock
 
 
@@ -118,7 +101,7 @@ def test_retired_election_and_unrelated_pass_counter_still_admit(fleet, monkeypa
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
     row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, candidate))
     with _fixture_census_fence(queue):
-        result = pool.PoolQueue(queue.root).claim(
+        result = reopen_queue(queue).claim(
             capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
     assert result is not None and result["action_key"] == candidate
 
@@ -239,7 +222,7 @@ def test_paired_admission_with_six_retired_elections(fleet, monkeypatch, legacy)
     row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, candidate))
     with _fixture_census_fence(queue):
         started = time.perf_counter()
-        result = pool.PoolQueue(queue.root).claim(
+        result = reopen_queue(queue).claim(
             capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
         elapsed = time.perf_counter() - started
     print(f"retired_elections=6 arm={'before' if legacy else 'after'} "
@@ -333,7 +316,7 @@ def test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow(
     try:
         assert entered.wait(), "fixture census child did not start"
         for key, row in zip(candidates, rows):
-            sibling = pool.PoolQueue(queue.root)
+            sibling = reopen_queue(queue)
             result = sibling.claim(capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
             if election_state in {"none", "retired"}:
                 assert result is not None and result["action_key"] == key
@@ -366,7 +349,7 @@ def test_a_complete_retirement_census_is_shared_across_independent_loops(
         assert selected not in census["elections"]
     monkeypatch.setattr(reservation, "_ordinary_election_census", lambda *args: None)
     with _fixture_census_fence(queue):
-        result = pool.PoolQueue(queue.root).claim(
+        result = reopen_queue(queue).claim(
             capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
     assert result is not None and result["action_key"] == candidate
 
@@ -382,7 +365,7 @@ def test_a_new_election_invalidates_a_siblings_shared_census(fleet, monkeypatch,
     _fixture_selection(queue, selected)
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
     with _fixture_census_fence(queue):
-        result = pool.PoolQueue(queue.root).claim(
+        result = reopen_queue(queue).claim(
             capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
     assert result is None
     assert denial(candidate)["reason"] == "measurement_census_unavailable"
@@ -431,7 +414,7 @@ def test_a_live_census_is_shared_without_another_reader_fence(fleet, monkeypatch
         assert selected in census["elections"]
     with _fixture_census_fence(queue):
         for _ in range(4):
-            result = pool.PoolQueue(queue.root).claim(
+            result = reopen_queue(queue).claim(
                 capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
             assert result is None
             assert denial(candidate)["reason"] == "deferred_for_measurement_reservation"
@@ -640,7 +623,7 @@ def test_gang_retirement_is_shared_but_garbled_authority_is_not(
             assert census["gang_elections"] == {}
     with _fixture_census_fence(queue):
         for key, row in zip(candidates, rows):
-            result = pool.PoolQueue(queue.root).claim(
+            result = reopen_queue(queue).claim(
                 capacity={"cpu": 20, "mem_gb": 120, "gpu": 1}, has_gpu=True,
                 tags=["gb10", "sparklina"], ready=[row])
             if state == "retired":

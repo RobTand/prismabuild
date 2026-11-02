@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from . import immutable_files
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass
 import fcntl
@@ -66,6 +66,28 @@ class PublicationDisappeared(CensusUnavailable):
     """A listed publication was gone when the census read it (#1571)."""
 
 
+class CensusScheduler:
+    """Deadline and fence scheduling for one queue's census observers."""
+
+    wait_for_exit: Callable[[int], None] | None = None
+
+    def deadline(self, seconds: float) -> reader.Deadline:
+        return reader.Deadline(seconds)
+
+    def monotonic(self) -> float:
+        return time.monotonic()
+
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+    def wait_readable(self, descriptor: int, remaining: float) -> bool:
+        return bool(reader.select.select([descriptor], [], [], remaining)[0])
+
+
+def _scheduler(queue: PoolQueue) -> CensusScheduler:
+    return queue.census_scheduler if queue.census_scheduler is not None else CensusScheduler()
+
+
 def _admission_source_generation(queue: PoolQueue, census: dict) -> str:
     """Metadata of every mutable census input, including exact retirement slots.
 
@@ -76,7 +98,7 @@ def _admission_source_generation(queue: PoolQueue, census: dict) -> str:
     from . import _gang, pool
     observed = []
     count = 0
-    deadline = reader.Deadline(REFRESH_BUDGET_S)
+    deadline = _scheduler(queue).deadline(REFRESH_BUDGET_S)
 
     def observe(path, *, identity_only=False):
         nonlocal count
@@ -147,7 +169,7 @@ def _ordinary_selection_sources(queue: PoolQueue, cached: dict, *, recheck=False
     """
     from . import pool
     directory = queue.root / pool.record_store.PASSES
-    deadline = reader.Deadline(REFRESH_BUDGET_S)
+    deadline = _scheduler(queue).deadline(REFRESH_BUDGET_S)
     try:
         with os.scandir(directory) as entries:
             names = sorted(entry.name for entry in entries)
@@ -199,7 +221,7 @@ def _ordinary_election_census(queue: PoolQueue, item: dict, host: str,
     """
     from . import _gang, pool
     count = 0
-    deadline = reader.Deadline(REFRESH_BUDGET_S)
+    deadline = _scheduler(queue).deadline(REFRESH_BUDGET_S)
 
     def entries(path):
         nonlocal count
@@ -686,6 +708,7 @@ class CensusReader:
 
     def __init__(self, queue: PoolQueue, ledger: ResourceLedger):
         self.queue = queue
+        self.scheduler = _scheduler(queue)
         directory, digest = adaptive_cpu.box_state(ledger.base)
         self.directory = directory
         self.name = digest + ".measurement-reader-v1"
@@ -699,7 +722,7 @@ class CensusReader:
     def publish_shared(self, census: dict, generation: str) -> None:
         """Persist a complete census after its caller verified sources under M/H."""
         saved = {"schema": SHARED_CENSUS_SCHEMA, "pool": self.pool_identity,
-                 "boot": reader._boot_id(Path("/proc")), "created": time.monotonic(),
+                 "boot": reader._boot_id(Path("/proc")), "created": self.scheduler.monotonic(),
                  "generation": generation, "census": census,
                  "digest": core.canonical_sha256(census)}
         if len(core._canonical_bytes(saved)) <= MAX_RECORD_BYTES:
@@ -725,7 +748,7 @@ class CensusReader:
                     or saved["pool"] != self.pool_identity
                     or saved["boot"] != reader._boot_id(Path("/proc"))
                     or type(saved["created"]) not in (int, float)
-                    or not 0 <= time.monotonic() - saved["created"] <= SHARED_CENSUS_MAX_AGE_S
+                    or not 0 <= self.scheduler.monotonic() - saved["created"] <= SHARED_CENSUS_MAX_AGE_S
                     or core.canonical_sha256(saved["census"]) != saved["digest"]):
                 return None
             self._checked_census(saved["census"])
@@ -758,7 +781,7 @@ class CensusReader:
         """Verify optional shared authority under the caller's M/H locks."""
         try:
             return (self.source_generation(saved["census"]) == saved["generation"]
-                    and 0 <= time.monotonic() - saved["created"] <= SHARED_CENSUS_MAX_AGE_S)
+                    and 0 <= self.scheduler.monotonic() - saved["created"] <= SHARED_CENSUS_MAX_AGE_S)
         except (OSError, ValueError, TypeError, KeyError, CensusUnavailable,
                 core.PrismaBuildError, local_scratch.LocalScratchError):
             return False
@@ -809,7 +832,7 @@ class CensusReader:
                 # sibling's census into this candidate's denial. The waiter holds
                 # only its own candidate key, never M or H, and still refuses once
                 # FENCE_WAIT_S passes; nothing is read without the fence.
-                waited = reader.Deadline(FENCE_WAIT_S)
+                waited = self.scheduler.deadline(FENCE_WAIT_S)
                 while True:
                     try:
                         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -820,7 +843,7 @@ class CensusReader:
                         remaining = waited.remaining()
                         if remaining is None or remaining <= 0:
                             raise CensusUnavailable("measurement census reader busy") from None
-                        time.sleep(min(FENCE_POLL_S, remaining))
+                        self.scheduler.sleep(min(FENCE_POLL_S, remaining))
                 self._check_settled_reader()
             except (OSError, ValueError, core.PrismaBuildError, reader.ReaderOwnershipUnavailable,
                     local_scratch.LocalScratchError) as exc:
@@ -875,9 +898,11 @@ class CensusReader:
                 os.replace(temporary, self.name, src_dir_fd=directory, dst_dir_fd=directory)
                 os.fsync(directory)
             reply = reader.bounded(section, read,
-                                   deadline=reader.Deadline(budget_s), abandoned=abandoned,
+                                   deadline=self.scheduler.deadline(budget_s), abandoned=abandoned,
                                    on_spawn=persist, pool_identity=self.pool_identity,
-                                   announce_retained=False)
+                                   announce_retained=False,
+                                   wait_readable=self.scheduler.wait_readable,
+                                   wait_for_exit=self.scheduler.wait_for_exit)
             if reply.get("status") != "ok" or abandoned:
                 raise CensusUnavailable(f"measurement census unavailable: {reply}")
             value = reply.get("value")
@@ -956,6 +981,7 @@ class _SourceGenerationReader(CensusReader):
 
     def __init__(self, census_reader: CensusReader):
         self.queue = census_reader.queue
+        self.scheduler = census_reader.scheduler
         self.directory = census_reader.directory
         self.name = census_reader.name + ".sources"
         self.pool_identity = census_reader.pool_identity
@@ -969,6 +995,7 @@ class _OrdinaryAdmissionReader(CensusReader):
 
     def __init__(self, census_reader: CensusReader):
         self.queue = census_reader.queue
+        self.scheduler = census_reader.scheduler
         self.directory = census_reader.directory
         self.name = census_reader.name + ".ordinary"
         self.pool_identity = census_reader.pool_identity

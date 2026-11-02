@@ -39,6 +39,7 @@ import test_prepaid_writer_integration as fx
 import test_produced_spool as sp
 from prismabuild import adaptive_cpu, core, pool, produced_output as po
 from prismabuild import produced_spool as ps
+from fleet_world import Clock
 
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
@@ -127,6 +128,7 @@ def _producer(tmp_path: Path, monkeypatch, *, measurement: bool = False,
     does, and nothing else about the allowance: the default applies.
     """
 
+    Clock().install(monkeypatch)
     (published, cas) = _publish_producer(tmp_path, measurement=measurement,
                                          demand=demand, timeout_s=timeout_s)
     queue, owner = published.queue, published.owner

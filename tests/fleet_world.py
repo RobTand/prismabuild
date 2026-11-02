@@ -12,6 +12,7 @@ from typing import Literal
 from prismabuild import pool
 
 from admitted_queue_fixture import AdmittedQueueFixture
+from census_scheduler import FixtureCensusScheduler
 from queue_contention_2669 import cpu_contention  # noqa: F401, explicit remote plugin input
 from residency_publication import publish_landed_files
 
@@ -36,9 +37,10 @@ class Admission:
     capacity: Mapping[str, int]
     default_demand: Mapping[str, int]
 
-    def bind(self, queue: pool.PoolQueue) -> AdmittedQueueFixture:
+    def bind(self, queue: pool.PoolQueue, *, real_deadlines: bool = False) -> AdmittedQueueFixture:
         return AdmittedQueueFixture(queue, capacity=self.capacity,
-                                    default_demand=self.default_demand)
+                                    default_demand=self.default_demand,
+                                    real_deadlines=real_deadlines)
 
 
 class ActionRows:
@@ -57,10 +59,14 @@ class ActionRows:
 
 class FleetWorld:
     def __init__(self, root: Path, *, queue_name: str = "pb-queue",
-                 admission: Admission | None = None, clock: Clock | None = None) -> None:
+                 admission: Admission | None = None, clock: Clock | None = None,
+                 real_deadlines: bool = False) -> None:
         self.root = Path(root)
-        raw_queue = pool.PoolQueue(self.root / queue_name)
-        self.queue = raw_queue if admission is None else admission.bind(raw_queue)
+        raw_queue = pool.PoolQueue(
+            self.root / queue_name,
+            census_scheduler=None if real_deadlines else FixtureCensusScheduler())
+        self.queue = (raw_queue if admission is None else
+                      admission.bind(raw_queue, real_deadlines=real_deadlines))
         self.queue.records.ensure_layout()
         self.clock = Clock() if clock is None else clock
         self.actions = ActionRows(self.queue)
@@ -104,4 +110,11 @@ class FleetWorld:
 
 def queue_world(root, monkeypatch, **options):
     """Build a private world at the caller's clock boundary."""
-    return FleetWorld(root, **options)
+    world = FleetWorld(root, **options)
+    world.clock.install(monkeypatch)
+    return world
+
+
+def reopen_queue(queue):
+    """An independent observer of the same fixture, with the same schedule."""
+    return pool.PoolQueue(queue.root, census_scheduler=queue.census_scheduler)

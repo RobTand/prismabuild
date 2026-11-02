@@ -26,6 +26,8 @@ Every root is under ``tmp_path``; ``tests/conftest.py`` repoints ``pbrun.SH``
 there, and the harness refuses any other.
 """
 from __future__ import annotations
+from census_scheduler import FixtureCensusScheduler
+from queue_contention_2669 import cpu_contention  # noqa: F401, explicit remote plugin input
 
 import base64
 import hashlib
@@ -105,7 +107,8 @@ def small_units(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _run(tmp_path: Path, table: dict) -> dict:
     return shape_gate.run_gate(table, root=tmp_path / "gate",
-                               shared_root=Path(pbrun.configured_store().root), scale=SMALL_SCALE)
+                               shared_root=Path(pbrun.configured_store().root), scale=SMALL_SCALE,
+                               census_scheduler=FixtureCensusScheduler())
 
 
 def test_a_campaign_shaped_window_stages_and_reads_back_strictly(

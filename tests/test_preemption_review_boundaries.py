@@ -5,6 +5,7 @@ import uuid
 import pytest
 
 from prismabuild import pool
+from fleet_world import FleetWorld
 
 _REAL_ACTION_IDENTITY = pool.cpu_admission.action_identity
 
@@ -17,7 +18,7 @@ def known_generation_action(monkeypatch):
 
 
 def setup_holder(tmp_path, *, retry_safe=True, max_attempts=3):
-    q = pool.PoolQueue(tmp_path / 'queue')
+    q = FleetWorld(tmp_path, queue_name="queue").queue
     q.records.ensure_layout()
     background, foreground = (uuid.uuid4().hex * 2 for _ in range(2))
     def publish(key, priority, **kw):
@@ -176,7 +177,7 @@ def test_preemption_reads_the_sealed_action_class(tmp_path, monkeypatch, measure
     action = core.seal_action(body)
     cas = core.PrismaBuildCAS(tmp_path / 'cas')
     cas.publish_action_request(action)
-    q = pool.PoolQueue(tmp_path / 'queue')
+    q = FleetWorld(tmp_path, queue_name="queue").queue
     key = action['action_key']
     q.publish(action_key=key, cas_root=cas.root, checkout_root=tmp_path,
               worker_script=tmp_path / 'worker.py', priority=-10,
