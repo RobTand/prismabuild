@@ -886,3 +886,32 @@ def test_non_bazel_children_do_not_inherit_secret_variables(monkeypatch):
     environment = bazel_gate.child_environment(['python3', 'tool.py'])
     assert 'EXAMPLE_API_KEY' not in environment and 'GITHUB_TOKEN' not in environment
     assert environment['PATH'] == '/fake/bin'
+
+
+def test_cancelled_bep_placeholders_are_not_evidence_a_target_ran():
+    cancelled = {'id': {'testResult': {'label': '//tests:test_pbrun', 'shard': 0}},
+                 'aborted': {'reason': 'USER_INTERRUPTED'}}
+    watch = bazel_gate.FailFast('batch', set(), lambda *args: False, FakeClock())
+    watch.observe(result_event())
+    watch.observe(cancelled)
+    assert watch.ran == {'//tests:test_core'}
+    run = bazel_gate.bep_run(bep(result_event(), cancelled))
+    assert run['statuses'] == {'//tests:test_core': 'FAILED'}
+
+
+@pytest.mark.parametrize('identity', ['actionCompleted', 'targetCompleted'])
+def test_aborted_build_placeholders_are_not_definitive_failures(identity):
+    watch = bazel_gate.FailFast('batch', set(), lambda *args: False, FakeClock())
+    watch.observe({'id': {identity: {'label': '//tests:test_core'}},
+                   'aborted': {'reason': 'TIME_OUT'}})
+    assert not watch.cancel_due()
+
+
+def test_incremental_bep_preserves_split_utf8_and_discards_only_truncated_tail():
+    stream = bazel_gate.BepStream()
+    event = {'progress': {'stderr': 'ERROR: défaillance'}}
+    encoded = (json.dumps(event, ensure_ascii=False) + '\n').encode()
+    split = encoded.index('é'.encode()) + 1
+    assert list(stream.feed(encoded[:split])) == []
+    assert list(stream.feed(encoded[split:])) == [event]
+    assert list(stream.feed(b'{"id":', final=True)) == []
