@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import zipfile
 
 import pytest
 
@@ -28,12 +29,13 @@ class FakeWorkspace:
     """Records calls; answers from canned git and Bazel facts."""
 
     def __init__(self, changed, impacted=(), statuses=None, diff_error=None, build_ok=True,
-                 inputs=(), budgets=(), broken=()):
+                 inputs=(), budgets=(), broken=(), budget_only=(), reruns=None):
         self.changed, self.impacted, self.statuses = set(changed), set(impacted), statuses or {}
         self.diff_error, self.build_ok, self.inputs, self.budgets = diff_error, build_ok, inputs, budgets
         # Configs whose invocation fails before any test runs.
         self.broken = set(broken)
-        self.ran, self.built = [], []
+        self.marked, self.reruns = set(budget_only), reruns or {}
+        self.ran, self.built, self.extras = [], [], []
 
     def ensure_commit(self, sha):
         if not sha:
@@ -62,13 +64,18 @@ class FakeWorkspace:
     def arm64_excluded(self):
         return {tag: set(labels) for tag, labels in ARM64_EXCLUDED.items()}
 
-    def test(self, targets, config, metadata, log_name):
+    def test(self, targets, config, metadata, log_name, extra=()):
         self.ran.append((config, list(targets)))
+        self.extras.append(list(extra))
         if config in self.broken:
             return {'statuses': {}, 'invocation': f'{config}-id',
                     'error': '(15:48:14) ERROR: no matching toolchains found'}
-        return {'statuses': {label: self.statuses.get(label, 'PASSED') for label in targets},
+        answers = self.reruns if extra else self.statuses
+        return {'statuses': {label: answers.get(label, 'PASSED') for label in targets},
                 'invocation': f'{config}-id', 'error': None}
+
+    def budget_only(self, labels, statuses):
+        return {label for label in labels if label in self.marked or statuses.get(label) == 'TIMEOUT'}
 
     def build(self, targets, config, metadata, log_name):
         self.built.append((config, list(targets)))
@@ -267,6 +274,111 @@ def test_build_events_give_statuses_the_invocation_and_the_first_error_line():
                'testSummary': {'overallStatus': 'PASSED'}}
     assert bazel_gate.bep_run(bep(started, summary))['statuses'] == {'//tests:test_core': 'PASSED'}
     assert bazel_gate.bep_run('') == {'statuses': {}, 'invocation': None, 'error': None}
+
+
+def test_a_budget_only_failure_is_rerun_once_uncached_and_can_pass(tmp_path, monkeypatch):
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'],
+                              statuses={'//tests:test_core': 'FAILED'}, budget_only={'//tests:test_core'})
+    status, result = run(workspace, tmp_path, monkeypatch)
+    assert workspace.ran[1:] == [('remote', ['//tests:test_core']), ('remote', ['//tests:test_core'])]
+    assert workspace.extras == [[], ['--nocache_test_results']]
+    assert status == 0 and result['verdict'] == 'pass' and result['failed'] == []
+    assert result['budget_reruns'] == {'//tests:test_core': 'PASSED'}
+
+
+def test_a_bazel_timeout_is_rerun_once(tmp_path, monkeypatch):
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'],
+                              statuses={'//tests:test_core': 'TIMEOUT'})
+    status, result = run(workspace, tmp_path, monkeypatch)
+    assert status == 0 and result['budget_reruns'] == {'//tests:test_core': 'PASSED'}
+
+
+def test_a_confirmed_overrun_still_fails(tmp_path, monkeypatch):
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'],
+                              statuses={'//tests:test_core': 'FAILED'}, budget_only={'//tests:test_core'},
+                              reruns={'//tests:test_core': 'FAILED'})
+    status, result = run(workspace, tmp_path, monkeypatch)
+    assert status == 1 and result['failed'] == ['//tests:test_core']
+    assert result['budget_reruns'] == {'//tests:test_core': 'FAILED'}
+
+
+def test_a_real_failure_is_never_rerun(tmp_path, monkeypatch):
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core', '//tests:test_pbrun'],
+                              statuses={'//tests:test_core': 'FAILED', '//tests:test_pbrun': 'FAILED'},
+                              budget_only={'//tests:test_pbrun'})
+    status, result = run(workspace, tmp_path, monkeypatch)
+    assert workspace.ran[2:] == [('remote', ['//tests:test_pbrun'])]
+    assert status == 1 and result['failed'] == ['//tests:test_core']
+    assert result['budget_reruns'] == {'//tests:test_pbrun': 'PASSED'}
+
+
+def test_a_clean_run_records_no_reruns(tmp_path, monkeypatch):
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'])
+    status, result = run(workspace, tmp_path, monkeypatch)
+    assert status == 0 and result['budget_reruns'] == {} and workspace.extras == [[]]
+
+
+def test_main_mode_reruns_budget_only_failures_per_architecture(tmp_path, monkeypatch):
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'],
+                              statuses={'//tests:test_core': 'FAILED'}, budget_only={'//tests:test_core'})
+    status, result = run(workspace, tmp_path, monkeypatch, mode='main')
+    assert [config for config, _ in workspace.ran if config != 'checks'] == [
+        'remote', 'remote', 'remote-arm64', 'remote-arm64']
+    for architecture in ('amd64', 'arm64'):
+        entry = result['architectures'][architecture]
+        assert entry['budget_reruns'] == {'//tests:test_core': 'PASSED'}
+        assert entry['failed'] == [] and entry['missed'] == []
+    assert status == 0
+
+
+def _outputs(root, label, files, shard=None, zipped=False):
+    package, _, name = label.removeprefix('//').partition(':')
+    outputs = root / 'bazel-testlogs' / package / name / (f'{shard}/test.outputs' if shard else 'test.outputs')
+    outputs.mkdir(parents=True)
+    if zipped:
+        with zipfile.ZipFile(outputs / 'outputs.zip', 'w') as archive:
+            for file in files:
+                archive.writestr(file, 'x\n')
+    else:
+        for file in files:
+            (outputs / file).write_text('x\n')
+
+
+def _real_workspace(tmp_path):
+    (tmp_path / 'tools/ci').mkdir(parents=True)
+    (tmp_path / 'tools/ci/gate_run.py').write_text((ROOT / 'tools/ci/gate_run.py').read_text())
+    return bazel_gate.Workspace(root=tmp_path)
+
+
+def test_runner_markers_are_read_from_plain_and_zipped_outputs(tmp_path):
+    workspace = _real_workspace(tmp_path)
+    _outputs(tmp_path, '//tests:test_plain', ['budget-overrun.txt'])
+    _outputs(tmp_path, '//tests:test_zipped', ['budget-overrun.txt'], zipped=True)
+    _outputs(tmp_path, '//tests:test_assertion', ['junit.xml'])
+    failed = {label: 'FAILED' for label in
+              ['//tests:test_plain', '//tests:test_zipped', '//tests:test_assertion', '//tests:test_no_outputs']}
+    assert workspace.budget_only(sorted(failed), failed) == {'//tests:test_plain', '//tests:test_zipped'}
+
+
+def test_a_timeout_needs_no_marker(tmp_path):
+    workspace = _real_workspace(tmp_path)
+    assert workspace.budget_only(['//tests:test_slow'], {'//tests:test_slow': 'TIMEOUT'}) == {'//tests:test_slow'}
+
+
+def test_a_sharded_target_reruns_only_when_every_failed_shard_is_marked(tmp_path):
+    workspace = _real_workspace(tmp_path)
+    _outputs(tmp_path, '//tests:test_all', ['budget-overrun.txt'], shard='shard_1_of_2')
+    _outputs(tmp_path, '//tests:test_all', ['inventory.json'], shard='shard_2_of_2', zipped=True)
+    _outputs(tmp_path, '//tests:test_mixed', ['budget-overrun.txt'], shard='shard_1_of_2')
+    _outputs(tmp_path, '//tests:test_mixed', ['junit.xml'], shard='shard_2_of_2')
+    failed = {'//tests:test_all': 'FAILED', '//tests:test_mixed': 'FAILED'}
+    assert workspace.budget_only(sorted(failed), failed) == {'//tests:test_all'}
+
+
+def test_the_marker_name_is_the_runners(tmp_path):
+    gate_run = bazel_gate.module_from('gate_run_marker', ROOT / 'tools/ci/gate_run.py')
+    assert gate_run.BUDGET_MARKER == 'budget-overrun.txt'
+    assert 'gate_run.BUDGET_MARKER' in (ROOT / 'tools/bazel/python_runner.py').read_text()
 
 
 def test_remote_executor_configs_are_named_in_bazelrc():

@@ -171,3 +171,42 @@ def test_runner_lane_tests_need_a_git_checkout(tmp_path):
     (checkout / '.git').rmdir()
     with pytest.raises(RuntimeError, match='needs a git checkout'):
         runtime.checkout_of(runfiles)
+
+
+OVERRUN = [{'nodeid': 'tests/test_a.py::test_one', 'seconds': 138.0, 'budget_seconds': 20.0}]
+
+
+def test_a_budget_only_failure_writes_the_marker_and_fails(tmp_path, capsys):
+    status = python_runner.settle(0, {'tests/test_a.py::test_one': 'passed'}, OVERRUN, tmp_path,
+                                  'tests/test_a.py', 'budget-overrun.txt')
+    assert status == 1
+    assert 'tests/test_a.py::test_one: 138.000s > 20.000s' in (tmp_path / 'budget-overrun.txt').read_text()
+    assert 'Per-test time budget exceeded' in capsys.readouterr().err
+    assert not (tmp_path / 'inventory.json').exists()
+
+
+@pytest.mark.parametrize('status,nodes', [
+    (1, {'tests/test_a.py::test_one': 'failed'}),
+    (1, {}),
+    (2, {'tests/test_a.py::test_one': 'passed'}),
+])
+def test_any_other_failure_writes_no_marker(tmp_path, status, nodes):
+    assert python_runner.settle(status, nodes, [], tmp_path, 'tests/test_a.py', 'budget-overrun.txt') == status
+    assert not (tmp_path / 'budget-overrun.txt').exists()
+
+
+def test_the_runner_measures_budgets_only_after_every_test_passed(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(python_runner, 'budget_overruns', lambda *args: seen.append(args) or OVERRUN)
+    assert python_runner.overruns_after(1, {'tests/test_a.py::test_one': 'failed'}, tmp_path, tmp_path,
+                                        'tests/test_a.py') == []
+    assert python_runner.overruns_after(0, {}, tmp_path, tmp_path, 'tests/test_a.py') == []
+    assert seen == []
+    assert python_runner.overruns_after(0, {'tests/test_a.py::test_one': 'passed'}, tmp_path, tmp_path,
+                                        'tests/test_a.py') == OVERRUN
+
+
+def test_a_passing_file_records_its_inventory(tmp_path):
+    nodes = {'tests/test_a.py::test_one': 'passed'}
+    assert python_runner.settle(0, nodes, [], tmp_path, 'tests/test_a.py', 'budget-overrun.txt') == 0
+    assert '"tests/test_a.py::test_one": "passed"' in (tmp_path / 'inventory.json').read_text()
