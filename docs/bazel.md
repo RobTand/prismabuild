@@ -149,6 +149,98 @@ also fails when Bazel's tests differ from the hosted gate's population
 Pass the API key header from the environment or a private rc file. Never commit
 it.
 
+## Measured test sizes
+
+`tools/bazel/test_sizing.bzl` lists remote test actions whose measured CPU
+bursts exceed the default one CPU. `pb_py_test` adds each entry's execution
+properties to the properties from `nonhermetic()`. Tests without an entry
+keep their existing properties, tags, and environment.
+
+Use all three properties when reserving a measured size on BuildBuddy Cloud:
+
+```python
+exec_properties = {
+    "EstimatedComputeUnits": "1",
+    "EstimatedCPU": "2",
+    "EstimatedMemory": "0.5GB",
+}
+```
+
+A nonzero `EstimatedComputeUnits` disables both measured and predicted task
+sizing. The explicit CPU and memory values override its coupled defaults of
+one CPU and 2.5 GB per compute unit. Always specify memory too, to avoid
+reserving that default for a small test.
+
+`EstimatedCPU` alone does not force the scheduler to use that size. In the
+2026-11-02 calibration, an action requested 4000m CPU and 2 GB, but the
+scheduler chose a prediction of 1000m and 448,631,104 bytes. With the three
+properties above, the second calibration's receipts showed the requested
+4000m and 2,147,483,648 bytes as the effective size, with no prediction or
+measurement replacing them.
+
+Read the execution receipt, rather than inferring allocation from the action's
+platform. Request `rpc/BuildBuddyService/GetExecution` with
+`{"executionLookup":{"invocationId":"<test invocation>"},"inlineExecuteResponse":true}`.
+For each test action, inspect
+`executeResponse.result.executionMetadata.auxiliaryMetadata` for the
+`execution_stats.ExecutionAuxiliaryMetadata` record. Its
+`schedulingMetadata.requestedTaskSize` is the request;
+`schedulingMetadata.taskSize` is the effective allocation. CPU is in
+`estimatedMilliCpu`, memory in `estimatedMemoryBytes`. The same record gives
+the execution priority and `cgroupSettings`.
+
+Cloud's default isolation is OCI. In both calibrations its cgroups had
+`cpu.max = 3000000 100000`, a global 30-core quota, and
+`memory.max = max`. The requested size controls scheduling, CPU weight, and
+the leased cpuset; it is not a per-request CPU hard cap. Firecracker treats
+sizes as hard limits and needs a separate calibration. Do not assume every
+cloud executor configuration matches the sampled OCI containers.
+
+To repeat calibration, select the problem targets and tests which launch
+children, including users of process-backed broker fixtures. Exclude hosted
+targets. Runner-lane tests share the runner VM's cgroup, so their samples do
+not justify remote-executor reservations. Use the Remote Bazel command above
+with `--jobs=16`, `--nocache_test_results`,
+`--run_under=//tools/bazel:calibrate_tests`, and temporary overrides:
+
+```sh
+--remote_exec_header=x-buildbuddy-platform.EstimatedComputeUnits=1 \
+--remote_exec_header=x-buildbuddy-platform.EstimatedCPU=4 \
+--remote_exec_header=x-buildbuddy-platform.EstimatedMemory=2GB
+```
+
+Verify the effective size in the receipts before using the measurements.
+The wrapper samples cgroup CPU usage every 100 ms, including children which
+exit between samples. It records the maximum CPU burst, peak memory, and
+sampled live process count in `test.outputs/sizing.json` and the test log.
+Process counts exclude the sampler and include the test launcher and pytest;
+they are lower bounds because short-lived children can escape sampling.
+
+Save those records as a JSON object mapping target labels to lists of
+samples, and save the `GetExecution` response. Derive the requests with:
+
+```sh
+python3 tools/bazel/sizing_report.py \
+  --executions executions.json --samples samples.json > measurements.json
+```
+
+The derivation rounds bursts above 1.25 CPUs up to whole CPUs. It leaves
+smaller bursts at the default, allowing for the sampler's overhead. Memory
+gets 25 percent headroom, rounded up to 0.25 GB with a 0.5 GB minimum, only
+for targets receiving CPU overrides. Each table entry records its burst,
+sampled process count, and source-based reason. Calibration wall times are
+observations, never test assertions.
+
+The [2026-11-02 measurements](../tools/bazel/test_sizing_measurements.json)
+cover 220 isolated remote targets from a 236-target calibration. Sixteen
+runner-lane targets were observed but excluded from per-action sizing.
+The table reserves two CPUs for 65 targets, three for seven, and four for
+one. The other 147 measured targets keep dynamic sizing. Memory requests
+are 0.5 GB except `test_allowance_suite_filesystem_isolation`, which needs
+0.75 GB after headroom. The source evidence has 15 assertion-failing targets
+and eight timeouts, or 23 distinct targets, despite the original README's
+count of 24; calibration includes all 90 baseline failures and timeouts.
+
 ## CI
 
 The Merge gate workflow (`.github/workflows/gate.yml`) starts

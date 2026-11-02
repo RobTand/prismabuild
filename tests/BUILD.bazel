@@ -28657,6 +28657,10 @@ pb_py_test(
     name = "test_bazel_test_sizing",
     path = "tests/test_bazel_test_sizing.py",
     library = ":test_bazel_test_sizing_lib",
+    deps = [
+        ":test_action_resource_profile_lib",
+        ":test_bazel_workspace_lib",
+    ],
     timeout = "moderate",
 )
 

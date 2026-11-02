@@ -1,9 +1,15 @@
 load("@rules_python//python:py_library.bzl", "py_library")
+load("@rules_python//python:py_binary.bzl", "py_binary")
 
 package(default_visibility = ["//visibility:public"])
 
 # Tests read these files by path; tools/bazel/build_files.py names them.
 exports_files(glob(["**"]))
+
+py_binary(
+    name = "calibrate_tests",
+    srcs = ["calibrate_tests.py"],
+)
 
 filegroup(
     name = "files",

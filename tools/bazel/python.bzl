@@ -9,6 +9,7 @@ load("@rules_python//python:py_library.bzl", "py_library")
 load("@rules_python//python:py_test.bzl", "py_test")
 load("//tools/bazel:nonhermetic.bzl", "nonhermetic")
 load("//tools/bazel:test_inputs.bzl", "TEST_INPUTS")
+load("//tools/bazel:test_sizing.bzl", "TEST_SIZING")
 
 # What every hosted gate shard has: both conftest files, pyproject.toml's
 # pytest options, the per-test budgets, and every package the gate installs.
@@ -42,8 +43,12 @@ def pb_py_test(name, path, library, args = [], tags = [], deps = [], data = [], 
     names in strings, the tree reads of production modules it imports itself
     (tools/bazel/build_files.py), and test_inputs.bzl's entry.
     """
-    extra = TEST_INPUTS.get("//%s:%s" % (native.package_name(), name))
+    label = "//%s:%s" % (native.package_name(), name)
+    extra = TEST_INPUTS.get(label)
     extra_tags, exec_properties, env = nonhermetic(name)
+    sizing = TEST_SIZING.get(label)
+    if sizing:
+        exec_properties.update(sizing.exec_properties)
     py_test(
         name = name,
         main = "//tools/bazel:python_runner.py",
