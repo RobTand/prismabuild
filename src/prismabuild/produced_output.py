@@ -125,6 +125,7 @@ from . import pool
 _RENAMEAT2: list[object] = []
 _KEPT_PREWRITES: dict[str, tuple[tuple[object, ...], str]] = {}
 from . import core, digest_primitives
+from .resource_scope import _broker_scope_id
 
 from . import claim_identity
 
@@ -361,23 +362,6 @@ def bind_declared_instance(
 # --------------------------------------------------------------------------
 # Instances (runtime; bound to the live claim, never caller-supplied)
 # --------------------------------------------------------------------------
-
-def _broker_scope_id(action_key: str, nonce: str) -> str:
-    """The scope id the broker issues for an action+nonce (existing rule).
-
-    Same formula `ResourceScope._adopt_created_scope` enforces on every
-    broker response: `prismabuild-job` + sha256(action+nonce)[:32] + `.slice`.
-    Reused here as the control-identity check, never redefined.  This is the
-    package-side owner: `resource_scope` calls it rather than restating the
-    formula.  The broker itself keeps its own spelling -- a stdlib-only root
-    daemon cannot import the package -- and the issuer/mirror agreement is
-    pinned by `tests/test_broker_scope_contract_1301.py`.
-    """
-
-    return ("prismabuild-job"
-            + digest_primitives.raw_sha256((action_key + nonce).encode())[:32]
-            + ".slice")
-
 
 def _launch_env(env: Mapping[str, str] | None) -> dict[str, str]:
     """Launch-bound identity halves (same names as PB730 `injected_context`).
