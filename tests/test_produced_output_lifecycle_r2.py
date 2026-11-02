@@ -82,7 +82,7 @@ def _publish_claim(queue: pool.PoolQueue, owner: str = OWNER) -> dict:
     queue.publish(action_key=owner, cas_root="/cas", worker_script="/w.py",
                   checkout_root="/co", resources={"cpu": 1, "mem_gb": 1})
     claimed = queue.claim(owner="fixture-worker")
-    assert claimed is not None and claimed["action_key"] == owner
+    assert claimed is not None and claimed["action_key"] == owner, queue._host_denial_records()
     return claimed
 
 
@@ -198,7 +198,7 @@ def _bind_live(queue: pool.PoolQueue, tmp_path: Path, template: dict, *,
                   resources={"cpu": 1, "mem_gb": 1, **terms},
                   produced_output_template=template)
     claimed = queue.claim(owner="fixture-worker")
-    assert claimed is not None and claimed["action_key"] == owner
+    assert claimed is not None and claimed["action_key"] == owner, queue._host_denial_records()
     control = _file_broker_control(queue, owner)
     env = {"PRISMABUILD_ACTION_KEY": owner,
            "PRISMABUILD_ACTION_NONCE": control["nonce"],

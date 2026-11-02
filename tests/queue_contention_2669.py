@@ -1,13 +1,61 @@
 """Explicit pytest plugin: one assigned CPU and four acknowledged Python loads.
 
-Enable with ``-p queue_contention_2669``. Never expands assigned affinity.
+Enable with ``-p tests.queue_contention_2669``. Never expands assigned affinity.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 import os
 import subprocess
 import sys
+import time
+from types import SimpleNamespace
 
 import pytest
+
+
+def pytest_addoption(parser):
+    parser.addoption("--census-deschedule", action="store_true",
+                     help="advance the host deadline clock at reader ownership")
+    parser.addoption("--sample-deschedule", action="store_true",
+                     help="advance host Unix time after CPU sample publication")
+
+
+@pytest.fixture(autouse=True)
+def census_descheduling(request, monkeypatch):
+    if not request.config.getoption("--census-deschedule"):
+        return
+    from prismabuild import _bounded_reader as reader
+    wall = [time.monotonic()]
+    monkeypatch.setattr(reader, "time", SimpleNamespace(
+        **{**vars(time), "monotonic": lambda: wall[0]}))
+    capture = reader._capture_ownership
+
+    def descheduled(*args, **kwargs):
+        identity = capture(*args, **kwargs)
+        wall[0] += 6.
+        return identity
+
+    monkeypatch.setattr(reader, "_capture_ownership", descheduled)
+
+
+@pytest.fixture(autouse=True)
+def sample_descheduling(request, monkeypatch):
+    if not request.config.getoption("--sample-deschedule"):
+        return
+    from prismabuild import adaptive_cpu
+    wall_time = time.time
+    elapsed = [0.]
+    monkeypatch.setattr(time, "time", lambda: wall_time() + elapsed[0])
+    sample = adaptive_cpu.Controller.sample
+
+    def descheduled(controller):
+        observed = sample(controller)
+        elapsed[0] += 6.
+        if observed:
+            print("CPU sample age after descheduling:",
+                  time.time() - observed["sampled_unix"])
+        return observed
+
+    monkeypatch.setattr(adaptive_cpu.Controller, "sample", descheduled)
 
 
 @contextmanager
@@ -26,7 +74,9 @@ def cpu_contention():
         for _ in range(4):
             child = subprocess.Popen(
                 [sys.executable, "-I", "-S", "-c",
-                 "import os\nos.write(1, b'R')\nwhile True:\n    value = 37 * 41\n"],
+                 "import os\nentered = False\nwhile True:\n"
+                 "    if not entered:\n        os.write(1, b'R')\n        entered = True\n"
+                 "    value = 37 * 41\n"],
                 stdout=subprocess.PIPE, env=environment)
             children.append(child)
             assert child.stdout.read(1) == b"R", "load child did not enter its loop"
@@ -34,7 +84,8 @@ def cpu_contention():
         yield
     finally:
         for child in children:
-            child.terminate()
+            with suppress(ProcessLookupError):
+                child.terminate()
         for child in children:
             try:
                 child.wait(timeout=60)

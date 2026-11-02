@@ -1140,6 +1140,7 @@ pb_py_library(
         "//src/prismabuild:__init__",
         "//src/prismabuild:_gang_cycle",
         ":admitted_queue_fixture",
+        ":queue_contention_2669",
         ":residency_publication",
     ],
 )
@@ -1493,6 +1494,10 @@ pb_py_library(
     name = "queue_contention_2669",
     srcs = [
         "queue_contention_2669.py",
+    ],
+    deps = [
+        "//src/prismabuild:__init__",
+        "//src/prismabuild:_bounded_reader",
     ],
 )
 

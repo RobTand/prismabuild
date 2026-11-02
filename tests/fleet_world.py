@@ -12,6 +12,7 @@ from typing import Literal
 from prismabuild import pool
 
 from admitted_queue_fixture import AdmittedQueueFixture
+from queue_contention_2669 import cpu_contention  # noqa: F401, explicit remote plugin input
 from residency_publication import publish_landed_files
 
 
