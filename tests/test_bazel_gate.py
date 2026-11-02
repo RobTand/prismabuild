@@ -354,6 +354,13 @@ def test_quarantined_flaky_passes_are_recorded_without_a_budget_rerun(
     for entry in summaries:
         assert entry['flaky_passes'] == {label: 'FLAKY'}
     assert workspace.extras == ([[]] if mode == 'pr' else [[], []])
+    controller = bazel_gate.module_from('remote_gate_summary', ROOT / 'tools/ci/remote_gate.py')
+    explanation = controller.explain(result, [])
+    if mode == 'pr':
+        assert f'FLAKY (quarantine): {label}' in explanation
+    else:
+        for architecture in ('amd64', 'arm64'):
+            assert f'FLAKY on {architecture} (quarantine): {label}' in explanation
 
 
 @pytest.mark.parametrize('mode', ['pr', 'main'])
@@ -408,6 +415,26 @@ def test_quarantined_flaky_outside_selection_is_never_a_main_mode_miss(mode, tmp
         assert result['flaky_passes'] == {}
 
 
+def test_main_keeps_each_architectures_flaky_passes_separate(tmp_path, monkeypatch):
+    label = '//tests:test_core'
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_pbrun'], quarantine={label})
+    test = workspace.test
+
+    def architecture_test(targets, config, *args, **kwargs):
+        record = test(targets, config, *args, **kwargs)
+        record['statuses'][label] = 'FLAKY' if config == 'remote' else 'FAILED'
+        return record
+
+    monkeypatch.setattr(workspace, 'test', architecture_test)
+    status, result = run(workspace, tmp_path, monkeypatch, mode='main')
+    amd64, arm64 = result['architectures']['amd64'], result['architectures']['arm64']
+    assert status == 1
+    assert amd64['flaky_passes'] == {label: 'FLAKY'}
+    assert amd64['failed'] == [] and amd64['missed'] == []
+    assert arm64['flaky_passes'] == {} and arm64['failed'] == [label] and arm64['missed'] == [label]
+    assert arm64['budget_reruns'] == {}
+
+
 def test_workspace_reads_the_controller_quarantine_loader_at_its_own_root(tmp_path, monkeypatch):
     table_path = tmp_path / 'tools/bazel/nonhermetic.bzl'
     table_path.parent.mkdir(parents=True)
@@ -419,7 +446,15 @@ def test_workspace_reads_the_controller_quarantine_loader_at_its_own_root(tmp_pa
         calls.append(path)
         return read(path)
 
+    module_from = bazel_gate.module_from
+
+    def controller(name, path):
+        if path == ROOT / 'tools/ci/bazel_quarantine.py':
+            return bazel_quarantine
+        return module_from(name, path)
+
     monkeypatch.setattr(bazel_quarantine, 'read_quarantine', load)
+    monkeypatch.setattr(bazel_gate, 'module_from', controller)
     workspace = bazel_gate.Workspace(root=tmp_path)
     assert workspace.quarantine() == {'//tests:test_fixture': {'issue': 2670, 'reason': 'timeout'}}
     assert calls == [table_path]
