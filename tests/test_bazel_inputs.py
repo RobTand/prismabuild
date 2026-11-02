@@ -138,6 +138,9 @@ def test_tests_read_a_private_copy_of_the_interpreter(tmp_path, monkeypatch, mac
     monkeypatch.delenv('PB_BAZEL_LANE', raising=False)
     monkeypatch.setattr(sys, 'executable', sys.executable)
     monkeypatch.setattr('platform.machine', lambda: machine)
+    secret_names = ('BUILDBUDDY_API_KEY', 'MERGIFY_TOKEN', 'GITHUB_TOKEN', 'OTHER_API_KEY')
+    for name in secret_names:
+        monkeypatch.setenv(name, 'fake-secret-value')
     copies = []
     copyfile = runtime.shutil.copyfile
 
@@ -158,7 +161,10 @@ def test_tests_read_a_private_copy_of_the_interpreter(tmp_path, monkeypatch, mac
     assert not python.samefile(original)
     with original.open('rb') as source, python.open('rb') as private:
         assert hashlib.file_digest(private, 'sha256').digest() == hashlib.file_digest(source, 'sha256').digest()
-    assert subprocess.run([python, '-c', 'import json'], env=environment, check=False).returncode == 0
+    for name in secret_names:
+        assert name not in environment
+    result = subprocess.run([python, '-c', 'import json'], env=environment, check=False)
+    assert result.returncode == 0
 
 
 def test_runner_lane_tests_need_a_git_checkout(tmp_path):
@@ -259,6 +265,18 @@ def test_gate_child_environment_builder_keeps_only_allowed_names():
     assert not any(name.endswith(('_API_KEY', '_TOKEN')) for name in environment)
 
 
+def test_bazel_test_protocol_keeps_metadata_but_drops_credentials():
+    builder = load('gate_env_protocol', 'tools/ci/gate_env.py')
+    source = {'TEST_TMPDIR': '/test/tmp', 'RUNFILES_DIR': '/runfiles', 'XML_OUTPUT_FILE': '/out.xml',
+              'TEST_OTHER_TOKEN': 'fake-secret-value', 'RUNFILES_API_KEY': 'fake-secret-value',
+              'BUILDBUDDY_API_KEY': 'fake-secret-value'}
+    environment = builder.child_environment(source, bazel_test=True)
+    assert set(environment) == {'TEST_TMPDIR', 'RUNFILES_DIR', 'XML_OUTPUT_FILE'}
+    assert environment['TEST_TMPDIR'] == '/test/tmp'
+    assert environment['RUNFILES_DIR'] == '/runfiles'
+    assert environment['XML_OUTPUT_FILE'] == '/out.xml'
+
+
 def test_real_gate_child_call_sites_never_inherit_secrets(tmp_path, monkeypatch):
     import ast
     import inspect
@@ -267,21 +285,24 @@ def test_real_gate_child_call_sites_never_inherit_secrets(tmp_path, monkeypatch)
     paths = ['tools/ci/bazel_gate.py', 'tools/ci/gate_run.py',
              'tools/ci/bazel_generated.py', 'tools/ci/gate_select.py',
              'tools/ci/gate_revision.py', 'tools/ci/gate_setup.py',
-             'tools/bazel/build_files.py', 'tools/ci/bazel_parity.py']
+             'tools/bazel/build_files.py', 'tools/ci/bazel_parity.py',
+             'tools/bazel/runtime.py', 'tools/bazel/python_runner.py',
+             'tools/bazel/calibrate_tests.py']
     modules = [load('secret_probe_' + Path(path).stem, path) for path in paths]
-    gate, runner, generated, select, revision, setup, build_files, parity = modules
+    (gate, runner, generated, select, revision, setup, build_files, parity,
+     bazel_runtime, bazel_python, calibrate) = modules
     expected = set()
     for path in paths:
         for node in ast.walk(ast.parse((ROOT / path).read_text())):
             if isinstance(node, ast.Call) and ast.unparse(node.func) in {
-                    'subprocess.run', 'subprocess.Popen', 'subprocess.check_output', 'execute'}:
+                    'subprocess.run', 'subprocess.Popen', 'subprocess.check_output', 'execute', 'run'}:
                 expected.add((str((ROOT / path).resolve()), node.lineno))
     observed = set()
     ambient = {'PATH': '/usr/bin', 'HOME': str(tmp_path), 'GITHUB_SHA': 'abc',
                'PRISMABUILD_TEST_TIMEOUT_S': '300', 'GATE_PROFILE_STARTUP': '1',
                'PYTHONPATH': str(ROOT / 'src')}
     for name in ('BUILDBUDDY_API_KEY', 'MERGIFY_TOKEN', 'GITHUB_TOKEN',
-                 'GITHUB_OTHER_TOKEN', 'PRISMABUILD_OTHER_API_KEY', 'GATE_OTHER_TOKEN'):
+                 'GITHUB_OTHER_TOKEN', 'PRISMABUILD_OTHER_API_KEY', 'GATE_OTHER_TOKEN', 'TEST_OTHER_TOKEN'):
         ambient[name] = 'fake-secret-value'
     monkeypatch.setattr(os, 'environ', ambient)
     budget = tmp_path / 'tools/ci/gate_budget.json'
@@ -290,6 +311,8 @@ def test_real_gate_child_call_sites_never_inherit_secrets(tmp_path, monkeypatch)
     junit = tmp_path / 'junit.xml'
     junit.write_text('<testsuite><testcase file="tests/test_one.py" classname="tests.test_one" '
                      'name="test_one" time="0.01"/></testsuite>')
+
+    bazel_commands = []
 
     def capture(command, **kwargs):
         frame = inspect.currentframe().f_back
@@ -303,7 +326,16 @@ def test_real_gate_child_call_sites_never_inherit_secrets(tmp_path, monkeypatch)
         else:
             forbidden = sorted(name for name in names if name.endswith(('_API_KEY', '_TOKEN')))
             assert not forbidden, 'forbidden child environment names: ' + ', '.join(forbidden)
-            assert kwargs['env']['PATH'] == '/usr/bin'
+            assert kwargs['env']['PATH'].split(os.pathsep)[-1] == '/usr/bin'
+        if command == ['python3', 'test.py']:
+            assert kwargs['env']['TEST_TMPDIR'] == ambient['TEST_TMPDIR']
+            assert kwargs['env']['TEST_UNDECLARED_OUTPUTS_DIR'] == ambient['TEST_UNDECLARED_OUTPUTS_DIR']
+        if command[:2] == ['bazel', 'test']:
+            bazel_commands.append(command)
+            bep = Path(next(arg.split('=', 1)[1] for arg in command
+                            if arg.startswith('--build_event_json_file=')))
+            bep.write_text(json.dumps({'id': {'testSummary': {'label': '//tests:test_budget_probe'}},
+                                       'testSummary': {'overallStatus': 'PASSED'}}) + '\n')
         stdout = '' if kwargs.get('text') else b''
         if command[:2] == ['git', 'ls-files']:
             stdout = b''
@@ -313,7 +345,7 @@ def test_real_gate_child_call_sites_never_inherit_secrets(tmp_path, monkeypatch)
             stdout = budget.read_text()
         elif command[:2] == ['git', 'rev-parse']:
             stdout = 'a' * 40 + '\n'
-        return SimpleNamespace(returncode=0, stdout=stdout, wait=lambda: 0)
+        return SimpleNamespace(returncode=0, stdout=stdout, wait=lambda **kwargs: 0)
 
     monkeypatch.setattr(subprocess, 'run', capture)
     monkeypatch.setattr(subprocess, 'Popen', capture)
@@ -321,6 +353,12 @@ def test_real_gate_child_call_sites_never_inherit_secrets(tmp_path, monkeypatch)
     for command in [('git', 'status'), ('python3', 'tool.py'), ('java', '-jar', 'diff.jar'),
                     ('bash', '-c', 'true'), ('bazel', 'query'), ('/opt/bin/bb', 'version')]:
         workspace.run(*command)
+    statuses, reruns = gate.rerun_budget_only(
+        workspace, ['//tests:test_budget_probe'], {'//tests:test_budget_probe': 'TIMEOUT'},
+        'remote', {}, str(tmp_path / 'env-capture'))
+    assert statuses['//tests:test_budget_probe'] == 'PASSED'
+    assert reruns['//tests:test_budget_probe'] == 'PASSED'
+    assert len(bazel_commands) == 1 and '--nocache_test_results' in bazel_commands[0]
     workspace.ensure_commit('a' * 40)
     workspace.start_generated_checks()
     generated.check(root=tmp_path)
@@ -375,6 +413,37 @@ def test_real_gate_child_call_sites_never_inherit_secrets(tmp_path, monkeypatch)
     partition = load('secret_probe_partition', 'tools/ci/gate_partition.py')
     files = sorted(partition.SANDBOX_TEST_FILES | setup.ROOT_OWNED_INTERPRETER_FILES)
     setup.prepare_assigned_gate(files, execute=subprocess.run)
+    # Exercise runner setup without touching the host's lock or cgroup paths.
+    boxes = tmp_path / 'tools/fleet/fleet_boxes.json'
+    boxes.parent.mkdir(parents=True)
+    boxes.write_text(json.dumps({'action_tmpdir': str(tmp_path / 'runner-scratch')}))
+    monkeypatch.setattr(bazel_runtime, 'open',
+                        lambda *args: open(tmp_path / 'runner.lock', 'w'), raising=False)
+    monkeypatch.setattr(bazel_runtime, 'CGROUP_ROOT', tmp_path / 'cgroup')
+    monkeypatch.setattr(bazel_runtime.shutil, 'which', lambda name: None)
+    real_exists = Path.exists
+    monkeypatch.setattr(Path, 'exists', lambda path: (
+        True if str(path) == '/proc/sys/kernel/apparmor_restrict_unprivileged_userns'
+        else real_exists(path)))
+    bazel_runtime.prepare_runner(tmp_path, run=subprocess.run)
+    monkeypatch.setattr(Path, 'exists', real_exists)
+    # The real private-interpreter preparation feeds the real runner's pytest call.
+    private = tmp_path / 'private'
+    private.mkdir()
+    ambient.update(TEST_TMPDIR=str(private), XML_OUTPUT_FILE=str(junit),
+                   TEST_UNDECLARED_OUTPUTS_DIR=str(tmp_path / 'outputs'))
+    monkeypatch.setattr(sys, 'executable', sys.executable)
+    monkeypatch.setattr(sys, 'argv', ['python_runner.py', 'tests/test_one.py'])
+    monkeypatch.setattr(bazel_python, 'prepare_remote_test', bazel_runtime.prepare_remote_test)
+    assert bazel_python.main() == 0
+    assert not (private / 'python-environment/bin/python').is_symlink()
+    calibration_root = tmp_path / 'calibration'
+    calibration_root.mkdir()
+    samples = iter([(0.0, 0.0, 1), (1.0, 1.0, 2)])
+    monkeypatch.setattr(calibrate, 'cgroup', lambda: calibration_root)
+    monkeypatch.setattr(calibrate, 'sample', lambda root: next(samples))
+    monkeypatch.setattr(sys, 'argv', ['calibrate_tests.py', 'python3', 'test.py'])
+    assert calibrate.main() == 0
     # Wrapper frames aren't call sites. Every real subprocess site must execute.
     assert expected <= observed, sorted((Path(path).name, line) for path, line in expected - observed)
 

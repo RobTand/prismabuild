@@ -11,14 +11,22 @@ NAMES = frozenset({
     'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_DATE',
 })
 PREFIXES = ('LC_', 'PRISMABUILD_', 'GATE_', 'GITHUB_')
+# A --run_under wrapper launches a Bazel test, before the pytest adapter can
+# consume its runfiles, sharding and output protocol.
+BAZEL_TEST_PREFIXES = ('TEST_', 'RUNFILES_', 'GTEST_', 'COVERAGE_', 'TESTBRIDGE_')
+BAZEL_TEST_NAMES = frozenset({
+    'JAVA_RUNFILES', 'PYTHON_RUNFILES', 'XML_OUTPUT_FILE', 'BAZEL_TEST',
+    'PYTHONSAFEPATH', 'RUNTEST_PRESERVE_CWD', 'BUILD_EXECROOT',
+})
 
 
-def child_environment(source=None):
+def child_environment(source=None, *, bazel_test=False):
     """Select operational settings; secret suffixes take precedence over prefixes."""
     source = os.environ if source is None else source
     return {name: value for name, value in source.items()
             if not name.endswith(('_API_KEY', '_TOKEN'))
-            and (name in NAMES or name.startswith(PREFIXES))}
+            and (name in NAMES or name.startswith(PREFIXES)
+                 or bazel_test and (name in BAZEL_TEST_NAMES or name.startswith(BAZEL_TEST_PREFIXES)))}
 
 
 def main(argv=None):

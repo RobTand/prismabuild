@@ -1,5 +1,6 @@
 """Give a remote test the environment the hosted gate gives a shard."""
 import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,11 @@ import subprocess
 import sys
 import tempfile
 import venv
+
+ENV_SPEC = importlib.util.spec_from_file_location(
+    'gate_env', Path(__file__).resolve().parents[1] / 'ci/gate_env.py')
+gate_env = importlib.util.module_from_spec(ENV_SPEC)
+ENV_SPEC.loader.exec_module(gate_env)
 
 # .github/workflows/gate.yml and tools/ci/gate_run.py set these for every shard.
 GATE_ENVIRONMENT = {
@@ -28,13 +34,13 @@ BAZEL_NAMES = {'JAVA_RUNFILES', 'PYTHON_RUNFILES', 'XML_OUTPUT_FILE', 'BAZEL_TES
 
 
 def gate_environment(environ, root, scratch):
-    """The pytest process's environment: the caller's minus Bazel's, plus the gate's.
+    """Allowlisted pytest settings, without Bazel's variables or runner credentials.
 
     gate_run also drops loader overrides (LD_*) so proof capture sees the real
     interpreter. TMPDIR and HOME are short: hosted shards use /home/rob/pbt17,
     and Bazel's TEST_TMPDIR is too long for the AF_UNIX sockets tests bind.
     """
-    environment = {name: value for name, value in environ.items()
+    environment = {name: value for name, value in gate_env.child_environment(environ).items()
                    if not name.startswith(BAZEL_PREFIXES) and name not in BAZEL_NAMES}
     environment.update(GATE_ENVIRONMENT)
     environment['TMPDIR'] = environment['HOME'] = str(scratch)
@@ -86,19 +92,19 @@ def prepare_runner(root, run=subprocess.run):
         fcntl.flock(lock, fcntl.LOCK_EX)
         if not scratch.is_dir():
             run(['sudo', '-n', 'install', '-d', '-m', '0700', '-o', str(os.getuid()), '-g', str(os.getgid()),
-                 str(scratch)], check=True)
+                 str(scratch)], env=gate_env.child_environment(), check=True)
         missing = sorted(package for tool, package in RUNNER_PACKAGES.items() if not shutil.which(tool))
         if missing:
             apt = ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', '-o', 'Acquire::Retries=3']
-            run([*apt, 'update', '-qq'], check=True)
-            run([*apt, 'install', '-y', '-qq', '--no-install-recommends', *missing], check=True)
+            run([*apt, 'update', '-qq'], env=gate_env.child_environment(), check=True)
+            run([*apt, 'install', '-y', '-qq', '--no-install-recommends', *missing], env=gate_env.child_environment(), check=True)
         if Path('/proc/sys/kernel/apparmor_restrict_unprivileged_userns').exists():
-            run(['sudo', '-n', 'sysctl', '-w', 'kernel.apparmor_restrict_unprivileged_userns=0'], check=True)
+            run(['sudo', '-n', 'sysctl', '-w', 'kernel.apparmor_restrict_unprivileged_userns=0'], env=gate_env.child_environment(), check=True)
     # A hosted runner's processes live in a systemd service's cgroup, not the
     # root one; each test gets its own, delegated to it.
     leaf = CGROUP_ROOT / str(os.getpid())
     run(['sudo', '-n', 'sh', '-c', f'mkdir -p {leaf} && chown -R {os.getuid()}:{os.getgid()} {leaf} '
-         f'&& echo {os.getpid()} > {leaf}/cgroup.procs'], check=True)
+         f'&& echo {os.getpid()} > {leaf}/cgroup.procs'], env=gate_env.child_environment(), check=True)
     return scratch
 
 
