@@ -4,6 +4,8 @@
 Input samples map labels to lists of calibrate_tests.py's sizing.json records.
 Execution input is BuildBuddyService/GetExecution's JSON response. This tool
 reads saved evidence only; it never runs tests or handles account credentials.
+Source-confirmed multi-process labels may opt into a two-CPU minimum even
+when short samples miss runnable overlap. Launcher counts alone do not opt in.
 """
 import argparse
 from collections import defaultdict
@@ -18,7 +20,7 @@ def seconds(start, end):
             datetime.fromisoformat(start.replace('Z', '+00:00'))).total_seconds()
 
 
-def summarize(executions, samples):
+def summarize(executions, samples, *, multi_process_labels=()):
     actions = defaultdict(list)
     for action in executions.get('execution', []):
         if action.get('actionMnemonic') == 'TestRunner':
@@ -42,6 +44,8 @@ def summarize(executions, samples):
         # Ignore the sampler's small overhead around the one-CPU boundary.
         # Round real multi-core bursts up, without padding every target to 4.
         estimate = math.ceil(burst) if burst > 1.25 else 1
+        if label in multi_process_labels:
+            estimate = max(2, estimate)
         properties = {}
         if estimate > 1:
             # A nonzero compute-unit request disables measured AND predicted
@@ -60,9 +64,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--executions', type=Path, required=True)
     parser.add_argument('--samples', type=Path, required=True)
+    parser.add_argument('--multi-process-labels', type=Path,
+                        help='JSON list of labels whose source launches child work')
     args = parser.parse_args()
+    multi_process = json.loads(args.multi_process_labels.read_text()) if args.multi_process_labels else []
     print(json.dumps(summarize(json.loads(args.executions.read_text()),
-                               json.loads(args.samples.read_text())), indent=2))
+                               json.loads(args.samples.read_text()),
+                               multi_process_labels=multi_process), indent=2))
 
 
 if __name__ == '__main__':

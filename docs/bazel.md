@@ -227,7 +227,8 @@ cloud executor configuration matches the sampled OCI containers.
 To repeat calibration, select the problem targets and tests which launch
 children, including users of process-backed broker fixtures. Exclude hosted
 targets. Runner-lane tests share the runner VM's cgroup, so their samples do
-not justify remote-executor reservations. Use the Remote Bazel command above
+not justify remote-executor reservations. Use the hardened shared Run API
+client on a pushed commit
 with `--jobs=16`, `--nocache_test_results`,
 `--run_under=//tools/bazel:calibrate_tests`, and temporary overrides:
 
@@ -259,15 +260,40 @@ for targets receiving CPU overrides. Each table entry records its burst,
 sampled process count, and source-based reason. Calibration wall times are
 observations, never test assertions.
 
+For source-confirmed child work, pass a JSON list of target labels with
+`sizing_report.py --multi-process-labels labels.json`. These targets get at
+least two CPUs even when short samples miss runnable overlap. Launcher counts
+alone do not establish child work: a single-process test has five live
+launcher/test processes in the original calibration. Retain a source-based
+reason for each opt-in. The #2673 measurements and decisions are recorded in
+`tools/bazel/quarantine_sizing_measurements.json`; sizing does not remove a
+quarantine mark or retire a timing-dependent deflake issue.
+
+Runner-lane tests have no remote-execution allocation receipt. To measure one,
+run it alone with `--run_under='//tools/bazel:calibrate_tests --runner-cgroup'`.
+The sampler excludes preexisting delegated cgroups, requires exactly one new
+test cgroup, and reads its counters rather than the runner VM's counters.
+Report the runner reservation separately; per-target remote exec properties
+cannot reserve resources for a `no-remote-exec` action.
+If that runner exposes no memory controller, the sampler reports the maximum
+sampled sum of member RSS from numeric `statm` counters, labelled
+`sampled-sum-rss`. This can double-count shared pages and miss peaks between
+samples; it is not a cgroup memory high-water mark. No process arguments or
+environment files are read. Checkpoints retain measurements if a test times
+out; incomplete samples must not be reported as a completed test pass.
+
 The [2026-11-02 measurements](../tools/bazel/test_sizing_measurements.json)
 cover 220 isolated remote targets from a 236-target calibration. Sixteen
 runner-lane targets were observed but excluded from per-action sizing.
-The table reserves two CPUs for 65 targets, three for seven, and four for
+The original table reserved two CPUs for 65 targets, three for seven, and four for
 one. The other 147 measured targets keep dynamic sizing. Memory requests
 are 0.5 GB except `test_allowance_suite_filesystem_isolation`, which needs
 0.75 GB after headroom. The source evidence has 15 assertion-failing targets
 and eight timeouts, or 23 distinct targets, despite the original README's
 count of 24; calibration includes all 90 baseline failures and timeouts.
+The #2673 follow-up adds eleven two-CPU entries from the quarantine population,
+one with 0.75 GB and ten with 0.5 GB. It retains the ten earlier overrides in
+that population and records the in-process and runner-only exceptions.
 
 ## CI
 

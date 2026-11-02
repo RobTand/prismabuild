@@ -1,8 +1,9 @@
-"""Measured remote test sizes from c2df5862-efa0-464a-9226-9ed173029d0d.
+"""Measured remote test sizes from #2639 and #2673 calibration.
 
 See docs/bazel.md for calibration, effective-allocation receipts and rounding.
-test_sizing_measurements.json includes all 220 isolated targets, including
-those left at the default. Counts include launchers and exclude the sampler.
+test_sizing_measurements.json retains the original 220 isolated targets;
+quarantine_sizing_measurements.json records the 23-target follow-up.
+Counts include launchers and exclude the sampler.
 """
 
 TEST_SIZING = {
@@ -24,11 +25,23 @@ TEST_SIZING = {
         processes = 9,
         reason = "Subprocess harnesses and their descendants overlap the parent test process.",
     ),
+    "//tests:test_a_produced_namespace_is_not_a_consumer": struct(
+        exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.75GB"},
+        burst_cpu = 1.706,
+        processes = 6,
+        reason = "Produced-lifecycle fixtures execute real mover children and census readers alongside the parent test.",
+    ),
     "//tests:test_a_ready_consumers_lead_is_read_first": struct(
         exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
         burst_cpu = 1.297,
         processes = 6,
         reason = "Queue and tier fixtures overlap isolated reader or broker children with the parent test.",
+    ),
+    "//tests:test_a_ready_gpu_action_is_not_starved_by_cpu_shards": struct(
+        exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
+        burst_cpu = 0.996,
+        processes = 7,
+        reason = "GPU-holder queue claims overlap owned census-reader children with the parent; low average CPU does not remove their demand.",
     ),
     "//tests:test_a_released_consumer_key_races_the_claim_in_two_windows": struct(
         exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
@@ -108,6 +121,12 @@ TEST_SIZING = {
         processes = 7,
         reason = "Subprocess harnesses and their descendants overlap the parent test process.",
     ),
+    "//tests:test_an_unproven_ending_is_refused_terminally_at_its_bound": struct(
+        exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
+        burst_cpu = 0.997,
+        processes = 6,
+        reason = "Dead-owner publication and claim fixtures overlap census-reader children with real staged-mover checks.",
+    ),
     "//tests:test_box_prune_race_1542": struct(
         exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
         burst_cpu = 1.992,
@@ -120,6 +139,12 @@ TEST_SIZING = {
         processes = 9,
         reason = "Queue and tier fixtures overlap isolated reader or broker children with the parent test.",
     ),
+    "//tests:test_claim_denials": struct(
+        exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
+        burst_cpu = 1.782,
+        processes = 7,
+        reason = "Claim-denial fixtures run real queue admission and owned census-reader children alongside the parent test.",
+    ),
     "//tests:test_claim_progresses_while_a_sibling_stalls": struct(
         exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
         burst_cpu = 1.427,
@@ -131,6 +156,12 @@ TEST_SIZING = {
         burst_cpu = 1.517,
         processes = 7,
         reason = "Queue and tier fixtures overlap isolated reader or broker children with the parent test.",
+    ),
+    "//tests:test_client_proof_bridge_recovery": struct(
+        exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
+        burst_cpu = 1.004,
+        processes = 6,
+        reason = "Recovery proofs launch the installed reader in a child process while the parent coordinates durable copy cuts.",
     ),
     "//tests:test_consumer_archived_endings": struct(
         exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
@@ -161,6 +192,12 @@ TEST_SIZING = {
         burst_cpu = 1.632,
         processes = 7,
         reason = "Queue and tier fixtures overlap isolated reader or broker children with the parent test.",
+    ),
+    "//tests:test_docker_shim_relays_termination_1599": struct(
+        exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
+        burst_cpu = 1.015,
+        processes = 9,
+        reason = "The shim process, container-command substitute and termination observer overlap the parent test; no GPU workload runs.",
     ),
     "//tests:test_fixture_broker_process": struct(
         exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
@@ -246,6 +283,12 @@ TEST_SIZING = {
         processes = 9,
         reason = "Forked or spawned test children and their helpers overlap the parent test process.",
     ),
+    "//tests:test_output_reconciliation_cycle": struct(
+        exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
+        burst_cpu = 1.096,
+        processes = 9,
+        reason = "Produced-output fixtures execute real mover children and census reads while the parent reconciles output events.",
+    ),
     "//tests:test_paced_exports_share_a_tier": struct(
         exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
         burst_cpu = 1.627,
@@ -293,6 +336,12 @@ TEST_SIZING = {
         burst_cpu = 1.34,
         processes = 9,
         reason = "Subprocess harnesses and their descendants overlap the parent test process.",
+    ),
+    "//tests:test_pbwait_finds_a_later_submission": struct(
+        exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
+        burst_cpu = 1.011,
+        processes = 9,
+        reason = "Each bounded observation forks a fresh reader while the parent publishes and observes the later submission.",
     ),
     "//tests:test_placement_prefers_resident_copy": struct(
         exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
@@ -354,6 +403,12 @@ TEST_SIZING = {
         processes = 8,
         reason = "Forked or spawned test children and their helpers overlap the parent test process.",
     ),
+    "//tests:test_preemption_review_boundaries": struct(
+        exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
+        burst_cpu = 1.25,
+        processes = 7,
+        reason = "Real queue preemption claims overlap owned census-reader children even when their short CPU bursts are missed.",
+    ),
     "//tests:test_prepaid_output_funding": struct(
         exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
         burst_cpu = 1.596,
@@ -389,6 +444,12 @@ TEST_SIZING = {
         burst_cpu = 1.466,
         processes = 6,
         reason = "Forked or spawned test children and their helpers overlap the parent test process.",
+    ),
+    "//tests:test_queue_bell": struct(
+        exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
+        burst_cpu = 1.01,
+        processes = 6,
+        reason = "Real queue-bell service and requeue fixtures launch census and waiter subprocesses alongside the parent and HTTP threads.",
     ),
     "//tests:test_residency_is_derived_and_gates_admission": struct(
         exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
@@ -431,6 +492,12 @@ TEST_SIZING = {
         burst_cpu = 1.695,
         processes = 6,
         reason = "Queue and tier fixtures overlap isolated reader or broker children with the parent test.",
+    ),
+    "//tests:test_the_claim_pass_times_its_transition_holds": struct(
+        exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},
+        burst_cpu = 1.071,
+        processes = 6,
+        reason = "An external transition-lock holder and owned census readers overlap the parent claim-pass test.",
     ),
     "//tests:test_the_nonfinal_window_fences_its_advance": struct(
         exec_properties = {"EstimatedComputeUnits": "1", "EstimatedCPU": "2", "EstimatedMemory": "0.5GB"},

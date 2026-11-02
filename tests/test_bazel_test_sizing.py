@@ -157,6 +157,27 @@ def test_every_size_has_measurements_a_reason_and_an_existing_test_target(sizing
         assert float(entry.exec_properties['EstimatedCPU']) > 1, label
 
 
+def test_quarantine_measurements_cover_the_population_and_match_emitted_sizes():
+    evidence = json.loads((ROOT / 'tools/bazel/quarantine_sizing_measurements.json').read_text())
+    rows = evidence['measurements']
+    assert len(rows) == len({row['label'] for row in rows}) == 23
+    assert len({row['issue'] for row in rows}) == 19
+    for row in rows:
+        name = row['label'].split(':')[1]
+        assert (ROOT / 'tests' / (name + '.py')).is_file()
+        assert row['burst_cpu'] > 0 and row['processes'] >= 1
+        assert row['peak_memory_bytes'] > 0
+        assert len(row['source_reason'].strip()) > 20
+        properties = rule(name)['exec_properties']
+        for key in ('EstimatedComputeUnits', 'EstimatedCPU', 'EstimatedMemory'):
+            assert properties.get(key) == row['exec_properties'].get(key), row['label']
+    unchanged = {row['label'] for row in rows if not row['exec_properties']}
+    assert unchanged == {
+        '//tests:test_a_kill_between_a_movers_two_documents_blocks_nothing',
+        '//tests:test_action_resource_profile',
+    }
+
+
 @pytest.mark.parametrize('name', ['test_bazel_workspace', 'test_action_resource_profile'])
 def test_unsized_targets_keep_their_properties_tags_and_environment(name):
     native = SimpleNamespace(package_name=lambda: 'tests')

@@ -1,0 +1,1848 @@
+{
+  "issue": 2673,
+  "quarantine_source": {
+    "source_branch": "prismabuild-2667",
+    "source_commit": "1ddd997b289166b33b6575c83eec60d20813691d",
+    "verified_commit": "58edbdacd19b430de9626a5ae60ac0afa483181a"
+  },
+  "population": {
+    "targets": 23,
+    "issues": 19
+  },
+  "sample_interval_seconds": 0.1,
+  "jobs": 16,
+  "derivation": "bursts >1.25 CPU round up; source-confirmed child work has a 2-CPU minimum; memory gets 25% headroom rounded to 0.25 GiB with a 0.5 GiB minimum",
+  "process_counts": "launchers included, sampler excluded; sampled live counts are lower bounds; original remote launcher/test baseline is five",
+  "runner_memory_limit": "memory controller absent; enabling it returned I/O error; sampled aggregate RSS is separately labelled and may double-count shared pages",
+  "measurements": [
+    {
+      "label": "//tests:test_a_kill_between_a_movers_two_documents_blocks_nothing",
+      "burst_cpu": 1.012,
+      "processes": 5,
+      "peak_memory_bytes": 316162048,
+      "average_cpu": 0.485,
+      "wall_seconds": 15.353,
+      "queue_seconds": 0.148,
+      "exec_properties": {},
+      "issue": 2640,
+      "multi_process": false,
+      "lane": "remote",
+      "source_reason": "Moves and publication-cut failures run in-process; no test worker or census child is launched.",
+      "classification": "measured, not multi-process",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 2.6737803389999044,
+          "cpu_seconds": 2.6187270000000002,
+          "burst_cpu": 1.012329893420773,
+          "processes": 5,
+          "samples": 27,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "0-1,10-12,21"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 316162048
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 2.523,
+            "wall_seconds": 9.365,
+            "average_cpu": 0.269,
+            "peak_memory_bytes": 180772864,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 1.986,
+            "wall_seconds": 2.964,
+            "average_cpu": 0.67,
+            "peak_memory_bytes": 135090176,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 2.941,
+            "wall_seconds": 3.024,
+            "average_cpu": 0.973,
+            "peak_memory_bytes": 155934720,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_a_produced_namespace_is_not_a_consumer",
+      "burst_cpu": 1.706,
+      "processes": 6,
+      "peak_memory_bytes": 436621312,
+      "average_cpu": 0.15,
+      "wall_seconds": 178.953,
+      "queue_seconds": 0.348,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.75GB"
+      },
+      "issue": 2672,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Produced-lifecycle fixtures execute real mover children and census readers alongside the parent test.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "ded21586-fc7a-413f-b32c-0ed6a28b17b6"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 7.836544731999311,
+          "cpu_seconds": 7.305035,
+          "burst_cpu": 1.7061435485129934,
+          "processes": 6,
+          "samples": 78,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "0-1,9-12"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 436621312
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 4.047,
+            "wall_seconds": 4.229,
+            "average_cpu": 0.957,
+            "peak_memory_bytes": 141041664,
+            "link_type": 1
+          }
+        ],
+        "quarantine-initial": [
+          {
+            "cpu_seconds": 6.093,
+            "wall_seconds": 157.004,
+            "average_cpu": 0.039,
+            "peak_memory_bytes": 245133312,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 5.384,
+            "wall_seconds": 5.763,
+            "average_cpu": 0.934,
+            "peak_memory_bytes": 222769152,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 3.649,
+            "wall_seconds": 3.649,
+            "average_cpu": 1.0,
+            "peak_memory_bytes": 206327808,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_a_ready_gpu_action_is_not_starved_by_cpu_shards",
+      "burst_cpu": 0.996,
+      "processes": 7,
+      "peak_memory_bytes": 342011904,
+      "average_cpu": 0.265,
+      "wall_seconds": 214.46,
+      "queue_seconds": 0.27,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2662,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "GPU-holder queue claims overlap owned census-reader children with the parent; low average CPU does not remove their demand.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 13.979809267999372,
+          "cpu_seconds": 7.000748,
+          "burst_cpu": 0.9964865340599893,
+          "processes": 7,
+          "samples": 140,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "0,3,8-9,23,30"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 308588544
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 15.148,
+            "wall_seconds": 148.602,
+            "average_cpu": 0.102,
+            "peak_memory_bytes": 181297152,
+            "link_type": 1
+          }
+        ],
+        "quarantine-initial": [
+          {
+            "cpu_seconds": 15.394,
+            "wall_seconds": 21.462,
+            "average_cpu": 0.717,
+            "peak_memory_bytes": 342011904,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 9.384,
+            "wall_seconds": 15.557,
+            "average_cpu": 0.603,
+            "peak_memory_bytes": 148197376,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 9.739,
+            "wall_seconds": 14.581,
+            "average_cpu": 0.668,
+            "peak_memory_bytes": 151162880,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 7.236,
+            "wall_seconds": 14.257,
+            "average_cpu": 0.508,
+            "peak_memory_bytes": 308588544,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_a_successors_committed_identity_survives_a_link_back",
+      "burst_cpu": 1.422,
+      "processes": 6,
+      "peak_memory_bytes": 388780032,
+      "average_cpu": 0.307,
+      "wall_seconds": 105.23,
+      "queue_seconds": 0.314,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2641,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 7.774445925999316,
+          "cpu_seconds": 6.503588000000001,
+          "burst_cpu": 1.4219017756454089,
+          "processes": 6,
+          "samples": 78,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "5,8-9,27-28,31"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 388780032
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 5.309,
+            "wall_seconds": 65.43,
+            "average_cpu": 0.081,
+            "peak_memory_bytes": 169431040,
+            "link_type": 1
+          }
+        ],
+        "quarantine-initial": [
+          {
+            "cpu_seconds": 5.971,
+            "wall_seconds": 6.772,
+            "average_cpu": 0.882,
+            "peak_memory_bytes": 263933952,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 7.917,
+            "wall_seconds": 18.352,
+            "average_cpu": 0.431,
+            "peak_memory_bytes": 327237632,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 6.046,
+            "wall_seconds": 6.223,
+            "average_cpu": 0.972,
+            "peak_memory_bytes": 223363072,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 7.034,
+            "wall_seconds": 8.453,
+            "average_cpu": 0.832,
+            "peak_memory_bytes": 349040640,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_action_resource_profile",
+      "issue": 2625,
+      "multi_process": true,
+      "lane": "runner",
+      "source_reason": "Runs worker/profiler children in its delegated runner cgroup; it is not a single-process test.",
+      "burst_cpu": 1.698,
+      "processes": 4,
+      "peak_memory_bytes": 258887680,
+      "exec_properties": {},
+      "classification": "runner-only; remote properties are ineffective",
+      "memory_source": "sampled-sum-rss",
+      "runner_reservation": {
+        "EstimatedCPU": "4",
+        "EstimatedMemory": "8GB"
+      },
+      "calibration_invocations": [
+        "92d5f985-0aba-48ef-836d-9e17d15f33da",
+        "e12a9093-3404-47f4-8a02-3d24d7f65779"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 6.5155054209999435,
+          "cpu_seconds": 5.600629,
+          "burst_cpu": 1.6978663597373005,
+          "processes": 4,
+          "samples": 65,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {},
+          "exit_code": 0,
+          "isolation": "runner-delegated-cgroup"
+        },
+        {
+          "wall_seconds": 5.919049402999917,
+          "cpu_seconds": 5.099415,
+          "burst_cpu": 1.5782804299187603,
+          "processes": 4,
+          "samples": 58,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {},
+          "exit_code": 0,
+          "complete": true,
+          "peak_memory_bytes": 258887680,
+          "memory_source": "sampled-sum-rss",
+          "isolation": "runner-delegated-cgroup"
+        }
+      ],
+      "historical_executions": {}
+    },
+    {
+      "label": "//tests:test_allowance_suite_filesystem_isolation",
+      "burst_cpu": 1.322,
+      "processes": 8,
+      "peak_memory_bytes": 455221248,
+      "average_cpu": 0.254,
+      "wall_seconds": 134.297,
+      "queue_seconds": 0.319,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.75GB"
+      },
+      "issue": 2642,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Subprocess harnesses and their descendants overlap the parent test process.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 10.13472572201863,
+          "cpu_seconds": 4.369718,
+          "burst_cpu": 1.3215165838851082,
+          "processes": 8,
+          "samples": 101,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "12-14,25-27"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 455221248
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 6.672,
+            "wall_seconds": 33.501,
+            "average_cpu": 0.199,
+            "peak_memory_bytes": 254271488,
+            "link_type": 1
+          }
+        ],
+        "quarantine-initial": [
+          {
+            "cpu_seconds": 9.438,
+            "wall_seconds": 14.59,
+            "average_cpu": 0.647,
+            "peak_memory_bytes": 307314688,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 6.146,
+            "wall_seconds": 9.619,
+            "average_cpu": 0.639,
+            "peak_memory_bytes": 263684096,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 7.217,
+            "wall_seconds": 66.111,
+            "average_cpu": 0.109,
+            "peak_memory_bytes": 197869568,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 4.628,
+            "wall_seconds": 10.475,
+            "average_cpu": 0.442,
+            "peak_memory_bytes": 285814784,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_an_unproven_ending_is_refused_terminally_at_its_bound",
+      "burst_cpu": 0.997,
+      "processes": 6,
+      "peak_memory_bytes": 381714432,
+      "average_cpu": 0.072,
+      "wall_seconds": 179.767,
+      "queue_seconds": 0.19,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2659,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Dead-owner publication and claim fixtures overlap census-reader children with real staged-mover checks.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "ded21586-fc7a-413f-b32c-0ed6a28b17b6"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 158.74304567000945,
+          "cpu_seconds": 6.016539,
+          "burst_cpu": 0.9970646804694769,
+          "processes": 6,
+          "samples": 1580,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "2,16-20"
+          },
+          "exit_code": 1,
+          "peak_memory_bytes": 381714432
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 4.552,
+            "wall_seconds": 17.448,
+            "average_cpu": 0.261,
+            "peak_memory_bytes": 194514944,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 2.147,
+            "wall_seconds": 3.203,
+            "average_cpu": 0.671,
+            "peak_memory_bytes": 138608640,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_claim_denials",
+      "burst_cpu": 1.782,
+      "processes": 7,
+      "peak_memory_bytes": 380874752,
+      "average_cpu": 0.076,
+      "wall_seconds": 418.914,
+      "queue_seconds": 0.267,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2665,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Claim-denial fixtures run real queue admission and owned census-reader children alongside the parent test.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "8a689b6f-be2c-4783-b2a5-3d997a716164"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 7.12662986199939,
+          "cpu_seconds": 6.784924,
+          "burst_cpu": 1.7822242937425423,
+          "processes": 7,
+          "samples": 71,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "6-7,9,18-20"
+          },
+          "exit_code": 0,
+          "complete": true,
+          "isolation": "remote-action-cgroup",
+          "peak_memory_bytes": 380874752
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 5.463,
+            "wall_seconds": 30.53,
+            "average_cpu": 0.179,
+            "peak_memory_bytes": 202338304,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 7.618,
+            "wall_seconds": 79.899,
+            "average_cpu": 0.095,
+            "peak_memory_bytes": 156303360,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_claim_progresses_while_a_sibling_stalls",
+      "burst_cpu": 1.427,
+      "processes": 6,
+      "peak_memory_bytes": 330899456,
+      "average_cpu": 0.133,
+      "wall_seconds": 178.413,
+      "queue_seconds": 0.221,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2643,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 5.218851273995824,
+          "cpu_seconds": 4.5179339999999995,
+          "burst_cpu": 1.4270415119032598,
+          "processes": 6,
+          "samples": 52,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "14-19"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 330899456
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 6.577,
+            "wall_seconds": 159.028,
+            "average_cpu": 0.041,
+            "peak_memory_bytes": 148373504,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 5.76,
+            "wall_seconds": 5.842,
+            "average_cpu": 0.986,
+            "peak_memory_bytes": 164827136,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 6.673,
+            "wall_seconds": 8.058,
+            "average_cpu": 0.828,
+            "peak_memory_bytes": 149622784,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 4.766,
+            "wall_seconds": 5.486,
+            "average_cpu": 0.869,
+            "peak_memory_bytes": 183463936,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_client_proof_bridge_recovery",
+      "burst_cpu": 1.004,
+      "processes": 6,
+      "peak_memory_bytes": 244740096,
+      "average_cpu": 0.17,
+      "wall_seconds": 308.437,
+      "queue_seconds": 1.844,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2644,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Recovery proofs launch the installed reader in a child process while the parent coordinates durable copy cuts.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 10.483394506998593,
+          "cpu_seconds": 6.123602,
+          "burst_cpu": 1.0043856674711464,
+          "processes": 6,
+          "samples": 105,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "10-15"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 244740096
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 10.206,
+            "wall_seconds": 234.912,
+            "average_cpu": 0.043,
+            "peak_memory_bytes": 140283904,
+            "link_type": 1
+          }
+        ],
+        "quarantine-initial": [
+          {
+            "cpu_seconds": 11.911,
+            "wall_seconds": 22.102,
+            "average_cpu": 0.539,
+            "peak_memory_bytes": 152817664,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 12.12,
+            "wall_seconds": 20.867,
+            "average_cpu": 0.581,
+            "peak_memory_bytes": 223903744,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 11.731,
+            "wall_seconds": 19.787,
+            "average_cpu": 0.593,
+            "peak_memory_bytes": 224333824,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 6.386,
+            "wall_seconds": 10.77,
+            "average_cpu": 0.593,
+            "peak_memory_bytes": 101982208,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_cpu_control_plane_admission",
+      "burst_cpu": 1.632,
+      "processes": 7,
+      "peak_memory_bytes": 299749376,
+      "average_cpu": 0.099,
+      "wall_seconds": 294.895,
+      "queue_seconds": 0.332,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2642,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 6.962589378003031,
+          "cpu_seconds": 6.778188,
+          "burst_cpu": 1.6322160770900849,
+          "processes": 7,
+          "samples": 70,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "2,17-21"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 299749376
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 6.267,
+            "wall_seconds": 266.508,
+            "average_cpu": 0.024,
+            "peak_memory_bytes": 177168384,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 6.505,
+            "wall_seconds": 8.784,
+            "average_cpu": 0.74,
+            "peak_memory_bytes": 235413504,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 9.279,
+            "wall_seconds": 12.149,
+            "average_cpu": 0.764,
+            "peak_memory_bytes": 178683904,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 7.157,
+            "wall_seconds": 7.454,
+            "average_cpu": 0.96,
+            "peak_memory_bytes": 239194112,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_docker_shim_relays_termination_1599",
+      "burst_cpu": 1.015,
+      "processes": 9,
+      "peak_memory_bytes": 251273216,
+      "average_cpu": 0.218,
+      "wall_seconds": 214.215,
+      "queue_seconds": 0.348,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2645,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "The shim process, container-command substitute and termination observer overlap the parent test; no GPU workload runs.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 23.328325957991183,
+          "cpu_seconds": 6.7002559999999995,
+          "burst_cpu": 1.0153181923828836,
+          "processes": 9,
+          "samples": 232,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "3-5,27-29"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 251273216
+        },
+        {
+          "wall_seconds": 25.93311167800016,
+          "cpu_seconds": 6.902945,
+          "burst_cpu": 1.0121245886755394,
+          "processes": 9,
+          "samples": 259,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "5-7,17-19"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 249958400
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 7.946,
+            "wall_seconds": 60.243,
+            "average_cpu": 0.132,
+            "peak_memory_bytes": 124653568,
+            "link_type": 1
+          },
+          {
+            "cpu_seconds": 5.568,
+            "wall_seconds": 38.859,
+            "average_cpu": 0.143,
+            "peak_memory_bytes": 137175040,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 6.03,
+            "wall_seconds": 33.791,
+            "average_cpu": 0.178,
+            "peak_memory_bytes": 98770944,
+            "link_type": 1
+          },
+          {
+            "cpu_seconds": 12.81,
+            "wall_seconds": 31.302,
+            "average_cpu": 0.409,
+            "peak_memory_bytes": 105361408,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 7.048,
+            "wall_seconds": 23.759,
+            "average_cpu": 0.297,
+            "peak_memory_bytes": 118956032,
+            "link_type": 1
+          },
+          {
+            "cpu_seconds": 7.23,
+            "wall_seconds": 26.261,
+            "average_cpu": 0.275,
+            "peak_memory_bytes": 138022912,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_gang_residency_members",
+      "burst_cpu": 1.715,
+      "processes": 7,
+      "peak_memory_bytes": 371662848,
+      "average_cpu": 0.458,
+      "wall_seconds": 208.76,
+      "queue_seconds": 0.735,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2641,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 31.773475563997636,
+          "cpu_seconds": 24.866860000000003,
+          "burst_cpu": 1.7145127033652992,
+          "processes": 7,
+          "samples": 316,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "1,10-13,31"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 371662848
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 16.821,
+            "wall_seconds": 88.234,
+            "average_cpu": 0.191,
+            "peak_memory_bytes": 148582400,
+            "link_type": 1
+          }
+        ],
+        "quarantine-initial": [
+          {
+            "cpu_seconds": 24.065,
+            "wall_seconds": 38.818,
+            "average_cpu": 0.62,
+            "peak_memory_bytes": 227684352,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 14.162,
+            "wall_seconds": 25.202,
+            "average_cpu": 0.562,
+            "peak_memory_bytes": 152330240,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 15.302,
+            "wall_seconds": 24.142,
+            "average_cpu": 0.634,
+            "peak_memory_bytes": 161427456,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 25.315,
+            "wall_seconds": 32.363,
+            "average_cpu": 0.782,
+            "peak_memory_bytes": 214188032,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_gpu_sample_facts_profiles",
+      "burst_cpu": 1.482,
+      "processes": 7,
+      "peak_memory_bytes": 394940416,
+      "average_cpu": 0.209,
+      "wall_seconds": 123.322,
+      "queue_seconds": 0.303,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2643,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 4.683683674986241,
+          "cpu_seconds": 4.016366,
+          "burst_cpu": 1.4821711502943233,
+          "processes": 7,
+          "samples": 47,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "0-1,6,8,23-24"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 394940416
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 11.928,
+            "wall_seconds": 82.099,
+            "average_cpu": 0.145,
+            "peak_memory_bytes": 190922752,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 5.282,
+            "wall_seconds": 27.033,
+            "average_cpu": 0.195,
+            "peak_memory_bytes": 165756928,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 4.312,
+            "wall_seconds": 9.154,
+            "average_cpu": 0.471,
+            "peak_memory_bytes": 138989568,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 4.297,
+            "wall_seconds": 5.036,
+            "average_cpu": 0.853,
+            "peak_memory_bytes": 200548352,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_measurement_census_reader_fence_1498",
+      "burst_cpu": 1.269,
+      "processes": 6,
+      "peak_memory_bytes": 391905280,
+      "average_cpu": 0.513,
+      "wall_seconds": 59.047,
+      "queue_seconds": 0.251,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2646,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 5.213985807000427,
+          "cpu_seconds": 3.075823,
+          "burst_cpu": 1.2690330015072486,
+          "processes": 6,
+          "samples": 52,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "5-6,15,18,27,31"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 391905280
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 5.592,
+            "wall_seconds": 15.119,
+            "average_cpu": 0.37,
+            "peak_memory_bytes": 193081344,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 9.698,
+            "wall_seconds": 16.083,
+            "average_cpu": 0.603,
+            "peak_memory_bytes": 213241856,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 11.741,
+            "wall_seconds": 22.367,
+            "average_cpu": 0.525,
+            "peak_memory_bytes": 226193408,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 3.262,
+            "wall_seconds": 5.478,
+            "average_cpu": 0.595,
+            "peak_memory_bytes": 251543552,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_operator_host_hold",
+      "burst_cpu": 1.441,
+      "processes": 7,
+      "peak_memory_bytes": 304467968,
+      "average_cpu": 0.184,
+      "wall_seconds": 237.176,
+      "queue_seconds": 0.326,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2647,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 11.515897854987998,
+          "cpu_seconds": 10.262711,
+          "burst_cpu": 1.4405880536090225,
+          "processes": 7,
+          "samples": 115,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "3,25-29"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 304467968
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 9.721,
+            "wall_seconds": 188.076,
+            "average_cpu": 0.052,
+            "peak_memory_bytes": 174366720,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 11.259,
+            "wall_seconds": 17.545,
+            "average_cpu": 0.642,
+            "peak_memory_bytes": 296251392,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 12.123,
+            "wall_seconds": 19.607,
+            "average_cpu": 0.618,
+            "peak_memory_bytes": 289517568,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 10.65,
+            "wall_seconds": 11.948,
+            "average_cpu": 0.891,
+            "peak_memory_bytes": 279564288,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_ordinary_census_admission_2199",
+      "burst_cpu": 1.532,
+      "processes": 9,
+      "peak_memory_bytes": 407511040,
+      "average_cpu": 0.103,
+      "wall_seconds": 501.885,
+      "queue_seconds": 1.952,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2654,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Forked or spawned test children and their helpers overlap the parent test process.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 32.68376305498532,
+          "cpu_seconds": 13.059442,
+          "burst_cpu": 1.5324567980516641,
+          "processes": 9,
+          "samples": 326,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "11-13,17,26-27"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 407511040
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 14.21,
+            "wall_seconds": 300.336,
+            "average_cpu": 0.047,
+            "peak_memory_bytes": 223002624,
+            "link_type": 1
+          },
+          {
+            "cpu_seconds": 0.018,
+            "wall_seconds": 0.124,
+            "average_cpu": 0.146,
+            "peak_memory_bytes": 774144,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 12.666,
+            "wall_seconds": 120.364,
+            "average_cpu": 0.105,
+            "peak_memory_bytes": 290603008,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 11.333,
+            "wall_seconds": 47.97,
+            "average_cpu": 0.236,
+            "peak_memory_bytes": 249499648,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 13.36,
+            "wall_seconds": 33.09,
+            "average_cpu": 0.404,
+            "peak_memory_bytes": 262230016,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_output_reconciliation_cycle",
+      "burst_cpu": 1.096,
+      "processes": 9,
+      "peak_memory_bytes": 324579328,
+      "average_cpu": 0.14,
+      "wall_seconds": 299.059,
+      "queue_seconds": 6.694,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2670,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Produced-output fixtures execute real mover children and census reads while the parent reconciles output events.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 7.585579581999809,
+          "cpu_seconds": 6.526525,
+          "burst_cpu": 1.0960164857485473,
+          "processes": 9,
+          "samples": 76,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "4-6,13,16-17"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 324579328
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 7.185,
+            "wall_seconds": 58.227,
+            "average_cpu": 0.123,
+            "peak_memory_bytes": 199213056,
+            "link_type": 1
+          }
+        ],
+        "quarantine-initial": [
+          {
+            "cpu_seconds": 7.688,
+            "wall_seconds": 95.475,
+            "average_cpu": 0.081,
+            "peak_memory_bytes": 294150144,
+            "link_type": 1
+          }
+        ],
+        "quarantine-budget": [
+          {
+            "cpu_seconds": 8.24,
+            "wall_seconds": 115.839,
+            "average_cpu": 0.071,
+            "peak_memory_bytes": 266715136,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 6.707,
+            "wall_seconds": 13.627,
+            "average_cpu": 0.492,
+            "peak_memory_bytes": 249049088,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 5.233,
+            "wall_seconds": 7.943,
+            "average_cpu": 0.659,
+            "peak_memory_bytes": 233095168,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 6.856,
+            "wall_seconds": 7.947,
+            "average_cpu": 0.863,
+            "peak_memory_bytes": 211918848,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_paced_exports_share_a_tier",
+      "burst_cpu": 1.627,
+      "processes": 9,
+      "peak_memory_bytes": 364163072,
+      "average_cpu": 0.267,
+      "wall_seconds": 146.353,
+      "queue_seconds": 0.727,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2648,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Queue and tier fixtures overlap isolated reader or broker children with the parent test.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 9.766710388998035,
+          "cpu_seconds": 8.403419000000001,
+          "burst_cpu": 1.6268481229381788,
+          "processes": 9,
+          "samples": 98,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "0-1,4,7,30-31"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 364163072
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 7.774,
+            "wall_seconds": 45.757,
+            "average_cpu": 0.17,
+            "peak_memory_bytes": 234455040,
+            "link_type": 1
+          }
+        ],
+        "quarantine-initial": [
+          {
+            "cpu_seconds": 8.938,
+            "wall_seconds": 10.73,
+            "average_cpu": 0.833,
+            "peak_memory_bytes": 330604544,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 7.801,
+            "wall_seconds": 14.989,
+            "average_cpu": 0.52,
+            "peak_memory_bytes": 240181248,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 5.739,
+            "wall_seconds": 64.544,
+            "average_cpu": 0.089,
+            "peak_memory_bytes": 229797888,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 8.866,
+            "wall_seconds": 10.333,
+            "average_cpu": 0.858,
+            "peak_memory_bytes": 249929728,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_pbwait_finds_a_later_submission",
+      "burst_cpu": 1.011,
+      "processes": 9,
+      "peak_memory_bytes": 331141120,
+      "average_cpu": 0.68,
+      "wall_seconds": 20.53,
+      "queue_seconds": 0.181,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2649,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Each bounded observation forks a fresh reader while the parent publishes and observes the later submission.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 4.67296780200013,
+          "cpu_seconds": 4.500916,
+          "burst_cpu": 1.0108905356334261,
+          "processes": 9,
+          "samples": 47,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "2-3,12-15"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 331141120
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 5.268,
+            "wall_seconds": 11.053,
+            "average_cpu": 0.477,
+            "peak_memory_bytes": 251596800,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 3.863,
+            "wall_seconds": 4.456,
+            "average_cpu": 0.867,
+            "peak_memory_bytes": 251944960,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 4.819,
+            "wall_seconds": 5.021,
+            "average_cpu": 0.96,
+            "peak_memory_bytes": 278343680,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_preemption_review_boundaries",
+      "burst_cpu": 1.25,
+      "processes": 7,
+      "peak_memory_bytes": 313851904,
+      "average_cpu": 0.103,
+      "wall_seconds": 169.348,
+      "queue_seconds": 0.26,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2641,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Real queue preemption claims overlap owned census-reader children even when their short CPU bursts are missed.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 5.732255371000065,
+          "cpu_seconds": 4.732334,
+          "burst_cpu": 1.2496098302517775,
+          "processes": 7,
+          "samples": 58,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "3-4,21,25-26,43"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 313851904
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 6.562,
+            "wall_seconds": 88.699,
+            "average_cpu": 0.074,
+            "peak_memory_bytes": 155992064,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 5.773,
+            "wall_seconds": 74.559,
+            "average_cpu": 0.077,
+            "peak_memory_bytes": 157347840,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 5.061,
+            "wall_seconds": 6.09,
+            "average_cpu": 0.831,
+            "peak_memory_bytes": 155594752,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_queue_bell",
+      "burst_cpu": 1.01,
+      "processes": 6,
+      "peak_memory_bytes": 406339584,
+      "average_cpu": 0.386,
+      "wall_seconds": 56.733,
+      "queue_seconds": 0.601,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2671,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "Real queue-bell service and requeue fixtures launch census and waiter subprocesses alongside the parent and HTTP threads.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 5.592430713993963,
+          "cpu_seconds": 3.755294,
+          "burst_cpu": 1.0101869620452903,
+          "processes": 6,
+          "samples": 56,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "0-1,10-11,15,17"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 406339584
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 4.801,
+            "wall_seconds": 6.749,
+            "average_cpu": 0.711,
+            "peak_memory_bytes": 229306368,
+            "link_type": 1
+          }
+        ],
+        "quarantine-initial": [
+          {
+            "cpu_seconds": 4.718,
+            "wall_seconds": 33.34,
+            "average_cpu": 0.142,
+            "peak_memory_bytes": 309649408,
+            "link_type": 1
+          }
+        ],
+        "sizing-only": [
+          {
+            "cpu_seconds": 4.325,
+            "wall_seconds": 5.617,
+            "average_cpu": 0.77,
+            "peak_memory_bytes": 156905472,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 4.02,
+            "wall_seconds": 5.08,
+            "average_cpu": 0.791,
+            "peak_memory_bytes": 136323072,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 4.035,
+            "wall_seconds": 5.947,
+            "average_cpu": 0.679,
+            "peak_memory_bytes": 286277632,
+            "link_type": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "//tests:test_the_claim_pass_times_its_transition_holds",
+      "burst_cpu": 1.071,
+      "processes": 6,
+      "peak_memory_bytes": 400187392,
+      "average_cpu": 0.529,
+      "wall_seconds": 17.381,
+      "queue_seconds": 0.188,
+      "exec_properties": {
+        "EstimatedComputeUnits": "1",
+        "EstimatedCPU": "2",
+        "EstimatedMemory": "0.5GB"
+      },
+      "issue": 2650,
+      "multi_process": true,
+      "lane": "remote",
+      "source_reason": "An external transition-lock holder and owned census readers overlap the parent claim-pass test.",
+      "classification": "sized",
+      "memory_source": "maximum calibration cgroup-memory.peak and historical execution peakMemoryBytes",
+      "calibration_invocations": [
+        "c2df5862-efa0-464a-9226-9ed173029d0d"
+      ],
+      "calibration_samples": [
+        {
+          "wall_seconds": 4.852959431009367,
+          "cpu_seconds": 2.798712,
+          "burst_cpu": 1.0712823701379937,
+          "processes": 6,
+          "samples": 49,
+          "interval_seconds": 0.1,
+          "cgroup_settings": {
+            "cpu.max": "3000000 100000",
+            "cpu.weight": "157",
+            "memory.max": "max",
+            "cpuset.cpus.effective": "24-29"
+          },
+          "exit_code": 0,
+          "peak_memory_bytes": 400187392
+        }
+      ],
+      "historical_executions": {
+        "baseline": [
+          {
+            "cpu_seconds": 3.134,
+            "wall_seconds": 6.662,
+            "average_cpu": 0.47,
+            "peak_memory_bytes": 145362944,
+            "link_type": 1
+          }
+        ],
+        "combined-initial": [
+          {
+            "cpu_seconds": 2.952,
+            "wall_seconds": 5.467,
+            "average_cpu": 0.54,
+            "peak_memory_bytes": 211066880,
+            "link_type": 1
+          }
+        ],
+        "prior-calibration": [
+          {
+            "cpu_seconds": 3.114,
+            "wall_seconds": 5.252,
+            "average_cpu": 0.593,
+            "peak_memory_bytes": 321282048,
+            "link_type": 1
+          }
+        ]
+      }
+    }
+  ]
+}
