@@ -20,10 +20,6 @@ TEST_INPUTS = {
         data = ["//src/prismabuild:files", "//tools:files"],
         reason = "tools/ci/import_cycles.py scans src/prismabuild and tools under the repository root by default.",
     ),
-    "//tests:test_import_fanout": struct(
-        data = ["//src/prismabuild:files", "//tools:files", "//tests:files"],
-        reason = "tools/ci/import_fanout.py scans src, tools and tests under the root its caller passes.",
-    ),
     "//tests:test_pbtest_digest_owner_shard_1553": struct(
         data = ["//tests:test_core_lib"],
         reason = "it runs a tests/test_core.py node through pbtest, which needs that module's imports.",

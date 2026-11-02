@@ -36,6 +36,8 @@ class FakeWorkspace:
         self.broken = set(broken)
         self.marked, self.reruns = set(budget_only), reruns or {}
         self.ran, self.built, self.extras = [], [], []
+        self.graph_revisions, self.diff_revisions = [], []
+        self.graph_errors = []
 
     def ensure_commit(self, sha):
         if not sha:
@@ -44,7 +46,13 @@ class FakeWorkspace:
     def changes(self, base, head):
         return set(self.changed), set()
 
+    def graph_check(self, base, head):
+        self.graph_revisions.extend([base, head])
+        return {"summary": "U 20.0% → 20.0%, SCC max 1 → 1",
+                "base": {"u_pct": 20}, "head": {"u_pct": 20}, "errors": self.graph_errors}
+
     def bazel_diff(self, base, head):
+        self.diff_revisions.extend([base, head])
         if self.diff_error:
             raise bazel_gate.GateError(self.diff_error)
         return set(self.impacted)
@@ -183,11 +191,14 @@ def test_a_bazel_diff_error_fails_the_gate(tmp_path, monkeypatch):
     status, result = run(FakeWorkspace(['src/prismabuild/core.py'], diff_error='bazel-diff exited 1'),
                          tmp_path, monkeypatch)
     assert status == 1 and 'bazel-diff exited 1' in result['error']
+    assert result['graph_impact']['head']['u_pct'] == 20
 
 
-def test_an_empty_base_fails_the_gate(tmp_path, monkeypatch):
+def test_an_empty_base_fails_the_gate(tmp_path, monkeypatch, capsys):
     status, result = run(FakeWorkspace(['src/prismabuild/core.py']), tmp_path, monkeypatch, base='')
     assert status == 1 and 'empty base' in result['error']
+    assert 'U unavailable' in capsys.readouterr().out
+    assert result['graph_impact']['errors']
 
 
 def test_a_failing_or_missing_test_status_fails(tmp_path, monkeypatch):
@@ -379,3 +390,283 @@ def test_remote_executor_configs_are_named_in_bazelrc():
     config = (ROOT / '.bazelrc').read_text()
     for name in bazel_gate.CONFIGS.values():
         assert f'build:{name} --remote_executor=' in config
+
+
+@pytest.mark.parametrize('mode', ['pr', 'main'])
+@pytest.mark.parametrize('changed,impacted', [
+    (['MODULE.bazel'], []), (['.github/workflows/gate.yml'], []),
+    (['.mergify.yml'], []), (['tests/BUILD.bazel'], []),
+    (['src/prismabuild/core.py'], ['//tests:test_core']),
+])
+def test_both_graphs_are_checked_even_when_selection_skips_diff(mode, changed, impacted, tmp_path, monkeypatch, capsys):
+    workspace = FakeWorkspace(changed, impacted)
+    status, result = run(workspace, tmp_path, monkeypatch, mode=mode)
+    assert workspace.graph_revisions == ['a' * 40, 'b' * 40]
+    assert result['graph_impact']['head']['u_pct'] == 20
+    assert 'U 20.0% → 20.0%, SCC max 1 → 1' in capsys.readouterr().out
+    assert status == 0
+
+
+@pytest.mark.parametrize('mode', ['pr', 'main'])
+def test_graph_failures_reach_inputs_with_mermaid_and_still_print_summary(mode, tmp_path, monkeypatch, capsys):
+    workspace = FakeWorkspace(['MODULE.bazel'])
+    workspace.graph_errors = ['test reach 99 exceeds budget 2\n```mermaid\ngraph TD; t --> hub\n```']
+    status, result = run(workspace, tmp_path, monkeypatch, mode=mode)
+    assert status == 1
+    assert workspace.graph_errors[0] in result['inputs']
+    assert 't --> hub' in result['graph_impact']['errors'][0]
+    assert 'U 20.0% → 20.0%' in capsys.readouterr().out
+
+
+def test_hash_generation_requests_a_revision_specific_dependency_file():
+    generate, impacted = bazel_gate.diff_commands('/tmp/bazel-diff-v70', '/repo', 'bazel',
+                                           Path('/tmp/base.json'), Path('/tmp/head.json'), '/tmp/impacted')
+    command = generate(Path('/tmp/base.json'))
+    assert command[command.index('--depEdgesFile') + 1] == '/tmp/base-deps.json'
+    assert command[:2] == ['/tmp/bazel-diff-v70', 'generate-hashes']
+    assert impacted[:2] == ['/tmp/bazel-diff-v70', 'get-impacted-targets']
+    assert '-jar' not in command + impacted
+
+
+def test_bazel_blame_uses_explain_not_a_second_path_finder(tmp_path, monkeypatch):
+    workspace = bazel_gate.Workspace(root=tmp_path)
+    workspace.hashes = {'base': Path('/tmp/base.json'), 'head': Path('/tmp/head.json')}
+    workspace.deps = {'head': Path('/tmp/head-deps.json')}
+    monkeypatch.setattr(workspace, 'diff_tool', lambda: '/tmp/bazel-diff-v70')
+    calls = []
+    def run_command(*args, **kwargs):
+        calls.append(args)
+        return 'graph TD; test --> hub'
+    monkeypatch.setattr(workspace, 'run', run_command)
+    assert 'graph TD; test --> hub' in workspace.explain('//tests:test_x')
+    assert calls == [('/tmp/bazel-diff-v70', 'explain', '-sh', '/tmp/base.json',
+                      '-fh', '/tmp/head.json', '-d', '/tmp/head-deps.json',
+                      '--target', '//tests:test_x', '--format', 'mermaid')]
+
+
+def test_streamed_query_adds_missing_source_edges_and_records_library_owners(tmp_path):
+    rows = [
+        {'sourceFile': {'name': '//pkg:a.py'}},
+        {'sourceFile': {'name': '@@external//:a.py'}},
+        {'rule': {'name': '//pkg:a', 'ruleInput': ['//pkg:a.py', '@@external//:a.py'],
+                  'attribute': [{'name': 'srcs', 'stringListValue': ['//pkg:a.py']}]}}]
+    edges, owners = bazel_gate.source_edges({'//tests:t': {'//pkg:a'}, '//pkg:a': set()}, rows)
+    assert edges == {'//tests:t': {'//pkg:a'}, '//pkg:a': {'//pkg:a.py'}}
+    assert owners == {'//pkg:a': {'//pkg:a.py'}}
+
+
+def test_graph_baseline_may_not_be_loosened_or_deleted():
+    old = {'u_pct': 20, 'loc_u_pct': 30, 'scc_max': 1, 'reach_budget': 9}
+    assert bazel_gate.graph_baseline_errors({**old, 'u_pct': 21}, old)
+    assert bazel_gate.graph_baseline_errors({}, old)
+    assert bazel_gate.graph_baseline_errors({**old, 'u_pct': 19, 'reach_budget': 8}, old) == []
+
+
+def test_workspace_reuses_both_graphs_and_fingerprints_only_a_tests_source_and_imports(tmp_path, monkeypatch):
+    (tmp_path / 'tests/fixtures').mkdir(parents=True)
+    (tmp_path / 'tests/test_t.py').write_text('unchanged\n')
+    (tmp_path / 'tests/fixtures/import_fanout_baseline.json').write_text('{}')
+    (tmp_path / 'bazel-diff-v70.0.2-linux-amd64').write_bytes(b'fixture binary')
+    monkeypatch.setattr(bazel_gate.tempfile, 'gettempdir', lambda: str(tmp_path))
+    monkeypatch.setattr(bazel_gate, 'bazel_diff_digest', lambda data: bazel_gate.BAZEL_DIFF_SHA256)
+    workspace = bazel_gate.Workspace(root=tmp_path)
+    real_module_from = bazel_gate.module_from
+    def graph_module(name, path):
+        if name != 'graph_impact_for_gate':
+            pytest.fail('gate graph checks must not deepen reach through the legacy scanner path')
+        return real_module_from(name, path)
+    monkeypatch.setattr(bazel_gate, 'module_from', graph_module)
+    current, generated = [], []
+    monkeypatch.setattr(workspace, 'checkout', lambda sha: current.append(sha))
+    monkeypatch.setattr(workspace, 'tests', lambda: {'//tests:test_t'})
+    def query(expression):
+        if expression.startswith('kind("source file"'):
+            return [{'sourceFile': {'name': '//tests:test_t.py'}}]
+        return [{'rule': {'name': '//tests:test_t_lib', 'ruleClass': 'py_library',
+                          'ruleInput': ['//tests:test_t.py'],
+                          'attribute': [{'name': 'srcs', 'stringListValue': ['//tests:test_t.py']}]}}]
+    monkeypatch.setattr(workspace, 'streamed_query', query)
+    def command(*args, **kwargs):
+        assert args[0] == str(tmp_path / 'bazel-diff-v70.0.2-linux-amd64')
+        if 'generate-hashes' in args:
+            generated.append(current[-1])
+            output = Path(args[-1])
+            output.write_text(json.dumps({'hashes': {
+                '//tests:test_t': f'Rule#transitive-{current[-1]}~own-test',
+                '//tests:test_t_lib': f'Rule#transitive-{current[-1]}~own-library',
+                '//tests:test_t.py': 'SourceFile#same~same'}}))
+            Path(args[args.index('--depEdgesFile') + 1]).write_text(json.dumps({
+                '//tests:test_t': ['//tests:test_t_lib'], '//tests:test_t_lib': []}))
+        elif 'get-impacted-targets' in args:
+            Path(args[args.index('--output') + 1]).write_text('//tests:test_t\n')
+        return ''
+    monkeypatch.setattr(workspace, 'run', command)
+    def unexpected_download(*args, **kwargs):
+        pytest.fail('the cached binary must serve generation and selection')
+    monkeypatch.setattr(bazel_gate.urllib.request, 'urlopen', unexpected_download)
+    workspace.ensure_graphs('base-sha', 'head-sha')
+    assert workspace.bazel_diff('base-sha', 'head-sha') == {'//tests:test_t'}
+    assert generated == ['base-sha', 'head-sha']
+    assert workspace.graph_contents['base']['//tests:test_t'] == {
+        'source': 'SourceFile#same~same', 'imports': [], 'deps': ['//tests:test_t_lib']}
+    assert workspace.graph_contents['head']['//tests:test_t'] == {
+        'source': 'SourceFile#same~same', 'imports': [], 'deps': ['//tests:test_t_lib']}
+    assert workspace.snapshots['head']['reach'] == {
+        '//tests:test_t': ['//tests:test_t.py']}
+
+
+
+def test_single_diff_binary_is_checksum_pinned_and_cached(tmp_path, monkeypatch):
+    from io import BytesIO
+    monkeypatch.setattr(bazel_gate.tempfile, 'gettempdir', lambda: str(tmp_path))
+    monkeypatch.setattr(bazel_gate, 'bazel_diff_digest', lambda data: bazel_gate.BAZEL_DIFF_SHA256)
+    downloads = []
+    def fetch(url, **kwargs):
+        downloads.append(url)
+        return BytesIO(b'native diff tool')
+    monkeypatch.setattr(bazel_gate.urllib.request, 'urlopen', fetch)
+    workspace = bazel_gate.Workspace(root=tmp_path)
+    assert downloads == []
+    binary = Path(workspace.diff_tool())
+    assert binary.read_bytes() == b'native diff tool'
+    assert binary.stat().st_mode & 0o111
+    assert Path(workspace.diff_tool()) == binary
+    assert downloads == [bazel_gate.BAZEL_DIFF_URL]
+    assert '/v70.0.2/bazel-diff-rust-linux-amd64' in downloads[0]
+    assert bazel_gate.BAZEL_DIFF_SHA256 == '44226a1d1d5239abc8bc6158de1f886fcbbf58e44479ec178df8c01e7e32102e'
+
+
+def test_a_diff_checksum_mismatch_refuses_the_binary(tmp_path, monkeypatch):
+    from io import BytesIO
+    monkeypatch.setattr(bazel_gate.tempfile, 'gettempdir', lambda: str(tmp_path))
+    monkeypatch.setattr(bazel_gate, 'bazel_diff_digest', lambda data: 'wrong checksum')
+    monkeypatch.setattr(bazel_gate.urllib.request, 'urlopen', lambda *args, **kwargs: BytesIO(b'wrong tool'))
+    workspace = bazel_gate.Workspace(root=tmp_path)
+    with pytest.raises(bazel_gate.GateError, match='checksum mismatch'):
+        workspace.diff_tool()
+    assert not (tmp_path / 'bazel-diff-v70.0.2-linux-amd64').exists()
+
+
+
+def test_gate_metrics_record_counts_without_repeating_full_source_closures():
+    measured = {'u_pct': 25, 'reach': {'t': ['a', 'b']},
+                'components': [['a'], ['b', 'c']], 'edges': [['t', 'a']], 'loc': {'a': 1}, 'scc_max': 2, 'scc_members': ['b', 'c']}
+    record = bazel_gate.graph_metrics(measured)
+    assert record == {'u_pct': 25, 'reach_sizes': {'t': 2}, 'cycles': [['b', 'c']],
+                      'scc_max': 2, 'scc_members': ['b', 'c']}
+    assert measured['reach']['t'] == ['a', 'b']
+
+
+def test_adapter_produces_packages_base_maxima_and_both_typed_edge_directions():
+    before = {'reach': {'//pkg:old': ['//pkg:a.py', '//pkg:b.py'], '//other:t': ['//pkg:a.py']},
+              'test_packages': {'//pkg:old': '//pkg', '//other:t': '//other'}}
+    after = {'reach': {'//pkg:old': ['//pkg:a.py'], '//new:t': ['//pkg:c.py']},
+             'test_packages': {'//pkg:old': '//pkg', '//new:t': '//new'}}
+    old_edges = {'rule_to_rule': {('//pkg:old', '//pkg:lib')},
+                 'rule_to_source': {('//pkg:lib', '//pkg:b.py')}}
+    new_edges = {'rule_to_rule': {('//pkg:old', '//pkg:newlib')},
+                 'rule_to_source': {('//pkg:newlib', '//pkg:c.py')}}
+    assert bazel_gate.graph_policy_inputs(before, after, old_edges, new_edges) == {
+        'test_packages': {'//pkg:old': '//pkg', '//new:t': '//new'},
+        'base_package_max_reach': {'//pkg': 2, '//other': 1},
+        'edge_diff': {'added': {'rule_to_rule': [['//pkg:old', '//pkg:newlib']],
+                                'rule_to_source': [['//pkg:newlib', '//pkg:c.py']]},
+                      'removed': {'rule_to_rule': [['//pkg:old', '//pkg:lib']],
+                                  'rule_to_source': [['//pkg:lib', '//pkg:b.py']]}}}
+
+
+def test_edge_types_use_bazel_kinds_instead_of_file_extensions():
+    edges = {'//pkg:t': {'//pkg:generated.py', '//pkg:source', '//pkg:lib.py'},
+             '//pkg:source': {'//pkg:lib.py'}}
+    assert bazel_gate.typed_edges(edges, {'//pkg:t', '//pkg:lib.py'}, {'//pkg:source'}) == {
+        'rule_to_rule': {('//pkg:t', '//pkg:lib.py')},
+        'rule_to_source': {('//pkg:t', '//pkg:source')}}
+
+
+def test_graph_only_baseline_writer_keeps_history_and_never_runs_test_populations(tmp_path, monkeypatch, capsys):
+    impact = bazel_gate.module_from('core_for_baseline_test', ROOT / 'tools/ci/graph_impact.py')
+    workspace = bazel_gate.Workspace(root=tmp_path)
+    snapshot = impact.measure({'//pkg:t': {'//pkg:a'}}, {('//pkg:t', '//pkg:a')}, {'//pkg:a': 1})
+    baseline = impact.baseline_record(snapshot)
+    baseline.pop('edge_groups')
+    baseline['figures']['u_pct'] = 200
+    workspace.snapshots = {'base': snapshot, 'head': snapshot}
+    workspace.graph_impact = impact
+    workspace.graph_baselines = {'head': {'history': ['preserved'], 'graph_impact': baseline}}
+    calls = []
+    def check(base, head, *, record_gains=False):
+        calls.append(record_gains)
+        return {'summary': 'U 100.0% → 100.0%, SCC max 1 → 1', 'errors': []}
+    monkeypatch.setattr(workspace, 'graph_check', check)
+    monkeypatch.setattr(workspace, 'ensure_commit', lambda sha: None)
+    monkeypatch.setattr(workspace, 'run', lambda *args, **kwargs: pytest.fail('graph mode must not run test populations'))
+    monkeypatch.setenv('BUILDBUDDY_ARTIFACTS_DIRECTORY', str(tmp_path / 'artifacts'))
+    path = tmp_path / 'tests/fixtures/import_fanout_baseline.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(workspace.graph_baselines['head']))
+    assert bazel_gate.main(['graph', '--base', 'base', '--head', 'head', '--write-baseline'], workspace) == 0
+    written = json.loads(path.read_text())
+    assert written['history'] == ['preserved']
+    assert written['graph_impact']['figures']['u_pct'] == 100
+    assert 'edge_groups' not in written['graph_impact']
+    assert calls == [True]
+    assert 'U 100.0% → 100.0%' in capsys.readouterr().out
+    original = path.read_bytes()
+    monkeypatch.setattr(workspace, 'graph_check', lambda *args, **kwargs: {'summary': 'loss', 'errors': ['SCC grew']})
+    assert bazel_gate.main(['graph', '--base', 'base', '--head', 'head', '--write-baseline'], workspace) == 1
+    assert path.read_bytes() == original
+
+
+def test_native_cycle_blame_targets_the_reported_cycle_even_without_a_test_path():
+    head = {'reach': {'//tests:unrelated': []}, 'loc': {},
+            'edges': [['//new:a', '//new:b'], ['//new:b', '//new:a']]}
+    assert bazel_gate.blame_target('SCC grew or merged (2 nodes): //new:a, //new:b', head, []) == '//new:a'
+    head['reach']['//tests:affected'] = []
+    assert bazel_gate.blame_target('existing test reach grew: //tests:affected +1', head, []) == '//tests:affected'
+
+
+@pytest.mark.parametrize('stored', [
+    {'test_to_test_imports': ['tests/test_a.py -> tests/test_b.py']},
+    {'test_to_test_imports': []},
+    {'conftest_source_imports': ['conftest.py -> src/prismabuild/core.py']},
+    {'conftest_source_imports': []},
+    {'test_to_test_imports': [], 'conftest_source_imports': []},
+    {'future_relationships': ['//pkg:a -> //pkg:b']},
+    {'future_relationships': [['//pkg:a', '//pkg:b']]},
+    {'future_edges': []},
+    {'graph_impact': {'edge_groups': {'test_to_test': []}}},
+    {'metadata': {'future_relationships': [['//pkg:a', '//pkg:b']]}},
+])
+def test_baseline_writer_refuses_stored_edges_in_head_without_writing(tmp_path, monkeypatch, stored):
+    impact = bazel_gate.module_from('core_for_edge_baseline_test', ROOT / 'tools/ci/graph_impact.py')
+    snapshot = impact.measure({'//pkg:t': {'//pkg:a'}}, {('//pkg:t', '//pkg:a')}, {'//pkg:a': 1})
+    baseline = impact.baseline_record(snapshot)
+    baseline.pop('edge_groups')
+    head = {'history': ['preserved'], 'graph_impact': baseline, **stored}
+    head['graph_impact'] = {**baseline, **head['graph_impact']}
+    workspace = bazel_gate.Workspace(root=tmp_path)
+    workspace.snapshots = {'head': snapshot}
+    workspace.graph_impact = impact
+    workspace.graph_baselines = {'head': head}
+    monkeypatch.setattr(workspace, 'ensure_commit', lambda sha: None)
+    monkeypatch.setattr(workspace, 'graph_check', lambda *args, **kwargs: {
+        'summary': 'U 100.0% → 100.0%, SCC max 1 → 1', 'errors': []})
+    monkeypatch.setattr(workspace, 'run', lambda *args, **kwargs: pytest.fail('graph mode ran a population'))
+    output = tmp_path / 'artifacts'
+    monkeypatch.setenv('BUILDBUDDY_ARTIFACTS_DIRECTORY', str(output))
+    path = tmp_path / 'tests/fixtures/import_fanout_baseline.json'
+    path.parent.mkdir(parents=True)
+    original = json.dumps(head)
+    path.write_text(original)
+
+    assert bazel_gate.main(['graph', '--base', 'base', '--head', 'head', '--write-baseline'], workspace) == 1
+    result = json.loads((output / bazel_gate.RESULT).read_text())
+    assert 'stored edge lists' in result['error']
+    assert path.read_text() == original
+    assert not (output / path.name).exists()
+
+
+def test_prismabuild_baseline_cannot_enable_transitional_test_imports():
+    baseline = bazel_gate.graph_baseline({'u_pct': 20, 'loc_u_pct': 30, 'scc_max': 1, 'reach_budget': 9})
+    assert any('strict' in error for error in bazel_gate.graph_baseline_errors(
+        {**baseline, 'test_to_test': 'reach'}, baseline))

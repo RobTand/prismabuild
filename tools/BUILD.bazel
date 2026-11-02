@@ -131,14 +131,23 @@ pb_py_library(
         "//:MODULE.bazel",
         "//:MODULE.bazel.lock",
         "//src/prismabuild:digest_primitives.py",
+        "//tests:fixtures/graph_impact_allowlist.json",
+        "//tests:fixtures/import_fanout_baseline.json",
         "ci/bazel_gate.py",
         "ci/bazel_generated.py",
+        "ci/bazel_imports.py",
         "ci/bazel_parity.py",
         "ci/gate_paths.py",
         "ci/gate_requirements.txt",
         "ci/gate_run.py",
         "ci/gate_select.py",
+        "ci/graph_impact.py",
         "ci/remote_gate.py",
+    ],
+    deps = [
+        ":ci/bazel_imports",
+        ":ci/gate_run",
+        ":ci/graph_impact",
     ],
 )
 
@@ -152,6 +161,16 @@ pb_py_library(
         "//tools/bazel:generate.sh",
         "//tools/bazel:requirements.py",
         "ci/bazel_generated.py",
+    ],
+)
+
+pb_py_library(
+    name = "ci/bazel_imports",
+    srcs = [
+        "ci/bazel_imports.py",
+    ],
+    data = [
+        "//:conftest.py",
     ],
 )
 
@@ -351,6 +370,13 @@ pb_py_library(
 )
 
 pb_py_library(
+    name = "ci/graph_impact",
+    srcs = [
+        "ci/graph_impact.py",
+    ],
+)
+
+pb_py_library(
     name = "ci/import_cycles",
     srcs = [
         "ci/import_cycles.py",
@@ -370,16 +396,8 @@ pb_py_library(
     srcs = [
         "ci/import_fanout.py",
     ],
-    data = [
-        "//:conftest.py",
-        "//tests:fixtures/import_fanout_baseline.json",
-        "ci/gate_durations.json",
-        "ci/gate_quarantine.json",
-        "ci/gate_select.py",
-        "ci/import_fanout.py",
-    ],
     deps = [
-        ":ci/gate_select",
+        ":ci/bazel_imports",
     ],
 )
 
