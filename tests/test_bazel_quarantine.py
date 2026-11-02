@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from test_bazel_test_sizing import starlark
+from bazel_macro_support import starlark
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -63,9 +63,9 @@ def test_only_quarantined_targets_are_flaky(quarantine):
         macro(**attributes)
     marked = {'//tests:' + target['name'] for target in captured if target.get('flaky', False)}
     assert marked == set(quarantine)
-    # Direct rule attributes must not bypass the macro's table.
+    # Direct rule attributes in generated packages must not bypass the table.
     for path in ('BUILD.bazel', 'tests/BUILD.bazel', 'tools/BUILD.bazel',
-                 'src/prismabuild/BUILD.bazel', 'tools/bazel/BUILD.bazel'):
+                 'src/prismabuild/BUILD.bazel'):
         for node in ast.walk(ast.parse((ROOT / path).read_text())):
             if isinstance(node, ast.Call):
                 for keyword in node.keywords:

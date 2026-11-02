@@ -38,6 +38,20 @@ pb_py_library(
 )
 
 pb_py_library(
+    name = "bazel_macro_support",
+    srcs = [
+        "bazel_macro_support.py",
+    ],
+    data = [
+        "//:files",
+        "//src/prismabuild:files",
+        "//tools/bazel:files",
+        "//tools:files",
+        ":files",
+    ],
+)
+
+pb_py_library(
     name = "bench_move_pricing",
     srcs = [
         "bench_move_pricing.py",
@@ -28677,7 +28691,6 @@ pb_py_library(
         "//:files",
         "//src/prismabuild:BUILD.bazel",
         "//src/prismabuild:files",
-        "//tools/bazel:BUILD.bazel",
         "//tools/bazel:files",
         "//tools:BUILD.bazel",
         "//tools:files",
@@ -28685,7 +28698,7 @@ pb_py_library(
         "BUILD.bazel",
     ],
     deps = [
-        ":test_bazel_test_sizing_lib",
+        ":bazel_macro_support",
     ],
 )
 
@@ -28712,6 +28725,9 @@ pb_py_library(
         "//tools:files",
         ":files",
         "BUILD.bazel",
+    ],
+    deps = [
+        ":bazel_macro_support",
     ],
 )
 
