@@ -82,6 +82,11 @@ failed because the sizing table was absent; both unsized checks passed.
 The GREEN check also covers derivation from synthetic, fixed timestamps and
 counters, with no real-time thresholds or sleeping in the tests.
 
+The [GREEN invocation](https://app.buildbuddy.io/invocation/ad6765be-9e2d-4399-8bf2-d5d22d68317e)
+passed all five selected targets: sizing contracts, workspace contracts,
+BUILD generation, input handling, and population parity. It used
+`--jobs=16` and `--remote_execution_priority=100`.
+
 ## Per-target reservations
 
 Every row also sets `EstimatedComputeUnits=1`. CPU bursts are in cores.
