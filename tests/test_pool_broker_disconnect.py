@@ -6,6 +6,8 @@ an absent broker reply into exit 125.  The socket server is confined to the
 test process; scope create/status/release remain the narrow mock used by the
 resource-scope tests, so this never contacts the privileged broker.
 """
+from short_socket import short_socket_path
+
 import array
 import hashlib
 import json
@@ -135,56 +137,56 @@ def make_failed_attempt(tmp_path, monkeypatch, *, publish_receipt=True,
     item = queue.claim(capacity={"cpu": 1, "mem_gb": 2})
     assert item is not None
 
-    socket_path = tmp_path / "broker.sock"
-    observed = {}
-    broker = _close_after_payload(socket_path, observed,
-                                  disconnect_before_exit=disconnect_before_exit)
+    with short_socket_path() as socket_path:
+        observed = {}
+        broker = _close_after_payload(socket_path, observed,
+                                      disconnect_before_exit=disconnect_before_exit)
 
-    def request(scope, operation, **extra):
-        if operation == "create":
-            return _scope_reply(scope)
-        if operation == "release":
-            return {"ok": True, "released": True, "scope_id": scope.unit}
-        return {"ok": True}
+        def request(scope, operation, **extra):
+            if operation == "create":
+                return _scope_reply(scope)
+            if operation == "release":
+                return {"ok": True, "released": True, "scope_id": scope.unit}
+            return {"ok": True}
 
-    def sample(scope):
-        value = {"action_key": scope.action_key, "nonce": scope.nonce,
-                 "host": socket.gethostname(), "scope_unit": scope.unit,
-                 "sampled_unix": pool._now(), "wall_seconds": 0.01,
-                 "cpu_seconds": 0.0, "memory_peak_bytes": 0,
-                 "memory_current_bytes": 0, "oom_kill": 0, "oom_local": 0,
-                 "complete": True, "errors": []}
-        resource_scope._atomic_json(scope.telemetry_path, value)
-        return value
+        def sample(scope):
+            value = {"action_key": scope.action_key, "nonce": scope.nonce,
+                     "host": socket.gethostname(), "scope_unit": scope.unit,
+                     "sampled_unix": pool._now(), "wall_seconds": 0.01,
+                     "cpu_seconds": 0.0, "memory_peak_bytes": 0,
+                     "memory_current_bytes": 0, "oom_kill": 0, "oom_local": 0,
+                     "complete": True, "errors": []}
+            resource_scope._atomic_json(scope.telemetry_path, value)
+            return value
 
-    original_wrap = resource_scope.ResourceScope.wrap_argv
-    def wrap(scope, argv, *args, **kwargs):
-        wrapped = original_wrap(scope, argv, *args, **kwargs)
-        wrapped[wrapped.index("--socket") + 1] = str(socket_path)
-        return wrapped
+        original_wrap = resource_scope.ResourceScope.wrap_argv
+        def wrap(scope, argv, *args, **kwargs):
+            wrapped = original_wrap(scope, argv, *args, **kwargs)
+            wrapped[wrapped.index("--socket") + 1] = str(socket_path)
+            return wrapped
 
-    monkeypatch.setattr(resource_scope.ResourceScope, "_request", request)
-    monkeypatch.setattr(resource_scope.ResourceScope, "sample", sample)
-    monkeypatch.setattr(resource_scope.ResourceScope, "wrap_argv", wrap)
-    monkeypatch.setattr(pool.cpu_admission, "record_completion", lambda *args: None)
-    try:
-        outcome = queue.execute(item, containment=True, heartbeat_s=0.02)
-    except BaseException:
-        broker["stopped"].set()
-        broker["server"].close()
-        raise
-    finally:
-        broker["thread"].join(timeout=30)
-    assert not broker["thread"].is_alive()
-    assert not broker["failures"]
-    assert observed["descriptors"] == 3
-    assert observed["payload_returncode"] == (0 if publish_receipt else 1)
-    terminal_path = queue.finish(
-        action["action_key"], status=finish_status,
-        detail={**outcome, **(finish_detail or {})}, claim_snapshot=item,
-    )
-    terminal = json.loads(terminal_path.read_text())
-    return queue, cas, action, terminal
+        monkeypatch.setattr(resource_scope.ResourceScope, "_request", request)
+        monkeypatch.setattr(resource_scope.ResourceScope, "sample", sample)
+        monkeypatch.setattr(resource_scope.ResourceScope, "wrap_argv", wrap)
+        monkeypatch.setattr(pool.cpu_admission, "record_completion", lambda *args: None)
+        try:
+            outcome = queue.execute(item, containment=True, heartbeat_s=0.02)
+        except BaseException:
+            broker["stopped"].set()
+            broker["server"].close()
+            raise
+        finally:
+            broker["thread"].join(timeout=30)
+        assert not broker["thread"].is_alive()
+        assert not broker["failures"]
+        assert observed["descriptors"] == 3
+        assert observed["payload_returncode"] == (0 if publish_receipt else 1)
+        terminal_path = queue.finish(
+            action["action_key"], status=finish_status,
+            detail={**outcome, **(finish_detail or {})}, claim_snapshot=item,
+        )
+        terminal = json.loads(terminal_path.read_text())
+        return queue, cas, action, terminal
 
 
 @pytest.mark.parametrize("disconnect_before_exit", [False, True],

@@ -1,4 +1,6 @@
 """Listener shutdown and child completion are descriptor events, without ticks."""
+from short_socket import short_socket_path
+
 import http.client
 import importlib.util
 import json
@@ -96,7 +98,7 @@ def test_metrics_blocks_on_listener_and_stop_and_serves_scrapes(
 
 def test_broker_listener_has_no_shutdown_tick(listener_broker, listener_wait_calls, tmp_path):
     m = listener_broker
-    with m.Server(str(tmp_path / 'listen.sock'), m.Handler) as server:
+    with short_socket_path() as endpoint, m.Server(str(endpoint), m.Handler) as server:
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
         try:
@@ -138,7 +140,7 @@ def test_broker_run_waits_on_pidfd_and_client_without_tick(
 
     monkeypatch.setattr(m, 'select', SimpleNamespace(select=observe_run_wait))
     try:
-        with m.Server(str(tmp_path / 'run.sock'), m.Handler) as server:
+        with short_socket_path() as endpoint, m.Server(str(endpoint), m.Handler) as server:
             server.authority = SimpleNamespace(run=launch_probe, handle=stop_probe)
             thread = threading.Thread(target=server.serve_forever)
             thread.start()
@@ -246,25 +248,26 @@ def test_broker_close_retains_main_daemon_request_semantics(listener_broker, tmp
             entered.set()
             assert release.wait(5)
 
-    server = m.Server(str(tmp_path / 'daemon.sock'), HeldHandler)
-    listener = threading.Thread(target=server.serve_forever)
-    listener.start()
-    client = socket.socket(socket.AF_UNIX)
-    try:
-        client.connect(server.server_address)
-        assert entered.wait(5)
-        server.shutdown()
-        listener.join(5)
-        server.server_close()
-        assert handlers[0].daemon and handlers[0].is_alive()
-    finally:
-        release.set()
-        client.close()
-        server.shutdown()
-        listener.join(5)
-        for handler in handlers:
-            handler.join(5)
-        server.server_close()
+    with short_socket_path() as endpoint:
+        server = m.Server(str(endpoint), HeldHandler)
+        listener = threading.Thread(target=server.serve_forever)
+        listener.start()
+        client = socket.socket(socket.AF_UNIX)
+        try:
+            client.connect(server.server_address)
+            assert entered.wait(5)
+            server.shutdown()
+            listener.join(5)
+            server.server_close()
+            assert handlers[0].daemon and handlers[0].is_alive()
+        finally:
+            release.set()
+            client.close()
+            server.shutdown()
+            listener.join(5)
+            for handler in handlers:
+                handler.join(5)
+            server.server_close()
 
 
 def test_metrics_cache_still_expires_on_the_next_scrape_at_ten_seconds(tmp_path, monkeypatch):
@@ -300,7 +303,7 @@ def test_broker_listener_stop_preserves_an_unfinished_request(listener_broker, t
         def finish(self):
             finished.set()
 
-    with m.Server(str(tmp_path / 'framing.sock'), FramingHandler) as server:
+    with short_socket_path() as endpoint, m.Server(str(endpoint), FramingHandler) as server:
         server.authority = SimpleNamespace(handle=lambda *a: {'ok': True})
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
