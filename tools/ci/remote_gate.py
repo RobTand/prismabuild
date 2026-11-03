@@ -170,6 +170,8 @@ def scan_artifacts(scanner_data, scanner_hash, result_path):
                 code = outcome.code if isinstance(outcome.code, int) else 75
         # The shared core allows unavailable zstd decoding. An artifact upload
         # cannot accept that skipped scan, even if the core returned zero.
+        if ': zstd: not scanned (compression.zstd unavailable)' in diagnostics.getvalue():
+            code = 75
     except BaseException:
         code = 75
     finally:
