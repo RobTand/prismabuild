@@ -248,6 +248,7 @@ raise SystemExit(7 if os.environ['CASE'] == 'failed-command' else 0)
 
 def test_private_diagnostics_are_not_fetched_or_staged_for_github(tmp_path, monkeypatch):
     calls = []
+    output = tmp_path / 'github-output'
     class ArtifactsClient:
         def __init__(self, key):
             pass
@@ -270,6 +271,46 @@ def test_private_diagnostics_are_not_fetched_or_staged_for_github(tmp_path, monk
     monkeypatch.delenv('GITHUB_OUTPUT', raising=False)
     monkeypatch.delenv('GITHUB_STEP_SUMMARY', raising=False)
     assert remote_gate.main(['pr', '--base', 'a' * 40, '--head', HEAD, '--branch', 'feature',
-                             '--output-dir', str(tmp_path)]) == 0
-    assert {path.name for path in tmp_path.iterdir()} == {'gate-result.json'}
+                             '--output-dir', str(output)]) == 0
+    assert {path.name for path in output.iterdir()} == {'gate-result.json'}
     assert [body['uri'] for method, body in calls if method == 'GetFile'] == ['safe-result']
+
+
+@pytest.mark.parametrize('phase', ['gate', 'scan'])
+def test_abrupt_exit_never_leaves_unscanned_artifacts_for_upload(phase, tmp_path):
+    import os
+    import shlex
+    import subprocess
+    import sys
+
+    initial, final = tmp_path / 'initial', tmp_path / 'final'
+    initial.mkdir()
+    final.mkdir()
+    gate = tmp_path / 'fake_gate.py'
+    gate.write_text("import os\nfrom pathlib import Path\n"
+                    "out = Path(os.environ['BUILDBUDDY_ARTIFACTS_DIRECTORY'])\n"
+                    "(out / 'result.json').write_text('unscanned synthetic result')\n"
+                    + ('os._exit(23)\n' if phase == 'gate' else ''))
+    status = tmp_path / 'status'
+    steps = remote_gate.secured_steps([str(gate)], str(status))
+    environment = {'PATH': os.environ['PATH'], 'HOME': str(tmp_path),
+                   'BUILDBUDDY_API_KEY': 'synthetic-bb-key',
+                   'BUILDBUDDY_ARTIFACTS_DIRECTORY': str(initial)}
+    first = subprocess.run([sys.executable, '-I', '-S', '-c', shlex.split(steps[0]['run'])[-1]],
+                           env=environment, capture_output=True, text=True, timeout=60)
+    assert first.returncode == (23 if phase == 'gate' else 0)
+    assert list(initial.iterdir()) == [], 'hard gate exit exposed unscanned artifacts'
+    if phase == 'scan':
+        environment['BUILDBUDDY_ARTIFACTS_DIRECTORY'] = str(final)
+        interrupt = """import os, sys
+def stop_scanner(frame, event, arg):
+    if frame.f_code.co_filename == '<pinned-artifact-scanner>':
+        os._exit(23)
+sys.settrace(stop_scanner)
+"""
+        last = subprocess.run([sys.executable, '-I', '-S', '-c',
+                               interrupt + shlex.split(steps[1]['run'])[-1]],
+                              env=environment, capture_output=True, text=True, timeout=60)
+        assert last.returncode == 23
+        assert list(final.iterdir()) == [], 'hard scan exit exposed unscanned artifacts'
+    assert (Path(str(status) + '.artifacts') / 'result.json').read_text() == 'unscanned synthetic result'
