@@ -44,7 +44,7 @@ def _send_action(sock, action, deadline):
         raise ValueError("publication canary publisher refused authorization")
 
 
-def submit(argv, *, intent, authorize, timeout_s=120.0):
+def submit(argv, *, intent, authorize, timeout_s=120.0, pass_fds=()):
     """One child, one bounded private handoff; callback runs in the parent.
 
     The parent callback receives the same absolute monotonic deadline and
@@ -63,7 +63,7 @@ def submit(argv, *, intent, authorize, timeout_s=120.0):
         with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
             process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
                                        stdout=stdout, stderr=stderr,
-                                       pass_fds=(child.fileno(),), start_new_session=True)
+                                       pass_fds=(child.fileno(), *pass_fds), start_new_session=True)
             child.close()
             authorized = False
             try:

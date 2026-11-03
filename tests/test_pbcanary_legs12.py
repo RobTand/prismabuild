@@ -173,18 +173,6 @@ def test_leg2_verify_wrong_image_prefix_fails(monkeypatch):
 # Driver helpers + preconditions (no fleet contact) ------------------------
 
 
-def test_first_json_with_key_skips_noise():
-    text = "pbrun: hello\n{\"other\": 1}\n{\"action_key\": \"abc\", \"x\": 1}\n"
-    found = pbcanary.first_json_with_stdout_key(text, "action_key")
-    assert found == {"action_key": "abc", "x": 1}
-    assert pbcanary.first_json_with_stdout_key("no json here", "action_key") is None
-
-
-def test_last_json_object_reads_pbwait_tail():
-    text = "row one\n{\"a\": 1}\nnot json\n{\"b\": 2}\n"
-    assert pbcanary.last_json_object(text) == {"b": 2}
-
-
 def test_fresh_namespace_refuses_reuse(tmp_path):
     first = pbcanary.fresh_namespace(tmp_path, "run-1")
     assert first.is_dir()

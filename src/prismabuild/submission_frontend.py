@@ -17,7 +17,7 @@ def render_submission(event: Display) -> None:
           end=event.end, flush=event.flush)
 
 
-def consumer_submission_display(store: FleetStore, *, render=render_submission):
+def consumer_submission_display(store: FleetStore, *, render=render_submission, on_record=None):
     """Adapt internal submission diagnostics to the versioned consumer JSON."""
     from dataclasses import replace
     import json
@@ -45,6 +45,9 @@ def consumer_submission_display(store: FleetStore, *, render=render_submission):
                     request_sha256=request_sha256, phases=submission_phase_snapshot(),
                     publication=dict(published_unix=generation, generation=generation))
                 event = replace(event, text=json.dumps(value))
+            if (on_record is not None and isinstance(value, dict)
+                    and value.get("schema") in (action_client.DETACH_SCHEMA_V1, SUBMISSION_SCHEMA_V1)):
+                on_record(value)
         render(event)
 
     return display

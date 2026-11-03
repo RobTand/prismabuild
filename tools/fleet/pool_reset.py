@@ -90,6 +90,7 @@ sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from collections.abc import Mapping, Sequence  # noqa: E402
 from prismabuild import fleet_submit  # noqa: E402
 from prismabuild import submission
+from prismabuild import machine_record
 from prismabuild.submission_frontend import store_for, render_submission, SUBMISSION_SCHEMA_V1
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
@@ -596,14 +597,17 @@ def start_resubmission(
     log = resubmission_log(queue_root, key)
     log.parent.mkdir(parents=True, exist_ok=True)
     handle = log.open("wb", buffering=0)
+    private = machine_record.Capture()
     try:
         process = subprocess.Popen(
-            list(command), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            start_new_session=True,
+            private.command(list(command)), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            start_new_session=True, pass_fds=private.pass_fds,
         )
     except BaseException:
+        private.close()
         handle.close()
         raise
+    process._reset_machine_record = private
 
     def capture() -> None:
         tail = b""
@@ -627,15 +631,7 @@ def start_resubmission(
 
 
 def announced_submission(said: str) -> dict | None:
-    """The line ``pbrun --detach`` printed, found among everything else.
-
-    ``pbrun`` writes that line to stdout and everything meant for a person to
-    stderr, and this tool sends both to one file, so the line is identified by
-    the schema it carries rather than by being the only thing there.  The
-    schema is imported rather than restated: a fleet runs a published runtime
-    generation, and a second copy of a versioned name is a second place for it
-    to go stale.
-    """
+    """Validate a detached acknowledgement read from the private record channel."""
 
     for raw in said.splitlines():
         raw = raw.strip()
@@ -656,7 +652,7 @@ def announced_submission(said: str) -> dict | None:
 
 
 def submission_outcome(process: subprocess.Popen, log: Path) -> dict:
-    """What this child did with the re-submission, from what it said.
+    """What this child did with the re-submission, from its private acknowledgement.
 
     The child is waited for.  A fixed window in its place was a guess wearing
     a number: a re-submission seals the tree and writes a bundle of up to
@@ -669,7 +665,7 @@ def submission_outcome(process: subprocess.Popen, log: Path) -> dict:
     Returns:
         ``{"state": ...}`` where the state is ``submitted`` with the
         ``line`` the child printed, ``refused`` with the tail of what it said,
-        or ``unclear`` when it exited zero without printing the line at all,
+        or ``unclear`` when it exited zero without a private acknowledgement,
         which is a broken contract rather than a submission.
     """
 
@@ -677,14 +673,14 @@ def submission_outcome(process: subprocess.Popen, log: Path) -> dict:
     capture = getattr(process, "_reset_capture", None)
     if capture is not None:
         capture.join()
-    if error := getattr(process, "_reset_capture_error", None):
-        return {"state": "unclear", "detail": f"cannot capture {log}: {error}"}
     try:
         said = log.read_text(encoding="utf-8", errors="replace")
     except OSError:
         said = ""
     tail = [line for line in said.splitlines() if line.strip()][-3:]
     if returncode != 0:
+        if private := getattr(process, "_reset_machine_record", None):
+            private.close()
         return {
             "state": "refused",
             "detail": "\n    ".join(
@@ -692,7 +688,15 @@ def submission_outcome(process: subprocess.Popen, log: Path) -> dict:
                 + tail
             ),
         }
-    line = announced_submission(said)
+    private = getattr(process, "_reset_machine_record", None)
+    try:
+        value = private.read() if private is not None else None
+        line = announced_submission(json.dumps(value)) if value is not None else None
+    except (OSError, machine_record.MachineRecordError):
+        line = None
+    finally:
+        if private is not None:
+            private.close()
     if line is None:
         return {
             "state": "unclear",

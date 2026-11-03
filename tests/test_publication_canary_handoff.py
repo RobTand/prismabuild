@@ -129,8 +129,10 @@ def test_forked_depth_is_not_publisher_ownership(tmp_path, monkeypatch):
 def test_slot_submission_has_generation_fence_and_execution_deadline(tmp_path, monkeypatch):
     source = Path(__file__).resolve().parents[1] / "src"
     seen = []
-    def submit(argv, *, intent, authorize, timeout_s):
+    def submit(argv, *, intent, authorize, timeout_s, pass_fds=()):
+        import os
         seen.append((argv, intent, timeout_s))
+        os.write(pass_fds[0], b'{"schema":"prismabuild.submission.v1","action_key":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\n')
         return subprocess.CompletedProcess(argv, 0, json.dumps({"action_key": "a" * 64}), "")
     monkeypatch.setattr(handoff, "submit", submit)
     paths = {"pbrun": tmp_path / "pbrun.py", "published_src": source,
@@ -149,7 +151,9 @@ def test_standalone_canary_cannot_reach_authorizing_handoff(tmp_path, monkeypatc
     calls = []
     monkeypatch.setattr(handoff, "submit", lambda *a, **k: pytest.fail("not a publisher"))
     def ordinary(argv, **kw):
+        import os
         calls.append(argv)
+        os.write(kw['pass_fds'][0], b'{"schema":"prismabuild.submission.v1","action_key":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}\n')
         return subprocess.CompletedProcess(argv, 0, json.dumps({"action_key": "b" * 64}), "")
     monkeypatch.setattr(pbcanary, "run_process", ordinary)
     pbcanary.submit_leg({"pbrun": tmp_path / "pbrun.py"},

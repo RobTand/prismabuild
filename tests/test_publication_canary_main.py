@@ -131,7 +131,7 @@ def test_driver_image_canary_reaches_real_sealing_and_ready(tmp_path, monkeypatc
 
     # Exercise the driver's argv and real pbrun publication in this process.
     # The independent handoff tests cover the child IPC/authorization protocol.
-    def submit(argv, *, intent, authorize, timeout_s):
+    def submit(argv, *, intent, authorize, timeout_s, pass_fds=()):
         stdout, stderr = io.StringIO(), io.StringIO()
         with monkeypatch.context() as patch, redirect_stdout(stdout), redirect_stderr(stderr):
             patch.setattr(sys, "argv", argv[1:])

@@ -89,6 +89,7 @@ from prismabuild.runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import machine_record
 from prismabuild import _gang, core, pool, residency_plan, storage_tiers  # noqa: E402
 
 SH = Path("/mnt/shared/prismabuild-fleet")
@@ -349,17 +350,19 @@ def main(argv: list[str] | None = None) -> int:
     group = secrets.token_hex(16)
     keys: list[str] = []
     for index, member in enumerate(manifest["members"]):
-        result = subprocess.run(member_command(args, manifest, member, group=group, index=index),
-                                capture_output=True, text=True, check=False)
+        with machine_record.Capture() as private:
+            result = subprocess.run(private.command(member_command(args, manifest, member, group=group, index=index)),
+                                    capture_output=True, text=True, check=False, pass_fds=private.pass_fds)
+            try:
+                reply = private.read() or {}
+            except (OSError, machine_record.MachineRecordError):
+                reply = {}
         sys.stderr.write(result.stderr)
-        line = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
-        try:
-            reply = json.loads(line)
-        except json.JSONDecodeError:
-            reply = {}
-        if result.returncode != 0 or reply.get("status") != "submitted":
+        if (result.returncode != 0 or not isinstance(reply, dict)
+                or reply.get("schema") not in ("prismabuild.submission.v1", "prismaquant.prismabuild.pbrun_detach.v1")
+                or reply.get("status") != "submitted"):
             withdraw(keys, f"pbgang: member {index} was not submitted")
-            print(f"pbgang: member {index} refused ({result.returncode}, {reply or line!r}); "
+            print(f"pbgang: member {index} refused ({result.returncode}; private acknowledgement invalid); "
                   f"withdrew {len(keys)} published member(s)", file=sys.stderr)
             return 1
         keys.append(str(reply["action_key"]))

@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 sys.path.insert(0, str(ROOT / 'tools/fleet'))
 import pbtest_outcomes
+from prismabuild import machine_record
 
 FLEET = Path('/mnt/shared/prismabuild-fleet')
 PBTEST = FLEET / 'repo/tools/pbtest.py'
@@ -175,19 +176,25 @@ def verify_cas(rows: list[dict]) -> list[dict]:
 def run_root_lane(report_dir: Path) -> dict:
     """Submit the root action, wait for its ending, and return it as a shard row."""
     files = populations(ROOT)['root']
-    with (report_dir / 'root.log').open('w') as log:
-        submitted = subprocess.run(root_command(ROOT), cwd=ROOT, stdout=subprocess.PIPE,
-                                   stderr=log, text=True, check=False)
-    (report_dir / 'root.submission.json').write_text(submitted.stdout)
-    key = json.loads(submitted.stdout.strip().splitlines()[-1])['action_key'] \
-        if submitted.returncode == 0 else None
+    with machine_record.Capture() as private, (report_dir / 'root.log').open('w') as log:
+        submitted = subprocess.run(private.command(root_command(ROOT)), cwd=ROOT, stdout=subprocess.PIPE,
+                                   stderr=log, text=True, check=False, pass_fds=private.pass_fds)
+        acknowledgement = private.read()
+    machine_record.save(report_dir / 'root.submission.json', acknowledgement)
+    key = acknowledgement.get('action_key') if (submitted.returncode == 0
+        and isinstance(acknowledgement, dict)
+        and acknowledgement.get('schema') in ('prismabuild.submission.v1',
+            'prismaquant.prismabuild.pbrun_detach.v1')) else None
     row = {'lane': 'root', 'files': files, 'action_key': key, 'verdict': {'green': False}}
     if key is None:
         return row
-    waited = subprocess.run([sys.executable, str(PBWAIT), '--endings', '--wait-s', str(ROOT_WAIT_S),
-                             key], capture_output=True, text=True, check=False)
-    (report_dir / 'root.endings.json').write_text(waited.stdout)
-    endings = json.loads(waited.stdout) if waited.stdout.strip() else {}
+    with machine_record.Capture() as private:
+        waited = subprocess.run(private.command([sys.executable, str(PBWAIT), '--endings', '--wait-s',
+                                 str(ROOT_WAIT_S), key]), capture_output=True, text=True,
+                                 check=False, pass_fds=private.pass_fds)
+        endings = private.read()
+    machine_record.save(report_dir / 'root.endings.json', endings)
+    endings = endings if isinstance(endings, dict) and endings.get('schema') == 'prismabuild.endings.v1' else {}
     ending = endings['endings'][-1] if endings.get('complete') and endings.get('endings') else {}
     output_path = (ending.get('result') or {}).get('stdout', {}).get('path')
     output = Path(output_path).read_text(errors='replace') if output_path else ''
@@ -257,6 +264,9 @@ def main(argv: list[str] | None = None) -> int:
                        else pbtest_command(ROOT, lane, python, plan_dir / f'{lane}.pbtest.json')}
                 for lane in LANES[args.tier]}}, indent=2))
             return 0
+        if 'root' in LANES[args.tier]:
+            for tool in (PBRUN, PBWAIT):
+                machine_record.require_capability([sys.executable, str(tool)])
         report_dir = report_dir or Path(tempfile.mkdtemp(prefix=f'pb-verify-{args.tier}-'))
         report_dir.mkdir(parents=True, exist_ok=True)
         if any(report_dir.iterdir()):
