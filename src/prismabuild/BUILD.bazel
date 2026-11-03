@@ -925,6 +925,18 @@ pb_py_library(
 )
 
 pb_py_library(
+    name = "operator_view",
+    srcs = [
+        "operator_view.py",
+    ],
+    deps = [
+        ":__init__",
+        ":public_evidence",
+        ":submission_types",
+    ],
+)
+
+pb_py_library(
     name = "output_contract",
     srcs = [
         "output_contract.py",

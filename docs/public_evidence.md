@@ -70,3 +70,49 @@ formats, placement and staged-read identities are unchanged. This source-only
 addition establishes no deployed runtime support, staged-read conformance or
 workload completion. The design and staged-read contract/ledger keep their
 separate implementation, validation, deployment and workload-proof axes.
+
+## Operator-local view
+
+`prismabuild.operator_view.operator_ending_view(record)` (#2726) calls the
+unchanged `public_evidence_view` first, then adds only the following validated
+root details inside `evidence`:
+
+| Field | Additional accepted value |
+| --- | --- |
+| `host` | An exact built-in `str` matching `^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$` with `fullmatch` semantics: 1–253 ASCII characters, alphanumeric first, then alphanumeric, dot or hyphen. Trailing newlines, non-ASCII look-alikes, whitespace and slashes are rejected. |
+| `transport` | An exact built-in `str` in the existing transport vocabulary derived from `submission_types.SubmissionRequest.transport` using `typing.get_type_hints` and `typing.get_args`; no copied transport literals or new vocabulary constant. |
+| `status` | Only the exact built-in `str` `superseded` overrides the public result. Every other status is exactly whatever the public projection produced, including omission (not an inferred `unknown`). |
+
+Keys are accepted only with exact built-in `str` type, by iterating the source
+mapping's items rather than looking up untrusted keys. Subclasses are rejected;
+there is no `str()`/`repr()` fallback. No free text, paths, argv, claim or control
+fields, notes or reasons are added. The chosen transport source has a stdlib-only
+import closure (`collections.abc`, `dataclasses`, `pathlib`, `typing`); it defines
+types and helpers without import-time I/O. It avoids importing the heavy
+`submission` or `fleet_submit` modules. This view derives transport membership
+from that one existing annotation rather than adding a third transport constant.
+
+**Implementer's interpretation, not additional issue requirements:** the return
+shape is the same `{schema, evidence}` public envelope, with extras only inside
+its root `evidence` record. Extras apply only to an ordinary root built-in `dict`
+within the public size limit, never to children, result descriptors or list
+roots. Callers with a list of endings must apply the function per record. An
+otherwise empty public projection still receives a valid host (or transport or
+exact superseded status). A root already carrying the exact public schema marker
+is treated as an envelope and is **public-only**: no extras are extracted from
+either its outer mapping or its unwrapped `evidence`. Unknown or invalid markers
+leave an ordinary record. Re-passing an operator result to `public_evidence_view`
+strips host, transport and superseded; the marker never bypasses revalidation.
+
+The public depth, node and container-size limits are unchanged. The extra scan
+runs only at depth zero and reuses the public root size limit (1024 entries);
+over-limit roots get no extras. All recursive work, including cycles, remains
+with the public projection. Results use fresh containers without input mutation.
+
+This is **operator-local terminal output only**, for an authenticated operator on
+the fleet host. Host placement, transport and superseded lineage are useful in
+that local context but are deliberately not approved for public export. The
+result must never be passed to writers: never saved, uploaded, published or used
+in JSON output or machine records. `public_evidence_view` remains the only view
+for those boundaries. This issue introduces the view only, with no production
+importers; #2718 owns any later terminal-only adoption and its separate review.
