@@ -29,12 +29,13 @@ class FakeWorkspace:
     """Records calls; answers from canned git and Bazel facts."""
 
     def __init__(self, changed, impacted=(), statuses=None, diff_error=None, build_ok=True,
-                 inputs=(), budgets=(), broken=(), budget_only=(), reruns=None):
+                 inputs=(), budgets=(), broken=(), budget_only=(), reruns=None, warnings=()):
         self.changed, self.impacted, self.statuses = set(changed), set(impacted), statuses or {}
         self.diff_error, self.build_ok, self.inputs, self.budgets = diff_error, build_ok, inputs, budgets
         # Configs whose invocation fails before any test runs.
         self.broken = set(broken)
         self.marked, self.reruns = set(budget_only), reruns or {}
+        self.warnings = list(warnings)
         self.ran, self.built, self.extras = [], [], []
         self.graph_revisions, self.diff_revisions = [], []
         self.graph_errors = []
@@ -84,6 +85,9 @@ class FakeWorkspace:
 
     def budget_only(self, labels, statuses):
         return {label for label in labels if label in self.marked or statuses.get(label) == 'TIMEOUT'}
+
+    def budget_warnings(self, labels):
+        return [row for row in self.warnings if row["label"] in labels]
 
     def build(self, targets, config, metadata, log_name):
         self.built.append((config, list(targets)))
@@ -287,103 +291,69 @@ def test_build_events_give_statuses_the_invocation_and_the_first_error_line():
     assert bazel_gate.bep_run('') == {'statuses': {}, 'invocation': None, 'error': None}
 
 
-def test_a_budget_only_failure_is_rerun_once_uncached_and_can_pass(tmp_path, monkeypatch):
-    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'],
-                              statuses={'//tests:test_core': 'FAILED'}, budget_only={'//tests:test_core'})
-    status, result = run(workspace, tmp_path, monkeypatch)
-    assert workspace.ran[1:] == [('remote', ['//tests:test_core']), ('remote', ['//tests:test_core'])]
-    assert workspace.extras == [[], ['--nocache_test_results']]
-    assert status == 0 and result['verdict'] == 'pass' and result['failed'] == []
-    assert result['budget_reruns'] == {'//tests:test_core': 'PASSED'}
+WARNING = {'label': '//tests:test_core', 'nodeid': 'tests/test_core.py::test_one',
+           'seconds': 138.0, 'budget_seconds': 20.0}
 
 
-def test_a_bazel_timeout_is_rerun_once(tmp_path, monkeypatch):
-    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'],
-                              statuses={'//tests:test_core': 'TIMEOUT'})
-    status, result = run(workspace, tmp_path, monkeypatch)
-    assert status == 0 and result['budget_reruns'] == {'//tests:test_core': 'PASSED'}
-
-
-def test_a_confirmed_overrun_still_fails(tmp_path, monkeypatch):
-    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'],
-                              statuses={'//tests:test_core': 'FAILED'}, budget_only={'//tests:test_core'},
-                              reruns={'//tests:test_core': 'FAILED'})
-    status, result = run(workspace, tmp_path, monkeypatch)
-    assert status == 1 and result['failed'] == ['//tests:test_core']
-    assert result['budget_reruns'] == {'//tests:test_core': 'FAILED'}
-
-
-def test_a_real_failure_is_never_rerun(tmp_path, monkeypatch):
-    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core', '//tests:test_pbrun'],
-                              statuses={'//tests:test_core': 'FAILED', '//tests:test_pbrun': 'FAILED'},
-                              budget_only={'//tests:test_pbrun'})
-    status, result = run(workspace, tmp_path, monkeypatch)
-    assert workspace.ran[2:] == [('remote', ['//tests:test_pbrun'])]
-    assert status == 1 and result['failed'] == ['//tests:test_core']
-    assert result['budget_reruns'] == {'//tests:test_pbrun': 'PASSED'}
-
-
-def test_a_clean_run_records_no_reruns(tmp_path, monkeypatch):
-    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'])
-    status, result = run(workspace, tmp_path, monkeypatch)
-    assert status == 0 and result['budget_reruns'] == {} and workspace.extras == [[]]
-
-
-def test_main_mode_reruns_budget_only_failures_per_architecture(tmp_path, monkeypatch):
-    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'],
-                              statuses={'//tests:test_core': 'FAILED'}, budget_only={'//tests:test_core'})
-    status, result = run(workspace, tmp_path, monkeypatch, mode='main')
-    assert [config for config, _ in workspace.ran if config != 'checks'] == [
-        'remote', 'remote', 'remote-arm64', 'remote-arm64']
-    for architecture in ('amd64', 'arm64'):
-        entry = result['architectures'][architecture]
-        assert entry['budget_reruns'] == {'//tests:test_core': 'PASSED'}
-        assert entry['failed'] == [] and entry['missed'] == []
+@pytest.mark.parametrize('mode', ['pr', 'main'])
+def test_budget_warnings_are_recorded_without_failing_or_rerunning(mode, tmp_path, monkeypatch):
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'], warnings=[WARNING])
+    status, result = run(workspace, tmp_path, monkeypatch, mode=mode)
     assert status == 0
+    if mode == 'pr':
+        assert result['verdict'] == 'pass' and result['failed'] == []
+        assert result['budget_warnings'] == [WARNING]
+    else:
+        assert all(not row['failed'] for row in result['architectures'].values())
+        assert result['budget_warnings'] == [
+            {**WARNING, 'architecture': 'amd64'}, {**WARNING, 'architecture': 'arm64'}]
+    assert [config for config, _ in workspace.ran if config != 'checks'] == (
+        ['remote'] if mode == 'pr' else ['remote', 'remote-arm64'])
 
 
-def _outputs(root, label, files, shard=None, zipped=False):
+@pytest.mark.parametrize('mode', ['pr', 'main'])
+@pytest.mark.parametrize('status', ['TIMEOUT', 'FAILED'])
+def test_failures_stay_failed_and_never_start_a_second_test(mode, status, tmp_path, monkeypatch):
+    workspace = FakeWorkspace(['src/prismabuild/core.py'], ['//tests:test_core'],
+                              statuses={'//tests:test_core': status})
+    code, result = run(workspace, tmp_path, monkeypatch, mode=mode)
+    assert code == 1
+    if mode == 'pr':
+        assert result['failed'] == ['//tests:test_core']
+        assert workspace.ran == [('checks', []), ('remote', ['//tests:test_core'])]
+    else:
+        assert [config for config, _ in workspace.ran] == ['remote', 'remote-arm64']
+        assert all(row['failed'] == ['//tests:test_core'] for row in result['architectures'].values())
+
+
+def _outputs(root, label, rows=None, shard=None, zipped=False):
     package, _, name = label.removeprefix('//').partition(':')
     outputs = root / 'bazel-testlogs' / package / name / (f'{shard}/test.outputs' if shard else 'test.outputs')
     outputs.mkdir(parents=True)
+    files = {'inventory.json': '{}'}
+    if rows is not None:
+        files['budget-warnings.json'] = json.dumps(rows)
     if zipped:
         with zipfile.ZipFile(outputs / 'outputs.zip', 'w') as archive:
-            for file in files:
-                archive.writestr(file, 'x\n')
+            for file, content in files.items():
+                archive.writestr(file, content)
     else:
-        for file in files:
-            (outputs / file).write_text('x\n')
+        for file, content in files.items():
+            (outputs / file).write_text(content)
 
 
-def _real_workspace(tmp_path):
-    (tmp_path / 'tools/ci').mkdir(parents=True)
-    (tmp_path / 'tools/ci/gate_run.py').write_text((ROOT / 'tools/ci/gate_run.py').read_text())
-    return bazel_gate.Workspace(root=tmp_path)
-
-
-def test_runner_markers_are_read_from_plain_and_zipped_outputs(tmp_path):
-    workspace = _real_workspace(tmp_path)
-    _outputs(tmp_path, '//tests:test_plain', ['budget-overrun.txt'])
-    _outputs(tmp_path, '//tests:test_zipped', ['budget-overrun.txt'], zipped=True)
-    _outputs(tmp_path, '//tests:test_assertion', ['junit.xml'])
-    failed = {label: 'FAILED' for label in
-              ['//tests:test_plain', '//tests:test_zipped', '//tests:test_assertion', '//tests:test_no_outputs']}
-    assert workspace.budget_only(sorted(failed), failed) == {'//tests:test_plain', '//tests:test_zipped'}
-
-
-def test_a_timeout_needs_no_marker(tmp_path):
-    workspace = _real_workspace(tmp_path)
-    assert workspace.budget_only(['//tests:test_slow'], {'//tests:test_slow': 'TIMEOUT'}) == {'//tests:test_slow'}
-
-
-def test_a_sharded_target_reruns_only_when_every_failed_shard_is_marked(tmp_path):
-    workspace = _real_workspace(tmp_path)
-    _outputs(tmp_path, '//tests:test_all', ['budget-overrun.txt'], shard='shard_1_of_2')
-    _outputs(tmp_path, '//tests:test_all', ['inventory.json'], shard='shard_2_of_2', zipped=True)
-    _outputs(tmp_path, '//tests:test_mixed', ['budget-overrun.txt'], shard='shard_1_of_2')
-    _outputs(tmp_path, '//tests:test_mixed', ['junit.xml'], shard='shard_2_of_2')
-    failed = {'//tests:test_all': 'FAILED', '//tests:test_mixed': 'FAILED'}
-    assert workspace.budget_only(sorted(failed), failed) == {'//tests:test_all'}
+def test_warnings_are_collected_from_plain_zipped_and_sharded_outputs(tmp_path):
+    row = {key: value for key, value in WARNING.items() if key != 'label'}
+    _outputs(tmp_path, '//tests:plain', [row])
+    _outputs(tmp_path, '//tests:zipped', [row], zipped=True)
+    _outputs(tmp_path, '//tests:sharded', [row], shard='shard_1_of_2')
+    _outputs(tmp_path, '//tests:sharded', shard='shard_2_of_2', zipped=True)
+    _outputs(tmp_path, '//tests:clean', zipped=True)
+    workspace = bazel_gate.Workspace(root=tmp_path)
+    assert workspace.budget_warnings(['//tests:plain', '//tests:zipped', '//tests:sharded',
+                                      '//tests:clean', '//tests:missing']) == [
+        {'label': '//tests:plain', **row}, {'label': '//tests:zipped', **row},
+        {'label': '//tests:sharded', **row}]
 
 
 def test_remote_executor_configs_are_named_in_bazelrc():

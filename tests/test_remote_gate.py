@@ -172,3 +172,22 @@ def test_a_post_merge_record_names_invocation_errors_and_exclusions():
     assert record['excluded'] == {'amd64': {}, 'arm64': {'runner': 49}}
     summary = remote_gate.explain({**post_merge(arm64_error=error), 'mode': 'main'}, [2593])
     assert f'arm64: {error}' in summary and 'FAILED' not in summary
+
+
+@pytest.mark.parametrize('mode', ['pr', 'main'])
+def test_budget_warnings_are_visible_in_the_summary_without_failing_outputs(mode):
+    warning = {'label': '//tests:test_a', 'nodeid': 'tests/test_a.py::test_cost',
+               'seconds': 138.0, 'budget_seconds': 20.0}
+    if mode == 'main':
+        warning['architecture'] = 'arm64'
+    record = json.loads(result()) if mode == 'pr' else post_merge()
+    record.update(mode=mode, budget_warnings=[warning])
+    summary = remote_gate.explain(record, [])
+    assert 'BUDGET_WARNING' in summary
+    assert '//tests:test_a' in summary and 'tests/test_a.py::test_cost' in summary
+    assert '138.000s > 20.000s' in summary
+    if mode == 'main':
+        assert 'arm64' in summary
+        assert remote_gate.post_merge_record(record, [], 0)['verdict'] == 'pass'
+    else:
+        assert remote_gate.outputs(record)['tests'] == 'success'
