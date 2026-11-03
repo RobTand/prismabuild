@@ -4356,6 +4356,12 @@
     "unresolved": "set(baseline[key])"
   },
   {
+    "path": "tools/ci/check_no_secret_leak.py",
+    "owner": "inspect_secret_members",
+    "unresolved": "offset == required_offset",
+    "binding": "required"
+  },
+  {
     "path": "tools/ci/full_suite_workflow.py",
     "owner": "collect_shards",
     "unresolved": "{node.split('::', 1)[0] for node in rows}"

@@ -7,7 +7,6 @@ timed-out or disconnected run, or a missing or malformed result, fails here.
 """
 import argparse
 import base64
-import hashlib
 import inspect
 import uuid
 import json
@@ -77,9 +76,8 @@ def child_env(environ):
         and not name.endswith(('_API_KEY', '_TOKEN'))
     }
 
-def run_gate(command, result_path):
+def run_private_gate(command, result_path):
     """Runner-only: keep the Run API moving to its mandatory last step."""
-    import runpy
     from pathlib import Path
 
     environment = child_env(os.environ)
@@ -96,7 +94,9 @@ def run_gate(command, result_path):
     try:
         sys.argv = command
         try:
-            runpy.run_path(command[0], run_name='__main__')
+            source = Path(command[0]).read_bytes()
+            exec(compile(source, command[0], 'exec'),
+                 {'__name__': '__main__', '__file__': command[0]})
             code = 0
         except SystemExit as outcome:
             code = outcome.code if isinstance(outcome.code, int) else 75
@@ -109,7 +109,6 @@ def scan_artifacts(scanner_data, scanner_hash, result_path):
     """Runner-only: scan in this process; never start a credential-bearing child."""
     import base64
     import contextlib
-    import hashlib
     import io
     from pathlib import Path
     import shutil
@@ -134,7 +133,7 @@ def scan_artifacts(scanner_data, scanner_hash, result_path):
         if not secrets.get('BUILDBUDDY_API_KEY'):
             raise ValueError('required scanner input unavailable')
         source = base64.b64decode(scanner_data, validate=True)
-        if hashlib.sha256(source).hexdigest() != scanner_hash:
+        if raw_sha256(source) != scanner_hash:
             raise ValueError('scanner hash mismatch')
         sys.argv = ['check_no_secret_leak.py', '--env', 'BUILDBUDDY_API_KEY',
                     '--require', 'BUILDBUDDY_API_KEY']
@@ -189,12 +188,16 @@ def scan_artifacts(scanner_data, scanner_hash, result_path):
 
 def secured_steps(command, result_path=None):
     scanner = Path(__file__).with_name('check_no_secret_leak.py').read_bytes()
-    if hashlib.sha256(scanner).hexdigest() != SCANNER_SHA256:
+    digest_source = (Path(__file__).resolve().parents[2]
+                     / 'src/prismabuild/digest_primitives.py').read_text()
+    digests = {}
+    exec(compile(digest_source, '<digest-owner>', 'exec'), digests)
+    if digests['raw_sha256'](scanner) != SCANNER_SHA256:
         raise RemoteError('artifact scanner hash mismatch')
     result_path = result_path or '/tmp/pb-gate-' + uuid.uuid4().hex + '.status'
     common = 'import os, sys\n' + inspect.getsource(child_env) + '\n'
-    first = common + inspect.getsource(run_gate) + f'\nrun_gate({command!r}, {result_path!r})\n'
-    final = (common + inspect.getsource(scan_artifacts)
+    first = common + inspect.getsource(run_private_gate) + f'\nrun_private_gate({command!r}, {result_path!r})\n'
+    final = (common + f'\nexec({digest_source!r})\n' + inspect.getsource(scan_artifacts)
              + f'\nscan_artifacts({base64.b64encode(scanner).decode()!r}, {SCANNER_SHA256!r}, {result_path!r})\n')
     return [{'run': '"$HOME/.local/bin/gate-python" ' + shlex.join(['-I', '-S', '-c', source])}
             for source in (first, final)]

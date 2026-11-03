@@ -435,13 +435,11 @@ pb_py_library(
         "ci/remote_gate.py",
     ],
     data = [
+        "//src/prismabuild:digest_primitives.py",
         "//tools/bazel:nonhermetic.bzl",
         "ci/bazel_gate.py",
         "ci/check_no_secret_leak.py",
         "ci/remote_gate.py",
-    ],
-    deps = [
-        ":ci/bazel_gate",
     ],
 )
 

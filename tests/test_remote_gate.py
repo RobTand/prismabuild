@@ -30,7 +30,7 @@ def test_the_runner_checks_out_the_pull_request_and_installs_pinned_tools():
     assert f'echo "{remote_gate.UV_SHA256}  uv.tar.gz" | sha256sum -c -' in install
     assert 'python install 3.14' in install
     assert 'tools/ci/bazel_gate.py' in gate and HEAD in gate
-    assert 'run_gate' in gate and 'scan_artifacts' in final
+    assert 'run_private_gate' in gate and 'scan_artifacts' in final
     assert gate.startswith('\"$HOME/.local/bin/gate-python\" ')
     assert 'python find 3.14)' in install
     assert body['platform_properties']['container-image'] == remote_gate.IMAGE
