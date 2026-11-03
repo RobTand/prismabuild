@@ -6,6 +6,9 @@ gate-result.json as a BuildBuddy artifact; this script fetches it. A failed,
 timed-out or disconnected run, or a missing or malformed result, fails here.
 """
 import argparse
+import base64
+import inspect
+import uuid
 import json
 import os
 from pathlib import Path
@@ -31,10 +34,10 @@ curl -fsSLo uv.tar.gz https://github.com/astral-sh/uv/releases/download/{UV_VERS
 echo "{UV_SHA256}  uv.tar.gz" | sha256sum -c -
 tar -xzf uv.tar.gz
 install -D -m 755 uv-x86_64-unknown-linux-gnu/uv "$HOME/.local/bin/uv"
-"$HOME/.local/bin/uv" python install {PYTHON}'''
+"$HOME/.local/bin/uv" python install {PYTHON}
+ln -sf "$("$HOME/.local/bin/uv" python find {PYTHON})" "$HOME/.local/bin/gate-python"'''
 SCHEMA = 'prismabuild.bazel-gate.v1'
-# Diagnostic logs, by suffix: each test or build run names its own.
-DIAGNOSTICS = ('bazel-remote-grpc.log', 'execution_log.binpb.zst')
+SCANNER_SHA256 = 'decd9ce671299ece1b245811af459349ed9932ee9b81b2c4c7a13cf96b94f609'
 DONE = 'COMPLETE_INVOCATION_STATUS'
 LOST = 'DISCONNECTED_INVOCATION_STATUS'
 # bazel_gate.py's ARM64_EXCLUDED: lanes main mode leaves out of its arm64 pass,
@@ -64,6 +67,142 @@ class BuildBuddy:
             raise RemoteError(f'BuildBuddy {method} failed: {error}') from error
 
 
+def child_env(environ):
+    return {
+        name: value for name, value in environ.items()
+        if (name in ('PATH', 'HOME', 'TMPDIR', 'LANG', 'VIRTUAL_ENV',
+                     'BUILDBUDDY_ARTIFACTS_DIRECTORY', 'BBRUN_FINAL_SCAN')
+            or name.startswith(('LC_', 'UV_', 'PYTHON')))
+        and not name.endswith(('_API_KEY', '_TOKEN'))
+    }
+
+def run_private_gate(command, result_path):
+    """Runner-only: keep the Run API moving to its mandatory last step."""
+    from pathlib import Path
+
+    environment = child_env(os.environ)
+    environment['BBRUN_FINAL_SCAN'] = '1'
+    if os.environ.get('BUILDBUDDY_API_KEY'):
+        environment['BUILDBUDDY_API_KEY'] = os.environ['BUILDBUDDY_API_KEY']
+    upload = Path(environment['BUILDBUDDY_ARTIFACTS_DIRECTORY'])
+    upload.mkdir(parents=True, exist_ok=True)
+    staged = Path(result_path + '.artifacts')
+    staged.mkdir()
+    environment['BUILDBUDDY_ARTIFACTS_DIRECTORY'] = str(staged)
+    os.environ.clear()
+    os.environ.update(environment)
+    try:
+        sys.argv = command
+        try:
+            source = Path(command[0]).read_bytes()
+            exec(compile(source, command[0], 'exec'),
+                 {'__name__': '__main__', '__file__': command[0]})
+            code = 0
+        except SystemExit as outcome:
+            code = outcome.code if isinstance(outcome.code, int) else 75
+    except BaseException:
+        print('runner command did not complete', file=sys.stderr)
+        code = 127
+    Path(result_path).write_text(str(code))
+
+def scan_artifacts(scanner_data, scanner_hash, result_path):
+    """Runner-only: scan in this process; never start a credential-bearing child."""
+    import base64
+    import contextlib
+    import io
+    from pathlib import Path
+    import shutil
+
+    secrets = {name: os.environ[name] for name in
+               ('BUILDBUDDY_API_KEY', 'MERGIFY_TOKEN', 'GITHUB_TOKEN') if os.environ.get(name)}
+    environment = child_env(os.environ)
+    environment.pop('BBRUN_FINAL_SCAN', None)
+    os.environ.clear()
+    os.environ.update(environment)
+    os.environ.update(secrets)
+    upload_path = os.environ.get('BUILDBUDDY_ARTIFACTS_DIRECTORY')
+    upload = Path(upload_path) if upload_path else None
+    code = 75
+    staged = Path(result_path + '.artifacts')
+    try:
+        if upload is None:
+            raise ValueError('upload directory unavailable')
+        upload.mkdir(parents=True, exist_ok=True)
+        if not staged.is_dir():
+            raise ValueError('private scan directory unavailable')
+        if not secrets.get('BUILDBUDDY_API_KEY'):
+            raise ValueError('required scanner input unavailable')
+        source = base64.b64decode(scanner_data, validate=True)
+        if raw_sha256(source) != scanner_hash:
+            raise ValueError('scanner hash mismatch')
+        sys.argv = ['check_no_secret_leak.py', '--env', 'BUILDBUDDY_API_KEY',
+                    '--require', 'BUILDBUDDY_API_KEY']
+        for name in ('MERGIFY_TOKEN', 'GITHUB_TOKEN'):
+            if name in secrets:
+                sys.argv.extend(['--env', name])
+        sys.argv.append(str(staged))
+        # Discard scanner diagnostics too: paths may themselves contain secrets.
+        # The pinned scanner is executed in-process and launches no children.
+        diagnostics = io.StringIO()
+        with contextlib.redirect_stdout(diagnostics), contextlib.redirect_stderr(diagnostics):
+            try:
+                exec(compile(source, '<pinned-artifact-scanner>', 'exec'), {'__name__': '__main__'})
+            except SystemExit as outcome:
+                code = outcome.code if isinstance(outcome.code, int) else 75
+        # The shared core allows unavailable zstd decoding. An artifact upload
+        # cannot accept that skipped scan, even if the core returned zero.
+        if ': zstd: not scanned (compression.zstd unavailable)' in diagnostics.getvalue():
+            code = 75
+        if code == 0:
+            for path in staged.iterdir():
+                target = upload / path.name
+                if target.exists() or target.is_symlink():
+                    raise ValueError('upload path collision')
+                shutil.move(str(path), str(target))
+            staged.rmdir()
+    except BaseException:
+        code = 75
+    finally:
+        for name in secrets:
+            os.environ.pop(name, None)
+    if code:
+        if staged.exists():
+            shutil.rmtree(staged)
+        if upload is not None:
+            for path in upload.iterdir():
+                if path.is_symlink() or not path.is_dir():
+                    path.unlink()
+                else:
+                    shutil.rmtree(path)
+        print('artifact scan: FAIL; artifacts deleted', flush=True)
+    else:
+        print('artifact scan: PASS (upload directory; required key available)', flush=True)
+    try:
+        previous = int(Path(result_path).read_text())
+        if not 0 <= previous <= 255:
+            previous = 75
+        Path(result_path).unlink()
+    except (OSError, ValueError):
+        previous = 75
+    raise SystemExit(code or previous)
+
+def secured_steps(command, result_path=None):
+    scanner = Path(__file__).with_name('check_no_secret_leak.py').read_bytes()
+    digest_source = (Path(__file__).resolve().parents[2]
+                     / 'src/prismabuild/digest_primitives.py').read_text()
+    digests = {}
+    exec(compile(digest_source, '<digest-owner>', 'exec'), digests)
+    if digests['raw_sha256'](scanner) != SCANNER_SHA256:
+        raise RemoteError('artifact scanner hash mismatch')
+    result_path = result_path or '/tmp/pb-gate-' + uuid.uuid4().hex + '.status'
+    common = 'import os, sys\n' + inspect.getsource(child_env) + '\n'
+    first = common + inspect.getsource(run_private_gate) + f'\nrun_private_gate({command!r}, {result_path!r})\n'
+    final = (common + f'\nexec({digest_source!r})\n' + inspect.getsource(scan_artifacts)
+             + f'\nscan_artifacts({base64.b64encode(scanner).decode()!r}, {SCANNER_SHA256!r}, {result_path!r})\n')
+    return [{'run': '"$HOME/.local/bin/gate-python" ' + shlex.join(['-I', '-S', '-c', source])}
+            for source in (first, final)]
+
+
 def run_request(args):
     if not args.base or not args.head:
         raise RemoteError('empty base or head: the queue-aware refs were unavailable')
@@ -73,8 +212,7 @@ def run_request(args):
         'repo': args.repo,
         'branch': args.branch,
         'commit_sha': args.checkout or args.head,
-        'steps': [{'run': INSTALL},
-                  {'run': f'"$("$HOME/.local/bin/uv" python find {PYTHON})" ' + shlex.join(command)}],
+        'steps': [{'run': INSTALL}, *secured_steps(command)],
         'env': {'GIT_REPO_DEFAULT_BRANCH': 'main'},
         'platform_properties': {
             # The runner hosts only the Bazel client; tests go to remote execution.
@@ -116,13 +254,6 @@ def await_invocation(client, invocation_id, deadline, interval=15, clock=time.mo
         if clock() > deadline:
             raise RemoteError(f'remote run {invocation_id} did not finish in time')
         sleep(interval)
-
-
-def diagnostics(client, invocation):
-    for artifact in invocation.get('artifacts', []):
-        name = artifact.get('name', '')
-        if name.endswith(DIAGNOSTICS):
-            yield Path(name).name, client.call('GetFile', {'uri': artifact['uri']}, timeout=300, raw=True)
 
 
 def fetch(client, invocation, name):
@@ -287,8 +418,6 @@ def main(argv=None):
             raise RemoteError('BuildBuddy Run returned no invocation id')
         print(f'Remote Bazel run: https://app.buildbuddy.io/invocation/{invocation_id}', flush=True)
         invocation = await_invocation(client, invocation_id, started + (args.timeout + 10) * 60)
-        for name, data in diagnostics(client, invocation):
-            (args.output_dir / name).write_bytes(data)
         result = parse_result(fetch(client, invocation, RESULT), args.head)
     except RemoteError as error:
         print(f'::error::{error}', flush=True)
