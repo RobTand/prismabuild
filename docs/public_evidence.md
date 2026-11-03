@@ -71,6 +71,89 @@ addition establishes no deployed runtime support, staged-read conformance or
 workload completion. The design and staged-read contract/ledger keep their
 separate implementation, validation, deployment and workload-proof axes.
 
+## Status command endings
+
+Part 3a of #2718 connects the ordinary `pbstatus --json` `endings` writer
+in [`main()`](../tools/fleet/pbstatus.py) to `public_evidence_view`.
+The writer calls the local `_public_ending_adapter` for each raw census row.
+It emits one `{schema, evidence}` envelope per row in source order.
+An empty source list stays `[]`.
+The adapter copies each row.
+It maps the presentation status with this table:
+
+| Source status | Public status |
+| --- | --- |
+| `executed`, `cache_hit` | `succeeded` |
+| `failed`, `refused` | `failed` |
+| `withdrawn` | `withdrawn` |
+| `waiting` | `pending` |
+| `running`, `cancelled`, `interrupted`, `timed_out` | Same name |
+| `superseded`, recovery-unavailable, `unreadable`, missing, non-string, all other values | `unknown` |
+
+The q41 rule uses only root markers.
+A root `status` of exactly `superseded` maps to public `unknown`.
+A root `current is False` with a dictionary-valued `superseded_by` also maps
+ to `unknown`, even if the recorded status is `executed` or `failed`.
+The adapter does not inspect that dictionary's contents.
+A `superseded` history summary or `supersedes_terminal` alone does not mark
+ the containing row as superseded.
+A current successful row with history still maps to `succeeded`.
+A `current` value of `None`, `current_unresolved`, or a terminal conflict
+ alone does not establish supersession.
+The adapter does not decode the action-client IPC wrapper.
+It does not change unrelated census `state="superseded"` sections.
+
+The adapter copies `timing_finished_unix` to `finished_at` only when present.
+It does not use the `finished_unix` sorting fallback as execution evidence.
+Census rows have no `started_at` or hashes.
+The adapter does not invent them.
+The shared view validates all evidence and omits all unapproved fields.
+The adapter adds no separate filter.
+Raw rows still control completeness, diagnostics, exit codes and the table.
+Export does not change private verdicts, source rows or canonical receipts.
+
+### Writer and test inventory
+
+The only changed writer is the ordinary `main()` JSON object's `endings`
+ value in [`tools/fleet/pbstatus.py`](../tools/fleet/pbstatus.py).
+The focused tests are in [`tests/test_pbstatus.py`](../tests/test_pbstatus.py):
+
+| Test | Coverage |
+| --- | --- |
+| `test_json_endings_are_public_evidence_envelopes_in_source_order` | Real lane and pool-schema records; exact ordered output; success, failure, cancellation, recovery-unavailable, both superseded forms and current success with history |
+| `test_json_endings_map_statuses_through_the_public_table` | Every status rule; missing and unhashable values |
+| `test_json_endings_recognize_superseded_only_from_root_markers` | q41 triggers and controls; no wrapper decoding |
+| `test_json_endings_carry_no_private_sentinel` | Nested capability, claim, control and argv sentinels; leak assertion only on `endings` |
+| `test_json_export_leaves_source_rows_and_records_unchanged` | Raw rows, record bytes, canonical receipt bytes and hashes, private status, exit code and every other JSON key |
+| `test_public_ending_adapter_is_type_safe_and_does_not_mutate` | Fresh mapping; shared hash, size, return-code and timestamp validation; no fabricated time |
+
+Only JSON assertions change in these existing tests in that same file:
+
+- `test_endings_name_their_transport_and_their_slurm_state`
+- `test_a_withdrawal_is_an_ending_and_is_listed_from_withdrawn`
+- `test_an_ending_names_the_actions_own_status_in_its_own_column`
+- `test_a_receipt_puts_the_ending_under_done`
+- `test_a_record_that_cannot_be_parsed_is_a_row_not_a_silence`
+- `test_an_unreadable_record_says_which_way_it_is_unreadable`
+- `test_a_readable_ending_carries_no_unreadable_note`
+- `test_a_purged_job_reads_as_unknown_rather_than_none`
+
+Private-field assertions read census rows separately.
+The purged-job test also passes raw census rows to `ending_lines`.
+Existing terminal assertions keep their meaning.
+`test_recent_bounds_how_many_records_are_read` checks the empty-list boundary.
+`test_json_is_one_object_with_the_three_lists` checks the outer object.
+The unchanged
+[`test_pbstatus_ending_completeness_review.py`](../tests/test_pbstatus_ending_completeness_review.py)
+checks incomplete reads and exit code 3.
+
+**The safety claim covers only the structured `endings` value.**
+It does not cover the whole command.
+Part 3b / #2747 owns the deferred terminal table, notes, stderr, `scheduler`,
+`unavailable_sections`, queue-root diagnostics and other JSON sections.
+The operator-local section below describes view support, not adoption here.
+Source support is not deployed runtime support.
+
 ## Operator-local view
 
 `prismabuild.operator_view.operator_ending_view(record)` (#2726) calls the

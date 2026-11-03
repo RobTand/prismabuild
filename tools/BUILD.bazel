@@ -1436,6 +1436,7 @@ pb_py_library(
         "//src/prismabuild:core",
         "//src/prismabuild:filesystem_capacity",
         "//src/prismabuild:fleet_submit",
+        "//src/prismabuild:public_evidence",
         "//src/prismabuild:runtime_paths",
         "//src/prismabuild:slurm_lane",
         ":fleet/upgrade_client",
