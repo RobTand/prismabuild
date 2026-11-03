@@ -71203,6 +71203,32 @@ pb_py_library(
 )
 
 pb_py_test(
+    name = "test_operator_view",
+    path = "tests/test_operator_view.py",
+    library = ":test_operator_view_lib",
+    timeout = "moderate",
+)
+
+pb_py_library(
+    name = "test_operator_view_lib",
+    srcs = [
+        "test_operator_view.py",
+    ],
+    data = [
+        "//:docs/public_evidence.md",
+        "//src/prismabuild:operator_view.py",
+        "test_operator_view.py",
+    ],
+    deps = [
+        "//src/prismabuild:__init__",
+        "//src/prismabuild:operator_view",
+        "//src/prismabuild:public_evidence",
+        "//src/prismabuild:submission_types",
+        ":compat/support/wire_inventory",
+    ],
+)
+
+pb_py_test(
     name = "test_ordinary_census_admission_2199",
     path = "tests/test_ordinary_census_admission_2199.py",
     library = ":test_ordinary_census_admission_2199_lib",
