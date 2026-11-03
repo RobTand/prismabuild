@@ -212,6 +212,16 @@ def _partial_sharer(tmp_path: Path, monkeypatch):
     return queue, source
 
 
+def _deep_partial_sharer(tmp_path: Path, monkeypatch):
+    deep = tmp_path
+    for index in range(7):
+        deep = deep / (f"source-{index}-" + "x" * 32)
+    deep.mkdir(parents=True)
+    queue, source = _partial_sharer(deep, monkeypatch)
+    assert len(str(source)) > 256
+    return queue, source
+
+
 def _waits(queue: pool.PoolQueue, key: str, source: Path) -> None:
     """The claim pass keeps the item ready, takes no token, ages no pass, and
     the denial names the source it could not read."""
@@ -221,13 +231,15 @@ def _waits(queue: pool.PoolQueue, key: str, source: Path) -> None:
     assert queue.records.item_path(pool.record_store.READY, key).exists()
     denial = latest_claim_denial(queue, key)
     assert denial is not None and denial["reason"] == "residency_map_unreadable", denial
-    assert str(source) in denial["evidence"]["residency"]["error"]   # type: ignore[index]
+    error = denial["evidence"]["residency"]["error"]              # type: ignore[index]
+    assert isinstance(error, str) and len(error) == 256
+    assert error == str(source)[:256]
     assert queue.ledger().held() == held and queue.passes(key) == passes
 
 
 def test_a_source_fragment_that_cannot_be_statted_is_a_wait_not_a_pass(
         tmp_path: Path, monkeypatch) -> None:
-    queue, source = _partial_sharer(tmp_path, monkeypatch)
+    queue, source = _deep_partial_sharer(tmp_path, monkeypatch)
     real = Path.stat
 
     def stat(self, *args, **kwargs):
@@ -244,7 +256,7 @@ def test_a_source_fragment_that_cannot_be_statted_is_a_wait_not_a_pass(
 
 def test_a_malformed_source_fragment_is_a_wait_not_a_pass(
         tmp_path: Path, monkeypatch) -> None:
-    queue, source = _partial_sharer(tmp_path, monkeypatch)
+    queue, source = _deep_partial_sharer(tmp_path, monkeypatch)
     source.write_text("{ not json")
     verdict = _verdict(queue, SECOND)
     assert verdict["state"] == "map_unreadable", verdict
