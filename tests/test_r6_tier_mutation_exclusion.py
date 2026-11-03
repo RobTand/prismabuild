@@ -69,6 +69,7 @@ from prismabuild import adaptive_cpu, pool  # noqa: E402
 from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 from prismabuild import tier_holdings
+from prismabuild.denial_records import MAX_DENIAL_VALUE_TEXT
 
 TIER = "prismabuild-stage:r6excl"
 KIND = "stage_gib"
@@ -274,6 +275,26 @@ def _eio(holder: Path) -> dict:
     return {"holder": str(holder), "errno": errno.EIO, "error": EIO_TEXT}
 
 
+def _bounded_eio(holder: Path) -> dict:
+    # Read the active encoder bound rather than caching it at module import.
+    from prismabuild.denial_records import MAX_DENIAL_VALUE_TEXT
+
+    return {**_eio(holder), "holder": str(holder)[:MAX_DENIAL_VALUE_TEXT]}
+
+
+def test_bounded_eio_uses_the_current_denial_text_bound(tmp_path, monkeypatch):
+    from prismabuild import denial_records
+
+    monkeypatch.setattr(denial_records, "MAX_DENIAL_VALUE_TEXT", 64)
+    holder = tmp_path / HOLDER_H
+    assert len(str(holder)) > denial_records.MAX_DENIAL_VALUE_TEXT
+    assert _bounded_eio(holder) == {
+        "holder": str(holder)[:denial_records.MAX_DENIAL_VALUE_TEXT],
+        "errno": errno.EIO,
+        "error": EIO_TEXT,
+    }
+
+
 @pytest.mark.parametrize("path_impl", PATH_IMPLS)
 def test_metadata_stat_error_cannot_hide_a_live_holder(tmp_path, monkeypatch,
                                                        path_impl):
@@ -333,9 +354,10 @@ def test_unreadable_holder_still_retires_under_a_falling_wanted(
     assert ledger.mint_supply().get(KIND) == 1
 
 
+@pytest.mark.parametrize("deep_path", [False, True], ids=["short", "deep"])
 @pytest.mark.parametrize("path_impl", PATH_IMPLS)
 def test_a_holder_that_stays_unreadable_is_reported_every_cycle(
-        tmp_path, monkeypatch, path_impl):
+        tmp_path, monkeypatch, path_impl, deep_path):
     """Loud, not silent -- and a steady state that does not stall.
 
     Every mint cycle reports the ledger, the holder, its errno, the kinds
@@ -346,9 +368,17 @@ def test_a_holder_that_stays_unreadable_is_reported_every_cycle(
     the holder (the lower-bound total cannot call it never-fits); and
     ``pbstatus --starvation`` attributes the refusal to the holder.
     """
+    if deep_path:
+        # These components alone exceed the denial text bound, regardless
+        # of the executor's temp root, and each fits a filesystem component.
+        for _ in range(3):
+            tmp_path = tmp_path / ("deep-" + "d" * 91)
+        tmp_path.mkdir(parents=True)
     queue, _dead = _shaped_queue(tmp_path)
     ledger = queue.tier(TIER)
     holder = ledger.paths.held / HOLDER_H
+    if deep_path:
+        assert len(str(holder)) > MAX_DENIAL_VALUE_TEXT
     # Claim admission reads immutable authority by its real hexadecimal key.
     small = "e" * 64
     _publish_claimant(queue)
@@ -379,7 +409,8 @@ def test_a_holder_that_stays_unreadable_is_reported_every_cycle(
     assert denial["reason"] == "tier_census_unreadable"
     shortage = denial["evidence"]["tier_shortage"]
     assert shortage["tier_id"] == TIER
-    assert shortage["census_unreadable"] == [_eio(holder)]
+    # Denial evidence bounds text; the reports and census keep full paths.
+    assert shortage["census_unreadable"] == [_bounded_eio(holder)]
     # The starvation census attributes the stall to the holder.
     (entry,) = [entry for entry in starvation["census_unreadable"]
                 if entry["ledger_id"] == TIER]
