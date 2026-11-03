@@ -7,6 +7,7 @@ and verified (not shape-only) producer holds in egress attribution.
 """
 
 from __future__ import annotations
+from short_socket import short_socket_path
 from fleet_world import Admission, FleetWorld
 
 from prismabuild import batch_ledger as bl
@@ -653,142 +654,142 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
     authority = resource_broker.Authority(
         tmp_path / "broker-state", os.getuid(), _Kernel(),
         max_memory_bytes=1024 ** 3)
-    endpoint = tmp_path / "broker.sock"
-    server = resource_broker.Server(str(endpoint), resource_broker.Handler)
-    server.authority = authority
-    thread = threading.Thread(
-        target=server.serve_forever, kwargs={"poll_interval": 0.01},
-        daemon=True)
-    thread.start()
-    try:
-        monkeypatch.setattr(resource_scope, "BROKER_SOCKET", endpoint)
-        # Admission through the real publish path with a verifiable
-        # sealed request (ordinary command, no movement range): the
-        # egress claimed-copy attribution verifies this live hold as a
-        # producer reservation instead of tainting it as a mover copy.
-        # The owner key is the sealed request's own content address.
-        terms = oc.owner_demand_terms(template)
-        casdir, owner = _producer_request(tmp_path, template, tag="full")
-        queue.publish(action_key=owner, cas_root=str(casdir),
-                      worker_script="/w.py", checkout_root="/co",
-                      resources={"cpu": 1, "mem_gb": 1, **terms},
-                      produced_output_template=template)
-        claimed = queue.claim(owner="r2-worker")
-        assert claimed is not None and claimed["action_key"] == owner
-        nonce = secrets.token_hex(16)
-        scope = resource_scope.ResourceScope(
-            owner, nonce, 64 * 1024 ** 2, tmp_path / "telemetry.json",
-            socket_path=endpoint)
-        control = scope.create()
-        live = pool.record_store.value_or_raise(
-            queue.records.item(pool.record_store.CLAIMED, owner),
-        )
-        assert isinstance(live, dict)
-        live["resource_scope"] = control
-        pool.immutable_files.write_json_atomic(
-            queue.records.item_path(pool.record_store.CLAIMED, owner),
-            live,
-        )
-        env = {"PRISMABUILD_ACTION_KEY": owner,
-               "PRISMABUILD_ACTION_NONCE": control["nonce"],
-               "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
-        po.declare_template(queue.root, template)
-        instance = po.bind_instance(
-            queue, template, owner_action_key=owner,
-            claim_snapshot=claimed, env=env)
-        bl.declare_instance(queue.root, instance)
-        assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
-
-        stage = tmp_path / "stage"
-        stage.mkdir()
-        from prismabuild import stage_release
-
-        assert staged_path.register_stage_root(
-            queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
-        out_base = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
-        payload = b"W" * BIG
-        assert bl.BatchLedger.reserve(
-            queue, instance, template, batch_id="full", tier=STAGE_TIER,
-            class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
-            paths=[str(origin / "full.pt")])["ok"] is True
-        desc = _payload_desc(origin, template, instance, "full.pt", payload)
-        batch = po.commit_batch(queue, instance, template, [desc],
-                                batch_id="full", tier=STAGE_TIER,
-                                mover_key=MOVER0)
-        assert batch["ok"] is True
-        _move(queue, batch, origin, stage, out_base, tmp_path, "full")
-        total = BIG
-
-        # A distinct downstream consumer pins the staged window while the
-        # producer is still live: retirement must refuse while the read
-        # is live, and the producer hold itself must not taint the
-        # egress.
-        host = socket.gethostname()
-        acquired = rlc.acquire(
-            queue, consumer_action_key=batch["batch_namespace"],
-            attempt={"nonce": secrets.token_hex(16),
-                     "scope_id": "downstream-scope"},
-            tier_id=STAGE_TIER, epoch="",
-            span={"start_bytes": 0, "end_bytes": total},
-            holder={"host": host, "worker": "downstream-1", "pid": 4242},
-            acquire_token=secrets.token_hex(16),
-            covers=[{"mover_action_key": MOVER0,
-                     "manifest_sha256": batch["manifest_digest"]}],
-            expected=None, owner_action_key=DOWNSTREAM,
-            residency_root=str(out_base))
-        assert acquired["ok"], acquired
-        blocked = po.retire_batch(queue, instance, template, "full",
-                                  stage_root=str(stage),
-                                  residency_root=str(out_base))
-        assert blocked == {"ok": False, "refusal": "egress-incomplete",
-                           "receipt": blocked["receipt"]}
-        # Attribution traces the recorded staged paths to the live census.
-        live_paths, unknown = po._live_output_paths(
-            queue, rlc, _recorded(queue, instance, "full"), str(out_base))
-        assert unknown is None
-        assert live_paths != []
-        assert rlc.release(queue, acquired["pin_id"], acquired["ref_id"],
-                           consumer_action_key=DOWNSTREAM,
-                           residency_root=str(out_base)) is True
-
-        retired = po.retire_batch(queue, instance, template, "full",
-                                  stage_root=str(stage),
-                                  residency_root=str(out_base))
-        assert retired["ok"] is True, json.dumps(
-            retired.get("receipt", retired), indent=1, sort_keys=True,
-            default=str)
-        assert retired["receipt"]["complete"] is True
-        # Durable quota still held with the origin file present.
-        assert bl.BatchLedger.reserve(
-            queue, instance, template, batch_id="full2", tier=STAGE_TIER,
-            class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
-            paths=[str(origin / "full2.pt")])["refusal"] == \
-            "prewrite-exceeds-payload-maxima"
-        (origin / "full.pt").unlink()
-        assert bl.BatchLedger.reclaim(queue, instance, template,
-                                 batch_id="full") == {
-            "ok": True, "batch_id": "full", "reclaimed": True}
-        assert bl.BatchLedger.reserve(
-            queue, instance, template, batch_id="full2", tier=STAGE_TIER,
-            class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
-            paths=[str(origin / "full2.pt")])["ok"] is True
-
-        # Ordinary next-prewrite work proceeds while live; the contained
-        # finish then authorizes the final release.
-        terminal = queue.finish(owner, status="executed", detail={})
-        assert terminal == queue.records.item_path(pool.record_store.DONE, owner)
-        proof = rlc.read_scope_attestation(queue, owner, nonce)
-        assert isinstance(proof, dict) and proof["scope_empty"] is True
-        released = po.safe_release_instance(
-            queue, instance, template, lease_sdk=rlc)
-        assert released["ok"] is True, released
-        assert released["lease_proof"] == "sdk-census-clean"
-    finally:
+    with short_socket_path() as endpoint:
+        server = resource_broker.Server(str(endpoint), resource_broker.Handler)
+        server.authority = authority
+        thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.01},
+            daemon=True)
+        thread.start()
         try:
-            server.shutdown()
+            monkeypatch.setattr(resource_scope, "BROKER_SOCKET", endpoint)
+            # Admission through the real publish path with a verifiable
+            # sealed request (ordinary command, no movement range): the
+            # egress claimed-copy attribution verifies this live hold as a
+            # producer reservation instead of tainting it as a mover copy.
+            # The owner key is the sealed request's own content address.
+            terms = oc.owner_demand_terms(template)
+            casdir, owner = _producer_request(tmp_path, template, tag="full")
+            queue.publish(action_key=owner, cas_root=str(casdir),
+                          worker_script="/w.py", checkout_root="/co",
+                          resources={"cpu": 1, "mem_gb": 1, **terms},
+                          produced_output_template=template)
+            claimed = queue.claim(owner="r2-worker")
+            assert claimed is not None and claimed["action_key"] == owner
+            nonce = secrets.token_hex(16)
+            scope = resource_scope.ResourceScope(
+                owner, nonce, 64 * 1024 ** 2, tmp_path / "telemetry.json",
+                socket_path=endpoint)
+            control = scope.create()
+            live = pool.record_store.value_or_raise(
+                queue.records.item(pool.record_store.CLAIMED, owner),
+            )
+            assert isinstance(live, dict)
+            live["resource_scope"] = control
+            pool.immutable_files.write_json_atomic(
+                queue.records.item_path(pool.record_store.CLAIMED, owner),
+                live,
+            )
+            env = {"PRISMABUILD_ACTION_KEY": owner,
+                   "PRISMABUILD_ACTION_NONCE": control["nonce"],
+                   "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
+            po.declare_template(queue.root, template)
+            instance = po.bind_instance(
+                queue, template, owner_action_key=owner,
+                claim_snapshot=claimed, env=env)
+            bl.declare_instance(queue.root, instance)
+            assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
+
+            stage = tmp_path / "stage"
+            stage.mkdir()
+            from prismabuild import stage_release
+
+            assert staged_path.register_stage_root(
+                queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
+            out_base = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
+            payload = b"W" * BIG
+            assert bl.BatchLedger.reserve(
+                queue, instance, template, batch_id="full", tier=STAGE_TIER,
+                class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
+                paths=[str(origin / "full.pt")])["ok"] is True
+            desc = _payload_desc(origin, template, instance, "full.pt", payload)
+            batch = po.commit_batch(queue, instance, template, [desc],
+                                    batch_id="full", tier=STAGE_TIER,
+                                    mover_key=MOVER0)
+            assert batch["ok"] is True
+            _move(queue, batch, origin, stage, out_base, tmp_path, "full")
+            total = BIG
+
+            # A distinct downstream consumer pins the staged window while the
+            # producer is still live: retirement must refuse while the read
+            # is live, and the producer hold itself must not taint the
+            # egress.
+            host = socket.gethostname()
+            acquired = rlc.acquire(
+                queue, consumer_action_key=batch["batch_namespace"],
+                attempt={"nonce": secrets.token_hex(16),
+                         "scope_id": "downstream-scope"},
+                tier_id=STAGE_TIER, epoch="",
+                span={"start_bytes": 0, "end_bytes": total},
+                holder={"host": host, "worker": "downstream-1", "pid": 4242},
+                acquire_token=secrets.token_hex(16),
+                covers=[{"mover_action_key": MOVER0,
+                         "manifest_sha256": batch["manifest_digest"]}],
+                expected=None, owner_action_key=DOWNSTREAM,
+                residency_root=str(out_base))
+            assert acquired["ok"], acquired
+            blocked = po.retire_batch(queue, instance, template, "full",
+                                      stage_root=str(stage),
+                                      residency_root=str(out_base))
+            assert blocked == {"ok": False, "refusal": "egress-incomplete",
+                               "receipt": blocked["receipt"]}
+            # Attribution traces the recorded staged paths to the live census.
+            live_paths, unknown = po._live_output_paths(
+                queue, rlc, _recorded(queue, instance, "full"), str(out_base))
+            assert unknown is None
+            assert live_paths != []
+            assert rlc.release(queue, acquired["pin_id"], acquired["ref_id"],
+                               consumer_action_key=DOWNSTREAM,
+                               residency_root=str(out_base)) is True
+
+            retired = po.retire_batch(queue, instance, template, "full",
+                                      stage_root=str(stage),
+                                      residency_root=str(out_base))
+            assert retired["ok"] is True, json.dumps(
+                retired.get("receipt", retired), indent=1, sort_keys=True,
+                default=str)
+            assert retired["receipt"]["complete"] is True
+            # Durable quota still held with the origin file present.
+            assert bl.BatchLedger.reserve(
+                queue, instance, template, batch_id="full2", tier=STAGE_TIER,
+                class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
+                paths=[str(origin / "full2.pt")])["refusal"] == \
+                "prewrite-exceeds-payload-maxima"
+            (origin / "full.pt").unlink()
+            assert bl.BatchLedger.reclaim(queue, instance, template,
+                                     batch_id="full") == {
+                "ok": True, "batch_id": "full", "reclaimed": True}
+            assert bl.BatchLedger.reserve(
+                queue, instance, template, batch_id="full2", tier=STAGE_TIER,
+                class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
+                paths=[str(origin / "full2.pt")])["ok"] is True
+
+            # Ordinary next-prewrite work proceeds while live; the contained
+            # finish then authorizes the final release.
+            terminal = queue.finish(owner, status="executed", detail={})
+            assert terminal == queue.records.item_path(pool.record_store.DONE, owner)
+            proof = rlc.read_scope_attestation(queue, owner, nonce)
+            assert isinstance(proof, dict) and proof["scope_empty"] is True
+            released = po.safe_release_instance(
+                queue, instance, template, lease_sdk=rlc)
+            assert released["ok"] is True, released
+            assert released["lease_proof"] == "sdk-census-clean"
         finally:
-            thread.join(timeout=10)
-            server.server_close()
+            try:
+                server.shutdown()
+            finally:
+                thread.join(timeout=10)
+                server.server_close()
 
 
 def _recorded(queue: pool.PoolQueue, instance: dict, batch_id: str) -> bl.BatchCapture:
