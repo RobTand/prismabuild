@@ -1083,6 +1083,20 @@ class _ConnectedBroker:
         return False
 
 
+def test_connected_broker_round_trip_from_deep_scratch(tmp_path):
+    from prismabuild.resource_scope import broker_request
+
+    deep = tmp_path / ("scratch-" * 5) / ("nested-" * 6) / ("workspace-" * 5)
+    deep.mkdir(parents=True)
+    assert len(os.fsencode(deep / "broker.sock")) > 107
+    with _ConnectedBroker(deep) as broker:
+        response = broker_request(
+            {"op": "create", "action_key": CONSUMER, "nonce": "b" * 32,
+             "memory_max_bytes": 64 * 1024 ** 2}, socket_path=broker.endpoint)
+        assert response["ok"] is True
+        assert broker.backend.exists(response["scope_id"])
+
+
 def _connected_setup(queue, stage, root, tmp_path, broker, nonce, token,
                      source="/mnt/shared/cx.bin", name="cx.bin", size=2048,
                      owner=None):
