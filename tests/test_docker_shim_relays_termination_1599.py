@@ -407,18 +407,72 @@ def test_a_created_container_is_removed_so_a_late_start_cannot_land(tmp_path):
     assert _state(tmp_path)["running"] is False        # the late start found it removed
 
 
-def test_a_created_container_that_cannot_be_removed_is_start_unresolved(tmp_path):
-    process = _start(tmp_path, mode="honor", grace="1",
-                     extra={"FAKE_START_LATER": "30", "FAKE_RM_REJECTS": "1"})
-    _wait_started(tmp_path)
-    process.send_signal(signal.SIGTERM)
-    code = process.wait(timeout=20)
-    assert code == 125, code
+def _created_removal_relay(tmp_path, monkeypatch):
+    relay = _CreationRelay(tmp_path, created_not_running=True,
+                           reject_removal=True, query_cost=0.2)
+    # Exercise production's default budget, independent of the caller's shell.
+    monkeypatch.delenv(relay.module.GRACE_ENV, raising=False)
+    monkeypatch.delenv(relay.module.KILL_WAIT_ENV, raising=False)
+    return relay
+
+
+def _assert_created_start_unresolved(tmp_path, code):
     receipt = _receipts(tmp_path)[0]
-    assert receipt["stop_proved"] is False
-    assert receipt["outcome"] == "start_unresolved"
-    assert receipt["escalation"]["remove_rejected"] >= 1
-    assert receipt["escalation"]["container_removed"] is False
+    calls = _state(tmp_path)["calls"]
+    evidence = {"code": code, "receipt": receipt, "calls": calls}
+    assert code == 125, f"created container must remain unresolved: {evidence}"
+    assert receipt["container_id"] == CID, evidence
+    assert receipt["found_by"] == "label", evidence
+    assert receipt["stop_proved"] is False, evidence
+    assert receipt["outcome"] == "start_unresolved", evidence
+    assert receipt["escalation"]["remove_rejected"] >= 1, evidence
+    assert receipt["escalation"]["container_removed"] is False, evidence
+    removals = _calls(tmp_path, "rm")
+    assert removals and all(call["argv"] == ["rm", "-f", CID]
+                            for call in removals), evidence
+    assert _calls(tmp_path, "kill") == [], evidence
+    assert receipt["container_final"]["running"] is False, evidence
+    assert receipt["container_final"]["status"] == "created", evidence
+    return receipt
+
+
+def test_a_created_container_that_cannot_be_removed_is_start_unresolved(tmp_path, monkeypatch):
+    """Denied removal leaves an accepted start unresolved, not proved stopped."""
+    relay = _created_removal_relay(tmp_path, monkeypatch)
+    code = relay.run()
+    receipt = _assert_created_start_unresolved(tmp_path, code)
+    # Queries spend virtual budget, but rm completes with a full second to spare
+    # before the first signal's default 1.5 s grace + 2.5 s tail deadline.
+    assert receipt["grace_s"] == 1.5 and receipt["stop_tail_s"] == 2.5
+    deadline = receipt["grace_s"] + receipt["stop_tail_s"]
+    removal = _calls(tmp_path, "rm")[0]
+    assert receipt["grace_s"] <= removal["at"]
+    assert removal["finished_at"] <= deadline - 1.0
+    queries_before_rm = [call for call in relay.calls
+                         if call["verb"] in {"ps", "inspect"}
+                         and call["at"] < removal["at"]]
+    assert {call["verb"] for call in queries_before_rm} == {"ps", "inspect"}
+    assert all(call["finished_at"] - call["at"] == pytest.approx(0.2)
+               for call in queries_before_rm)
+    assert relay.now >= deadline - 0.05
+    assert relay.created and not relay.running
+    # The accepted start can still land AFTER the receipt, without a sleeper or
+    # a scheduled race. Its possibility is why Running=False is not stop proof.
+    relay.release_late_start()
+    assert relay.running
+    assert relay.events[-1] == "late start released"
+    assert _receipts(tmp_path)[0] == receipt
+
+
+def test_a_created_container_false_stop_mutant_is_rejected(tmp_path, monkeypatch):
+    relay = _created_removal_relay(tmp_path, monkeypatch)
+    monkeypatch.setattr(relay.module, "TERMINAL_STATES",
+                        relay.module.TERMINAL_STATES | {"created"})
+    code = relay.run()
+    # Apply precisely the target's verdict assertions to the mutated real shim.
+    # This must fail, rather than comparing a canned mock response to itself.
+    with pytest.raises(AssertionError, match="created container must remain unresolved"):
+        _assert_created_start_unresolved(tmp_path, code)
 
 
 def test_a_creation_that_lands_after_the_deadline_is_reported_and_not_a_stop(tmp_path):
@@ -639,12 +693,15 @@ class _CreationRelay:
 
     Only OS boundaries are fake. Ownership, discovery, deadline accounting,
     stop decisions and receipt writing still use the shim implementation.
-    The first empty discovery releases creation, after client exit. Shim waits
-    advance virtual time, so host load cannot consume the discovery window.
+    By default, the first empty discovery releases creation after client exit.
+    The created-but-not-running mode instead holds an accepted start until an
+    explicit release, and can deny removal. Shim waits and optional daemon query
+    costs advance virtual time, so host load cannot consume the stop window.
     """
 
     def __init__(self, tmp_path, *, create_after_exit=False, query_times_out=False,
-                 client_exit_before_observation=False):
+                 client_exit_before_observation=False, created_not_running=False,
+                 reject_removal=False, query_cost=0.0):
         self.module = _shim_module()
         self.tmp_path = tmp_path
         self.now = 0.0
@@ -652,8 +709,11 @@ class _CreationRelay:
         self.calls = []
         self.handlers = {}
         self.returncode = None
-        self.created = False
+        self.created = created_not_running
         self.running = False
+        self.created_not_running = created_not_running
+        self.reject_removal = reject_removal
+        self.query_cost = query_cost
         self.create_after_exit = create_after_exit
         self.query_times_out = query_times_out
         self.signalled = False
@@ -678,7 +738,8 @@ class _CreationRelay:
             if self.client_exit_before_observation:
                 self.events.append("client exited")
                 self.returncode = -signal.SIGTERM
-            self.events.append("signal observed before creation")
+            self.events.append("signal observed while start pending" if self.created_not_running
+                               else "signal observed before creation")
             self.handlers[signal.SIGTERM](signal.SIGTERM, None)
         return self.returncode
 
@@ -693,9 +754,23 @@ class _CreationRelay:
             self.events.append("container created")
             self.created = self.running = True
 
+    def release_late_start(self):
+        """Let the accepted start land only when the test explicitly releases it."""
+        assert self.created_not_running and self.created and not self.running
+        self.events.append("late start released")
+        self.running = True
+
     def query(self, argv, *, timeout, **kwargs):
         verb = argv[1]
-        self.calls.append({"verb": verb, "argv": argv[1:]})
+        call = {"verb": verb, "argv": argv[1:], "at": self.now}
+        self.calls.append(call)
+        # Successful daemon replies consume explicit virtual time. If the last
+        # query cannot fit, obey the real shim's remaining per-call timeout.
+        cost = self.query_cost if verb in {"ps", "inspect"} else 0.0
+        self.now += min(cost, timeout)
+        call["finished_at"] = self.now
+        if cost > timeout:
+            raise subprocess.TimeoutExpired(argv, timeout)
         if verb == "ps":
             assert self.returncode is not None, "discovery must follow client exit"
             if self.query_times_out:
@@ -714,8 +789,15 @@ class _CreationRelay:
                 "Config": {"Labels": {"prismabuild.action": OWNER,
                                        "prismabuild.shim": self.nonce}},
                 "State": {"Running": self.running,
-                          "Status": "running" if self.running else "exited"},
+                          "Status": ("running" if self.running else
+                                     "created" if self.created_not_running else "exited")},
             }])
+        elif verb == "rm":
+            assert self.created and not self.running and self.created_not_running
+            assert argv[1:] == ["rm", "-f", CID]
+            assert self.reject_removal, "only denied removal is modelled here"
+            self.events.append("removal denied")
+            return SimpleNamespace(returncode=1, stdout="", stderr="removal denied")
         elif verb == "kill":
             assert self.created and argv[-1] == CID
             self.events.append("container stopped")
