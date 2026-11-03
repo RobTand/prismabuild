@@ -9,7 +9,8 @@ a test), wired to ``Authority.handle`` directly.
 """
 
 from __future__ import annotations
-from short_socket import short_socket_path
+from collections.abc import Iterator
+from tempfile import TemporaryDirectory
 
 from contextlib import contextmanager
 from functools import partial
@@ -39,6 +40,18 @@ from prismabuild import role_session
 from fleet_membership_fixture import finish_after_terminal_probe  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
 from prismabuild import tier_cycle as tier_loop  # noqa: E402
+
+
+# Temporary copy of tests/short_socket.py; deduplicate in #2695.
+@contextmanager
+def short_socket_path() -> Iterator[Path]:
+    """Keep the directory alive until the caller has closed its server."""
+    with TemporaryDirectory(prefix="pb-", dir="/tmp") as directory:
+        endpoint = Path(directory) / "socket"
+        length = len(os.fsencode(endpoint))
+        if length > 107:
+            raise ValueError(f"AF_UNIX endpoint exceeds 107 encoded bytes: {length} bytes")
+        yield endpoint
 
 
 class Backend:

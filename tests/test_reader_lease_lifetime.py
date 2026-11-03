@@ -11,9 +11,10 @@ prose. Run via published pbtest at -10; JSON evidence outside the checkout.
 Fixtures are independent (tmp_path queue, no cross-worker state).
 """
 from __future__ import annotations
-from short_socket import short_socket_path
+from collections.abc import Iterator
+from tempfile import TemporaryDirectory
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 
 import errno
 import json
@@ -31,6 +32,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map, reader_lease  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 from prismabuild import staged_path
+
+# Temporary copy of tests/short_socket.py; deduplicate in #2695.
+@contextmanager
+def short_socket_path() -> Iterator[Path]:
+    """Keep the directory alive until the caller has closed its server."""
+    with TemporaryDirectory(prefix="pb-", dir="/tmp") as directory:
+        endpoint = Path(directory) / "socket"
+        length = len(os.fsencode(endpoint))
+        if length > 107:
+            raise ValueError(f"AF_UNIX endpoint exceeds 107 encoded bytes: {length} bytes")
+        yield endpoint
+
 
 CONSUMER = "c" * 64
 CONSUMER2 = "d" * 64
