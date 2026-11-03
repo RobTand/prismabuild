@@ -227,7 +227,12 @@ def _waits(queue: pool.PoolQueue, key: str, source: Path) -> None:
 
 def test_a_source_fragment_that_cannot_be_statted_is_a_wait_not_a_pass(
         tmp_path: Path, monkeypatch) -> None:
-    queue, source = _partial_sharer(tmp_path, monkeypatch)
+    deep = tmp_path
+    for index in range(7):
+        deep = deep / (f"source-{index}-" + "x" * 32)
+    deep.mkdir(parents=True)
+    queue, source = _partial_sharer(deep, monkeypatch)
+    assert len(str(source)) > 256
     real = Path.stat
 
     def stat(self, *args, **kwargs):
@@ -244,7 +249,12 @@ def test_a_source_fragment_that_cannot_be_statted_is_a_wait_not_a_pass(
 
 def test_a_malformed_source_fragment_is_a_wait_not_a_pass(
         tmp_path: Path, monkeypatch) -> None:
-    queue, source = _partial_sharer(tmp_path, monkeypatch)
+    deep = tmp_path
+    for index in range(7):
+        deep = deep / (f"source-{index}-" + "x" * 32)
+    deep.mkdir(parents=True)
+    queue, source = _partial_sharer(deep, monkeypatch)
+    assert len(str(source)) > 256
     source.write_text("{ not json")
     verdict = _verdict(queue, SECOND)
     assert verdict["state"] == "map_unreadable", verdict
