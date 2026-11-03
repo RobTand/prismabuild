@@ -170,13 +170,19 @@ also fails when Bazel's tests differ from the hosted gate's population
 ## Configurations
 
 - `--config=remote`: BuildBuddy cache, remote execution on the pinned Ubuntu
-  24.04 image, build events, `--jobs=40`. BuildBuddy's free plan is shared
-  with TL3's gate, so PrismaBuild takes about half of it.
+  24.04 image in `selfhosted-amd64` on dl380g10, build events, `--jobs=40`.
 - `--config=remote-arm64`: the same, but every action runs on BuildBuddy's
-  linux/arm64 executors. Remote Bazel runners are amd64 only, so the client
-  stays on amd64.
+  `selfhosted-arm64` executors on the Sparks. The amd64 client drives both
+  action architectures.
 - `--config=ci`: CI build metadata, a refusal of a stale `MODULE.bazel.lock`,
   and the per-test receipts parity reads.
+
+Both execution platforms require self-hosted executors. Unavailable pool
+capacity fails or waits within the existing timeout; actions never fall back
+to cloud or local execution. The Remote Bazel runner keeps its existing cloud
+Firecracker request, normally 4 CPUs and 8 GB, plus its current disk reservation.
+Runner-lane tests, GitHub-hosted lanes and ARM exclusions keep their current
+placement. Moving the runner itself requires separate compatibility work.
 
 Pass the API key header from the environment or a private rc file. Never commit
 it.
