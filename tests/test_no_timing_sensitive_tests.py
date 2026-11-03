@@ -1107,3 +1107,34 @@ def test_distributed_guard_preserves_characterized_findings(tmp_path, monkeypatc
         except ValueError as exc:
             errors.extend(str(exc).splitlines())
     assert sorted(errors) == CHARACTERIZED_TIMING_ERRORS
+
+
+def test_short_socket_allocators_match_canonical_bytes():
+    def allocator_bytes(source):
+        definitions = [node for node in ast.parse(source).body
+                       if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                       and node.name == "short_socket_path"]
+        if not definitions:
+            return None
+        assert len(definitions) == 1
+        function = definitions[0]
+        start = min([function.lineno] + [node.lineno for node in function.decorator_list])
+        return b"".join(source.splitlines(keepends=True)[start - 1:function.end_lineno])
+
+    directory = TIMING_REPOSITORY / "tests"
+    canonical = allocator_bytes((directory / "short_socket.py").read_bytes())
+    assert canonical is not None
+    for name in ("test_reader_lease_lifetime.py", "test_fleet_membership_busy_resign.py",
+                 "test_produced_output_scope.py", "test_resource_broker.py"):
+        source = (directory / name).read_bytes()
+        local = allocator_bytes(source)
+        if local is None:
+            tree = ast.parse(source)
+            imported = any(isinstance(node, ast.ImportFrom) and node.module == "short_socket"
+                           and any(alias.name == "short_socket_path" for alias in node.names)
+                           for node in tree.body)
+            referenced = any(isinstance(node, ast.Name) and node.id == "short_socket_path"
+                             and isinstance(node.ctx, ast.Load) for node in ast.walk(tree))
+            assert imported or not referenced, name
+        else:
+            assert local == canonical, f"{name}: short_socket_path drifted from tests/short_socket.py (#2695)"

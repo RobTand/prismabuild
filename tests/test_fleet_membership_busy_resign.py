@@ -9,7 +9,10 @@ a test), wired to ``Authority.handle`` directly.
 """
 
 from __future__ import annotations
+from collections.abc import Iterator
+from tempfile import TemporaryDirectory
 
+from contextlib import contextmanager
 from functools import partial
 import json
 import os
@@ -37,6 +40,18 @@ from prismabuild import role_session
 from fleet_membership_fixture import finish_after_terminal_probe  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
 from prismabuild import tier_cycle as tier_loop  # noqa: E402
+
+
+# Temporary copy of tests/short_socket.py; deduplicate in #2695.
+@contextmanager
+def short_socket_path() -> Iterator[Path]:
+    """Keep the directory alive until the caller has closed its server."""
+    with TemporaryDirectory(prefix="pb-", dir="/tmp") as directory:
+        endpoint = Path(directory) / "socket"
+        length = len(os.fsencode(endpoint))
+        if length > 107:
+            raise ValueError(f"AF_UNIX endpoint exceeds 107 encoded bytes: {length} bytes")
+        yield endpoint
 
 
 class Backend:
@@ -1326,7 +1341,7 @@ def _live_owner() -> str:
     return owner
 
 
-@pytest.fixture()
+@contextmanager
 def live_broker(authority, tmp_path: Path):
     """Real Authority behind a real Unix-socket broker, driven through the
     real ResourceScope socket client. The privileged peer boundary is
@@ -1364,20 +1379,38 @@ def live_broker(authority, tmp_path: Path):
             real, addr = super().get_request()
             return _RootPeerSocket(real), addr
 
-    sock = tmp_path / "resources.sock"
-    server = _RootPeerServer(str(sock), broker_mod.Handler)
-    server.authority = auth
-    thread = threading.Thread(
-        target=server.serve_forever, kwargs={"poll_interval": 0.05},
-        daemon=True)
-    thread.start()
-    try:
-        yield auth, lambda payload: broker_request(
-            dict(payload), socket_path=sock)
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5.0)
+    with short_socket_path() as sock:
+        server = _RootPeerServer(str(sock), broker_mod.Handler)
+        server.authority = auth
+        thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.05},
+            daemon=True)
+        thread.start()
+        try:
+            yield auth, lambda payload: broker_request(
+                dict(payload), socket_path=sock)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5.0)
+
+
+@pytest.fixture(name="live_broker")
+def _live_broker_fixture(authority, tmp_path: Path):
+    with live_broker(authority, tmp_path) as broker:
+        yield broker
+
+
+def test_live_broker_round_trip_from_deep_scratch(authority, tmp_path):
+    deep = tmp_path / ("scratch-" * 5) / ("nested-" * 6) / ("workspace-" * 5)
+    deep.mkdir(parents=True)
+    assert len(os.fsencode(deep / "resources.sock")) > 107
+    with live_broker(authority, deep) as (auth, call):
+        response = call({"op": "maintenance_begin", "owner": "upgrade-window",
+                         "reason": "deep scratch regression"})
+        assert response["ok"] is True and response["draining"] is True
+        gate = json.loads(Path(auth.maintenance_path).read_text())
+        assert gate["draining"] is True and gate["owner"] == "upgrade-window"
 
 
 def test_broker_end_refuses_reason_field(authority) -> None:
