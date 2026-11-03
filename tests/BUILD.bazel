@@ -117656,6 +117656,25 @@ pb_py_library(
 )
 
 pb_py_test(
+    name = "test_public_evidence",
+    path = "tests/test_public_evidence.py",
+    library = ":test_public_evidence_lib",
+    timeout = "moderate",
+)
+
+pb_py_library(
+    name = "test_public_evidence_lib",
+    srcs = [
+        "test_public_evidence.py",
+    ],
+    deps = [
+        "//src/prismabuild:__init__",
+        "//src/prismabuild:digest_primitives",
+        "//src/prismabuild:public_evidence",
+    ],
+)
+
+pb_py_test(
     name = "test_publication_cached_absence_review",
     path = "tests/test_publication_cached_absence_review.py",
     library = ":test_publication_cached_absence_review_lib",
