@@ -18,8 +18,9 @@ over tiny real files and kills the mover with an exception nothing in it
 catches, raised between the first and the second document of one
 publication whichever of the two the mover writes first.  Then it runs the
 same key again, and a second key of the same range, and asserts that both
-complete without a copy, a grace or a replacement.  The grace is shortened;
-the red assertions are about completion, copies and identities.
+complete without a copy, a grace or a replacement.  A test-owned clock
+advances only at publication polling: no real scheduling delay can spend
+its grace.  Every adoption must leave that clock and its wait spy untouched.
 """
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ import os
 from pathlib import Path
 import socket
 import sys
-import time
+import threading
 
 import pytest
 
@@ -53,9 +54,6 @@ OTHER_RAM_MOVER = "d" * 64
 N = 3
 SIZE = 16 * 1024
 TOTAL = N * SIZE
-#: Shortened.  A gate that waits for a date that never comes costs at least
-#: this per blocked range; one that adopts costs none of it.
-GRACE = 2.0
 
 
 class _Killed(BaseException):
@@ -224,13 +222,38 @@ def _documents(queue: pool.PoolQueue, consumer: str, mover: str
     return vouched, dated
 
 
-def _timed(call, args) -> tuple[dict, float]:
-    started = time.monotonic()
-    receipt = call(args)
-    return receipt, time.monotonic() - started
+class _PublicationWait:
+    """Own only staged_path's deadline and polling clock, not process time.
+
+    Scheduling and filesystem work cannot advance this clock.  Only the
+    publication polling boundary can, and every call is retained even if
+    the mover catches an error or eventually succeeds.  Other time APIs
+    (including receipt instrumentation) still use their real clocks.
+    """
+
+    def __init__(self, monkeypatch) -> None:
+        self.calls: list[float] = []
+        self.polled = threading.Event()
+        self._real_time = staged_path.time
+        monkeypatch.setattr(staged_path, "time", self)
+
+    def __getattr__(self, name):
+        return getattr(self._real_time, name)
+
+    def monotonic(self) -> float:
+        return sum(self.calls)
+
+    def sleep(self, seconds: float) -> None:
+        self.calls.append(seconds)
+        self.polled.set()
+
+    def assert_no_wait(self) -> None:
+        assert self.calls == [], f"publication polling: {self.calls}"
+        assert self.monotonic() == 0.0, "virtual publication grace elapsed"
+        assert not self.polled.is_set(), "publication polling occurred"
 
 
-def _finished_without_a_copy(receipt: dict, elapsed: float,
+def _finished_without_a_copy(receipt: dict, wait: _PublicationWait,
                              paths: list[Path], before: list) -> None:
     assert receipt["complete"] is True, (
         f"a later publication of the killed mover's names did not finish: "
@@ -247,7 +270,7 @@ def _finished_without_a_copy(receipt: dict, elapsed: float,
     assert set(outcomes) <= {"adopted", "adopted_by_content"}, outcomes
     assert sum(outcomes.values()) == N, outcomes
     assert _identities(paths) == before, "a correct copy was replaced"
-    assert elapsed < GRACE, f"{elapsed:.1f} s against a {GRACE} s grace"
+    wait.assert_no_wait()
 
 
 def _whole_pair(queue: pool.PoolQueue, consumer: str, mover: str,
@@ -294,7 +317,6 @@ def _killed_stage_move(tmp_path: Path, monkeypatch, *, behind: bool):
     paths = _named(tmp_path / "stage", body)
     for index, path in enumerate(paths):
         assert path.read_bytes() == _payload(index)
-    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
     return queue, manifest, manifest_sha, body, paths
 
 
@@ -306,15 +328,16 @@ def test_the_same_key_then_another_key_finish_a_killed_stage_range(
     queue, manifest, sha, body, paths = _killed_stage_move(
         tmp_path, monkeypatch, behind=behind)
     before = _identities(paths)
+    wait = _PublicationWait(monkeypatch)
 
-    retry, elapsed = _timed(stage_move.move, _stage_args(
+    retry = stage_move.move(_stage_args(
         tmp_path, queue, manifest, sha, CONSUMER, STAGE_MOVER))
-    _finished_without_a_copy(retry, elapsed, paths, before)
+    _finished_without_a_copy(retry, wait, paths, before)
     _whole_pair(queue, CONSUMER, STAGE_MOVER, _keys(body))
 
-    other, elapsed = _timed(stage_move.move, _stage_args(
+    other = stage_move.move(_stage_args(
         tmp_path, queue, manifest, sha, OTHER_CONSUMER, OTHER_STAGE_MOVER))
-    _finished_without_a_copy(other, elapsed, paths, before)
+    _finished_without_a_copy(other, wait, paths, before)
     _whole_pair(queue, OTHER_CONSUMER, OTHER_STAGE_MOVER, _keys(body))
 
 
@@ -332,14 +355,15 @@ def test_another_key_then_the_same_key_finish_a_killed_stage_range(
     queue, manifest, sha, body, paths = _killed_stage_move(
         tmp_path, monkeypatch, behind=behind)
     before = _identities(paths)
+    wait = _PublicationWait(monkeypatch)
 
-    other, elapsed = _timed(stage_move.move, _stage_args(
+    other = stage_move.move(_stage_args(
         tmp_path, queue, manifest, sha, OTHER_CONSUMER, OTHER_STAGE_MOVER))
-    _finished_without_a_copy(other, elapsed, paths, before)
+    _finished_without_a_copy(other, wait, paths, before)
 
-    retry, elapsed = _timed(stage_move.move, _stage_args(
+    retry = stage_move.move(_stage_args(
         tmp_path, queue, manifest, sha, CONSUMER, STAGE_MOVER))
-    _finished_without_a_copy(retry, elapsed, paths, before)
+    _finished_without_a_copy(retry, wait, paths, before)
     _whole_pair(queue, CONSUMER, STAGE_MOVER, _keys(body))
 
 
@@ -369,7 +393,6 @@ def _killed_promotion(tmp_path: Path, monkeypatch):
     paths = _named(ram, body)
     for index, path in enumerate(paths):
         assert path.read_bytes() == _payload(index)
-    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
     return queue, manifest, manifest_sha, body, paths
 
 
@@ -378,15 +401,16 @@ def test_the_same_key_then_another_key_finish_a_killed_promotion(
     queue, manifest, sha, body, paths = _killed_promotion(
         tmp_path, monkeypatch)
     before = _identities(paths)
+    wait = _PublicationWait(monkeypatch)
 
-    retry, elapsed = _timed(ram_promote.promote, _promote_args(
+    retry = ram_promote.promote(_promote_args(
         tmp_path, queue, manifest, sha, RAM_MOVER))
-    _finished_without_a_copy(retry, elapsed, paths, before)
+    _finished_without_a_copy(retry, wait, paths, before)
     _whole_pair(queue, CONSUMER, RAM_MOVER, _keys(body))
 
-    other, elapsed = _timed(ram_promote.promote, _promote_args(
+    other = ram_promote.promote(_promote_args(
         tmp_path, queue, manifest, sha, OTHER_RAM_MOVER))
-    _finished_without_a_copy(other, elapsed, paths, before)
+    _finished_without_a_copy(other, wait, paths, before)
     _whole_pair(queue, CONSUMER, OTHER_RAM_MOVER, _keys(body))
 
 
@@ -395,15 +419,74 @@ def test_another_key_then_the_same_key_finish_a_killed_promotion(
     queue, manifest, sha, body, paths = _killed_promotion(
         tmp_path, monkeypatch)
     before = _identities(paths)
+    wait = _PublicationWait(monkeypatch)
 
-    other, elapsed = _timed(ram_promote.promote, _promote_args(
+    other = ram_promote.promote(_promote_args(
         tmp_path, queue, manifest, sha, OTHER_RAM_MOVER))
-    _finished_without_a_copy(other, elapsed, paths, before)
+    _finished_without_a_copy(other, wait, paths, before)
 
-    retry, elapsed = _timed(ram_promote.promote, _promote_args(
+    retry = ram_promote.promote(_promote_args(
         tmp_path, queue, manifest, sha, RAM_MOVER))
-    _finished_without_a_copy(retry, elapsed, paths, before)
+    _finished_without_a_copy(retry, wait, paths, before)
     _whole_pair(queue, CONSUMER, RAM_MOVER, _keys(body))
+
+
+# --- controls for the publication-wait observation ---------------------------
+
+def test_the_publication_clock_advances_only_at_the_poll_boundary(
+        monkeypatch) -> None:
+    assert "_PublicationWait" in globals(), "publication wait is not observed"
+    wait = _PublicationWait(monkeypatch)
+    started = staged_path.time.monotonic()
+    # Merely observing the clock, however often the mover is descheduled,
+    # cannot use up any publication grace.
+    for _ in range(10):
+        assert staged_path.time.monotonic() == started
+    wait.assert_no_wait()
+    assert not wait.polled.is_set()
+
+    staged_path.time.sleep(staged_path._PUBLISH_POLL_S)
+    assert wait.polled.is_set()
+    assert wait.calls == [staged_path._PUBLISH_POLL_S]
+    assert staged_path.time.monotonic() - started == staged_path._PUBLISH_POLL_S
+    with pytest.raises(AssertionError, match="publication polling"):
+        wait.assert_no_wait()
+
+
+def test_a_missing_sidecar_trips_the_publication_wait_check(
+        tmp_path: Path, monkeypatch) -> None:
+    """The old fragment-first residue really waits, on the virtual clock."""
+    assert "_PublicationWait" in globals(), "publication wait is not observed"
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.records.ensure_layout()
+    manifest, sha, body = _manifest(tmp_path)
+    staged = stage_move.move(_stage_args(
+        tmp_path, queue, manifest, sha, CONSUMER, STAGE_MOVER))
+    assert staged["complete"] is True, staged
+    residence = queue.root / pool.record_store.RESIDENCY
+    reader_lease.material_path(residence, CONSUMER, STAGE_MOVER).unlink()
+    vouched, dated = _documents(queue, CONSUMER, STAGE_MOVER)
+    assert vouched == set(_keys(body)) and dated is None, (vouched, dated)
+    paths = _named(tmp_path / "stage", body)
+    before = _identities(paths)
+    publisher = staged_path.StagedPublisher(
+        queue=queue, stage_root=tmp_path / "stage", residency_root=residence,
+        mover_action_key=OTHER_STAGE_MOVER, manifest_sha256=sha,
+        tier_id=STAGE_TIER, cas_root=tmp_path / "cas",
+        consumer_action_key=OTHER_CONSUMER)
+    temporary = tmp_path / "private-copy"
+    temporary.write_bytes(_payload(0))
+    wait = _PublicationWait(monkeypatch)
+    with pytest.raises(staged_path.PublicationRefused):
+        publisher.publish(body["entries"][0], paths[0], temporary,
+                          body["entries"][0]["sha256"])
+    assert wait.polled.is_set()
+    assert wait.calls
+    assert wait.monotonic() == sum(wait.calls)
+    assert wait.monotonic() >= staged_path._PUBLISH_GRACE_S
+    with pytest.raises(AssertionError, match="publication polling"):
+        wait.assert_no_wait()
+    assert _identities(paths) == before
 
 
 # --- the strict reader over the state the kill now leaves --------------------
