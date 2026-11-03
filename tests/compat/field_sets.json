@@ -4880,6 +4880,7 @@
       "--client-events-fd",
       "--d38-preflight-for",
       "--detach",
+      "--machine-record-fd",
       "--priority",
       "--wait-s"
     ],
@@ -4891,6 +4892,7 @@
     "fields": [
       "--client-events-fd",
       "--detach",
+      "--machine-record-fd",
       "--publish-sealed",
       "--wait-s"
     ],

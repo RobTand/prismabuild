@@ -180,7 +180,7 @@ def run_root_lane(report_dir: Path) -> dict:
         submitted = subprocess.run(private.command(root_command(ROOT)), cwd=ROOT, stdout=subprocess.PIPE,
                                    stderr=log, text=True, check=False, pass_fds=private.pass_fds)
         acknowledgement = private.read()
-    machine_record.save(report_dir / 'root.submission.json', acknowledgement)
+    machine_record.retain(report_dir / 'root.submission.json', acknowledgement)
     key = acknowledgement.get('action_key') if (submitted.returncode == 0
         and isinstance(acknowledgement, dict)
         and acknowledgement.get('schema') in ('prismabuild.submission.v1',
@@ -193,7 +193,7 @@ def run_root_lane(report_dir: Path) -> dict:
                                  str(ROOT_WAIT_S), key]), capture_output=True, text=True,
                                  check=False, pass_fds=private.pass_fds)
         endings = private.read()
-    machine_record.save(report_dir / 'root.endings.json', endings)
+    machine_record.retain(report_dir / 'root.endings.json', endings)
     endings = endings if isinstance(endings, dict) and endings.get('schema') == 'prismabuild.endings.v1' else {}
     ending = endings['endings'][-1] if endings.get('complete') and endings.get('endings') else {}
     output_path = (ending.get('result') or {}).get('stdout', {}).get('path')

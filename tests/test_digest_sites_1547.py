@@ -139,8 +139,17 @@ def test_gang_main_result_bytes_match_main(monkeypatch, capsys, tmp_path):
                                               {"tag": "two", "argv": ["/bin/true"]}]}))
     keys = iter(["a" * 64, "b" * 64])
     monkeypatch.setattr(module.secrets, "token_hex", lambda count: "c" * 32)
-    monkeypatch.setattr(module.subprocess, "run", lambda *args, **kwargs:
-        SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"status": "submitted", "action_key": next(keys)})))
+    def run(command, *, pass_fds=(), **kwargs):
+        reply = {"schema": "prismabuild.submission.v1", "status": "submitted",
+                 "action_key": next(keys)}
+        if pass_fds:
+            fd = int(command[command.index('--machine-record-fd') + 1])
+            assert pass_fds == (fd,)
+            module.machine_record.Writer(fd).write(reply)
+        return SimpleNamespace(returncode=0, stderr="", stdout=(
+            "public display\n" if pass_fds else json.dumps(reply)))
+
+    monkeypatch.setattr(module.subprocess, "run", run)
     monkeypatch.setattr(module.pool, "PoolQueue", lambda path:
         SimpleNamespace(records=module.pool.record_store.RecordStore(tmp_path / "queue")))
     monkeypatch.setattr(module.pool.record_store, "_read_json", lambda path: {})

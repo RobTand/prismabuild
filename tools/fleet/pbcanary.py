@@ -743,7 +743,7 @@ def _wait_for_side(paths: dict, *, leg: str, label: str, action_key: str,
             raise _SideUnverified(
                 f"{label} outcome observation timed out for {action_key}: {exc}",
                 action_key, reason) from exc
-        machine_record.save(leg_dir / f"pbwait{file_tag}.json",
+        machine_record.retain(leg_dir / f"pbwait{file_tag}.json",
                    {"returncode": waited["returncode"],
                     "record": waited["record"],
                     "stderr_tail": waited["stderr"].strip().splitlines()[-3:]})
@@ -812,7 +812,7 @@ def _execute_side(
             if not pending or time.monotonic() >= deadline:
                 raise
             _await_generation(label, generation, wait_s, deadline)
-    machine_record.save(leg_dir / f"detach{file_tag}.json", detach)
+    machine_record.retain(leg_dir / f"detach{file_tag}.json", detach)
     short = action_key[:12]
 
     waited = _wait_for_side(

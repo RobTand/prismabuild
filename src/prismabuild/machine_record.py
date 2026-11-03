@@ -67,7 +67,7 @@ class Writer:
         self.fd = fd
         self.written = False
 
-    def write(self, value) -> None:
+    def write(self, value) -> bool:
         if self.written:
             raise MachineRecordError('machine record already written')
         self.written = True
@@ -81,12 +81,14 @@ class Writer:
                 view = view[size:]
             if os.write(self.fd, b'\n') != 1:
                 raise OSError('missing machine record commit')
+            return True
         except (OSError, ValueError):
             try:
                 os.ftruncate(self.fd, 0)
             except OSError:
                 pass
             print('private machine record write failed; record unavailable', file=sys.stderr)
+            return False
 
 
 class Capture:
@@ -127,9 +129,10 @@ class Capture:
         self.close()
 
 
-def save(path, value):
+def retain(path, value):
     """Retain private evidence without creating a publicly readable file."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as stream:
+    with os.fdopen(fd, 'wb') as stream:
         os.fchmod(stream.fileno(), 0o600)
-        stream.write(json.dumps(value) + '\n')
+        if not Writer(stream.fileno()).write(value):
+            raise MachineRecordError('cannot retain private machine record')

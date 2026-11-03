@@ -385,7 +385,7 @@ def test_retained_private_evidence_is_0600_even_under_public_umask(tmp_path):
     path.chmod(0o644)
     previous = os.umask(0)
     try:
-        machine_record.save(path, {'action_key': 'a' * 64})
+        machine_record.retain(path, {'action_key': 'a' * 64})
     finally:
         os.umask(previous)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
