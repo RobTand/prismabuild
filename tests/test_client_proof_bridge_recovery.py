@@ -23,9 +23,101 @@ def _restored(publication, before, observed):
 
 
 def _interrupt(publication, cut):
+    with pytest.MonkeyPatch.context() as patches:
+        _protocol_diagnostics(publication[2].parent, patches)
     with reader_process(publication, cut=cut) as reader:
         assert reader.message() == {"bridge_cut": cut, "phase": "forward"}
         reader.kill()
+
+
+def _protocol_diagnostics(tmp_path, monkeypatch):
+    """Exercise the transport with real children, without adding collected cases.
+
+    The first child cannot dispatch a cut until the receiver is installed and
+    the parent accepts readiness. Advancing the legacy select clock to its
+    watchdog is deterministic: no sleep or scheduler-speed assertion is used.
+    The historical-reader checks below still run separately and unmodified.
+    """
+    import select
+
+    state = tmp_path / "protocol-state"
+    state.mkdir(exist_ok=True)
+    harness = tmp_path / "protocol-child.py"
+    stub = (None, None, state, tmp_path / "config", tmp_path / "backend", harness)
+    prelude = '''import json
+from pathlib import Path
+import sys
+control = Path(sys.argv[4])
+controls = json.loads(control.read_text())
+print(json.dumps({"bridge_ready": True}), flush=True)
+assert sys.stdin.readline().strip() == "start"
+assert Path(str(control) + ".receiver").is_file()
+'''
+    cut = 'print(json.dumps({"bridge_cut": "updater-before-replace", "phase": "forward"}), flush=True)\n'
+    outcome = {"exception": None, "result": {"state": "updated"}}
+    harness.write_text(prelude + cut + '''assert sys.stdin.readline().strip() == "continue"
+print(json.dumps({"bridge_resumed": "updater-before-replace", "phase": "forward"}), flush=True)
+print(json.dumps({"test_outcome": ''' + repr(outcome) + '''}), flush=True)
+''')
+    with monkeypatch.context() as clock:
+        # Expire only the old per-call select watchdog. The new queue protocol
+        # does not use select; its receiver is installed before dispatch.
+        clock.setattr(select, "select", lambda *args: ([], [], []))
+        with reader_process(stub, cut="updater-before-replace") as reader:
+            assert reader.message() == {"bridge_cut": "updater-before-replace", "phase": "forward"}
+            with pytest.raises(AssertionError, match="needs resume at acknowledged cut"):
+                reader.finish()
+            reader.resume()
+            assert reader.finish() == outcome
+
+    # EOF before readiness and EOF before a requested cut both propagate the
+    # real exit status and stderr, rather than waiting for a boundary watchdog.
+    for startup in ("", prelude):
+        harness.write_text('import sys\n' + startup
+                           + 'print("early-exit diagnostic", file=sys.stderr, flush=True)\nsys.exit(23)\n')
+        with pytest.raises(AssertionError) as failure:
+            with reader_process(stub, cut="updater-before-replace") as reader:
+                reader.message()
+        assert "23" in str(failure.value) and "early-exit diagnostic" in str(failure.value)
+        assert "updater-before-replace" in str(failure.value)
+
+    for actual in ({"bridge_cut": "wrong-cut", "phase": "forward"},
+                   {"bridge_cut": "updater-before-replace", "phase": "recover"}):
+        harness.write_text(prelude + 'print(json.dumps(' + repr(actual) + '), flush=True)\nsys.stdin.readline()\n')
+        with pytest.raises(AssertionError) as failure:
+            with reader_process(stub, cut="updater-before-replace") as reader:
+                reader.message()
+        assert actual["bridge_cut"] in str(failure.value)
+        assert actual["phase"] in str(failure.value)
+
+    harness.write_text(prelude + cut + '''assert sys.stdin.readline().strip() == "continue"
+print("resume diagnostic", file=sys.stderr, flush=True)
+sys.exit(24)
+''')
+    with pytest.raises(AssertionError) as failure:
+        with reader_process(stub, cut="updater-before-replace") as reader:
+            reader.message()
+            reader.resume()
+            reader.finish()
+    assert "24" in str(failure.value) and "resume diagnostic" in str(failure.value)
+
+    unexpected = {"test_outcome": {"exception": "RuntimeError", "error": "resume refused"}}
+    harness.write_text(prelude + cut + '''assert sys.stdin.readline().strip() == "continue"
+print(json.dumps(''' + repr(unexpected) + '''), flush=True)
+''')
+    with pytest.raises(AssertionError) as failure:
+        with reader_process(stub, cut="updater-before-replace") as reader:
+            reader.message()
+            reader.resume()
+    assert "RuntimeError" in str(failure.value) and "resume refused" in str(failure.value)
+
+    refused = {"exception": "RuntimeError", "error": "restore diagnostic", "result": None}
+    harness.write_text(prelude + 'print(json.dumps({"test_outcome": ' + repr(refused) + '}), flush=True)\n')
+    with reader_process(stub, cut="restore-updater-before-replace") as reader:
+        observed = reader.finish()
+    with pytest.raises(AssertionError) as failure:
+        _restored(stub, {}, observed)
+    assert "RuntimeError" in str(failure.value) and "restore diagnostic" in str(failure.value)
 
 
 @pytest.mark.parametrize("changed", ["previous", "candidate"])
