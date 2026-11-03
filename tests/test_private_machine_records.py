@@ -390,3 +390,18 @@ def test_retained_private_evidence_is_0600_even_under_public_umask(tmp_path):
         os.umask(previous)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert json.loads(path.read_text()) == {'action_key': 'a' * 64}
+
+
+def test_private_record_loads_without_the_prismabuild_package(tmp_path):
+    program = """
+import runpy, sys
+record = runpy.run_path(sys.argv[1])
+assert not any(name == 'prismabuild' or name.startswith('prismabuild.') for name in sys.modules)
+with record['Capture']() as capture:
+    assert record['Writer'](capture.file.fileno()).write({'status': 'submitted'})
+    assert capture.read() == {'status': 'submitted'}
+"""
+    done = REAL_RUN([sys.executable, '-I', '-c', program,
+                     str(ROOT / 'src/prismabuild/machine_record.py')],
+                    cwd=tmp_path, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
