@@ -226,6 +226,13 @@ def test_proxy_sends_only_stdio_fds_and_never_executes_payload(tmp_path, approve
     assert process.returncode == (7 if approved else 125), error
 
 
+def test_proxy_round_trip_from_deep_scratch(tmp_path):
+    deep = tmp_path / ('scratch-' * 5) / ('nested-' * 6) / ('workspace-' * 5)
+    deep.mkdir(parents=True)
+    assert len(str(deep / 'broker.sock').encode()) > 107
+    test_proxy_sends_only_stdio_fds_and_never_executes_payload(deep, approved=True)
+
+
 @pytest.mark.parametrize('published', [False, True])
 def test_wrapper_and_proxy_support_source_and_published_layouts(tmp_path, monkeypatch, published):
     import json
