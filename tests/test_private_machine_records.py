@@ -18,8 +18,9 @@ import pbwait
 import pool_reset
 from prismabuild import core, submission
 from submission_support import patch_store
-from test_pbrun_client_events import BOOTSTRAP, ROOT, _setup
-from test_verified_action_result import _publish_result, _finish, _no_outer_launch_identity
+from pbrun_client_support import BOOTSTRAP, _setup
+ROOT = Path(__file__).resolve().parents[1]
+from verified_action_support import _publish_result, _finish, _no_outer_launch_identity
 
 PUBLIC = '{"schema":"public.view.v1","complete":false}\n'
 REAL_RUN = subprocess.run
@@ -175,7 +176,7 @@ def test_verify_reads_private_ack_and_endings(tmp_path, monkeypatch):
 
 
 def test_campaign_real_publication_ignores_display(tmp_path, monkeypatch):
-    from test_pbrun_detach import _checkout, _queue
+    from pbrun_detach_support import _checkout, _queue
     work = _checkout(tmp_path)
     _queue(tmp_path)
     import socket
@@ -188,22 +189,6 @@ def test_campaign_real_publication_ignores_display(tmp_path, monkeypatch):
     assert Path(reply['submission']).is_file()
 
 
-def test_pbtest_private_identity_survives_replaced_submission_stdout(tmp_path, monkeypatch):
-    from dataclasses import replace
-    from test_pbtest_identifies_its_checkout_once import _counted_run, _sealed, pbtest
-    real_submit = submission.submit_action
-    def submit(*args, display, **kwargs):
-        return real_submit(*args, display=lambda e: display(
-            replace(e, text=PUBLIC.strip()) if e.channel == 'stdout' else e), **kwargs)
-    monkeypatch.setattr(submission, 'submit_action', submit)
-    observe = pbtest.client_recovery.observe_command
-    monkeypatch.setattr(pbtest.client_recovery, 'observe_command',
-                        lambda identity, *, deadline: observe(identity, deadline=0))
-    code, _, root = _counted_run(tmp_path, monkeypatch, shards=1)
-    rows = json.loads((tmp_path / 'report.json').read_text())
-    assert code == 1  # the real submitted shard remains unclaimed
-    assert rows[0]['action_key'] == _sealed(root)[0]['action_key']
-    assert 'public.view.v1' not in rows[0]['output']
 
 
 @pytest.mark.parametrize('kind', ['standard', 'pipe', 'public', 'nonempty', 'readonly', 'stdout_alias'])
@@ -254,7 +239,7 @@ def test_pool_reset_never_uses_stdout_as_private_fallback(tmp_path):
     assert pool_reset.submission_outcome(process, log)['state'] == 'unclear'
 
 
-from test_consumer_surface import consumer_world, consumer_action
+from consumer_surface_support import consumer_world, consumer_action
 
 
 @pytest.mark.parametrize('status,exit_code', [('executed', 0), ('failed', 1), ('waiting', 75)])
@@ -405,3 +390,48 @@ with record['Capture']() as capture:
                      str(ROOT / 'src/prismabuild/machine_record.py')],
                     cwd=tmp_path, capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
+
+
+def test_verify_private_reader_does_not_import_the_prismabuild_package(tmp_path):
+    program = """
+import builtins, runpy, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).parent / 'fleet'))
+import pbtest_outcomes
+baseline_import = builtins.__import__
+def refuse_package(name, *args, **kwargs):
+    if name == 'prismabuild' or name.startswith('prismabuild.'):
+        raise AssertionError('private reader imported the PB package')
+    return baseline_import(name, *args, **kwargs)
+builtins.__import__ = refuse_package
+verify = runpy.run_path(sys.argv[1])
+assert verify['machine_record'].__file__ == sys.argv[2]
+"""
+    done = REAL_RUN([sys.executable, '-I', '-c', program, str(ROOT / 'tools/verify.py'),
+                     str(ROOT / 'src/prismabuild/machine_record.py')],
+                    cwd=tmp_path, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize('raw', [b'{}\n{}\n', b'{broken}\n', b'{"status":NaN}\n',
+    b'{"status":Infinity}\n', b'{"status":-Infinity}\n', b'{"status":1,"status":2}\n',
+    b'{"nested":{"key":1,"key":2}}\n', b'{"status":"\xff"}\n',
+    '{"status":1}'.encode('utf-16') + b'\n', b'\xef\xbb\xbf{}\n',
+    b'[' * 2000 + b'0' + b']' * 2000 + b'\n', b'1' * 5000 + b'\n'])
+def test_private_reader_matches_digest_owner_refusals(raw):
+    from prismabuild import digest_primitives, machine_record
+    with pytest.raises(ValueError):
+        digest_primitives.decode_strict_json(raw, where='parity test')
+    with machine_record.Capture() as private:
+        private.file.write(raw)
+        with pytest.raises(machine_record.MachineRecordError):
+            private.read()
+
+
+@pytest.mark.parametrize('value', [None, [], {'status': 'submitted', 'nested': [{'key': 'é'}]}])
+def test_private_reader_matches_digest_owner_documents(value):
+    from prismabuild import digest_primitives, machine_record
+    raw = (' \t\r\n' + json.dumps(value, ensure_ascii=False) + '\n').encode('utf-8')
+    with machine_record.Capture() as private:
+        private.file.write(raw)
+        assert private.read() == digest_primitives.decode_strict_json(raw, where='parity test') == value

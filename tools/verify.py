@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -16,7 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 sys.path.insert(0, str(ROOT / 'tools/fleet'))
 import pbtest_outcomes
-from prismabuild import machine_record
+_record_spec = importlib.util.spec_from_file_location(
+    'verify_machine_record', ROOT / 'src/prismabuild/machine_record.py')
+machine_record = importlib.util.module_from_spec(_record_spec)
+_record_spec.loader.exec_module(machine_record)
 
 FLEET = Path('/mnt/shared/prismabuild-fleet')
 PBTEST = FLEET / 'repo/tools/pbtest.py'

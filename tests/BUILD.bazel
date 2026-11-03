@@ -960,6 +960,22 @@ pb_py_library(
 )
 
 pb_py_library(
+    name = "consumer_surface_support",
+    srcs = [
+        "consumer_surface_support.py",
+    ],
+    deps = [
+        "//src/prismabuild:__init__",
+        "//src/prismabuild:core",
+        "//tools:fleet/pbwait",
+        ":fleet_world",
+        ":pbmcp_fixture",
+        ":submission_support",
+        ":verified_action_support",
+    ],
+)
+
+pb_py_library(
     name = "controlled_action",
     srcs = [
         "controlled_action.py",
@@ -1330,6 +1346,33 @@ pb_py_library(
         "//src/prismabuild:storage_tiers",
         "//tools:fleet/pbmcp",
         ":residency_publication",
+    ],
+)
+
+pb_py_library(
+    name = "pbrun_client_support",
+    srcs = [
+        "pbrun_client_support.py",
+    ],
+    deps = [
+        "//src/prismabuild:__init__",
+        "//src/prismabuild:_gang_cycle",
+        "//src/prismabuild:core",
+        "//src/prismabuild:d38_gate_cycle",
+        "//tools:fleet/pbrun",
+        ":queue_space_support",
+        ":verified_action_support",
+    ],
+)
+
+pb_py_library(
+    name = "pbrun_detach_support",
+    srcs = [
+        "pbrun_detach_support.py",
+    ],
+    deps = [
+        "//src/prismabuild:__init__",
+        "//src/prismabuild:_gang_cycle",
     ],
 )
 
@@ -42742,6 +42785,7 @@ pb_py_library(
         "//src/prismabuild:core",
         "//tools:fleet/pbrun",
         "//tools:fleet/pbwait",
+        ":consumer_surface_support",
         ":fleet_world",
         ":pbmcp_fixture",
         ":submission_support",
@@ -81243,6 +81287,7 @@ pb_py_library(
         "//src/prismabuild:d38_gate_cycle",
         "//src/prismabuild:slurm_lane",
         "//tools:fleet/pbrun",
+        ":pbrun_client_support",
         ":queue_space_support",
         ":test_pbrun_detach_lib",
         ":test_slurm_lane_lib",
@@ -82806,6 +82851,7 @@ pb_py_library(
         "//src/prismabuild:d38_gate_cycle",
         "//src/prismabuild:slurm_lane",
         "//tools:fleet/pbrun",
+        ":pbrun_detach_support",
         ":submission_support",
         ":test_slurm_lane_lib",
     ],
@@ -114008,29 +114054,33 @@ pb_py_library(
         "test_private_machine_records.py",
     ],
     data = [
+        "//src/prismabuild:machine_record.py",
         "//tools:files/fleet",
         "//tools:verify.py",
+        "test_private_machine_records.py",
     ],
     deps = [
         "//src/prismabuild:__init__",
         "//src/prismabuild:core",
         "//src/prismabuild:d38_gate_cycle",
+        "//src/prismabuild:digest_primitives",
         "//src/prismabuild:machine_record",
         "//src/prismabuild:submission_frontend",
         "//tools:fleet/pbcampaign",
         "//tools:fleet/pbcanary",
         "//tools:fleet/pbcanary_submission",
         "//tools:fleet/pbrun",
+        "//tools:fleet/pbtest_outcomes",
         "//tools:fleet/pbwait",
         "//tools:fleet/pool_reset",
         "//tools:verify",
+        ":consumer_surface_support",
+        ":fixtures/pbtest-reader-before-1842/pbtest_outcomes",
+        ":pbrun_client_support",
+        ":pbrun_detach_support",
         ":queue_space_support",
         ":submission_support",
-        ":test_consumer_surface_lib",
-        ":test_pbrun_client_events_lib",
-        ":test_pbrun_detach_lib",
-        ":test_pbtest_identifies_its_checkout_once_lib",
-        ":test_verified_action_result_lib",
+        ":verified_action_support",
     ],
 )
 
@@ -162537,6 +162587,7 @@ pb_py_library(
         "//src/prismabuild:resource_scope",
         "//tools:prismabuild_worker",
         ":pbmcp_fixture",
+        ":verified_action_support",
     ],
 )
 
@@ -167451,6 +167502,19 @@ pb_py_library(
         "//src/prismabuild:storage_tiers",
         "//src/prismabuild:tier_cycle",
         ":test_prewarm_requires_known_receipts_lib",
+    ],
+)
+
+pb_py_library(
+    name = "verified_action_support",
+    srcs = [
+        "verified_action_support.py",
+    ],
+    deps = [
+        "//src/prismabuild:__init__",
+        "//src/prismabuild:_gang_cycle",
+        "//src/prismabuild:core",
+        ":pbmcp_fixture",
     ],
 )
 

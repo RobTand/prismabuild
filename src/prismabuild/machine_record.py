@@ -9,8 +9,6 @@ import subprocess
 import sys
 import tempfile
 
-from .digest_primitives import decode_strict_json
-
 CAPABILITY = {"schema": "prismabuild.machine_record_capability.v1", "machine_record_fd": 1}
 FLAG = '--machine-record-fd'
 
@@ -21,6 +19,23 @@ class MachineRecordError(ValueError):
 
 class UnsupportedRuntime(MachineRecordError):
     pass
+
+
+def _decode_machine_document(raw):
+    def private_object(pairs):
+        value = dict(pairs)
+        if len(value) != len(pairs):
+            raise MachineRecordError('duplicate private record key')
+        return value
+
+    def private_constant(_):
+        raise MachineRecordError('non-finite private record number')
+
+    try:
+        decoder = json.JSONDecoder(object_pairs_hook=private_object, parse_constant=private_constant)
+        return decoder.decode(raw.decode('utf-8').lstrip(' \t\r\n'))
+    except (ValueError, UnicodeError, RecursionError):
+        raise MachineRecordError('private machine record is malformed') from None
 
 
 def capability(argv) -> bool:
@@ -34,7 +49,7 @@ def require_capability(command) -> None:
     try:
         result = subprocess.run([*command, '--machine-record-capability'],
             capture_output=True, text=True, check=False, timeout=30)
-        value = decode_strict_json(result.stdout.encode("utf-8"), where="machine record capability")
+        value = _decode_machine_document(result.stdout.encode("utf-8"))
         supported = (result.returncode == 0 and isinstance(value, dict)
             and value.get('schema') == CAPABILITY['schema']
             and type(value.get('machine_record_fd')) is int and value['machine_record_fd'] >= 1)
@@ -114,10 +129,7 @@ class Capture:
             return None
         if not raw.endswith(b'\n'):
             raise MachineRecordError('private machine record is incomplete')
-        try:
-            return decode_strict_json(raw, where="private machine record")
-        except (ValueError, UnicodeError):
-            raise MachineRecordError('private machine record is malformed') from None
+        return _decode_machine_document(raw)
 
     def close(self):
         self.file.close()

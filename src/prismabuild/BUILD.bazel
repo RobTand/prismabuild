@@ -880,10 +880,6 @@ pb_py_library(
     srcs = [
         "machine_record.py",
     ],
-    deps = [
-        ":__init__",
-        ":digest_primitives",
-    ],
 )
 
 pb_py_library(

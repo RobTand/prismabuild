@@ -244,3 +244,21 @@ def test_invalid_caller_env_refuses_before_preparation_or_submission(
     error = capsys.readouterr().err
     assert "pbtest: --env" in error
     assert diagnostic in error
+
+
+def test_pbtest_private_identity_survives_replaced_submission_stdout(tmp_path, monkeypatch):
+    from dataclasses import replace
+    PUBLIC = '{"schema":"public.view.v1","complete":false}\n'
+    real_submit = submission.submit_action
+    def submit(*args, display, **kwargs):
+        return real_submit(*args, display=lambda e: display(
+            replace(e, text=PUBLIC.strip()) if e.channel == 'stdout' else e), **kwargs)
+    monkeypatch.setattr(submission, 'submit_action', submit)
+    observe = pbtest.client_recovery.observe_command
+    monkeypatch.setattr(pbtest.client_recovery, 'observe_command',
+                        lambda identity, *, deadline: observe(identity, deadline=0))
+    code, _, root = _counted_run(tmp_path, monkeypatch, shards=1)
+    rows = json.loads((tmp_path / 'report.json').read_text())
+    assert code == 1  # the real submitted shard remains unclaimed
+    assert rows[0]['action_key'] == _sealed(root)[0]['action_key']
+    assert 'public.view.v1' not in rows[0]['output']

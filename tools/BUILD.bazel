@@ -3416,6 +3416,7 @@ pb_py_library(
     ],
     data = [
         "//:_proof_runtime_profiles/standard3144.json",
+        "//src/prismabuild:machine_record.py",
         "//tests:proof_execution.json",
         "//tests:qualification/test_cuda.py",
         "//tests:receipt_execution.json",
@@ -3450,7 +3451,6 @@ pb_py_library(
         "verify.py",
     ],
     deps = [
-        "//src/prismabuild:__init__",
         "//src/prismabuild:machine_record",
         "//tests:fixtures/pbtest-reader-before-1842/pbtest_outcomes",
         ":fleet/pbtest_outcomes",
