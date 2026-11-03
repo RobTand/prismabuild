@@ -494,6 +494,8 @@ def test_an_ending_names_the_actions_own_status_in_its_own_column(fleet, capsys)
         retry_safe=False, detail={"returncode": 1, "action_returncode": 7},
     )
     ending = _run_json(fleet, capsys)["endings"][0]
+    assert ending.get("schema") == _PUBLIC_SCHEMA
+    assert "evidence" in ending
     assert ending["evidence"]["returncode"] == 1
     assert "action_returncode" not in ending["evidence"]
     assert fleet_census.endings(fleet["queue"])[0]["action_returncode"] == 7
