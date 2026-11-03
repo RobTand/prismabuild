@@ -16,6 +16,9 @@ at a fake CLI that records the argv it was handed.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
+from short_socket import short_socket_path
+
 import json
 import os
 from pathlib import Path
@@ -70,50 +73,52 @@ def _shim(tmp_path: Path, argv: list[str], *, cgroup: str | None = None,
     path = tmp_path / "cgroup"
     path.write_text(cgroup if cgroup is not None else "0::/test-unscoped\n", encoding="utf-8")
     environment["PRISMABUILD_CGROUP_FILE"] = str(path)
-    broker_thread = None
-    broker_stop = None
-    broker = None
-    if docker_env and "PRISMABUILD_CGROUP_ROOT" in docker_env:
-        import socket
-        import threading
-        endpoint = tmp_path / "broker.sock"
-        broker = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        broker.bind(str(endpoint))
-        broker.listen(2)
-        broker.settimeout(.05)
-        broker_stop = threading.Event()
-        calls = []
-        def serve():
-            while not broker_stop.is_set():
-                try:
-                    connection, _ = broker.accept()
-                except socket.timeout:
-                    continue
-                with connection:
-                    request = json.loads(connection.recv(65536))
-                    calls.append(request)
-                    (tmp_path / "broker.json").write_text(json.dumps(calls))
-                    response = {"ok": environment.get("PRISMABUILD_DOCKER_TEST_BROKER_FAIL") != "1",
-                                "ticket": "b" * 64}
-                    connection.sendall(json.dumps(response).encode() + b"\n")
-        broker_thread = threading.Thread(target=serve)
-        broker_thread.start()
-        environment["PRISMABUILD_RESOURCE_SOCKET"] = str(endpoint)
-    try:
-        result = subprocess.run(
-            (["taskset", "--cpu-list", ",".join(map(str, sorted(affinity)))]
-             if affinity is not None else []) + [str(SHIM), *argv],
-            env=environment, capture_output=True, text=True,
-            check=False, timeout=timeout,
-        )
-    finally:
-        if broker_thread is not None:
-            broker_stop.set()
-            broker_thread.join(timeout=2)
-            broker.close()
-            assert not broker_thread.is_alive()
-    forwarded = json.loads(called.read_text()) if called.exists() else None
-    return result, marker.exists(), forwarded
+    with ExitStack() as stack:
+        broker_thread = None
+        broker_stop = None
+        broker = None
+        if docker_env and "PRISMABUILD_CGROUP_ROOT" in docker_env:
+            import socket
+            import threading
+            endpoint = stack.enter_context(short_socket_path())
+            broker = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            stack.callback(broker.close)
+            broker.bind(str(endpoint))
+            broker.listen(2)
+            broker.settimeout(.05)
+            broker_stop = threading.Event()
+            calls = []
+            def serve():
+                while not broker_stop.is_set():
+                    try:
+                        connection, _ = broker.accept()
+                    except socket.timeout:
+                        continue
+                    with connection:
+                        request = json.loads(connection.recv(65536))
+                        calls.append(request)
+                        (tmp_path / "broker.json").write_text(json.dumps(calls))
+                        response = {"ok": environment.get("PRISMABUILD_DOCKER_TEST_BROKER_FAIL") != "1",
+                                    "ticket": "b" * 64}
+                        connection.sendall(json.dumps(response).encode() + b"\n")
+            broker_thread = threading.Thread(target=serve)
+            broker_thread.start()
+            environment["PRISMABUILD_RESOURCE_SOCKET"] = str(endpoint)
+        try:
+            result = subprocess.run(
+                (["taskset", "--cpu-list", ",".join(map(str, sorted(affinity)))]
+                 if affinity is not None else []) + [str(SHIM), *argv],
+                env=environment, capture_output=True, text=True,
+                check=False, timeout=timeout,
+            )
+        finally:
+            if broker_thread is not None:
+                broker_stop.set()
+                broker_thread.join(timeout=2)
+                broker.close()
+                assert not broker_thread.is_alive()
+        forwarded = json.loads(called.read_text()) if called.exists() else None
+        return result, marker.exists(), forwarded
 
 
 def _labels(forwarded: list[str]) -> list[str]:

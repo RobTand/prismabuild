@@ -12,6 +12,7 @@ PASS here. SDK-connected tests skip on checkouts without the accepted
 package and prove the corrected path here.
 """
 from __future__ import annotations
+from short_socket import short_socket_path
 from fleet_world import Admission, FleetWorld
 
 from prismabuild.legacy_funding import LegacyFunding
@@ -332,135 +333,135 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
     authority = resource_broker.Authority(
         tmp_path / "broker-state", __import__("os").getuid(), _Kernel(),
         max_memory_bytes=1024 ** 3)
-    endpoint = tmp_path / "broker.sock"
-    server = resource_broker.Server(
-        str(endpoint), resource_broker.Handler)
-    server.authority = authority
-    thread = threading.Thread(
-        target=server.serve_forever, kwargs={"poll_interval": 0.01},
-        daemon=True)
-    thread.start()
-    try:
-        monkeypatch.setattr(resource_scope, "BROKER_SOCKET", endpoint)
-        owner = "d" * 64
-        terms = oc.owner_demand_terms(template)
-        queue.publish(action_key=owner, cas_root="/cas",
-                      worker_script="/w.py", checkout_root="/co",
-                      resources={"cpu": 1, "mem_gb": 1, **terms},
-                      produced_output_template=template)
-        claimed = queue.claim(owner="life-worker")
-        assert claimed is not None and claimed["action_key"] == owner
-        nonce = secrets.token_hex(16)
-        scope = resource_scope.ResourceScope(
-            owner, nonce, 64 * 1024 ** 2, tmp_path / "telemetry.json",
-            socket_path=endpoint)
-        control = scope.create()
-        live = pool.record_store.value_or_raise(
-            queue.records.item(pool.record_store.CLAIMED, owner),
-        )
-        assert isinstance(live, dict)
-        live["resource_scope"] = control
-        pool.immutable_files.write_json_atomic(
-            queue.records.item_path(pool.record_store.CLAIMED, owner),
-            live,
-        )
-        env = {"PRISMABUILD_ACTION_KEY": owner,
-               "PRISMABUILD_ACTION_NONCE": control["nonce"],
-               "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
-        po.declare_template(queue.root, template)
-        instance = po.bind_instance(
-            queue, template, owner_action_key=owner,
-            claim_snapshot=claimed, env=env)
-        bl.declare_instance(queue.root, instance)
-        assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
-        terminal = queue.finish(owner, status="executed", detail={})
-        assert terminal == queue.records.item_path(pool.record_store.DONE, owner)
-        proof = rlc.read_scope_attestation(queue, owner, nonce)
-        assert isinstance(proof, dict) and proof["scope_empty"] is True
-        first = po.safe_release_instance(
-            queue, instance, template, lease_sdk=rlc)
-        assert first["ok"] is True and first["released"] == 0
-        assert first["lease_proof"] == "sdk-census-clean"
-        second = po.safe_release_instance(
-            queue, instance, template, lease_sdk=rlc)
-        assert second["ok"] is True and second["released"] == 0
-        # A leftover batch-namespace token releases exactly once: file a
-        # real batch record plus its commitments entry (mover already
-        # egressed, fragment gone) with one remainder token, as a
-        # partial transfer would leave. Holder identity comes from the
-        # validated record, so both halves are required.
-        desc = oc.validate_descriptor({
-            "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
-            "artifact_class": "payload",
-            "path": str(origin / "left.pt"),
-            "bytes": 64, "sha256": hashlib.sha256(b"L" * 64).hexdigest(),
-            "producer_generation": oc.mint_output_generation(),
-            "owner_action_key": instance["owner_action_key"],
-            "owner_attempt": dict(instance["owner_attempt"]),
-        }, template, instance)
-        digest = oc.output_manifest_sha256([desc])
-        ns = oc.batch_namespace(instance, "batch-left", digest)
-        mover = "e" * 64
-        batch_file = (queue.root / "residency" / oc.OUTPUT_BATCHES_SUBDIR
-                      / oc.instance_namespace(instance) / "batch-left.json")
-        batch_file.parent.mkdir(parents=True, exist_ok=True)
-        batch_file.write_bytes(json.dumps({
-            "schema": oc.BATCH_SCHEMA_V1, "batch_id": "batch-left",
-            "batch_namespace": ns,
-            "manifest_schema": oc.BATCH_MANIFEST_SCHEMA_V1,
-            "manifest_digest": digest, "tier": STAGE_TIER,
-            "mover_key": mover,
-            "class_bytes": {"payload": 64, "checkpoint": 0, "temp": 0},
-            "total_bytes": 64, "entry_count": 1, "entries": [desc],
-            "template_id": str(oc.validate_template(template)["template_id"]),
-            "template_sha256": oc.template_sha256(template),
-            "owner_action_key": instance["owner_action_key"],
-            "owner_attempt": dict(instance["owner_attempt"]),
-            "object_set_id": oc.manifest_object_set_id(
-                {f"64:{desc['path']}": {"bytes": 64,
-                                        "sha256": desc["sha256"]}}),
-            "unix": 0.0}, sort_keys=True).encode() + b"\n")
-        import stat as _stat
-        os.chmod(batch_file, _stat.S_IRUSR | _stat.S_IRGRP | _stat.S_IROTH)
-        commitments_path = bl.BatchLedger.for_instance(queue.root, instance).path
-        record = {"batches": {
-            "batch-left": {
-                "manifest_digest": digest, "batch_namespace": ns,
-                "tier": STAGE_TIER, "mover_key": mover,
-                "class_bytes": {"payload": 64, "checkpoint": 0, "temp": 0},
-                "retired": True}},
-            "admission": {"minimum_gib": {STAGE_TIER: 1},
-                          "window_gib": {STAGE_TIER: 2},
-                          "bound_unix": 0.0}}
-        bl.BatchLedger(commitments_path).file(record)
-        assert queue.tier(STAGE_TIER).take(ns, {STAGE_BARE: 1})
-        third = po.safe_release_instance(
-            queue, instance, template, lease_sdk=rlc)
-        assert third["ok"] is True and third["released"] == 1
-        fourth = po.safe_release_instance(
-            queue, instance, template, lease_sdk=rlc)
-        assert fourth["ok"] is True and fourth["released"] == 0
-        # A ledger failure retains instead of reporting ok True.
-        assert queue.tier(STAGE_TIER).take(ns, {STAGE_BARE: 1})
-        real_ledger = queue.tier
-
-        def boom(tier_id):
-            ledger = real_ledger(tier_id)
-            if tier_id == STAGE_TIER:
-                def failing(holder, **kwargs):
-                    raise OSError("simulated ledger failure")
-
-                ledger.egress = failing  # type: ignore[method-assign]
-            return ledger
-
-        monkeypatch.setattr(queue, 'tier', boom)
-        failing = po.safe_release_instance(
-            queue, instance, template, lease_sdk=rlc)
-        assert failing["ok"] is False
-        assert "unknown-retain" in str(failing["refusal"])
-    finally:
+    with short_socket_path() as endpoint:
+        server = resource_broker.Server(
+            str(endpoint), resource_broker.Handler)
+        server.authority = authority
+        thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.01},
+            daemon=True)
+        thread.start()
         try:
-            server.shutdown()
+            monkeypatch.setattr(resource_scope, "BROKER_SOCKET", endpoint)
+            owner = "d" * 64
+            terms = oc.owner_demand_terms(template)
+            queue.publish(action_key=owner, cas_root="/cas",
+                          worker_script="/w.py", checkout_root="/co",
+                          resources={"cpu": 1, "mem_gb": 1, **terms},
+                          produced_output_template=template)
+            claimed = queue.claim(owner="life-worker")
+            assert claimed is not None and claimed["action_key"] == owner
+            nonce = secrets.token_hex(16)
+            scope = resource_scope.ResourceScope(
+                owner, nonce, 64 * 1024 ** 2, tmp_path / "telemetry.json",
+                socket_path=endpoint)
+            control = scope.create()
+            live = pool.record_store.value_or_raise(
+                queue.records.item(pool.record_store.CLAIMED, owner),
+            )
+            assert isinstance(live, dict)
+            live["resource_scope"] = control
+            pool.immutable_files.write_json_atomic(
+                queue.records.item_path(pool.record_store.CLAIMED, owner),
+                live,
+            )
+            env = {"PRISMABUILD_ACTION_KEY": owner,
+                   "PRISMABUILD_ACTION_NONCE": control["nonce"],
+                   "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
+            po.declare_template(queue.root, template)
+            instance = po.bind_instance(
+                queue, template, owner_action_key=owner,
+                claim_snapshot=claimed, env=env)
+            bl.declare_instance(queue.root, instance)
+            assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
+            terminal = queue.finish(owner, status="executed", detail={})
+            assert terminal == queue.records.item_path(pool.record_store.DONE, owner)
+            proof = rlc.read_scope_attestation(queue, owner, nonce)
+            assert isinstance(proof, dict) and proof["scope_empty"] is True
+            first = po.safe_release_instance(
+                queue, instance, template, lease_sdk=rlc)
+            assert first["ok"] is True and first["released"] == 0
+            assert first["lease_proof"] == "sdk-census-clean"
+            second = po.safe_release_instance(
+                queue, instance, template, lease_sdk=rlc)
+            assert second["ok"] is True and second["released"] == 0
+            # A leftover batch-namespace token releases exactly once: file a
+            # real batch record plus its commitments entry (mover already
+            # egressed, fragment gone) with one remainder token, as a
+            # partial transfer would leave. Holder identity comes from the
+            # validated record, so both halves are required.
+            desc = oc.validate_descriptor({
+                "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
+                "artifact_class": "payload",
+                "path": str(origin / "left.pt"),
+                "bytes": 64, "sha256": hashlib.sha256(b"L" * 64).hexdigest(),
+                "producer_generation": oc.mint_output_generation(),
+                "owner_action_key": instance["owner_action_key"],
+                "owner_attempt": dict(instance["owner_attempt"]),
+            }, template, instance)
+            digest = oc.output_manifest_sha256([desc])
+            ns = oc.batch_namespace(instance, "batch-left", digest)
+            mover = "e" * 64
+            batch_file = (queue.root / "residency" / oc.OUTPUT_BATCHES_SUBDIR
+                          / oc.instance_namespace(instance) / "batch-left.json")
+            batch_file.parent.mkdir(parents=True, exist_ok=True)
+            batch_file.write_bytes(json.dumps({
+                "schema": oc.BATCH_SCHEMA_V1, "batch_id": "batch-left",
+                "batch_namespace": ns,
+                "manifest_schema": oc.BATCH_MANIFEST_SCHEMA_V1,
+                "manifest_digest": digest, "tier": STAGE_TIER,
+                "mover_key": mover,
+                "class_bytes": {"payload": 64, "checkpoint": 0, "temp": 0},
+                "total_bytes": 64, "entry_count": 1, "entries": [desc],
+                "template_id": str(oc.validate_template(template)["template_id"]),
+                "template_sha256": oc.template_sha256(template),
+                "owner_action_key": instance["owner_action_key"],
+                "owner_attempt": dict(instance["owner_attempt"]),
+                "object_set_id": oc.manifest_object_set_id(
+                    {f"64:{desc['path']}": {"bytes": 64,
+                                            "sha256": desc["sha256"]}}),
+                "unix": 0.0}, sort_keys=True).encode() + b"\n")
+            import stat as _stat
+            os.chmod(batch_file, _stat.S_IRUSR | _stat.S_IRGRP | _stat.S_IROTH)
+            commitments_path = bl.BatchLedger.for_instance(queue.root, instance).path
+            record = {"batches": {
+                "batch-left": {
+                    "manifest_digest": digest, "batch_namespace": ns,
+                    "tier": STAGE_TIER, "mover_key": mover,
+                    "class_bytes": {"payload": 64, "checkpoint": 0, "temp": 0},
+                    "retired": True}},
+                "admission": {"minimum_gib": {STAGE_TIER: 1},
+                              "window_gib": {STAGE_TIER: 2},
+                              "bound_unix": 0.0}}
+            bl.BatchLedger(commitments_path).file(record)
+            assert queue.tier(STAGE_TIER).take(ns, {STAGE_BARE: 1})
+            third = po.safe_release_instance(
+                queue, instance, template, lease_sdk=rlc)
+            assert third["ok"] is True and third["released"] == 1
+            fourth = po.safe_release_instance(
+                queue, instance, template, lease_sdk=rlc)
+            assert fourth["ok"] is True and fourth["released"] == 0
+            # A ledger failure retains instead of reporting ok True.
+            assert queue.tier(STAGE_TIER).take(ns, {STAGE_BARE: 1})
+            real_ledger = queue.tier
+
+            def boom(tier_id):
+                ledger = real_ledger(tier_id)
+                if tier_id == STAGE_TIER:
+                    def failing(holder, **kwargs):
+                        raise OSError("simulated ledger failure")
+
+                    ledger.egress = failing  # type: ignore[method-assign]
+                return ledger
+
+            monkeypatch.setattr(queue, 'tier', boom)
+            failing = po.safe_release_instance(
+                queue, instance, template, lease_sdk=rlc)
+            assert failing["ok"] is False
+            assert "unknown-retain" in str(failing["refusal"])
         finally:
-            thread.join(timeout=10)
-            server.server_close()
+            try:
+                server.shutdown()
+            finally:
+                thread.join(timeout=10)
+                server.server_close()

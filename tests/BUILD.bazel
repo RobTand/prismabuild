@@ -1667,6 +1667,13 @@ pb_py_library(
 )
 
 pb_py_library(
+    name = "short_socket",
+    srcs = [
+        "short_socket.py",
+    ],
+)
+
+pb_py_library(
     name = "storage_host_ledger",
     srcs = [
         "storage_host_ledger.py",
@@ -46936,6 +46943,9 @@ pb_py_library(
         "//tools:fleet/docker",
         "test_docker_shim_global_options.py",
     ],
+    deps = [
+        ":short_socket",
+    ],
 )
 
 pb_py_test(
@@ -61545,6 +61555,7 @@ pb_py_library(
         "//src/prismabuild:role_session",
         "//tools:fleet/pbmetrics",
         "//tools:fleet/resource_broker",
+        ":short_socket",
     ],
 )
 
@@ -101184,6 +101195,7 @@ pb_py_library(
         "//src/prismabuild:core",
         "//src/prismabuild:resource_scope",
         "//tools:prismabuild_worker",
+        ":short_socket",
     ],
 )
 
@@ -114119,6 +114131,7 @@ pb_py_library(
         "//tools:fleet/resource_broker",
         ":admitted_queue_fixture",
         ":fleet_world",
+        ":short_socket",
     ],
 )
 
@@ -114154,6 +114167,7 @@ pb_py_library(
         "//tools:fleet/resource_broker",
         ":admitted_queue_fixture",
         ":fleet_world",
+        ":short_socket",
     ],
 )
 
@@ -133224,6 +133238,7 @@ pb_py_library(
         "//src/prismabuild:__init__",
         "//src/prismabuild:resource_scope",
         "//tools:fleet/resource_exec",
+        ":short_socket",
     ],
 )
 

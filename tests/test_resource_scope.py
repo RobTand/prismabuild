@@ -1,5 +1,6 @@
 """Per-attempt telemetry and selective memory containment."""
 from pathlib import Path
+from short_socket import short_socket_path
 import pytest
 
 from prismabuild.resource_scope import ResourceScope, ResourceUnavailable, read_cgroup
@@ -143,8 +144,7 @@ def test_broker_refusal_and_oversized_response_fail_closed(tmp_path, response, e
     import socket
     import threading
     from prismabuild.resource_scope import broker_request
-    path = tmp_path / 'broker.sock'
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+    with short_socket_path() as path, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(str(path))
         server.listen(1)
         def serve():
@@ -176,10 +176,9 @@ def test_proxy_sends_only_stdio_fds_and_never_executes_payload(tmp_path, approve
     import subprocess
     import sys
     import threading
-    path = tmp_path / 'broker.sock'
     marker = tmp_path / 'payload-ran'
     seen = {}
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+    with short_socket_path() as path, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(str(path))
         server.listen(1)
         def serve():
@@ -233,6 +232,68 @@ def test_proxy_round_trip_from_deep_scratch(tmp_path):
     test_proxy_sends_only_stdio_fds_and_never_executes_payload(deep, approved=True)
 
 
+def test_short_socket_is_private_bounded_and_removed_after_round_trip():
+    import os
+    import socket
+    import stat
+
+    with short_socket_path() as endpoint:
+        directory = endpoint.parent
+        assert directory.parent == Path('/tmp')
+        assert directory.name.startswith('pb-')
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+        assert len(os.fsencode(endpoint)) <= 107
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.settimeout(60)
+            server.bind(str(endpoint))
+            server.listen(1)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(60)
+                client.connect(str(endpoint))
+                connection, _ = server.accept()
+                with connection:
+                    connection.settimeout(60)
+                    client.sendall(b'ping')
+                    assert connection.recv(4) == b'ping'
+                    connection.sendall(b'pong')
+                    assert client.recv(4) == b'pong'
+    assert not directory.exists()
+
+
+def test_short_socket_allocates_distinct_server_directories():
+    with short_socket_path() as first, short_socket_path() as second:
+        assert first.parent != second.parent
+        assert first.parent.is_dir() and second.parent.is_dir()
+    assert not first.parent.exists()
+    assert not second.parent.exists()
+
+
+def test_short_socket_cleans_up_after_an_exception():
+    with pytest.raises(RuntimeError, match='server failed'):
+        with short_socket_path() as endpoint:
+            raise RuntimeError('server failed')
+    assert not endpoint.parent.exists()
+
+
+def test_short_socket_rejects_overlong_encoded_endpoint_before_yield(monkeypatch):
+    import short_socket
+    from tempfile import TemporaryDirectory
+
+    directories = []
+
+    def overlong_directory(**kwargs):
+        directory = TemporaryDirectory(prefix='\u00e9' * 50, dir='/tmp')
+        directories.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr(short_socket, 'TemporaryDirectory', overlong_directory)
+    with pytest.raises(ValueError, match='AF_UNIX endpoint exceeds 107 encoded bytes'):
+        with short_socket_path():
+            pytest.fail('overlong endpoint was yielded to the server')
+    assert len(directories) == 1
+    assert not directories[0].exists()
+
+
 @pytest.mark.parametrize('published', [False, True])
 def test_wrapper_and_proxy_support_source_and_published_layouts(tmp_path, monkeypatch, published):
     import json
@@ -272,9 +333,8 @@ def test_proxy_signal_stops_exact_scope_and_returns_signal_status(tmp_path):
     import subprocess
     import sys
     import threading
-    endpoint = tmp_path / 'broker.sock'
     seen = []
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+    with short_socket_path() as endpoint, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(str(endpoint))
         server.listen(2)
         def serve():
@@ -326,8 +386,8 @@ def test_legacy_create_schema_refusal_only_defers_tagged_requests(tmp_path,tagge
     import socket
     import threading
     from prismabuild.resource_scope import broker_request
-    path=tmp_path/'legacy.sock';seen=[]
-    with socket.socket(socket.AF_UNIX) as server:
+    seen=[]
+    with short_socket_path() as path, socket.socket(socket.AF_UNIX) as server:
         server.bind(str(path));server.listen(1)
         def respond():
             connection,_=server.accept()
