@@ -1096,6 +1096,13 @@ pb_py_library(
 )
 
 pb_py_library(
+    name = "public_evidence",
+    srcs = [
+        "public_evidence.py",
+    ],
+)
+
+pb_py_library(
     name = "publication_canary",
     srcs = [
         "publication_canary.py",

@@ -3298,6 +3298,45 @@
     "binding": "fields"
   },
   {
+    "path": "src/prismabuild/public_evidence.py",
+    "owner": "<module>",
+    "fields": [
+      "action_key",
+      "action_manifest_sha256",
+      "stderr_sha256",
+      "stdout_sha256"
+    ],
+    "binding": "_HASH_FIELDS"
+  },
+  {
+    "path": "src/prismabuild/public_evidence.py",
+    "owner": "<module>",
+    "fields": [
+      "action_key",
+      "action_manifest_sha256",
+      "children",
+      "finished_at",
+      "observed_at",
+      "result",
+      "returncode",
+      "started_at",
+      "status",
+      "stderr_sha256",
+      "stdout_sha256"
+    ],
+    "binding": "_RECORD_FIELDS"
+  },
+  {
+    "path": "src/prismabuild/public_evidence.py",
+    "owner": "<module>",
+    "fields": [
+      "finished_at",
+      "observed_at",
+      "started_at"
+    ],
+    "binding": "_TIME_FIELDS"
+  },
+  {
     "path": "src/prismabuild/publication_canary.py",
     "owner": "check_envelope",
     "unresolved": "{CAPABILITY, value[\"host\"], f\"runtime-generation:{value['generation']}\"}",
