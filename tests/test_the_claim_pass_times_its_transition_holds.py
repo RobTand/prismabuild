@@ -19,6 +19,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -61,8 +62,17 @@ def _snapshot(queue: pool.PoolQueue) -> dict:
     return adaptive_cpu.read_json(path)
 
 
+@pytest.mark.parametrize(
+    "durations, max_index, expected_max_s, expected_total_s",
+    [
+        pytest.param((0.75, 0.125, 0.25), 0, 0.75, 1.125, id="slow-longest"),
+        pytest.param((0.25, 1.25, 0.125), 1, 1.25, 1.625, id="fast-longest"),
+    ],
+)
 def test_a_slow_lookup_under_the_lock_is_timed_and_names_its_key(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        durations: tuple[float, float, float], max_index: int,
+        expected_max_s: float, expected_total_s: float) -> None:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
@@ -70,37 +80,50 @@ def test_a_slow_lookup_under_the_lock_is_timed_and_names_its_key(
     slow, fast, claimed = keys
     real = queue._claim_blocked_fresh
     looked: list[str] = []
+    duration_by_key = dict(zip(keys, durations))
+    # Stay in the real monotonic epoch for any claim-path deadlines, but
+    # advance only at lookup exits. Filesystem work and descheduling before
+    # or after those exits must not affect the transition-hold ranking.
+    clock = SimpleNamespace(value=time.monotonic())
+    scripted_time = SimpleNamespace(
+        **(vars(pool.time) | {"monotonic": lambda: clock.value}))
 
     def lookup(key: str):
-        # The fresh ``claimed/`` listing each claim takes under its key's
-        # lock: slow for one key, as an NFS round trip can be.  Two keys are
-        # refused, so the pass takes a lock for each of the three.
+        # Keep the fresh claimed/ listing real for the successful candidate.
+        # Refuse two keys so the pass takes all three transition locks. Each
+        # key's duration is independent of the candidate visitation order.
         looked.append(key)
-        if key == slow:
-            time.sleep(SLOW_S)
-            return True, None
-        if key == fast:
-            return True, None
-        return real(key)
+        try:
+            if key in (slow, fast):
+                return True, None
+            return real(key)
+        finally:
+            clock.value += duration_by_key[key]
 
-    monkeypatch.setattr(queue, "_claim_blocked_fresh", lookup)
-    item = queue.claim(tags=["here"], owner="worker")
+    with monkeypatch.context() as patch:
+        # Replace only pool's namespace, not the shared time module used by
+        # threading, child readers or the rest of the process. Retain sleep,
+        # perf_counter and wall time unchanged for other pool operations.
+        patch.setattr(pool, "time", scripted_time)
+        patch.setattr(queue, "_claim_blocked_fresh", lookup)
+        item = queue.claim(tags=["here"], owner="worker")
 
     assert item is not None and item["action_key"] == claimed
     assert sorted(looked) == sorted(keys)
     holds = queue.last_claim_pass
     assert holds is not None
     assert holds["transition_holds"] == 3
-    assert holds["transition_held_max_key"] == slow
-    assert holds["transition_held_max_s"] >= SLOW_S
-    assert holds["transition_held_s"] >= holds["transition_held_max_s"]
+    assert holds["transition_held_max_key"] == keys[max_index]
+    assert holds["transition_held_max_s"] == expected_max_s
+    assert holds["transition_held_s"] == expected_total_s
 
     filed = _snapshot(queue)
     assert filed["schema"] == pool.CLAIM_DENIALS_SCHEMA_V1
     entry = filed["claim_passes"][str(os.getpid())]
     assert entry["transition_holds"] == 3
-    assert entry["transition_held_max_key"] == slow
-    assert entry["transition_held_max_s"] >= SLOW_S
+    assert entry["transition_held_max_key"] == keys[max_index]
+    assert entry["transition_held_max_s"] == expected_max_s
+    assert entry["transition_held_s"] == expected_total_s
     # The denials the pass filed are kept beside it, and a later denial keeps
     # the pass entry: the two writers share one file.
     reasons = {value["action_key"]: value["reason"]
