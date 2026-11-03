@@ -1,6 +1,7 @@
 """Bazel workspace contracts: pinned toolchains and images, BuildBuddy flags, no secrets."""
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 import re
 
@@ -60,6 +61,22 @@ def test_remote_configs_execute_everything_remotely_and_leave_room_for_tl3():
     for flag in ['--platforms', '--extra_execution_platforms', '--host_platform']:
         assert f'build:remote-arm64 {flag}=//tools/bazel:linux_arm64' in CONFIG
     assert not [line for line in CONFIG if line.startswith('build --jobs')]
+
+
+def test_both_remote_platforms_route_to_their_self_hosted_pool_without_fallback():
+    platforms = {}
+    for statement in ast.parse(PLATFORMS).body:
+        if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+            continue
+        call = statement.value
+        if not isinstance(call.func, ast.Name) or call.func.id != 'platform':
+            continue
+        fields = {keyword.arg: keyword.value for keyword in call.keywords}
+        platforms[ast.literal_eval(fields['name'])] = ast.literal_eval(fields['exec_properties'])
+    for architecture, config in [('amd64', 'remote'), ('arm64', 'remote-arm64')]:
+        assert platforms[f'linux_{architecture}'].get('Pool') == f'selfhosted-{architecture}'
+        assert platforms[f'linux_{architecture}'].get('use-self-hosted-executors') == 'true'
+        assert f'build:{config} --remote_local_fallback=false' in CONFIG
 
 
 def test_ci_refuses_a_stale_module_lockfile_and_keeps_receipts():
