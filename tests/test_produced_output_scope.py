@@ -12,6 +12,7 @@ tests use truncate (no pages). No capability is announced. General-window
 admission returns the delivered prepaid-per-batch window declaration.
 """
 from __future__ import annotations
+from short_socket import short_socket_path
 from fleet_world import Admission, FleetWorld
 
 
@@ -158,7 +159,7 @@ def _bind(queue: pool.PoolQueue, template: dict, owner: str = OWNER):
 
 
 @contextmanager
-def _broker_endpoint(tmp_path: Path, monkeypatch):
+def broker_endpoint(tmp_path: Path, monkeypatch):
     """The ordinary resource broker, over a stub cgroup kernel.
 
     `safe_release_instance` authorizes its final release only from a
@@ -198,27 +199,27 @@ def _broker_endpoint(tmp_path: Path, monkeypatch):
     authority = resource_broker.Authority(
         tmp_path / "broker-state", os.getuid(), _Kernel(),
         max_memory_bytes=1024 ** 3)
-    endpoint = tmp_path / "broker.sock"
-    server = resource_broker.Server(str(endpoint), resource_broker.Handler)
-    server.authority = authority
-    thread = threading.Thread(
-        target=server.serve_forever, kwargs={"poll_interval": 0.01},
-        daemon=True)
-    thread.start()
-    try:
-        monkeypatch.setattr(resource_scope, "BROKER_SOCKET", endpoint)
-        yield endpoint
-    finally:
+    with short_socket_path() as endpoint:
+        server = resource_broker.Server(str(endpoint), resource_broker.Handler)
+        server.authority = authority
+        thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.01},
+            daemon=True)
+        thread.start()
         try:
-            server.shutdown()
+            monkeypatch.setattr(resource_scope, "BROKER_SOCKET", endpoint)
+            yield endpoint
         finally:
-            thread.join(timeout=10)
-            server.server_close()
+            try:
+                server.shutdown()
+            finally:
+                thread.join(timeout=10)
+                server.server_close()
 
 
-@pytest.fixture
-def broker_endpoint(tmp_path: Path, monkeypatch):
-    with _broker_endpoint(tmp_path, monkeypatch) as endpoint:
+@pytest.fixture(name="broker_endpoint")
+def _broker_endpoint_fixture(tmp_path: Path, monkeypatch):
+    with broker_endpoint(tmp_path, monkeypatch) as endpoint:
         yield endpoint
 
 
@@ -228,7 +229,7 @@ def test_broker_round_trip_from_deep_scratch(tmp_path, monkeypatch):
     deep = tmp_path / ("scratch-" * 5) / ("nested-" * 6) / ("workspace-" * 5)
     deep.mkdir(parents=True)
     assert len(os.fsencode(deep / "broker.sock")) > 107
-    with _broker_endpoint(deep, monkeypatch) as endpoint:
+    with broker_endpoint(deep, monkeypatch) as endpoint:
         response = broker_request(
             {"op": "create", "action_key": OWNER, "nonce": "b" * 32,
              "memory_max_bytes": 64 * 1024 ** 2}, socket_path=endpoint)

@@ -1,4 +1,6 @@
 """Privileged resource authority must isolate each exact caller-owned attempt."""
+from short_socket import short_socket_path
+
 import importlib.util
 import hashlib
 import json
@@ -288,8 +290,7 @@ def test_released_authority_survives_retry_without_touching_another_group(author
 def test_socket_handler_rejects_invalid_protocol_without_backend_work(authority, tmp_path, message):
     a, b = authority
     m = module()
-    endpoint = tmp_path / 'broker.sock'
-    with m.Server(str(endpoint), m.Handler) as server:
+    with short_socket_path() as endpoint, m.Server(str(endpoint), m.Handler) as server:
         server.authority = a
         thread = threading.Thread(target=server.serve_forever,
                                   kwargs={'poll_interval': 0.01}, daemon=True)
