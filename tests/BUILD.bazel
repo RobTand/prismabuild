@@ -149908,9 +149908,6 @@ pb_py_test(
     path = "tests/test_test_tiers.py",
     library = ":test_test_tiers_lib",
     deps = [
-        "//src/prismabuild:__init__",
-        "//src/prismabuild:d38_gate_cycle",
-        "//src/prismabuild:endings",
         "//tools:verify",
     ],
     data = [

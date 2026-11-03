@@ -22,6 +22,9 @@ _record_spec = importlib.util.spec_from_file_location(
 machine_record = importlib.util.module_from_spec(_record_spec)
 _record_spec.loader.exec_module(machine_record)
 
+ROOT_SUBMISSION_SCHEMAS = ('prismabuild.submission.v1', 'prismaquant.prismabuild.pbrun_detach.v1')
+ROOT_ENDINGS_SCHEMA = 'prismabuild.endings.v1'
+
 FLEET = Path('/mnt/shared/prismabuild-fleet')
 PBTEST = FLEET / 'repo/tools/pbtest.py'
 PBRUN = FLEET / 'repo/tools/pbrun.py'
@@ -187,8 +190,7 @@ def run_root_lane(report_dir: Path) -> dict:
     machine_record.retain(report_dir / 'root.submission.json', acknowledgement)
     key = acknowledgement.get('action_key') if (submitted.returncode == 0
         and isinstance(acknowledgement, dict)
-        and acknowledgement.get('schema') in ('prismabuild.submission.v1',
-            'prismaquant.prismabuild.pbrun_detach.v1')) else None
+        and acknowledgement.get('schema') in ROOT_SUBMISSION_SCHEMAS) else None
     row = {'lane': 'root', 'files': files, 'action_key': key, 'verdict': {'green': False}}
     if key is None:
         return row
@@ -198,7 +200,7 @@ def run_root_lane(report_dir: Path) -> dict:
                                  check=False, pass_fds=private.pass_fds)
         endings = private.read()
     machine_record.retain(report_dir / 'root.endings.json', endings)
-    endings = endings if isinstance(endings, dict) and endings.get('schema') == 'prismabuild.endings.v1' else {}
+    endings = endings if isinstance(endings, dict) and endings.get('schema') == ROOT_ENDINGS_SCHEMA else {}
     ending = endings['endings'][-1] if endings.get('complete') and endings.get('endings') else {}
     output_path = (ending.get('result') or {}).get('stdout', {}).get('path')
     output = Path(output_path).read_text(errors='replace') if output_path else ''

@@ -219,8 +219,8 @@ def test_root_lane_reconciles_real_pytest_execution(tmp_path, monkeypatch, case)
               'status': 'executed', 'exit_code': 0,
               'result': {'stdout': {'path': str(payload)}}}
     replies = iter([
-        SimpleNamespace(returncode=0, stdout=json.dumps({'schema': 'prismabuild.submission.v1', 'action_key': key})),
-        SimpleNamespace(returncode=0, stdout=json.dumps({'schema': 'prismabuild.endings.v1', 'complete': True, 'endings': [ending]})),
+        SimpleNamespace(returncode=0, stdout=json.dumps({'schema': verify.ROOT_SUBMISSION_SCHEMAS[0], 'action_key': key})),
+        SimpleNamespace(returncode=0, stdout=json.dumps({'schema': verify.ROOT_ENDINGS_SCHEMA, 'complete': True, 'endings': [ending]})),
     ])
     monkeypatch.setattr(verify, 'populations', lambda root: {'root': selected})
     def private_reply(command, **kwargs):
