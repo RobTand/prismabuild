@@ -276,7 +276,23 @@ def _eio(holder: Path) -> dict:
 
 
 def _bounded_eio(holder: Path) -> dict:
+    # Read the active encoder bound rather than caching it at module import.
+    from prismabuild.denial_records import MAX_DENIAL_VALUE_TEXT
+
     return {**_eio(holder), "holder": str(holder)[:MAX_DENIAL_VALUE_TEXT]}
+
+
+def test_bounded_eio_uses_the_current_denial_text_bound(tmp_path, monkeypatch):
+    from prismabuild import denial_records
+
+    monkeypatch.setattr(denial_records, "MAX_DENIAL_VALUE_TEXT", 64)
+    holder = tmp_path / HOLDER_H
+    assert len(str(holder)) > denial_records.MAX_DENIAL_VALUE_TEXT
+    assert _bounded_eio(holder) == {
+        "holder": str(holder)[:denial_records.MAX_DENIAL_VALUE_TEXT],
+        "errno": errno.EIO,
+        "error": EIO_TEXT,
+    }
 
 
 @pytest.mark.parametrize("path_impl", PATH_IMPLS)
