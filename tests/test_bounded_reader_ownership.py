@@ -275,7 +275,9 @@ def test_partial_callback_failure_retains_original_proved_identity(tmp_path, mon
 
 def test_pidfd_support_failure_refuses_before_fork_and_default_still_works(monkeypatch):
     with monkeypatch.context() as owned:
-        owned.delattr(reader.signal, "pidfd_send_signal")
+        # Even an API-complete interpreter cannot authorize Linux ownership
+        # on another platform. Missing optional APIs alone now permit fallback.
+        owned.setattr(reader.sys, "platform", "darwin")
 
         def forbidden():
             raise AssertionError("unsupported ownership must not fork")
@@ -574,3 +576,255 @@ def test_owned_read_requires_a_finite_budget_and_exact_pool_scope(budget, pool):
     with pytest.raises(ValueError, match="finite budget and exact pool/read scope"):
         reader.bounded(SECTION, lambda: "must not read", deadline=reader.Deadline(budget),
                        abandoned=[], on_spawn=lambda _ownership: None, pool_identity=pool)
+
+
+def _hide_pidfd_attributes(patch, *, raw_wait=False):
+    patch.delattr(os, "pidfd_open", raising=False)
+    patch.delattr(os, "P_PIDFD", raising=False)
+    patch.delattr(signal, "pidfd_send_signal", raising=False)
+    if raw_wait:
+        patch.delattr(os, "waitid", raising=False)
+
+
+def _skip_pidfd_enosys(exc):
+    cause = exc.__cause__ if isinstance(exc, reader.ReaderOwnershipUnavailable) else exc
+    if isinstance(cause, OSError) and cause.errno == errno.ENOSYS:
+        pytest.skip("host kernel does not implement pidfd operations (ENOSYS)")
+    raise exc
+
+
+def test_pidfd_adapter_prefers_native_apis_resolved_at_call_time(monkeypatch):
+    assert hasattr(reader, "_pidfd_open"), "missing internal pidfd adapter"
+    calls = []
+    result = object()
+    monkeypatch.setattr(os, "pidfd_open", lambda *args: calls.append(("open", args)) or 73,
+                        raising=False)
+    monkeypatch.setattr(os, "P_PIDFD", 3, raising=False)
+    monkeypatch.setattr(os, "waitid", lambda *args: calls.append(("wait", args)) or result,
+                        raising=False)
+    monkeypatch.setattr(signal, "pidfd_send_signal",
+                        lambda *args: calls.append(("signal", args)), raising=False)
+
+    def forbidden():
+        raise AssertionError("native calls must not load a syscall binding")
+
+    monkeypatch.setattr(reader, "_load_pidfd_syscall", forbidden)
+    reader._require_pidfd_support()
+    assert reader._pidfd_open(123) == 73
+    assert reader._pidfd_waitid(73, os.WEXITED | os.WNOWAIT) is result
+    reader._pidfd_send_signal(73, signal.SIGKILL)
+    assert calls == [("open", (123, 0)), ("wait", (3, 73, os.WEXITED | os.WNOWAIT)),
+                     ("signal", (73, signal.SIGKILL))]
+    # A second lookup must not use a function captured by an adapter singleton.
+    monkeypatch.setattr(os, "pidfd_open", lambda pid, flags: 91)
+    assert reader._pidfd_open(123) == 91
+    # P_PIDFD alone may be missing while Python's waitid is usable.
+    monkeypatch.delattr(os, "P_PIDFD")
+    assert reader._pidfd_waitid(73, os.WEXITED | os.WNOWAIT) is result
+
+
+def test_pidfd_syscall_table_is_static_per_architecture():
+    assert hasattr(reader, "_PIDFD_ABIS"), "missing audited syscall/ABI table"
+    # Linux UAPI: arch/x86/entry/syscalls/syscall_64.tbl and
+    # include/uapi/asm-generic/unistd.h; siginfo.h's 64-bit SIGCHLD layout.
+    assert reader._PIDFD_ABIS == {
+        "x86_64": {"pidfd_open": 434, "pidfd_send_signal": 424, "waitid": 247,
+                   "siginfo_size": 128, "sigchld_offset": 16},
+        "aarch64": {"pidfd_open": 434, "pidfd_send_signal": 424, "waitid": 95,
+                    "siginfo_size": 128, "sigchld_offset": 16},
+    }
+
+
+@pytest.mark.parametrize("platform_name,machine", [("darwin", "x86_64"),
+                                                  ("linux", "unsupported-fixture")])
+def test_pidfd_fallback_refuses_unsupported_platform_or_architecture_before_fork(
+        monkeypatch, platform_name, machine):
+    assert hasattr(reader, "_PIDFD_ABIS"), "missing platform-gated fallback"
+    with monkeypatch.context() as patch:
+        _hide_pidfd_attributes(patch)
+        patch.setattr(reader.sys, "platform", platform_name)
+        patch.setattr(reader.platform, "machine", lambda: machine)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("unsupported ownership must refuse before fork or binding")
+
+        patch.setattr(os, "fork", forbidden)
+        patch.setattr(reader, "_load_pidfd_syscall", forbidden)
+        with pytest.raises(reader.ReaderOwnershipUnavailable, match="Linux pidfd/waitid support"):
+            reader.bounded(SECTION, forbidden, deadline=reader.Deadline(5), abandoned=[],
+                           on_spawn=forbidden, pool_identity="private-pool")
+    with monkeypatch.context() as patch:
+        _hide_pidfd_attributes(patch, raw_wait=True)
+        assert reader.bounded("default", lambda: "unchanged", deadline=reader.Deadline(5),
+                              abandoned=[]) == {"status": "ok", "value": "unchanged"}
+
+
+@pytest.mark.parametrize("operation", ["pidfd_open", "waitid", "pidfd_send_signal"])
+@pytest.mark.parametrize("error", [errno.ENOSYS, errno.EPERM, errno.ESRCH, errno.ECHILD])
+def test_pidfd_fallback_preserves_errno_and_fails_closed(monkeypatch, operation, error):
+    import ctypes
+
+    assert hasattr(reader, "_pidfd_open"), "missing errno-preserving fallback"
+    real_syscall = reader._load_pidfd_syscall()
+    pid = os.fork()
+    if pid == 0:
+        while True:
+            signal.pause()
+    descriptor = None
+    try:
+        ownership = reader._capture_ownership(pid, pool_identity="private-pool", section=SECTION)
+        try:
+            descriptor = reader._pidfd_open(pid)
+        except OSError as exc:
+            _skip_pidfd_enosys(exc)
+        calls = []
+        abi = reader._PIDFD_ABIS[reader.platform.machine()]
+
+        def syscall(number, *args):
+            calls.append(number)
+            if number == abi[operation]:
+                ctypes.set_errno(error)
+                return -1
+            return real_syscall(number, *args)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("adapter must never use PID-only operations")
+
+        with monkeypatch.context() as patch:
+            _hide_pidfd_attributes(patch, raw_wait=True)
+            patch.setattr(reader, "_load_pidfd_syscall", lambda: syscall)
+            patch.setattr(os, "kill", forbidden)
+            patch.setattr(os, "waitpid", forbidden)
+            invoke = {"pidfd_open": lambda: reader._pidfd_open(pid),
+                      "waitid": lambda: reader._pidfd_waitid(descriptor, os.WEXITED | os.WNOHANG),
+                      "pidfd_send_signal": lambda: reader._pidfd_send_signal(descriptor, signal.SIGKILL)}
+            with pytest.raises(OSError) as caught:
+                invoke[operation]()
+            assert caught.value.errno == error
+            if operation != "pidfd_send_signal":
+                with pytest.raises(reader.ReaderOwnershipUnavailable) as refused:
+                    reader._pin_reader(ownership)
+                assert isinstance(refused.value.__cause__, OSError)
+                assert refused.value.__cause__.errno == error
+            if operation == "waitid":
+                assert reader._reap_pidfd_within(descriptor, pid, 0) == (False, None)
+            if operation in ("waitid", "pidfd_send_signal"):
+                abandoned = []
+                reader._stop_owned_reader(pid, descriptor, ownership, SECTION, time.monotonic(),
+                                          abandoned, "private-pool")
+                assert len(abandoned) == 1
+                assert abandoned[0]["ownership_unsettled"] is True
+                assert abandoned[0]["ownership"] == ownership.to_record()
+            assert abi[operation] in calls
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+
+
+@pytest.mark.parametrize("mode", ["native", "fallback", "raw_wait"])
+def test_real_pidfd_operations_on_owned_child(monkeypatch, mode):
+    assert hasattr(reader, "_pidfd_open"), "missing pidfd adapter"
+    if mode == "native" and not all((hasattr(os, "pidfd_open"), hasattr(os, "P_PIDFD"),
+                                     hasattr(os, "waitid"), hasattr(signal, "pidfd_send_signal"))):
+        pytest.skip("interpreter does not expose native pidfd APIs")
+    pid = os.fork()
+    if pid == 0:
+        while True:
+            signal.pause()
+    descriptor = None
+    reaped_child = False
+    try:
+        with monkeypatch.context() as patch:
+            if mode != "native":
+                _hide_pidfd_attributes(patch, raw_wait=mode == "raw_wait")
+            try:
+                descriptor = reader._pidfd_open(pid)
+                reader._check_pidfd_pid(descriptor, pid)
+                options = os.WEXITED | os.WNOHANG | os.WNOWAIT
+                assert reader._pidfd_waitid(descriptor, options) is None
+                reader._pidfd_send_signal(descriptor, signal.SIGKILL)
+                assert select.select([descriptor], [], [], 5)[0] == [descriptor]
+                first = reader._pidfd_waitid(descriptor, options)
+                again = reader._pidfd_waitid(descriptor, options)
+                for observed in (first, again):
+                    assert observed is not None and observed.si_pid == pid
+                    assert observed.si_code == os.CLD_KILLED
+                    assert observed.si_status == signal.SIGKILL
+                reaped = reader._pidfd_waitid(descriptor, os.WEXITED | os.WNOHANG)
+                reaped_child = reaped is not None and reaped.si_pid == pid
+                assert (reaped.si_pid, reaped.si_code, reaped.si_status) == (
+                    pid, os.CLD_KILLED, signal.SIGKILL)
+                with pytest.raises(OSError) as caught:
+                    reader._pidfd_waitid(descriptor, os.WEXITED | os.WNOHANG)
+                assert caught.value.errno == errno.ECHILD
+            except OSError as exc:
+                _skip_pidfd_enosys(exc)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        # Only fixture cleanup; never signal a PID after we have reaped it.
+        if not reaped_child:
+            with suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+            with suppress(ChildProcessError):
+                os.waitpid(pid, 0)
+
+
+@pytest.mark.parametrize("raw_wait", [False, True])
+@pytest.mark.parametrize("outcome", ["success", "timeout", "callback_failure"])
+def test_owned_reader_admission_liveness_and_cleanup_with_pidfd_attributes_hidden(
+        tmp_path, monkeypatch, raw_wait, outcome):
+    # Only an ENOSYS cause may skip; other ownership refusals are failures.
+    assert hasattr(reader, "_pidfd_open"), "missing owned-reader fallback"
+    seen = []
+    abandoned = []
+    fifo = tmp_path / "read.fifo"
+    os.mkfifo(fifo)
+    source = tmp_path / "source"
+    marker = tmp_path / "ownership.json"
+
+    def persist(ownership):
+        assert _live(ownership) == "running"
+        assert not source.exists(), "child read before ownership persistence"
+        _no_fifo_reader(fifo)
+        _persist(marker, ownership)
+        seen.append(ownership)
+        source.write_text("released")
+        if outcome == "callback_failure":
+            raise RuntimeError("fixture callback failure")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("owned readers may not use PID-only operations")
+
+    try:
+        with monkeypatch.context() as patch:
+            _hide_pidfd_attributes(patch, raw_wait=raw_wait)
+            patch.setattr(os, "kill", forbidden)
+            patch.setattr(os, "waitpid", forbidden)
+            kwargs = dict(deadline=reader.Deadline(5), cap_s=0.2 if outcome == "timeout" else None,
+                          abandoned=abandoned, on_spawn=persist, pool_identity=_scope(tmp_path))
+            if outcome == "callback_failure":
+                with pytest.raises(RuntimeError, match="fixture callback failure"):
+                    reader.bounded(SECTION, lambda: _read_fifo(fifo), **kwargs)
+            else:
+                result = reader.bounded(SECTION, (lambda: _read_fifo(fifo)) if outcome == "timeout"
+                                        else source.read_text, **kwargs)
+                assert result["status"] == ("timed_out" if outcome == "timeout" else "ok")
+                if outcome == "success":
+                    assert result["value"] == "released"
+    except reader.ReaderOwnershipUnavailable as exc:
+        _skip_pidfd_enosys(exc)
+    finally:
+        for child in abandoned:
+            with suppress(ProcessLookupError):
+                os.kill(child["pid"], signal.SIGKILL)
+            with suppress(ChildProcessError):
+                os.waitpid(child["pid"], 0)
+    assert len(seen) == 1 and not abandoned
+    assert json.loads(marker.read_text()) == seen[0].to_record()
+    assert _live(seen[0]) == "settled"
+    with pytest.raises(ChildProcessError):
+        os.waitpid(seen[0].pid, os.WNOHANG)
+    _no_fifo_reader(fifo)
