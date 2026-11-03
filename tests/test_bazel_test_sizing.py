@@ -83,13 +83,13 @@ def test_derivation_uses_bursts_instead_of_averages_and_rounds_memory():
         },
     }]}
     samples = {'//tests:test_example': [{'burst_cpu': 2.8, 'processes': 6}]}
-    assert report.summarize(execution, samples) == [{
+    assert report.summarize_test_sizing(execution, samples) == [{
         'label': '//tests:test_example', 'burst_cpu': 2.8, 'processes': 6,
         'peak_memory_bytes': 1100000000, 'average_cpu': 0.5,
         'wall_seconds': 10.0, 'queue_seconds': 1.0,
         'exec_properties': {'EstimatedComputeUnits': '1', 'EstimatedCPU': '3', 'EstimatedMemory': '1.5GB'},
     }]
     samples['//tests:test_example'][0]['burst_cpu'] = 1.05
-    assert report.summarize(execution, samples)[0]['exec_properties'] == {}
+    assert report.summarize_test_sizing(execution, samples)[0]['exec_properties'] == {}
     # An unisolated runner sample has no remote TestRunner execution record.
-    assert report.summarize({'execution': []}, samples) == []
+    assert report.summarize_test_sizing({'execution': []}, samples) == []
