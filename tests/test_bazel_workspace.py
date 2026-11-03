@@ -75,6 +75,7 @@ def test_both_remote_platforms_route_to_their_self_hosted_pool_without_fallback(
         platforms[ast.literal_eval(fields['name'])] = ast.literal_eval(fields['exec_properties'])
     for architecture, config in [('amd64', 'remote'), ('arm64', 'remote-arm64')]:
         assert platforms[f'linux_{architecture}'].get('Pool') == f'selfhosted-{architecture}'
+        assert platforms[f'linux_{architecture}'].get('use-self-hosted-executors') == 'true'
         assert f'build:{config} --remote_local_fallback=false' in CONFIG
 
 
