@@ -12,7 +12,8 @@ tests use truncate (no pages). No capability is announced. General-window
 admission returns the delivered prepaid-per-batch window declaration.
 """
 from __future__ import annotations
-from short_socket import short_socket_path
+from collections.abc import Iterator
+from tempfile import TemporaryDirectory
 from fleet_world import Admission, FleetWorld
 
 
@@ -53,6 +54,18 @@ try:
 except ImportError:
     rlc = None  # type: ignore[assignment]
     HAS_PIN = False
+
+# Temporary copy of tests/short_socket.py; deduplicate in #2695.
+@contextmanager
+def short_socket_path() -> Iterator[Path]:
+    """Keep the directory alive until the caller has closed its server."""
+    with TemporaryDirectory(prefix="pb-", dir="/tmp") as directory:
+        endpoint = Path(directory) / "socket"
+        length = len(os.fsencode(endpoint))
+        if length > 107:
+            raise ValueError(f"AF_UNIX endpoint exceeds 107 encoded bytes: {length} bytes")
+        yield endpoint
+
 
 STAGE_TIER = "prismabuild-stage:dl380g10"
 RAM_TIER = "ram:dl380g10"

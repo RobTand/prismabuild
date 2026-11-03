@@ -114509,7 +114509,6 @@ pb_py_library(
         "//tools:fleet/resource_broker",
         ":admitted_queue_fixture",
         ":fleet_world",
-        ":short_socket",
     ],
 )
 
@@ -133208,7 +133207,6 @@ pb_py_library(
     ],
     deps = [
         "//tools:fleet/resource_broker",
-        ":short_socket",
     ],
 )
 

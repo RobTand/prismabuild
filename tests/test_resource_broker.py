@@ -1,5 +1,7 @@
 """Privileged resource authority must isolate each exact caller-owned attempt."""
-from short_socket import short_socket_path
+from collections.abc import Iterator
+from tempfile import TemporaryDirectory
+from contextlib import contextmanager
 
 import importlib.util
 import hashlib
@@ -10,6 +12,18 @@ import socket
 import threading
 from types import SimpleNamespace
 import pytest
+
+# Temporary copy of tests/short_socket.py; deduplicate in #2695.
+@contextmanager
+def short_socket_path() -> Iterator[Path]:
+    """Keep the directory alive until the caller has closed its server."""
+    with TemporaryDirectory(prefix="pb-", dir="/tmp") as directory:
+        endpoint = Path(directory) / "socket"
+        length = len(os.fsencode(endpoint))
+        if length > 107:
+            raise ValueError(f"AF_UNIX endpoint exceeds 107 encoded bytes: {length} bytes")
+        yield endpoint
+
 
 PATH = Path(__file__).resolve().parents[1] / 'tools/fleet/resource_broker.py'
 
