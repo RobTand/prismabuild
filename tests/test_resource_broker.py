@@ -1,4 +1,8 @@
 """Privileged resource authority must isolate each exact caller-owned attempt."""
+from collections.abc import Iterator
+from tempfile import TemporaryDirectory
+from contextlib import contextmanager
+
 import importlib.util
 import hashlib
 import json
@@ -8,6 +12,18 @@ import socket
 import threading
 from types import SimpleNamespace
 import pytest
+
+# Temporary copy of tests/short_socket.py; deduplicate in #2695.
+@contextmanager
+def short_socket_path() -> Iterator[Path]:
+    """Keep the directory alive until the caller has closed its server."""
+    with TemporaryDirectory(prefix="pb-", dir="/tmp") as directory:
+        endpoint = Path(directory) / "socket"
+        length = len(os.fsencode(endpoint))
+        if length > 107:
+            raise ValueError(f"AF_UNIX endpoint exceeds 107 encoded bytes: {length} bytes")
+        yield endpoint
+
 
 PATH = Path(__file__).resolve().parents[1] / 'tools/fleet/resource_broker.py'
 
@@ -288,8 +304,7 @@ def test_released_authority_survives_retry_without_touching_another_group(author
 def test_socket_handler_rejects_invalid_protocol_without_backend_work(authority, tmp_path, message):
     a, b = authority
     m = module()
-    endpoint = tmp_path / 'broker.sock'
-    with m.Server(str(endpoint), m.Handler) as server:
+    with short_socket_path() as endpoint, m.Server(str(endpoint), m.Handler) as server:
         server.authority = a
         thread = threading.Thread(target=server.serve_forever,
                                   kwargs={'poll_interval': 0.01}, daemon=True)
@@ -313,6 +328,14 @@ def test_socket_handler_rejects_invalid_protocol_without_backend_work(authority,
             thread.join(timeout=5)
     assert not b.groups
     assert not a.records
+
+
+def test_socket_round_trip_from_deep_scratch(authority, tmp_path):
+    deep = tmp_path / ("scratch-" * 5) / ("nested-" * 6) / ("workspace-" * 5)
+    deep.mkdir(parents=True)
+    assert len(os.fsencode(deep / "broker.sock")) > 107
+    test_socket_handler_rejects_invalid_protocol_without_backend_work(
+        authority, deep, b'[]\n')
 
 
 @pytest.mark.parametrize('mask', [True, -1, 0o1000, '022', [], None])

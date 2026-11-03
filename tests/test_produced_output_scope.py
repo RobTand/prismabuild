@@ -12,6 +12,8 @@ tests use truncate (no pages). No capability is announced. General-window
 admission returns the delivered prepaid-per-batch window declaration.
 """
 from __future__ import annotations
+from collections.abc import Iterator
+from tempfile import TemporaryDirectory
 from fleet_world import Admission, FleetWorld
 
 
@@ -20,6 +22,7 @@ from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
 from collections import Counter
+from contextlib import contextmanager
 import errno
 import hashlib
 import json
@@ -51,6 +54,18 @@ try:
 except ImportError:
     rlc = None  # type: ignore[assignment]
     HAS_PIN = False
+
+# Temporary copy of tests/short_socket.py; deduplicate in #2695.
+@contextmanager
+def short_socket_path() -> Iterator[Path]:
+    """Keep the directory alive until the caller has closed its server."""
+    with TemporaryDirectory(prefix="pb-", dir="/tmp") as directory:
+        endpoint = Path(directory) / "socket"
+        length = len(os.fsencode(endpoint))
+        if length > 107:
+            raise ValueError(f"AF_UNIX endpoint exceeds 107 encoded bytes: {length} bytes")
+        yield endpoint
+
 
 STAGE_TIER = "prismabuild-stage:dl380g10"
 RAM_TIER = "ram:dl380g10"
@@ -156,7 +171,7 @@ def _bind(queue: pool.PoolQueue, template: dict, owner: str = OWNER):
             "env": env}
 
 
-@pytest.fixture
+@contextmanager
 def broker_endpoint(tmp_path: Path, monkeypatch):
     """The ordinary resource broker, over a stub cgroup kernel.
 
@@ -197,22 +212,41 @@ def broker_endpoint(tmp_path: Path, monkeypatch):
     authority = resource_broker.Authority(
         tmp_path / "broker-state", os.getuid(), _Kernel(),
         max_memory_bytes=1024 ** 3)
-    endpoint = tmp_path / "broker.sock"
-    server = resource_broker.Server(str(endpoint), resource_broker.Handler)
-    server.authority = authority
-    thread = threading.Thread(
-        target=server.serve_forever, kwargs={"poll_interval": 0.01},
-        daemon=True)
-    thread.start()
-    try:
-        monkeypatch.setattr(resource_scope, "BROKER_SOCKET", endpoint)
-        yield endpoint
-    finally:
+    with short_socket_path() as endpoint:
+        server = resource_broker.Server(str(endpoint), resource_broker.Handler)
+        server.authority = authority
+        thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.01},
+            daemon=True)
+        thread.start()
         try:
-            server.shutdown()
+            monkeypatch.setattr(resource_scope, "BROKER_SOCKET", endpoint)
+            yield endpoint
         finally:
-            thread.join(timeout=10)
-            server.server_close()
+            try:
+                server.shutdown()
+            finally:
+                thread.join(timeout=10)
+                server.server_close()
+
+
+@pytest.fixture(name="broker_endpoint")
+def _broker_endpoint_fixture(tmp_path: Path, monkeypatch):
+    with broker_endpoint(tmp_path, monkeypatch) as endpoint:
+        yield endpoint
+
+
+def test_broker_round_trip_from_deep_scratch(tmp_path, monkeypatch):
+    from prismabuild.resource_scope import broker_request
+
+    deep = tmp_path / ("scratch-" * 5) / ("nested-" * 6) / ("workspace-" * 5)
+    deep.mkdir(parents=True)
+    assert len(os.fsencode(deep / "broker.sock")) > 107
+    with broker_endpoint(deep, monkeypatch) as endpoint:
+        response = broker_request(
+            {"op": "create", "action_key": OWNER, "nonce": "b" * 32,
+             "memory_max_bytes": 64 * 1024 ** 2}, socket_path=endpoint)
+        assert response["ok"] is True
 
 
 def _bind_contained(queue: pool.PoolQueue, tmp_path: Path, template: dict,
