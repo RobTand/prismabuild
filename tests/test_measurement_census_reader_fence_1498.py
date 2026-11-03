@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import math
 import os
 import threading
 import time
@@ -165,32 +166,100 @@ def test_a_busy_fence_refuses_before_any_transition_or_host_lock(
         fleet, tmpfs_state, monkeypatch):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
-    census = reservation.CensusReader(queue, queue.ledger())
+    ledger = queue.ledger()
+    census = reservation.CensusReader(queue, ledger)
+    measurement = publish("busy-fence-measurement", measurement=True, priority=-100)
+    candidate = publish("busy-fence-candidate", measurement=True, priority=-10)
+    candidate_record = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, candidate),
+    )
+    before = (ledger.held_keys(), ledger.held())
+    assert before == ([], {})
+
+    attempts = []
+    real_transition = queue.action_transition_lock
+    real_admission = queue._admission_lock
+
+    def observed_transition(key, **kwargs):
+        attempts.append(("transition", key))
+        return real_transition(key, **kwargs)
+
+    def observed_admission(controller):
+        attempts.append(("host", None))
+        return real_admission(controller)
+
+    # _start_claim_scan takes H once to configure capacity, and the claim
+    # holds its own candidate key before entering the census. Neither is an
+    # elected measurement M lock. No further M or H attempt is allowed, even
+    # if it would fail or release its lock before we inspect held tokens.
+    prelude = [("host", None), ("transition", candidate)]
+
+    class FenceClock:
+        def __init__(self):
+            self.now = 0.0
+            self.polls = []
+
+        def monotonic(self):
+            return self.now
+
+        def advance(self, seconds):
+            assert 0 < seconds <= reservation.FENCE_POLL_S
+            assert attempts == prelude
+            assert (ledger.held_keys(), ledger.held()) == before
+            self.polls.append(seconds)
+            self.now += seconds
+
+        def __getattr__(self, name):
+            # Only these modules' deadline/sleeper use virtual time. Other
+            # time attributes (including the fleet's Unix clock) pass through.
+            return self.advance if name == "sleep" else getattr(time, name)
+
+    virtual = FenceClock()
     guard = census.directory / (census.name + ".guard")
     descriptor = os.open(guard, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        publish("busy-fence-measurement", measurement=True, priority=-100)
-        candidate = publish("busy-fence-candidate", measurement=True, priority=-10)
-        candidate_record = pool.record_store.value_or_raise(
-            queue.records.item(pool.record_store.READY, candidate),
-        )
-        started = time.monotonic()
-        result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS,
-                             adaptive_cpu=True, has_gpu=True,
-                             tags=["gb10", "sparklina"], ready=[candidate_record],
-                             cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
-                             gpu_sampler=lambda: fleet_gpu_sample(sample, readings))
-        elapsed = time.monotonic() - started
-        assert result is None
-        row = _denial(queue, candidate)
-        assert row is not None and row["reason"] == "measurement_census_unavailable"
-        assert "reader busy" in row["evidence"]["unavailable"]
-        assert elapsed < 5.0, elapsed
-        assert queue.ledger().held_keys() == []
-    finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+    with monkeypatch.context() as observe:
+        observe.setattr(queue, "action_transition_lock", observed_transition)
+        observe.setattr(queue, "_admission_lock", observed_admission)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with monkeypatch.context() as timing:
+                timing.setattr(reservation, "time", virtual)
+                timing.setattr(reservation.reader, "time", virtual)
+                result = queue.claim(
+                    capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
+                    has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate_record],
+                    cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
+                    gpu_sampler=lambda: fleet_gpu_sample(sample, readings))
+            assert reservation.time is time and reservation.reader.time is time
+            assert result is None
+            row = _denial(queue, candidate)
+            assert row is not None and row["reason"] == "measurement_census_unavailable"
+            assert "reader busy" in row["evidence"]["unavailable"]
+            assert math.isclose(virtual.now, reservation.FENCE_WAIT_S, abs_tol=1e-9)
+            assert math.isclose(sum(virtual.polls), reservation.FENCE_WAIT_S, abs_tol=1e-9)
+            assert len(virtual.polls) == math.ceil(
+                reservation.FENCE_WAIT_S / reservation.FENCE_POLL_S)
+            assert all(math.isclose(poll, reservation.FENCE_POLL_S, abs_tol=1e-9)
+                       for poll in virtual.polls[:-1])
+            assert attempts == prelude
+            assert (ledger.held_keys(), ledger.held()) == before
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
+        # With the guard released and the real clock restored, the same
+        # two-phase census succeeds and the H observer sees a real attempt.
+        # Exercise the M observer too: both forward to real locks, not mocks.
+        attempts.clear()
+        controller = pool.cpu_admission.Controller(
+            ledger, TIERS, sampler=lambda: fleet_cpu_sample(clock, readings))
+        with reservation.locked_census(queue, ledger, controller) as recovered:
+            assert {measurement, candidate} <= set(recovered["keys"])
+        assert ("host", None) in attempts
+        with queue.action_transition_lock(measurement, blocking=False) as acquired:
+            assert acquired
+        assert ("transition", measurement) in attempts
+        assert (ledger.held_keys(), ledger.held()) == before
 
 
 def test_a_body_exception_under_the_held_fence_keeps_its_type(fleet, tmpfs_state, monkeypatch):
