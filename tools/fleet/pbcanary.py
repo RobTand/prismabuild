@@ -79,6 +79,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve()
 FLEET_DIR = HERE.parent
+sys.path.insert(0, str(HERE.parents[2 if FLEET_DIR.name == "fleet" else 1] / "src"))
+from prismabuild import machine_record
 
 #: Published fleet client this driver submits through. Overridable with
 #: --published-root; reading the live repo's tools keeps a stale checkout
@@ -187,6 +189,12 @@ def check_preconditions(paths: dict, checkout: Path) -> None:
             "Git tree: runner misconfigured: did not test"
         )
 
+    try:
+        for name in ("pbrun", "pbwait"):
+            machine_record.require_capability([sys.executable, str(paths[name])])
+    except machine_record.UnsupportedRuntime as exc:
+        raise PreconditionRefused(f"precondition refused (run): {exc}: did not test") from exc
+
 
 def default_checkout() -> Path:
     """The Git toplevel holding this driver; ``pbrun --cwd`` snapshots it."""
@@ -223,40 +231,10 @@ def fresh_namespace(canary_root: Path, run_id: str) -> Path:
     return namespace
 
 
-def run_process(argv: list[str], *, timeout_s: float) -> subprocess.CompletedProcess:
+def run_process(argv: list[str], *, timeout_s: float, pass_fds=()) -> subprocess.CompletedProcess:
     return subprocess.run(
-        argv, capture_output=True, text=True, check=False, timeout=timeout_s,
+        argv, capture_output=True, text=True, check=False, timeout=timeout_s, pass_fds=pass_fds,
     )
-
-
-def first_json_with_stdout_key(text: str, key: str) -> dict | None:
-    """Scan output lines for the first JSON object carrying ``key``."""
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            value = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(value, dict) and key in value:
-            return value
-    return None
-
-
-def last_json_object(text: str) -> dict | None:
-    """Scan output lines backwards for the last parseable JSON object."""
-    for line in reversed(text.splitlines()):
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            value = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(value, dict):
-            return value
-    return None
 
 
 def _publication_placement(spec: dict, host: str, *, resources: dict) -> dict:
@@ -420,16 +398,19 @@ def submit_leg(
         submit_argv += ["--env", f"{name}={value}"]
     submit_argv += ["--", *command]
     try:
-        if slot_intent is None:
-            completed = run_process(submit_argv, timeout_s=120.0)
-        else:
-            from pbcanary_submission import submit
-            assert callable(authorizer)
-            completed = submit(
-                submit_argv, intent=slot_intent,
-                authorize=lambda action, *, deadline: authorizer(
-                    action, run_id=run_id, deadline=deadline),
-                timeout_s=120.0)
+        with machine_record.Capture() as private:
+            private_argv = private.command(submit_argv)
+            if slot_intent is None:
+                completed = run_process(private_argv, timeout_s=120.0, pass_fds=private.pass_fds)
+            else:
+                from pbcanary_submission import submit
+                assert callable(authorizer)
+                completed = submit(
+                    private_argv, intent=slot_intent,
+                    authorize=lambda action, *, deadline: authorizer(
+                        action, run_id=run_id, deadline=deadline),
+                    timeout_s=120.0, pass_fds=private.pass_fds)
+            detach = private.read()
     except (ValueError, OSError, RuntimeError) as exc:
         raise PreconditionRefused(
             f"precondition refused ({label}): publication canary handoff: {exc}: did not test"
@@ -443,8 +424,9 @@ def submit_leg(
             f"precondition refused ({label}): pbrun submission "
             f"{reason}: did not test ({exc}{detail})"
         ) from exc
-    detach = first_json_with_stdout_key(completed.stdout, "action_key")
-    if completed.returncode != 0 or detach is None:
+    if (completed.returncode != 0 or not isinstance(detach, dict)
+            or detach.get("schema") not in ("prismabuild.submission.v1", "prismaquant.prismabuild.pbrun_detach.v1")
+            or not isinstance(detach.get("action_key"), str)):
         tail = (completed.stderr.strip().splitlines() or ["no stderr"]) [-1]
         raise PreconditionRefused(
             f"precondition refused ({label}): pbrun submission "
@@ -456,13 +438,25 @@ def submit_leg(
 def wait_leg(paths: dict, leg: str, action_key: str, wait_s: float,
              *, timeout_s: float | None = None) -> dict:
     """Observe one submitted leg within one bounded interval."""
-    completed = run_process(
-        [sys.executable, str(paths["pbwait"]),
-         "--wait-s", str(wait_s), action_key],
-        timeout_s=(float(wait_s) + 120.0 if timeout_s is None
-                   else min(float(wait_s) + 120.0, timeout_s)),
-    )
-    record = last_json_object(completed.stdout) or {}
+    try:
+        with machine_record.Capture() as private:
+            completed = run_process(
+                private.command([sys.executable, str(paths["pbwait"]),
+                 "--wait-s", str(wait_s), action_key]),
+                timeout_s=(float(wait_s) + 120.0 if timeout_s is None
+                           else min(float(wait_s) + 120.0, timeout_s)),
+                pass_fds=private.pass_fds,
+            )
+            rows = private.read()
+        if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
+                or rows[0].get("action_key") != action_key):
+            raise machine_record.MachineRecordError("missing private wait record")
+        record = rows[0]
+    except machine_record.MachineRecordError as exc:
+        if completed.returncode == 0:
+            raise _SideUnverified(f"{leg} private wait record unavailable: {exc}",
+                                  action_key, "outcome_unobserved") from exc
+        record = {}
     return {"returncode": completed.returncode,
             "stdout": completed.stdout,
             "stderr": completed.stderr,
@@ -749,7 +743,7 @@ def _wait_for_side(paths: dict, *, leg: str, label: str, action_key: str,
             raise _SideUnverified(
                 f"{label} outcome observation timed out for {action_key}: {exc}",
                 action_key, reason) from exc
-        write_json(leg_dir / f"pbwait{file_tag}.json",
+        machine_record.retain(leg_dir / f"pbwait{file_tag}.json",
                    {"returncode": waited["returncode"],
                     "record": waited["record"],
                     "stderr_tail": waited["stderr"].strip().splitlines()[-3:]})
@@ -818,7 +812,7 @@ def _execute_side(
             if not pending or time.monotonic() >= deadline:
                 raise
             _await_generation(label, generation, wait_s, deadline)
-    write_json(leg_dir / f"detach{file_tag}.json", detach)
+    machine_record.retain(leg_dir / f"detach{file_tag}.json", detach)
     short = action_key[:12]
 
     waited = _wait_for_side(

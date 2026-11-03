@@ -320,8 +320,13 @@ def test_submit_leg_puts_the_drivers_priority_on_the_submission(
         stdout = '{"action_key": "key-1"}'
         stderr = ""
 
-    def fake_run(argv, *, timeout_s):
-        captured["argv"] = list(argv)
+    def fake_run(argv, *, timeout_s, pass_fds=()):
+        import os
+        captured["argv"] = [part for part in argv]
+        fd_at = captured["argv"].index('--machine-record-fd')
+        fd = int(captured["argv"][fd_at + 1])
+        os.write(fd, b'{"schema":"prismabuild.submission.v1","action_key":"key-1"}\n')
+        del captured["argv"][fd_at:fd_at + 2]
         return _Done()
 
     monkeypatch.setattr(pbcanary, "run_process", fake_run)
@@ -368,8 +373,13 @@ def _driver_pbrun_argv(
         stdout = '{"action_key": "key-1"}'
         stderr = ""
 
-    def fake_run(argv, *, timeout_s):
-        captured["argv"] = list(argv)
+    def fake_run(argv, *, timeout_s, pass_fds=()):
+        import os
+        captured["argv"] = [part for part in argv]
+        fd_at = captured["argv"].index('--machine-record-fd')
+        fd = int(captured["argv"][fd_at + 1])
+        os.write(fd, b'{"schema":"prismabuild.submission.v1","action_key":"key-1"}\n')
+        del captured["argv"][fd_at:fd_at + 2]
         return _Done()
 
     monkeypatch.setattr(pbcanary, "run_process", fake_run)
@@ -391,8 +401,13 @@ def _submit_leg_argv(
         stdout = '{"action_key": "key-1"}'
         stderr = ""
 
-    def fake_run(argv, *, timeout_s):
-        captured["argv"] = list(argv)
+    def fake_run(argv, *, timeout_s, pass_fds=()):
+        import os
+        captured["argv"] = [part for part in argv]
+        fd_at = captured["argv"].index('--machine-record-fd')
+        fd = int(captured["argv"][fd_at + 1])
+        os.write(fd, b'{"schema":"prismabuild.submission.v1","action_key":"key-1"}\n')
+        del captured["argv"][fd_at:fd_at + 2]
         return _Done()
 
     monkeypatch.setattr(pbcanary, "run_process", fake_run)

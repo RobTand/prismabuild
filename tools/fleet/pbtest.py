@@ -73,7 +73,7 @@ from prismabuild.runtime_paths import (  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import action_client, client_channel, client_recovery  # noqa: E402
-from prismabuild.submission_frontend import store_for, render_submission, request_arguments, SUBMISSION_SCHEMA_V1
+from prismabuild.submission_frontend import store_for, render_submission, request_arguments
 from prismabuild.submission_types import (
     OfferDiscoveryTimedOut, SubmissionRequest, SubmissionRefused,
 )
@@ -224,22 +224,6 @@ def run_shard(index: int, first, *, again, wait_s: float,
 
 
 
-def _detach_record(text: str) -> bool:
-    """Whether a display line is ``pbrun``'s JSON record for a detached caller.
-
-    A shard is published detached and observed separately, so that record is
-    this process's bookkeeping, never a line the shard's attached ``pbrun``
-    printed; its stdout carried nothing else (``detached_submission_record``).
-    """
-
-    try:
-        value = json.loads(text)
-    except ValueError:
-        return False
-    return (isinstance(value, dict)
-            and value.get("schema") in (action_client.DETACH_SCHEMA_V1, SUBMISSION_SCHEMA_V1))
-
-
 class _ShardLines:
     """Submission display events, as the lines a shard's ``pbrun`` printed.
 
@@ -254,7 +238,7 @@ class _ShardLines:
         self.pending = ""
 
     def __call__(self, event) -> None:
-        if event.channel == "stdout" and _detach_record(event.text):
+        if event.channel == "stdout":
             return
         self.write(event.text + event.end)
 

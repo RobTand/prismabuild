@@ -18,7 +18,7 @@ from prismabuild.runtime_paths import generation_root
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild.submission_frontend import render_submission, consumer_submission_display
-from prismabuild import submission_timing
+from prismabuild import submission_timing, machine_record
 from prismabuild import action_edges, submission, sealed_submission, action_client, client_channel, core as pb, pool, fleet_roster
 from prismabuild.submission_types import FleetStore, SubmissionRequest, SubmissionRefused, ArgumentRefused
 from prismabuild.submission import TRANSPORTS, RESIDENCY_MODES, RESIDENCY_RAM_MODES, RESIDENCY_SHARE_MODES, DEFAULT_MAX_ATTEMPTS, CHECKOUT_SNAPSHOT_MAX_BYTES
@@ -41,6 +41,10 @@ def argument_parser() -> argparse.ArgumentParser:
                     "--transport or the published generation's default; the "
                     "result does not depend on which."
     )
+    ap.add_argument("--machine-record-fd", type=int, metavar="N",
+                    help="write the complete detached acknowledgement to a private 0600 regular file descriptor")
+    ap.add_argument("--machine-record-capability", action="store_true",
+                    help="report private machine record support without accessing the fleet")
     ap.add_argument("--client-events-fd", type=int, default=None, help=argparse.SUPPRESS)
     verbs = ap.add_mutually_exclusive_group()
     verbs.add_argument("--seal-only", action="store_true",
@@ -428,6 +432,10 @@ def argument_parser() -> argparse.ArgumentParser:
 def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Namespace:
     ap = parser if parser is not None else argument_parser()
     args = ap.parse_args(argv)
+    if args.machine_record_capability:
+        ap.error("--machine-record-capability must be used alone")
+    if args.machine_record_fd is not None and (not args.detach or args.withdraw or args.release_origin_consumer):
+        ap.error("--machine-record-fd requires a detached submission")
     if args.json and (len(args.withdraw) != 1 or args.release_origin_consumer is not None):
         ap.error("--json requires exactly one --withdraw KEY")
 
@@ -436,7 +444,7 @@ def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Na
                 or any(c not in "0123456789abcdef" for c in args.publish_sealed)):
             ap.error("--publish-sealed requires a full lowercase 64-hex action key")
         supplied = list(sys.argv[1:] if argv is None else argv)
-        allowed = {"--publish-sealed", "--detach", "--wait-s", "--client-events-fd"}
+        allowed = {"--publish-sealed", "--detach", "--wait-s", "--client-events-fd", "--machine-record-fd"}
         if args.command or any(word.startswith("--") and word.split("=", 1)[0] not in allowed
                                for word in supplied):
             ap.error("--publish-sealed takes only KEY, --detach and --wait-s")
@@ -446,7 +454,7 @@ def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Na
                  "--release-origin-consumer or --as-sealed-by")
     if args.d38_preflight_for is not None:
         supplied = list(sys.argv[1:] if argv is None else argv)
-        allowed = {"--d38-preflight-for", "--detach", "--wait-s", "--priority", "--client-events-fd"}
+        allowed = {"--d38-preflight-for", "--detach", "--wait-s", "--priority", "--client-events-fd", "--machine-record-fd"}
         if args.command or any(word.startswith("--") and word.split("=", 1)[0] not in allowed
                                for word in supplied):
             ap.error("--d38-preflight-for takes only PLAN, --detach, --wait-s and --priority")
@@ -469,6 +477,8 @@ def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Na
 
 
 def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, report=None) -> int:
+    if machine_record.capability(argv):
+        return 0
     report = report if report is not None else action_client.ClientReport()
     writer = None
     pending_ending = None
@@ -477,7 +487,12 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
     try:
         parser = argument_parser()
         args = parse_args(argv, parser=parser)
-        display = (consumer_submission_display(configured_store(), render=render_submission)
+        try:
+            private = machine_record.Writer(args.machine_record_fd) if args.machine_record_fd is not None else None
+        except machine_record.MachineRecordError as exc:
+            parser.error(str(exc))
+        display = (consumer_submission_display(configured_store(), render=render_submission,
+                       on_record=private.write if private is not None else None)
                    if args.detach else render_submission)
         if args.client_events_fd is not None:
             try:

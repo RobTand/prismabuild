@@ -78,8 +78,12 @@ def test_a_reset_from_a_checkout_starts_the_pbrun_beside_it(
         started.append(list(command))
         log = Path(queue_root) / pool_reset.RESETS / f"{key}.log"
         log.parent.mkdir(parents=True, exist_ok=True)
-        log.write_text(json.dumps(ACK) + "\n", encoding="utf-8")
-        return _Stub(), log
+        log.write_text("public display\n", encoding="utf-8")
+        private = pool_reset.machine_record.Capture()
+        pool_reset.machine_record.Writer(private.file.fileno()).write(ACK)
+        process = _Stub()
+        process._reset_machine_record = private
+        return process, log
 
     monkeypatch.setattr(pool_reset, "start_resubmission", _capture)
 

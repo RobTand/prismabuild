@@ -219,11 +219,17 @@ def test_root_lane_reconciles_real_pytest_execution(tmp_path, monkeypatch, case)
               'status': 'executed', 'exit_code': 0,
               'result': {'stdout': {'path': str(payload)}}}
     replies = iter([
-        SimpleNamespace(returncode=0, stdout=json.dumps({'action_key': key})),
-        SimpleNamespace(returncode=0, stdout=json.dumps({'complete': True, 'endings': [ending]})),
+        SimpleNamespace(returncode=0, stdout=json.dumps({'schema': verify.ROOT_SUBMISSION_SCHEMAS[0], 'action_key': key})),
+        SimpleNamespace(returncode=0, stdout=json.dumps({'schema': verify.ROOT_ENDINGS_SCHEMA, 'complete': True, 'endings': [ending]})),
     ])
     monkeypatch.setattr(verify, 'populations', lambda root: {'root': selected})
-    monkeypatch.setattr(verify.subprocess, 'run', lambda *args, **kwargs: next(replies))
+    def private_reply(command, **kwargs):
+        import os
+        reply = next(replies)
+        fd = int(command[command.index('--machine-record-fd') + 1])
+        os.write(fd, (reply.stdout + '\n').encode())
+        return reply
+    monkeypatch.setattr(verify.subprocess, 'run', private_reply)
     report = tmp_path / 'evidence'
     report.mkdir()
     result = verify.run_root_lane(report)

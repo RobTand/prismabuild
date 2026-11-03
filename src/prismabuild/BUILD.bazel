@@ -876,6 +876,13 @@ pb_py_library(
 )
 
 pb_py_library(
+    name = "machine_record",
+    srcs = [
+        "machine_record.py",
+    ],
+)
+
+pb_py_library(
     name = "manifest_layout",
     srcs = [
         "manifest_layout.py",

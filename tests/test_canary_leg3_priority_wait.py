@@ -109,7 +109,8 @@ def test_explicit_leg3_budget_caps_the_observer_process(tmp_path, monkeypatch):
     monkeypatch.setattr(pbcanary, "time", SimpleNamespace(
         monotonic=lambda: elapsed[0]))
 
-    def process(argv, *, timeout_s):
+    def process(argv, *, timeout_s, pass_fds):
+        assert pass_fds == (int(argv[argv.index('--machine-record-fd') + 1]),)
         timeouts.append(timeout_s)
         elapsed[0] += timeout_s
         raise pbcanary.subprocess.TimeoutExpired(cmd=argv, timeout=timeout_s)
