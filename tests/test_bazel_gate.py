@@ -635,3 +635,14 @@ def test_prismabuild_baseline_cannot_enable_transitional_test_imports():
     baseline = bazel_gate.graph_baseline({'u_pct': 20, 'loc_u_pct': 30, 'scc_max': 1, 'reach_budget': 9})
     assert any('strict' in error for error in bazel_gate.graph_baseline_errors(
         {**baseline, 'test_to_test': 'reach'}, baseline))
+
+
+def test_raw_bazel_diagnostics_stay_outside_uploaded_results(tmp_path):
+    root, upload = tmp_path / 'checkout', tmp_path / 'upload'
+    root.mkdir()
+    logs = ['pr-bazel-remote-grpc.log', 'main-amd64-execution_log.binpb.zst']
+    for name in logs:
+        (root / name).write_bytes(b'private diagnostic')
+    bazel_gate.write_result({'verdict': 'pass'}, upload, root=root)
+    assert {path.name for path in upload.iterdir()} == {'gate-result.json'}
+    assert all((root / name).read_bytes() == b'private diagnostic' for name in logs)

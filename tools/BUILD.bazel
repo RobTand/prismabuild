@@ -192,6 +192,13 @@ pb_py_library(
 )
 
 pb_py_library(
+    name = "ci/check_no_secret_leak",
+    srcs = [
+        "ci/check_no_secret_leak.py",
+    ],
+)
+
+pb_py_library(
     name = "ci/check_regression_test",
     srcs = [
         "ci/check_regression_test.py",
@@ -428,8 +435,10 @@ pb_py_library(
         "ci/remote_gate.py",
     ],
     data = [
+        "//src/prismabuild:digest_primitives.py",
         "//tools/bazel:nonhermetic.bzl",
         "ci/bazel_gate.py",
+        "ci/check_no_secret_leak.py",
         "ci/remote_gate.py",
     ],
 )
