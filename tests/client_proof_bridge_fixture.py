@@ -5,10 +5,12 @@ from io import BytesIO
 import json
 import os
 from pathlib import Path
-import select
+from queue import Empty, Queue
 import subprocess
 import sys
 import tarfile
+import threading
+import time
 from types import SimpleNamespace
 import uuid
 
@@ -55,6 +57,9 @@ mode = sys.argv[3]
 config = json.loads(config_path.read_text())
 backend = json.loads(backend_path.read_text())
 controls = json.loads(Path(sys.argv[4]).read_text()) if len(sys.argv) > 4 else {}
+if len(sys.argv) > 4:
+    print(json.dumps({'bridge_ready': True}), flush=True)
+    assert sys.stdin.readline().strip() == 'start'
 install = Path(config['install_dir'])
 driver = (Path(config['runtime']) / 'tools/upgrade_client.py'
           if mode == 'direct' else install / 'upgrade_client.py')
@@ -126,6 +131,7 @@ def pause(name):
     persist_backend()
     print(json.dumps({'bridge_cut': name, 'phase': phase['value']}), flush=True)
     assert sys.stdin.readline().strip() == 'continue'
+    print(json.dumps({'bridge_resumed': name, 'phase': phase['value']}), flush=True)
 
 def replacement(source, target):
     name = Path(target).name
@@ -407,31 +413,112 @@ def reader_process(publication, **controls):
             [sys.executable, "-I", str(harness), str(config), str(backend), "run", str(control)],
             cwd="/", text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=errors, start_new_session=True)
+        # One outer watchdog, not a new deadline for each stdout line or cut.
+        # Correctness comes from ready/start and cut/continue acknowledgements.
+        deadline = time.monotonic() + 180
+        events = Queue()
+        installed = threading.Event()
+        paused = False
+        acknowledged = None
+        completed = False
+
+        def diagnostics():
+            return f"controls={controls}; child exited {child.poll()}; {log.read_text()}"
+
+        def receive():
+            installed.set()
+            try:
+                for line in child.stdout:
+                    try:
+                        events.put(("message", json.loads(line)))
+                    except ValueError:
+                        events.put(("error", f"invalid child JSON: {line!r}"))
+                        return
+                # Reap before publishing EOF so exit diagnostics never race poll().
+                child.wait(timeout=180)
+                events.put(("exit", child.returncode))
+            except Exception as error:
+                events.put(("error", repr(error)))
+
+        receiver = threading.Thread(target=receive, name="installed-reader-stdout", daemon=True)
+
+        def event():
+            try:
+                kind, value = events.get(timeout=max(0, deadline - time.monotonic()))
+            except Empty:
+                raise AssertionError(f"child missed control boundary: {diagnostics()}") from None
+            assert kind == "message", f"child {kind}: {value}; {diagnostics()}"
+            assert isinstance(value, dict), f"unexpected child message: {value!r}; {diagnostics()}"
+            return value
+
+        def send(command):
+            try:
+                child.stdin.write(command + "\n")
+                child.stdin.flush()
+            except (BrokenPipeError, OSError):
+                child.wait(timeout=180)
+                raise AssertionError(f"child failed to accept {command}: {diagnostics()}") from None
+
         def message():
+            nonlocal paused, acknowledged, completed
+            assert not paused, f"child needs resume at acknowledged cut; {diagnostics()}"
+            assert not completed, f"child outcome already consumed; {diagnostics()}"
             while True:
-                available, _, _ = select.select([child.stdout], [], [], 15)
-                assert available, f"child missed control boundary: {controls}; {log.read_text()}"
-                line = child.stdout.readline()
-                assert line, f"child exited {child.poll()}: {log.read_text()}"
-                value = json.loads(line)
-                if "bridge_cut" in value or "test_outcome" in value:
+                value = event()
+                if "bridge_cut" in value:
+                    expected = {"bridge_cut": controls.get("cut"),
+                                "phase": "recover" if str(controls.get("cut", "")).startswith("restore-")
+                                else "forward"}
+                    assert value == expected, f"wrong control boundary: {value}; expected {expected}; {diagnostics()}"
+                    acknowledged = value
+                    paused = True
                     return value
+                if "test_outcome" in value:
+                    completed = True
+                    return value
+                assert "bridge_ready" not in value, f"duplicate child readiness: {value}; {diagnostics()}"
+
         def resume():
-            child.stdin.write("continue\n")
-            child.stdin.flush()
+            nonlocal paused
+            assert paused, f"resume without an acknowledged cut; {diagnostics()}"
+            send("continue")
+            observed = event()
+            expected = {"bridge_resumed": acknowledged["bridge_cut"],
+                        "phase": acknowledged["phase"]}
+            assert observed == expected, f"child failed to resume: {observed}; expected {expected}; {diagnostics()}"
+            paused = False
+
         def finish():
             observed = message()
             assert "test_outcome" in observed, observed
             child.wait(timeout=15)
-            assert child.returncode == 0, log.read_text()
+            assert child.returncode == 0, diagnostics()
             return observed["test_outcome"]
+
         def kill():
+            nonlocal paused
+            assert paused, f"kill without an acknowledged cut; {diagnostics()}"
             child.kill()
             child.wait(timeout=15)
+            paused = False
+
+        receiver.start()
         try:
+            assert installed.wait(timeout=180), f"stdout receiver not installed; {diagnostics()}"
+            # Test-only dispatch gates use this marker. Publish only after the
+            # sole stdout consumer is installed, before waiting for child ready.
+            Path(str(control) + ".receiver").touch()
+            ready = event()
+            assert ready == {"bridge_ready": True}, f"child not ready: {ready}; {diagnostics()}"
+            send("start")
             yield SimpleNamespace(message=message, resume=resume, finish=finish, kill=kill)
         finally:
+            # Emergency cleanup is not a test cut: even a malformed/early child
+            # must be reaped without masking its original protocol assertion.
             if child.poll() is None:
-                kill()
+                child.kill()
+                child.wait(timeout=180)
+            receiver.join(timeout=180)
             child.stdin.close()
             child.stdout.close()
+            assert not receiver.is_alive(), f"stdout receiver did not stop; {diagnostics()}"
