@@ -638,9 +638,6 @@ def diagnostic_logs(prefix):
 def write_result(result, directory, root=ROOT):
     directory.mkdir(parents=True, exist_ok=True)
     (directory / RESULT).write_text(json.dumps(result, indent=2) + '\n')
-    for suffix in DIAGNOSTICS:
-        for log in root.glob(f'*{suffix}'):
-            log.replace(directory / log.name)
 
 
 def gate_pr(workspace, base, head, metadata):
