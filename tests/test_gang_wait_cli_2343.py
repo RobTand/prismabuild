@@ -27,8 +27,10 @@ def test_cli_deadline_overrides_manifest_and_cancels_registered_members(
     replies = iter(keys)
 
     def submitted(command, **kwargs):
-        return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(
-            {"status": "submitted", "action_key": next(replies)}))
+        import os
+        raw = json.dumps({"schema": "prismabuild.submission.v1", "status": "submitted", "action_key": next(replies)})
+        os.write(int(command[command.index('--machine-record-fd') + 1]), (raw + '\n').encode())
+        return SimpleNamespace(returncode=0, stderr="", stdout=raw)
 
     monkeypatch.setattr(pbgang, "subprocess", SimpleNamespace(run=submitted))
     monkeypatch.setattr(pbgang, "secrets", SimpleNamespace(token_hex=lambda size: group))

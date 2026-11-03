@@ -51,7 +51,7 @@ from prismabuild.submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
 
-from prismabuild import action_wait, endings  # noqa: E402
+from prismabuild import action_wait, endings, machine_record  # noqa: E402
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
 from prismabuild import submission
@@ -920,9 +920,15 @@ def consumer_endings_verdict(rows):
 
 
 def main(argv=None) -> int:
+    if machine_record.capability(argv):
+        return 0
     ap = argparse.ArgumentParser(
         description="Wait for submitted PrismaBuild actions and report them."
     )
+    ap.add_argument("--machine-record-fd", type=int, metavar="N",
+                    help="write complete wait JSON to a private 0600 regular file descriptor")
+    ap.add_argument("--machine-record-capability", action="store_true",
+                    help="report private machine record support without accessing the fleet")
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="how long to wait for ALL of them, not for each")
     output = ap.add_mutually_exclusive_group()
@@ -943,6 +949,14 @@ def main(argv=None) -> int:
     ap.add_argument("--attempt", type=int,
                     help="final attempt number; required with --reconcile-pool or --reconcile-cleanup")
     args = ap.parse_args(argv)
+    if args.machine_record_capability:
+        ap.error("--machine-record-capability must be used alone")
+    if args.machine_record_fd is not None and (args.reconcile_pool or args.reconcile_cleanup):
+        ap.error("--machine-record-fd does not support reconciliation")
+    try:
+        private = machine_record.Writer(args.machine_record_fd) if args.machine_record_fd is not None else None
+    except machine_record.MachineRecordError as exc:
+        ap.error(str(exc))
 
     if args.until is not None and not args.endings:
         ap.error("--until requires --endings")
@@ -988,13 +1002,16 @@ def main(argv=None) -> int:
         complete = all(row["status"] not in {"waiting", "unreadable"}
                        and (args.until != "cleaned" or row["diagnostics"]["cleanup"]["complete"])
                        for row in ordered)
-        print(json.dumps({"schema": "prismabuild.endings.v1",
-                          "complete": complete,
-                          "endings": ordered}, sort_keys=True))
+        document = {"schema": "prismabuild.endings.v1", "complete": complete, "endings": ordered}
+        if private is not None:
+            private.write(document)
+        print(json.dumps(document, sort_keys=True))
         if args.until == "cleaned" and not complete and not any(
                 row["status"] == "unreadable" for row in ordered):
             return GAVE_UP_EXIT
         return consumer_endings_verdict(ordered)
+    if private is not None:
+        private.write(rows)
     print(json.dumps(rows, sort_keys=True) if args.json else render(rows))
     return verdict(rows)
 

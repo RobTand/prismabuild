@@ -34,7 +34,10 @@ raise SystemExit(2)
 
 ACK = {"schema": pool_reset.submission.action_client.DETACH_SCHEMA_V1, "action_key": "c" * 64,
        "transport": "pool", "status": "submitted", "published_unix": 123.0}
-ACCEPTS = "import json; print(" + repr(json.dumps(ACK)) + ")\n"
+ACCEPTS = ("import json, os, sys\n"
+           "raw = " + repr(json.dumps(ACK) + "\n") + "\n"
+           "os.write(int(sys.argv[sys.argv.index('--machine-record-fd') + 1]), raw.encode())\n"
+           "print(raw, end='')\n")
 
 
 @pytest.fixture()

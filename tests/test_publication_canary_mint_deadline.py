@@ -30,9 +30,9 @@ def main(argv=None, *, publication_canary_intent, authorize_canary):
     monkeypatch.setattr(slots, "mint", slow_mint)
     monkeypatch.setattr(publish_runtime, "MIRROR", tmp_path / "repo")
     real_submit = handoff.submit
-    def short_remaining_budget(argv, *, intent, authorize, timeout_s):
+    def short_remaining_budget(argv, *, intent, authorize, timeout_s, pass_fds=()):
         # Model a nearly consumed preparation budget without waiting120s.
-        return real_submit(argv, intent=intent, authorize=authorize, timeout_s=1.0)
+        return real_submit(argv, intent=intent, authorize=authorize, timeout_s=1.0, pass_fds=pass_fds)
     monkeypatch.setattr(handoff, "submit", short_remaining_budget)
     def driver(*, generation, publication_canary_authorizer, report):
         paths = {"pbrun": Path(argv[1]),

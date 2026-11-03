@@ -22689,3 +22689,13 @@ Staged-read targets SC-01, ID-02, ID-08 and ID-09 remain as written in the stage
 contract. This slice keeps PB admission ownership and charged attempt identity,
 adds a bounded host-fault observation, and makes no staged-read or campaign
 completion claim. It does not promote any ledger deployment or workload axis.
+
+## Private CLI continuation records
+
+Subprocess consumers read complete submission and wait documents through an
+explicit private descriptor before public rendering. The stable
+[CLI contract](machine_record_channel.md) defines descriptor validation,
+framing, capability detection, and error behavior. The
+[consumer inventory](machine_record_consumers.md) records migrated and external
+readers. Existing typed client events continue to carry bounded observation
+and recovery facts. Neither channel changes execution or receipt semantics.
