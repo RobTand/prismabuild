@@ -86,7 +86,7 @@ def repository_files(root):
                   and (root / path).is_file() and not (root / path).is_symlink())
 
 
-def package_of(path):
+def repository_package(path):
     if path.startswith(HANDWRITTEN):
         return HANDWRITTEN[0].rstrip('/')
     for package in PACKAGES:
@@ -531,7 +531,7 @@ def relative(path, package):
 
 
 def library_name(path):
-    stem = relative(path, package_of(path)).removesuffix('.py')
+    stem = relative(path, repository_package(path)).removesuffix('.py')
     # The test target takes the file's name; its importable module needs another.
     return stem + '_lib' if is_test(path) else stem
 
@@ -541,7 +541,7 @@ def label(package, name, home):
 
 
 def file_label(path, home):
-    package = package_of(path)
+    package = repository_package(path)
     return relative(path, package) if package == home else f'//{package}:{relative(path, package)}'
 
 
@@ -552,7 +552,7 @@ class Trees:
     def __init__(self, files):
         self.under = defaultdict(set)
         for path in files:
-            package = package_of(path)
+            package = repository_package(path)
             parts = PurePosixPath(relative(path, package)).parts
             for end in range(len(parts)):
                 self.under[(package, '/'.join(parts[:end]))].add(path)
@@ -626,13 +626,13 @@ def generate(root=ROOT, files=None):
         edges[path], data[path] = evidence.of(path)
     owner, libraries = {}, []
     for component in strongly_connected(evidence.modules, edges):
-        packages = {package_of(path) for path in component}
+        packages = {repository_package(path) for path in component}
         if len(packages) > 1:
             raise GenerationError('an import cycle crosses Bazel packages, which no target can hold: '
                                   + ', '.join(component))
         name = library_name(component[0]) + ('_cycle' if len(component) > 1 else '')
         for path in component:
-            owner[path] = (packages.pop() if len(packages) else package_of(path), name)
+            owner[path] = (packages.pop() if len(packages) else repository_package(path), name)
         libraries.append(component)
     closures = {}
 
@@ -687,7 +687,7 @@ def generate(root=ROOT, files=None):
             'srcs': [relative(path, home) for path in component], 'data': inputs, 'deps': deps}))
     for path in evidence.modules:
         if is_test(path):
-            home = package_of(path)
+            home = repository_package(path)
             packages[home].append((relative(path, home).removesuffix('.py'), 'pb_py_test', {
                 'path': path, 'library': label(*owner[path], home),
                 'deps': sorted({label(*owner[module], home) for module in evidence.test_modules(path)}

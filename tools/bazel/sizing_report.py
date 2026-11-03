@@ -18,7 +18,7 @@ def seconds(start, end):
             datetime.fromisoformat(start.replace('Z', '+00:00'))).total_seconds()
 
 
-def summarize(executions, samples):
+def summarize_test_sizing(executions, samples):
     actions = defaultdict(list)
     for action in executions.get('execution', []):
         if action.get('actionMnemonic') == 'TestRunner':
@@ -61,7 +61,7 @@ def main():
     parser.add_argument('--executions', type=Path, required=True)
     parser.add_argument('--samples', type=Path, required=True)
     args = parser.parse_args()
-    print(json.dumps(summarize(json.loads(args.executions.read_text()),
+    print(json.dumps(summarize_test_sizing(json.loads(args.executions.read_text()),
                                json.loads(args.samples.read_text())), indent=2))
 
 
