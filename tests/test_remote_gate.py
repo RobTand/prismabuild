@@ -135,14 +135,11 @@ class Client:
         return {'invocation': [answer]}
 
 
-def test_waiting_survives_one_api_blip_and_fails_on_disconnect_or_deadline():
+def test_waiting_survives_one_api_blip_and_fails_on_deadline():
     blip = remote_gate.RemoteError('BuildBuddy GetInvocation failed: timeout')
     done = {'invocationStatus': remote_gate.DONE}
     assert remote_gate.await_invocation(Client([blip, done]), 'id', deadline=10, clock=lambda: 0,
                                         sleep=lambda _: None) == done
-    with pytest.raises(remote_gate.RemoteError, match='disconnected'):
-        remote_gate.await_invocation(Client([{'invocationStatus': remote_gate.LOST}]), 'id', deadline=10,
-                                     clock=lambda: 0, sleep=lambda _: None)
     with pytest.raises(remote_gate.RemoteError, match='did not finish in time'):
         remote_gate.await_invocation(Client([{'invocationStatus': 'PARTIAL'}]), 'id', deadline=10,
                                      clock=lambda: 11, sleep=lambda _: None)
@@ -314,3 +311,181 @@ sys.settrace(stop_scanner)
         assert last.returncode == 23
         assert list(final.iterdir()) == [], 'hard scan exit exposed unscanned artifacts'
     assert (Path(str(status) + '.artifacts') / 'result.json').read_text() == 'unscanned synthetic result'
+
+
+class GateObservationClock:
+    def __init__(self):
+        self.now = 0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        assert seconds > 0, 'recovery must make bounded progress'
+        self.now += seconds
+
+
+class GateRecoveryClient:
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.calls = []
+
+    def call(self, method, body, **kwargs):
+        self.calls.append((method, body, kwargs))
+        expected, answer = self.answers.pop(0)
+        assert method == expected, 'observation must not submit another run'
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def disconnected_gate(**fields):
+    return {'invocation': [{'invocationStatus': remote_gate.LOST, 'success': False, **fields}]}
+
+
+def runner_execution(stage='COMPLETED', code=0, exit_code=0, **fields):
+    return {'execution': [{'executionId': 'runner-execution', 'stage': stage,
+                           'status': {'code': code}, 'exitCode': exit_code, **fields}]}
+
+
+def test_disconnect_observes_the_original_execution_until_it_finishes():
+    client = GateRecoveryClient([
+        ('GetInvocation', disconnected_gate()),
+        ('GetExecution', runner_execution(stage='EXECUTING')),
+        ('GetInvocation', disconnected_gate()),
+        ('GetExecution', runner_execution()),
+    ])
+    clock = GateObservationClock()
+    observed = remote_gate.await_invocation(client, 'original-id', deadline=5,
+                                            interval=1, clock=clock, sleep=clock.sleep)
+    assert observed['runner_execution_success'] is True
+    assert observed['invocationStatus'] == remote_gate.LOST
+    assert clock.now == 1
+    for method, body, options in client.calls:
+        expected = ({'selector': {'invocation_id': 'original-id'}, 'include_artifacts': True}
+                    if method == 'GetInvocation' else {'execution_lookup': {'invocation_id': 'original-id'}})
+        assert body == expected
+        assert 0 < options['timeout'] <= 5
+
+
+def test_recovered_event_stream_keeps_the_original_completed_record():
+    completed = {'invocationStatus': remote_gate.DONE, 'success': True}
+    client = GateRecoveryClient([
+        ('GetInvocation', disconnected_gate()), ('GetExecution', runner_execution(stage='EXECUTING')),
+        ('GetInvocation', {'invocation': [completed]}),
+    ])
+    clock = GateObservationClock()
+    assert remote_gate.await_invocation(client, 'original-id', deadline=5, interval=1,
+                                         clock=clock, sleep=clock.sleep) == completed
+
+
+@pytest.mark.parametrize('executions', [{'execution': []}, runner_execution(stage='EXECUTING')])
+def test_persistent_disconnect_uses_one_absolute_deadline(executions):
+    client = GateRecoveryClient([('GetInvocation', disconnected_gate()), ('GetExecution', executions)] * 3)
+    clock = GateObservationClock()
+    with pytest.raises(remote_gate.RemoteError, match='original-id.*did not finish in time'):
+        remote_gate.await_invocation(client, 'original-id', deadline=2.5, interval=1,
+                                     clock=clock, sleep=clock.sleep)
+    assert clock.now == 2.5
+    assert not client.answers
+
+
+def test_execution_lookup_api_blip_recovers_without_another_run():
+    client = GateRecoveryClient([
+        ('GetInvocation', disconnected_gate()),
+        ('GetExecution', remote_gate.RemoteError('temporary execution API failure')),
+        ('GetInvocation', disconnected_gate()), ('GetExecution', runner_execution()),
+    ])
+    clock = GateObservationClock()
+    observed = remote_gate.await_invocation(client, 'original-id', deadline=5, interval=1,
+                                            clock=clock, sleep=clock.sleep)
+    assert observed['runner_execution_success'] is True
+    assert clock.now == 1
+
+
+def test_persistent_execution_api_errors_exhaust_the_existing_retry_bound():
+    answers = [('GetInvocation', disconnected_gate()),
+               ('GetExecution', remote_gate.RemoteError('execution API unavailable'))]
+    client = GateRecoveryClient(answers * 4)
+    clock = GateObservationClock()
+    with pytest.raises(remote_gate.RemoteError, match='execution API unavailable'):
+        remote_gate.await_invocation(client, 'original-id', deadline=20, interval=1,
+                                     clock=clock, sleep=clock.sleep)
+    assert clock.now == 3
+    assert not client.answers
+
+
+@pytest.mark.parametrize('executions', [
+    runner_execution(code=14), runner_execution(code=4), runner_execution(exit_code=1),
+    {'execution': [runner_execution()['execution'][0], runner_execution()['execution'][0]]},
+    {'execution': [{'stage': 'COMPLETED', 'status': {}, 'exitCode': 0}]},
+    {'execution': [{'executionId': 'runner-execution', 'stage': 'COMPLETED', 'exitCode': 0}]},
+])
+def test_failed_or_unbound_execution_cannot_recover_a_disconnect(executions):
+    client = GateRecoveryClient([('GetInvocation', disconnected_gate()), ('GetExecution', executions)])
+    clock = GateObservationClock()
+    with pytest.raises(remote_gate.RemoteError):
+        remote_gate.await_invocation(client, 'original-id', deadline=5, interval=1,
+                                     clock=clock, sleep=clock.sleep)
+
+
+@pytest.mark.parametrize('stage', [4, 'COMPLETED'])
+def test_proto_default_zero_status_and_exit_codes_mean_success_only_after_completion(stage):
+    client = GateRecoveryClient([('GetInvocation', disconnected_gate()),
+        ('GetExecution', {'execution': [{'executionId': 'runner-execution', 'stage': stage, 'status': {}}]})])
+    clock = GateObservationClock()
+    assert remote_gate.await_invocation(client, 'original-id', deadline=5, clock=clock,
+                                       sleep=clock.sleep)['runner_execution_success'] is True
+
+
+@pytest.mark.parametrize('payload, runner_exit, expected', [
+    (result(), 0, 0), (result(verdict='fail'), 0, 1),
+    (None, 0, 1), (b'{bad json', 0, 1), (result(head='c' * 40), 0, 1),
+    (result(schema='wrong'), 0, 1), (result(), 75, 1),
+])
+def test_main_recovers_one_run_and_still_requires_its_valid_passing_result(
+        payload, runner_exit, expected, tmp_path, monkeypatch):
+    artifacts = [] if payload is None else [{'name': remote_gate.RESULT, 'uri': 'safe-result'}]
+    answers = [('Run', {'invocationId': 'original-id'}),
+               ('GetInvocation', disconnected_gate(artifacts=artifacts)),
+               ('GetExecution', runner_execution(exit_code=runner_exit))]
+    if runner_exit == 0 and payload is not None:
+        answers.append(('GetFile', payload))
+    client = GateRecoveryClient(answers)
+    monkeypatch.setattr(remote_gate, 'BuildBuddy', lambda key: client)
+    wait = remote_gate.await_invocation
+    clock = GateObservationClock()
+    monkeypatch.setattr(remote_gate, 'await_invocation', lambda client, invocation_id, deadline:
+        wait(client, invocation_id, deadline=5, clock=clock, sleep=clock.sleep))
+    github_output = tmp_path / 'github-output'
+    monkeypatch.setenv('GITHUB_OUTPUT', str(github_output))
+    monkeypatch.delenv('GITHUB_STEP_SUMMARY', raising=False)
+    monkeypatch.setenv('BUILDBUDDY_API_KEY', 'synthetic-only')
+    assert remote_gate.main(['pr', '--base', 'a' * 40, '--head', HEAD,
+                             '--branch', 'feature', '--output-dir', str(tmp_path / 'result')]) == expected
+    assert sum(method == 'Run' for method, _, _ in client.calls) == 1
+    assert not client.answers
+    output = github_output.read_text()
+    assert ('tests=success' in output) is (expected == 0)
+    if expected == 0:
+        assert 'scopes_ready=true' in output and 'scopes=//tests' in output
+    if payload is None or runner_exit:
+        assert not (tmp_path / 'result/gate-result.json').exists()
+
+
+def test_execution_observation_uses_the_authenticated_json_rpc_without_submitting(monkeypatch):
+    import io
+    seen = []
+    def respond(request, timeout):
+        seen.append((request, timeout))
+        return io.BytesIO(b'{"execution": []}')
+    monkeypatch.setattr(remote_gate.urllib.request, 'urlopen', respond)
+    client = remote_gate.BuildBuddy('synthetic-only')
+    assert client.call('GetExecution', {'execution_lookup': {'invocation_id': 'original-id'}}, timeout=2) == {
+        'execution': []}
+    request, timeout = seen[0]
+    assert request.full_url == 'https://app.buildbuddy.io/rpc/BuildBuddyService/GetExecution'
+    assert request.get_header('Content-type') == 'application/json'
+    assert request.get_header('X-buildbuddy-api-key') == 'synthetic-only'
+    assert json.loads(request.data) == {'execution_lookup': {'invocation_id': 'original-id'}}
+    assert timeout == 2
