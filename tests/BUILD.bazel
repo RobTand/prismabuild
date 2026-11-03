@@ -123173,6 +123173,7 @@ pb_py_library(
         "//src/prismabuild:_gang_cycle",
         "//src/prismabuild:adaptive_cpu",
         "//src/prismabuild:census",
+        "//src/prismabuild:denial_records",
         "//tools:fleet/pbstatus",
     ],
 )
