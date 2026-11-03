@@ -20,6 +20,7 @@ from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
 from collections import Counter
+from contextlib import contextmanager
 import errno
 import hashlib
 import json
@@ -156,8 +157,8 @@ def _bind(queue: pool.PoolQueue, template: dict, owner: str = OWNER):
             "env": env}
 
 
-@pytest.fixture
-def broker_endpoint(tmp_path: Path, monkeypatch):
+@contextmanager
+def _broker_endpoint(tmp_path: Path, monkeypatch):
     """The ordinary resource broker, over a stub cgroup kernel.
 
     `safe_release_instance` authorizes its final release only from a
@@ -213,6 +214,25 @@ def broker_endpoint(tmp_path: Path, monkeypatch):
         finally:
             thread.join(timeout=10)
             server.server_close()
+
+
+@pytest.fixture
+def broker_endpoint(tmp_path: Path, monkeypatch):
+    with _broker_endpoint(tmp_path, monkeypatch) as endpoint:
+        yield endpoint
+
+
+def test_broker_round_trip_from_deep_scratch(tmp_path, monkeypatch):
+    from prismabuild.resource_scope import broker_request
+
+    deep = tmp_path / ("scratch-" * 5) / ("nested-" * 6) / ("workspace-" * 5)
+    deep.mkdir(parents=True)
+    assert len(os.fsencode(deep / "broker.sock")) > 107
+    with _broker_endpoint(deep, monkeypatch) as endpoint:
+        response = broker_request(
+            {"op": "create", "action_key": OWNER, "nonce": "b" * 32,
+             "memory_max_bytes": 64 * 1024 ** 2}, socket_path=endpoint)
+        assert response["ok"] is True
 
 
 def _bind_contained(queue: pool.PoolQueue, tmp_path: Path, template: dict,

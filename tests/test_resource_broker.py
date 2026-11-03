@@ -315,6 +315,14 @@ def test_socket_handler_rejects_invalid_protocol_without_backend_work(authority,
     assert not a.records
 
 
+def test_socket_round_trip_from_deep_scratch(authority, tmp_path):
+    deep = tmp_path / ("scratch-" * 5) / ("nested-" * 6) / ("workspace-" * 5)
+    deep.mkdir(parents=True)
+    assert len(os.fsencode(deep / "broker.sock")) > 107
+    test_socket_handler_rejects_invalid_protocol_without_backend_work(
+        authority, deep, b'[]\n')
+
+
 @pytest.mark.parametrize('mask', [True, -1, 0o1000, '022', [], None])
 def test_invalid_umask_never_launches_payload(authority, mask):
     a, b = authority; request, record = create(a)
