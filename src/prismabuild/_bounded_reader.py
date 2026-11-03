@@ -8,9 +8,12 @@ In particular, an advisory ready_items snapshot is not an authoritative census.
 from __future__ import annotations
 
 import contextvars
+import ctypes
+import errno
 import json
 import math
 import os
+import platform
 import select
 import signal
 import socket
@@ -210,11 +213,136 @@ def reader_liveness(ownership: ReaderOwnership, *, pool_identity: str, section: 
         return "unknown"
 
 
-def _require_pidfd_support() -> None:
-    if (not hasattr(os, "pidfd_open") or not hasattr(os, "P_PIDFD")
-            or not hasattr(os, "waitid") or not hasattr(os, "WNOWAIT")
-            or not hasattr(signal, "pidfd_send_signal")):
+@dataclass(frozen=True)
+class _PidfdABI:
+    pidfd_open: int
+    pidfd_send_signal: int
+    waitid: int
+    p_pidfd: int
+    siginfo_size: int
+    si_code_offset: int
+    si_pid_offset: int
+    si_status_offset: int
+
+
+# Linux UAPI: x86's syscall_64.tbl and asm-generic/unistd.h (aarch64).
+# asm-generic/siginfo.h uses a 128-byte siginfo with an 8-byte-aligned
+# union on these LP64 ABIs: code at 8, then the SIGCHLD pid/uid/status at
+# 16/20/24. Do not extend this table to another ABI without checking both
+# its syscall numbers AND its siginfo layout (in particular, not x32/ILP32).
+_PIDFD_ABIS = {
+    "x86_64": _PidfdABI(434, 424, 247, 3, 128, 8, 16, 24),
+    "aarch64": _PidfdABI(434, 424, 95, 3, 128, 8, 16, 24),
+}
+
+
+class _WaitSiginfo(ctypes.Structure):
+    _fields_ = [
+        ("si_signo", ctypes.c_int), ("si_errno", ctypes.c_int),
+        ("si_code", ctypes.c_int), ("_union_alignment", ctypes.c_int),
+        ("si_pid", ctypes.c_int), ("si_uid", ctypes.c_uint),
+        ("si_status", ctypes.c_int), ("_clock_alignment", ctypes.c_int),
+        ("si_utime", ctypes.c_long), ("si_stime", ctypes.c_long),
+        ("_padding", ctypes.c_byte * 80),
+    ]
+
+
+@dataclass(frozen=True)
+class _PidfdWaitResult:
+    si_pid: int
+    si_status: int
+    si_code: int
+
+
+def _pidfd_abi() -> _PidfdABI:
+    abi = _PIDFD_ABIS.get(platform.machine())
+    if (sys.platform != "linux" or abi is None or sys.byteorder != "little"
+            or ctypes.sizeof(ctypes.c_void_p) != 8 or ctypes.sizeof(ctypes.c_long) != 8
+            or ctypes.sizeof(ctypes.c_int) != 4
+            or ctypes.sizeof(_WaitSiginfo) != abi.siginfo_size
+            or ctypes.alignment(_WaitSiginfo) != 8
+            or _WaitSiginfo.si_code.offset != abi.si_code_offset
+            or _WaitSiginfo.si_pid.offset != abi.si_pid_offset
+            or _WaitSiginfo.si_status.offset != abi.si_status_offset):
         raise ReaderOwnershipUnavailable("owned readers require Linux pidfd/waitid support")
+    return abi
+
+
+def _pidfd_syscall(number: int, *args) -> int:
+    # syscall is variadic: type its fixed syscall-number argument and explicitly
+    # type every variadic argument at the call site, including NULL pointers.
+    # use_errno swaps ctypes' thread-local errno around the actual libc call.
+    syscall = ctypes.CDLL(None, use_errno=True).syscall
+    syscall.restype = ctypes.c_long
+    syscall.argtypes = [ctypes.c_long]
+    result = syscall(number, *args)
+    if result == -1:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    return result
+
+
+def _pidfd_open(pid: int, flags: int = 0) -> int:
+    native = getattr(os, "pidfd_open", None)
+    if native is not None:
+        return native(pid, flags)
+    abi = _pidfd_abi()
+    return _pidfd_syscall(abi.pidfd_open, ctypes.c_int(pid), ctypes.c_uint(flags))
+
+
+def _pidfd_send_signal(descriptor: int, signum: int) -> None:
+    native = getattr(signal, "pidfd_send_signal", None)
+    if native is not None:
+        native(descriptor, signum)
+        return
+    abi = _pidfd_abi()
+    _pidfd_syscall(abi.pidfd_send_signal, ctypes.c_int(descriptor), ctypes.c_int(signum),
+                   ctypes.c_void_p(), ctypes.c_uint(0))
+
+
+def _pidfd_waitid(descriptor: int, options: int):
+    native = getattr(os, "waitid", None)
+    idtype = getattr(os, "P_PIDFD", None)
+    if native is not None and idtype is not None:
+        return native(idtype, descriptor, options)
+    abi = _pidfd_abi()
+    info = _WaitSiginfo()  # zero si_pid means no state change with WNOHANG
+    _pidfd_syscall(abi.waitid, ctypes.c_int(abi.p_pidfd), ctypes.c_uint(descriptor),
+                   ctypes.cast(ctypes.byref(info), ctypes.c_void_p), ctypes.c_int(options),
+                   ctypes.c_void_p())  # optional struct rusage *
+    if info.si_pid == 0:
+        return None
+    return _PidfdWaitResult(info.si_pid, info.si_status, info.si_code)
+
+
+def _require_pidfd_support() -> None:
+    message = "owned readers require Linux pidfd/waitid support"
+    if sys.platform != "linux" or not hasattr(os, "WNOWAIT"):
+        raise ReaderOwnershipUnavailable(message)
+    if (hasattr(os, "pidfd_open") and hasattr(os, "P_PIDFD")
+            and hasattr(os, "waitid") and hasattr(signal, "pidfd_send_signal")):
+        return
+    _pidfd_abi()
+    # Probe missing interpreter exports before forking. Our own pidfd permits
+    # a harmless signal 0. Waiting on ourselves MUST give ECHILD; that proves
+    # availability, never death or authority over any owned reader. Admission
+    # still requires the exact child's identity/fdinfo/parent proofs below.
+    descriptor = None
+    try:
+        descriptor = _pidfd_open(os.getpid(), 0)
+        _pidfd_send_signal(descriptor, 0)
+        try:
+            _pidfd_waitid(descriptor, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except OSError as exc:
+            if exc.errno != errno.ECHILD:
+                raise
+        else:
+            raise ReaderOwnershipUnavailable(message)
+    except (OSError, AttributeError, ValueError) as exc:
+        raise ReaderOwnershipUnavailable(message) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _check_pidfd_pid(descriptor: int, pid: int) -> None:
@@ -235,13 +363,13 @@ def _pin_reader(ownership: ReaderOwnership, *, allow_exited: bool = False) -> in
                                     section=ownership.section, allow_exited=allow_exited)
         if before != ownership:
             raise ReaderOwnershipUnavailable("reader identity changed before pidfd open")
-        descriptor = os.pidfd_open(ownership.pid, 0)
+        descriptor = _pidfd_open(ownership.pid, 0)
         _check_pidfd_pid(descriptor, ownership.pid)
         after = _capture_ownership(ownership.pid, pool_identity=ownership.pool_identity,
                                    section=ownership.section, allow_exited=allow_exited)
         if after != ownership:
             raise ReaderOwnershipUnavailable("reader identity changed around pidfd open")
-        result = os.waitid(os.P_PIDFD, descriptor, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        result = _pidfd_waitid(descriptor, os.WEXITED | os.WNOHANG | os.WNOWAIT)
         if result is not None and (result.si_pid != ownership.pid or not allow_exited):
             raise ReaderOwnershipUnavailable("pidfd does not prove a live owned reader")
         pinned = True
@@ -258,11 +386,11 @@ def _reap_pidfd_within(descriptor: int, pid: int, grace_s: float) -> tuple[bool,
     while True:
         try:
             _check_pidfd_pid(descriptor, pid)
-            observed = os.waitid(os.P_PIDFD, descriptor, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            observed = _pidfd_waitid(descriptor, os.WEXITED | os.WNOHANG | os.WNOWAIT)
             if observed is not None:
                 if observed.si_pid != pid:
                     return False, None
-                reaped = os.waitid(os.P_PIDFD, descriptor, os.WEXITED | os.WNOHANG)
+                reaped = _pidfd_waitid(descriptor, os.WEXITED | os.WNOHANG)
                 if reaped is None or reaped.si_pid != pid:
                     return False, None
                 status = (reaped.si_status << 8 if reaped.si_code == os.CLD_EXITED
@@ -305,11 +433,11 @@ def _stop_owned_reader(pid: int, descriptor: int | None, ownership: ReaderOwners
         if descriptor is not None:
             try:
                 _check_pidfd_pid(descriptor, pid)
-                observed = os.waitid(os.P_PIDFD, descriptor, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                observed = _pidfd_waitid(descriptor, os.WEXITED | os.WNOHANG | os.WNOWAIT)
                 if observed is not None and observed.si_pid != pid:
                     raise ReaderOwnershipUnavailable("pidfd no longer proves this reader")
                 if observed is None:
-                    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                    _pidfd_send_signal(descriptor, signal.SIGKILL)
                 settled, _ = _reap_pidfd_within(descriptor, pid, KILL_GRACE_S)
                 if settled:
                     return
@@ -636,7 +764,7 @@ def _bounded_reader(section: str, read, *, deadline: Deadline, abandoned: list,
             if reader_liveness(ownership, pool_identity=pool_identity, section=section) != "running":
                 raise ReaderOwnershipUnavailable("reader identity changed before read release")
             _check_pidfd_pid(pidfd, pid)
-            relation = os.waitid(os.P_PIDFD, pidfd, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            relation = _pidfd_waitid(pidfd, os.WEXITED | os.WNOHANG | os.WNOWAIT)
             if relation is not None:
                 raise ReaderOwnershipUnavailable("reader exited before read release")
             if release_write is None:
