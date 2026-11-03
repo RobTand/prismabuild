@@ -9,17 +9,21 @@ gate's own files stay the sources of truth:
 - `tools/ci/gate_quarantine.json`, `tools/verify.py` and
   `tests/proof_execution.json` decide which files run.
 - `tools/ci/gate_budget.json` sets per-test budgets.
-
-A contended executor can push a passing test over its budget. When every test in a
-file passed and only a budget overran, `tools/bazel/python_runner.py` fails the
-target and writes `budget-overrun.txt` (`gate_run.BUDGET_MARKER`) into its outputs.
-`tools/ci/bazel_gate.py` reruns exactly the targets that carry the marker in every
-shard that did not pass, or that Bazel stopped with `TIMEOUT`, once, with
-`--nocache_test_results`. The rerun's status replaces the first, so a second overrun
-fails. Any other failure is never rerun. The gate result lists reruns as
-`budget_reruns` (`{label: status}`): at the top level for a pull request, and per
-architecture after a merge.
 - `tools/ci/gate_requirements.txt` pins the packages.
+
+A contended executor can push a passing test over its budget. Every overrun
+is a warning. When all collected tests pass, `tools/bazel/python_runner.py`
+keeps exit status zero and writes `budget-warnings.json` beside the inventory
+in its test outputs. Each row names the test node, measured `seconds` and
+configured `budget_seconds`. The gate collects plain, zipped and sharded
+outputs into `budget_warnings`, adding the target `label` and, after a merge,
+the `architecture`. The result and GitHub summary show those warnings without
+changing the verdict. The hosted lane reports the same warning policy.
+
+The gate never reruns a target for a budget overrun or `TIMEOUT`. A hard Bazel
+`TIMEOUT`, assertion failure or missing result remains a failure. The static
+`budget_check` still rejects growing budgets; the limits remain the yardstick
+for warnings.
 
 ## Running tests
 

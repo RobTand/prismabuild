@@ -29,12 +29,11 @@ class FakeWorkspace:
     """Records calls; answers from canned git and Bazel facts."""
 
     def __init__(self, changed, impacted=(), statuses=None, diff_error=None, build_ok=True,
-                 inputs=(), budgets=(), broken=(), budget_only=(), reruns=None, warnings=()):
+                 inputs=(), budgets=(), broken=(), warnings=()):
         self.changed, self.impacted, self.statuses = set(changed), set(impacted), statuses or {}
         self.diff_error, self.build_ok, self.inputs, self.budgets = diff_error, build_ok, inputs, budgets
         # Configs whose invocation fails before any test runs.
         self.broken = set(broken)
-        self.marked, self.reruns = set(budget_only), reruns or {}
         self.warnings = list(warnings)
         self.ran, self.built, self.extras = [], [], []
         self.graph_revisions, self.diff_revisions = [], []
@@ -79,12 +78,8 @@ class FakeWorkspace:
         if config in self.broken:
             return {'statuses': {}, 'invocation': f'{config}-id',
                     'error': '(15:48:14) ERROR: no matching toolchains found'}
-        answers = self.reruns if extra else self.statuses
-        return {'statuses': {label: answers.get(label, 'PASSED') for label in targets},
+        return {'statuses': {label: self.statuses.get(label, 'PASSED') for label in targets},
                 'invocation': f'{config}-id', 'error': None}
-
-    def budget_only(self, labels, statuses):
-        return {label for label in labels if label in self.marked or statuses.get(label) == 'TIMEOUT'}
 
     def budget_warnings(self, labels):
         return [row for row in self.warnings if row["label"] in labels]

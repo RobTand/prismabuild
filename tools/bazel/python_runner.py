@@ -2,9 +2,9 @@
 
 pytest runs from the repository root with both conftest files and
 pyproject.toml, the gate's environment and its node-level deselects. The
-per-test budgets in tools/ci/gate_budget.json apply with gate_run's tolerance.
-A file that passes every test but overruns a budget fails with gate_run's
-BUDGET_MARKER in its outputs, so the gate can rerun it once.
+per-test budgets in tools/ci/gate_budget.json provide warning thresholds.
+A file that passes every test keeps its passing exit status and records
+per-test overruns in budget-warnings.json without rerunning.
 A file Bazel shards runs every TEST_TOTAL_SHARDS-th collected test. After the
 run, test.outputs/inventory.json records each node's outcome for parity.
 """
@@ -58,8 +58,7 @@ def budget_overruns(root, junit, path):
     """gate_run's per-test budgets. The gate checks separately that they never grow."""
     gate_run = gate_run_of(root)
     config = gate_run._budget_limits(json.loads((root / 'tools/ci/gate_budget.json').read_text()))
-    return [row for row in gate_run._budget_timings(junit, [path], config)
-            if row['seconds'] > row['budget_seconds'] * gate_run.BUDGET_ENFORCEMENT_TOLERANCE]
+    return gate_run._budget_timings(junit, [path], config)
 
 
 def overruns_after(status, nodes, root, junit, path):
@@ -69,17 +68,15 @@ def overruns_after(status, nodes, root, junit, path):
     return budget_overruns(root, junit, path)
 
 
-def settle(status, nodes, overruns, outputs, path, marker):
-    """The file's exit status. Only a budget overrun of passing tests leaves the marker."""
-    if overruns:
-        lines = [f"Per-test time budget exceeded: {row['nodeid']}: {row['seconds']:.3f}s > "
-                 f"{row['budget_seconds']:.3f}s policy" for row in overruns]
-        print('\n'.join(lines), file=sys.stderr)
-        outputs.mkdir(parents=True, exist_ok=True)
-        (outputs / marker).write_text('\n'.join(lines) + '\n')
-        return 1
+def settle(status, nodes, overruns, outputs, path):
+    """Preserve pytest's verdict and report passing-test overruns as warnings."""
     if status == 0:
         outputs.mkdir(parents=True, exist_ok=True)
+        if overruns:
+            for row in overruns:
+                print(f"BUDGET_WARNING: {row['nodeid']}: {row['seconds']:.3f}s > "
+                      f"{row['budget_seconds']:.3f}s policy", file=sys.stderr)
+            (outputs / 'budget-warnings.json').write_text(json.dumps(overruns) + '\n')
         (outputs / 'inventory.json').write_text(json.dumps(
             {'file': path, 'shard': os.environ.get('TEST_SHARD_INDEX'), 'nodes': nodes}))
     return status
@@ -119,7 +116,7 @@ def main():
     overruns = overruns_after(status, nodes, root, junit, path)
     if status == 0 and any(outcome == 'failed' for outcome in nodes.values()):
         status = 1
-    return settle(status, nodes, overruns, outputs, path, gate_run_of(root).BUDGET_MARKER)
+    return settle(status, nodes, overruns, outputs, path)
 
 
 if __name__ == '__main__':

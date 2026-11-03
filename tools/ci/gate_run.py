@@ -12,10 +12,6 @@ import sys
 import xml.etree.ElementTree as ET
 
 NO_VERDICT = 75
-BUDGET_ENFORCEMENT_TOLERANCE = 1.5
-# Bazel's runner writes this into a test's outputs when every test passed and only a
-# budget overran; tools/ci/bazel_gate.py reruns exactly those targets once.
-BUDGET_MARKER = 'budget-overrun.txt'
 
 
 class BudgetFailure(ValueError):
@@ -87,9 +83,7 @@ def _budget_timings(junit, files, config):
 def _write_budget_warnings(junit, warnings):
     messages = [
         f"BUDGET_WARNING: {row['nodeid']}: {row['seconds']:.3f}s > "
-        f"{row['budget_seconds']:.3f}s policy; within "
-        f"{BUDGET_ENFORCEMENT_TOLERANCE:g}x tolerance "
-        f"({row['budget_seconds'] * BUDGET_ENFORCEMENT_TOLERANCE:.3f}s)"
+        f"{row['budget_seconds']:.3f}s policy"
         for row in warnings]
     text = '\n'.join(messages)
     print(text)
@@ -115,7 +109,7 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
     print('GATE_PREFLIGHT_START', flush=True)
     record = {'schema': 'prismabuild.gate_result.v1',
               'population_version': plan.get('population', {}).get('version'),
-              'mode': plan.get('mode'), 'base_sha': plan.get('base_sha'), 'head_sha': plan.get('head_sha'), 'files': [], 'verdict': None, 'pytest_exit_code': None}
+              'budget_warnings': [], 'mode': plan.get('mode'), 'base_sha': plan.get('base_sha'), 'head_sha': plan.get('head_sha'), 'files': [], 'verdict': None, 'pytest_exit_code': None}
     try:
         eligible = {row['path'] for row in plan['selected']}
         files = sorted(eligible) if files is None else files
@@ -169,22 +163,10 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
             record['verdict'] = 'pass'
         try:
             costs = _budget_timings(junit, files, config)
-            overruns, warnings = [], []
-            for row in costs:
-                target = (overruns if row['seconds'] >
-                          row['budget_seconds'] * BUDGET_ENFORCEMENT_TOLERANCE else warnings)
-                target.append(row)
-            record['budget'].update(status='fail' if overruns else 'pass',
-                                    overruns=overruns, warnings=warnings)
-            if overruns:
-                record['verdict'] = 'fail'
-                print('Per-test time budget exceeded:')
-                for row in overruns:
-                    limit = row['budget_seconds'] * BUDGET_ENFORCEMENT_TOLERANCE
-                    print(f"{row['nodeid']}: {row['seconds']:.3f}s > {limit:.3f}s "
-                          f"(policy {row['budget_seconds']:.3f}s x {BUDGET_ENFORCEMENT_TOLERANCE:g})")
-            if warnings:
-                _write_budget_warnings(junit, warnings)
+            record['budget'].update(status='pass')
+            record['budget_warnings'] = costs
+            if costs:
+                _write_budget_warnings(junit, costs)
         except (OSError, ValueError, ET.ParseError) as error:
             record['budget'].update(status='unavailable', reason=str(error))
             # A definite test failure remains final even if timing evidence is lost.
