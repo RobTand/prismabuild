@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -176,23 +177,47 @@ def test_runner_lane_tests_need_a_git_checkout(tmp_path):
 OVERRUN = [{'nodeid': 'tests/test_a.py::test_one', 'seconds': 138.0, 'budget_seconds': 20.0}]
 
 
-def test_a_budget_only_failure_writes_the_marker_and_fails(tmp_path, capsys):
-    status = python_runner.settle(0, {'tests/test_a.py::test_one': 'passed'}, OVERRUN, tmp_path,
-                                  'tests/test_a.py', 'budget-overrun.txt')
-    assert status == 1
-    assert 'tests/test_a.py::test_one: 138.000s > 20.000s' in (tmp_path / 'budget-overrun.txt').read_text()
-    assert 'Per-test time budget exceeded' in capsys.readouterr().err
-    assert not (tmp_path / 'inventory.json').exists()
+@pytest.mark.parametrize('pytest_code, seconds', [(0, 20.5), (0, 138.0), (1, 138.0)])
+def test_runner_warns_for_passing_overruns_and_preserves_failures(
+        tmp_path, monkeypatch, capsys, pytest_code, seconds):
+    config = tmp_path / 'tools/ci/gate_budget.json'
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({'seconds': 20, 'slow': {}}))
+    private, outputs = tmp_path / 'private', tmp_path / 'outputs'
+    private.mkdir()
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    gate_run = python_runner.gate_run_of(ROOT)
+    monkeypatch.setattr(python_runner, 'gate_run_of', lambda root: gate_run)
+    monkeypatch.setattr(python_runner, 'prepare_remote_test', lambda root: (scratch, {}))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('TEST_TMPDIR', str(private))
+    monkeypatch.setenv('TEST_UNDECLARED_OUTPUTS_DIR', str(outputs))
+    monkeypatch.delenv('XML_OUTPUT_FILE', raising=False)
+    monkeypatch.delenv('TEST_TOTAL_SHARDS', raising=False)
+    monkeypatch.delenv('PB_BAZEL_LANE', raising=False)
+    monkeypatch.setattr(sys, 'argv', ['python_runner.py', 'tests/test_a.py'])
 
+    def execute(command, **kwargs):
+        outputs.mkdir()
+        failure = '<failure message="wrong result"/>' if pytest_code else ''
+        (outputs / 'junit.xml').write_text(
+            '<testsuites><testsuite><testcase file="tests/test_a.py" classname="tests.test_a" '
+            f'name="test_one" time="{seconds}">' + failure + '</testcase></testsuite></testsuites>')
+        return SimpleNamespace(returncode=pytest_code)
 
-@pytest.mark.parametrize('status,nodes', [
-    (1, {'tests/test_a.py::test_one': 'failed'}),
-    (1, {}),
-    (2, {'tests/test_a.py::test_one': 'passed'}),
-])
-def test_any_other_failure_writes_no_marker(tmp_path, status, nodes):
-    assert python_runner.settle(status, nodes, [], tmp_path, 'tests/test_a.py', 'budget-overrun.txt') == status
-    assert not (tmp_path / 'budget-overrun.txt').exists()
+    monkeypatch.setattr(python_runner.subprocess, 'run', execute)
+    assert python_runner.main() == pytest_code
+    assert not (outputs / 'budget-overrun.txt').exists()
+    if pytest_code:
+        assert not (outputs / 'budget-warnings.json').exists()
+        assert not (outputs / 'inventory.json').exists()
+    else:
+        assert json.loads((outputs / 'budget-warnings.json').read_text()) == [
+            {**OVERRUN[0], 'seconds': seconds}]
+        assert json.loads((outputs / 'inventory.json').read_text())['nodes'] == {
+            'tests/test_a.py::test_one': 'passed'}
+        assert f'{seconds:.3f}s > 20.000s' in capsys.readouterr().err
 
 
 def test_the_runner_measures_budgets_only_after_every_test_passed(tmp_path, monkeypatch):
@@ -206,17 +231,9 @@ def test_the_runner_measures_budgets_only_after_every_test_passed(tmp_path, monk
                                         'tests/test_a.py') == OVERRUN
 
 
-def test_a_passing_file_records_its_inventory(tmp_path):
-    nodes = {'tests/test_a.py::test_one': 'passed'}
-    assert python_runner.settle(0, nodes, [], tmp_path, 'tests/test_a.py', 'budget-overrun.txt') == 0
-    assert '"tests/test_a.py::test_one": "passed"' in (tmp_path / 'inventory.json').read_text()
-
-
-def test_the_gate_finds_the_marker_the_runner_writes(tmp_path):
+def test_the_gate_collects_the_warning_the_runner_writes(tmp_path):
     outputs = tmp_path / 'bazel-testlogs/tests/test_a/test.outputs'
-    marker = python_runner.gate_run_of(ROOT).BUDGET_MARKER
-    python_runner.settle(0, {'tests/test_a.py::test_one': 'passed'}, OVERRUN, outputs, 'tests/test_a.py', marker)
-    (tmp_path / 'tools/ci').mkdir(parents=True)
-    (tmp_path / 'tools/ci/gate_run.py').write_text((ROOT / 'tools/ci/gate_run.py').read_text())
+    python_runner.settle(0, {'tests/test_a.py::test_one': 'passed'}, OVERRUN, outputs,
+                         'tests/test_a.py')
     gate = load('bazel_gate_for_runner', 'tools/ci/bazel_gate.py').Workspace(root=tmp_path)
-    assert gate.budget_only(['//tests:test_a'], {'//tests:test_a': 'FAILED'}) == {'//tests:test_a'}
+    assert gate.budget_warnings(['//tests:test_a']) == [{'label': '//tests:test_a', **OVERRUN[0]}]

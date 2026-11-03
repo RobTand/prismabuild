@@ -50,19 +50,19 @@ def commit_target(tmp_path):
     return git('rev-parse', 'HEAD')
 
 
-def test_overrun_is_a_final_failure_even_when_pytest_passed(tmp_path, capsys):
+def test_overrun_is_a_warning_even_when_far_above_policy(tmp_path, capsys):
     policy(tmp_path)
     code, result = budget_run(tmp_path, case('30.001'))
-    assert code == 1
-    assert result['verdict'] == 'fail' and result['pytest_exit_code'] == 0
-    assert result['budget']['status'] == 'fail'
-    assert result['budget']['overruns'] == [
+    assert code == 0
+    assert result['verdict'] == 'pass' and result['pytest_exit_code'] == 0
+    assert result['budget']['status'] == 'pass'
+    assert result['budget_warnings'] == [
         {'nodeid': 'tests/test_sample.py::test_cost', 'seconds': 30.001, 'budget_seconds': 20}]
     assert 'tests/test_sample.py::test_cost' in capsys.readouterr().out
 
 
 @pytest.mark.parametrize('seconds', ['20.527', '30'])
-def test_within_tolerance_passes_with_visible_warning(tmp_path, monkeypatch, capsys, seconds):
+def test_overrun_passes_with_visible_warning(tmp_path, monkeypatch, capsys, seconds):
     policy(tmp_path)
     summary = tmp_path / 'summary.md'
     summary.write_text('Existing job summary\n')
@@ -70,8 +70,7 @@ def test_within_tolerance_passes_with_visible_warning(tmp_path, monkeypatch, cap
     xml = case(seconds).replace('</testsuite>', '<system-out>existing output</system-out></testsuite>')
     code, result = budget_run(tmp_path, xml)
     assert code == 0 and result['verdict'] == 'pass'
-    assert result['budget']['overruns'] == []
-    assert result['budget']['warnings'] == [
+    assert result['budget_warnings'] == [
         {'nodeid': 'tests/test_sample.py::test_cost', 'seconds': float(seconds), 'budget_seconds': 20}]
     warning = 'tests/test_sample.py::test_cost'
     assert warning in capsys.readouterr().out
@@ -85,21 +84,21 @@ def test_within_tolerance_passes_with_visible_warning(tmp_path, monkeypatch, cap
     assert testcase.find('failure') is None and testcase.find('error') is None
 
 
-@pytest.mark.parametrize('seconds,expected', [('63', 0), ('63.001', 1)])
-def test_tolerance_uses_the_precise_slow_exception(tmp_path, seconds, expected):
+@pytest.mark.parametrize('seconds', ['63', '63.001'])
+def test_warnings_use_the_precise_slow_exception(tmp_path, seconds):
     nodeid = 'tests/test_sample.py::TestCosts::test_cost[a.b]'
     policy(tmp_path, slow={nodeid: 42})
     code, result = budget_run(tmp_path, case(seconds, classname='tests.test_sample.TestCosts',
                                           name='test_cost[a.b]'))
-    assert code == expected
-    rows = result['budget']['warnings' if expected == 0 else 'overruns']
+    assert code == 0
+    rows = result['budget_warnings']
     assert rows == [{'nodeid': nodeid, 'seconds': float(seconds), 'budget_seconds': 42}]
 
 
 def test_at_policy_limit_needs_no_warning(tmp_path):
     policy(tmp_path)
     code, result = budget_run(tmp_path, case('20'))
-    assert code == 0 and result['budget']['warnings'] == []
+    assert code == 0 and result['budget_warnings'] == []
     assert not list(ET.parse(tmp_path / 'junit.xml').iter('system-out'))
 
 
@@ -173,7 +172,7 @@ def test_invalid_policy_limits_fail_closed(tmp_path, seconds):
 
 
 @pytest.mark.parametrize('pytest_code,overrun,expected_code,expected_verdict', [
-    (0, False, 75, None), (1, False, 1, 'fail'), (0, True, 1, 'fail'),
+    (0, False, 75, None), (1, False, 1, 'fail'), (0, True, 75, None),
 ])
 def test_warning_write_failure_preserves_definite_failure(tmp_path, monkeypatch,
                                                         pytest_code, overrun,
