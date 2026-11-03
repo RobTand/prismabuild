@@ -396,7 +396,8 @@ def test_verify_private_reader_does_not_import_the_prismabuild_package(tmp_path)
     program = """
 import builtins, runpy, sys
 from pathlib import Path
-sys.path.insert(0, str(Path(sys.argv[1]).parent / 'fleet'))
+sys.path[:0] = [str(Path(sys.argv[1]).parent / 'fleet'),
+                str(Path(sys.argv[1]).parents[1] / 'src')]
 import pbtest_outcomes
 baseline_import = builtins.__import__
 def refuse_package(name, *args, **kwargs):
@@ -417,7 +418,9 @@ assert verify['machine_record'].__file__ == sys.argv[2]
     b'{"status":Infinity}\n', b'{"status":-Infinity}\n', b'{"status":1,"status":2}\n',
     b'{"nested":{"key":1,"key":2}}\n', b'{"status":"\xff"}\n',
     '{"status":1}'.encode('utf-16') + b'\n', b'\xef\xbb\xbf{}\n',
-    b'[' * 2000 + b'0' + b']' * 2000 + b'\n', b'1' * 5000 + b'\n'])
+    b'1' * 5000 + b'\n'], ids=['multiple', 'malformed', 'nan', 'infinity',
+        'negative-infinity', 'duplicate', 'nested-duplicate', 'invalid-utf8',
+        'utf16', 'utf8-bom', 'oversized-integer'])
 def test_private_reader_matches_digest_owner_refusals(raw):
     from prismabuild import digest_primitives, machine_record
     with pytest.raises(ValueError):
@@ -435,3 +438,27 @@ def test_private_reader_matches_digest_owner_documents(value):
     with machine_record.Capture() as private:
         private.file.write(raw)
         assert private.read() == digest_primitives.decode_strict_json(raw, where='parity test') == value
+
+
+def test_private_reader_matches_digest_owner_depth_behavior():
+    from prismabuild import digest_primitives, machine_record
+    depth = 64000
+    raw = b'{"a":' * depth + b'0' + b'}' * depth + b'\n'
+    outcomes = []
+    with machine_record.Capture() as private:
+        private.file.write(raw)
+        for decode in (lambda: digest_primitives.decode_strict_json(raw, where='parity test'),
+                       private.read):
+            try:
+                value = decode()
+            except ValueError:
+                outcomes.append('refused')
+            else:
+                count = 0
+                while isinstance(value, dict):
+                    assert list(value) == ['a']
+                    value = value['a']
+                    count += 1
+                assert count == depth and value == 0
+                outcomes.append('accepted')
+    assert outcomes[0] == outcomes[1]
