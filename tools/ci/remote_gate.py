@@ -81,12 +81,16 @@ def run_gate(command, result_path):
     """Runner-only: keep the Run API moving to its mandatory last step."""
     import runpy
     from pathlib import Path
-    import shutil
 
     environment = child_env(os.environ)
     environment['BBRUN_FINAL_SCAN'] = '1'
     if os.environ.get('BUILDBUDDY_API_KEY'):
         environment['BUILDBUDDY_API_KEY'] = os.environ['BUILDBUDDY_API_KEY']
+    upload = Path(environment['BUILDBUDDY_ARTIFACTS_DIRECTORY'])
+    upload.mkdir(parents=True, exist_ok=True)
+    staged = Path(result_path + '.artifacts')
+    staged.mkdir()
+    environment['BUILDBUDDY_ARTIFACTS_DIRECTORY'] = str(staged)
     os.environ.clear()
     os.environ.update(environment)
     try:
@@ -99,23 +103,6 @@ def run_gate(command, result_path):
     except BaseException:
         print('runner command did not complete', file=sys.stderr)
         code = 127
-    try:
-        # Run API uploads immediately after each step. Leave this step's exact
-        # upload directory empty until the final step can scan with credentials.
-        upload = Path(environment['BUILDBUDDY_ARTIFACTS_DIRECTORY'])
-        if upload.exists():
-            shutil.move(str(upload), result_path + '.artifacts')
-        upload.mkdir(parents=True, exist_ok=True)
-    except (OSError, KeyError):
-        code = 75
-        # A failed handoff must not leave unscanned files in an automatic upload.
-        if environment.get('BUILDBUDDY_ARTIFACTS_DIRECTORY'):
-            upload = Path(environment['BUILDBUDDY_ARTIFACTS_DIRECTORY'])
-            if upload.is_symlink():
-                upload.unlink()
-            elif upload.exists():
-                shutil.rmtree(upload)
-            upload.mkdir(parents=True, exist_ok=True)
     Path(result_path).write_text(str(code))
 
 def scan_artifacts(scanner_data, scanner_hash, result_path):
@@ -142,13 +129,8 @@ def scan_artifacts(scanner_data, scanner_hash, result_path):
         if upload is None:
             raise ValueError('upload directory unavailable')
         upload.mkdir(parents=True, exist_ok=True)
-        if staged.exists():
-            for path in staged.iterdir():
-                target = upload / path.name
-                if target.exists() or target.is_symlink():
-                    raise ValueError('upload path collision')
-                shutil.move(str(path), str(target))
-            staged.rmdir()
+        if not staged.is_dir():
+            raise ValueError('private scan directory unavailable')
         if not secrets.get('BUILDBUDDY_API_KEY'):
             raise ValueError('required scanner input unavailable')
         source = base64.b64decode(scanner_data, validate=True)
@@ -159,7 +141,7 @@ def scan_artifacts(scanner_data, scanner_hash, result_path):
         for name in ('MERGIFY_TOKEN', 'GITHUB_TOKEN'):
             if name in secrets:
                 sys.argv.extend(['--env', name])
-        sys.argv.append(upload_path)
+        sys.argv.append(str(staged))
         # Discard scanner diagnostics too: paths may themselves contain secrets.
         # The pinned scanner is executed in-process and launches no children.
         diagnostics = io.StringIO()
@@ -172,6 +154,13 @@ def scan_artifacts(scanner_data, scanner_hash, result_path):
         # cannot accept that skipped scan, even if the core returned zero.
         if ': zstd: not scanned (compression.zstd unavailable)' in diagnostics.getvalue():
             code = 75
+        if code == 0:
+            for path in staged.iterdir():
+                target = upload / path.name
+                if target.exists() or target.is_symlink():
+                    raise ValueError('upload path collision')
+                shutil.move(str(path), str(target))
+            staged.rmdir()
     except BaseException:
         code = 75
     finally:
