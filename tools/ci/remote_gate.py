@@ -236,6 +236,7 @@ def await_invocation(client, invocation_id, deadline, interval=15, clock=time.mo
     """Observe one run: BES disconnects do not establish execution completion."""
     errors = 0
     recovering = False
+    execution_complete = False
     while True:
         remaining = deadline - clock()
         if remaining <= 0:
@@ -243,7 +244,11 @@ def await_invocation(client, invocation_id, deadline, interval=15, clock=time.mo
         try:
             found = client.call('GetInvocation', {'selector': {'invocation_id': invocation_id},
                                 'include_artifacts': True}, timeout=min(120, remaining)).get('invocation', [])
+            if clock() >= deadline:
+                raise RemoteError(f'remote run {invocation_id} did not finish in time')
             invocation = found[0] if found else {}
+            if execution_complete and found:
+                return {**invocation, 'runner_execution_success': True}
             if invocation.get('invocationStatus') == DONE:
                 return invocation
             recovering = recovering or invocation.get('invocationStatus') == LOST
@@ -253,6 +258,8 @@ def await_invocation(client, invocation_id, deadline, interval=15, clock=time.mo
                     raise RemoteError(f'remote run {invocation_id} did not finish in time')
                 observed = client.call('GetExecution', {'execution_lookup': {'invocation_id': invocation_id}},
                                        timeout=min(120, remaining))
+                if clock() >= deadline:
+                    raise RemoteError(f'remote run {invocation_id} did not finish in time')
             errors = 0
         except RemoteError:
             errors += 1
@@ -280,7 +287,10 @@ def await_invocation(client, invocation_id, deadline, interval=15, clock=time.mo
                     exit_code = execution.get('exitCode', 0)
                     if type(code) is not int or type(exit_code) is not int or code or exit_code:
                         raise RemoteError(f'remote run {invocation_id} execution failed')
-                    return {**invocation, 'runner_execution_success': True}
+                    # Final scanning may have uploaded artifacts after our
+                    # last BES lookup. Refresh metadata on the next iteration.
+                    execution_complete = True
+                    continue
         remaining = deadline - clock()
         if remaining <= 0:
             raise RemoteError(f'remote run {invocation_id} did not finish in time')

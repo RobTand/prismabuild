@@ -429,6 +429,7 @@ def test_failed_or_unbound_execution_cannot_recover_a_disconnect(executions):
     with pytest.raises(remote_gate.RemoteError):
         remote_gate.await_invocation(client, 'original-id', deadline=5, interval=1,
                                      clock=clock, sleep=clock.sleep)
+    assert not client.answers
 
 
 @pytest.mark.parametrize('stage', [4, 'COMPLETED'])
