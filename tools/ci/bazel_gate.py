@@ -173,28 +173,17 @@ def arm64_population(population, excluded):
     return sorted(label for label in population if label not in skipped), left_out
 
 
-def has_output(outputs, name):
-    """Whether a test.outputs directory holds name, as a file or inside outputs.zip."""
-    if (outputs / name).is_file():
-        return True
+def output_warnings(outputs):
+    """Read the runner's optional warning artifact, plain or Bazel-zipped."""
+    path = outputs / 'budget-warnings.json'
+    if path.is_file():
+        return json.loads(path.read_text())
     archive = outputs / 'outputs.zip'
-    if not archive.is_file():
-        return False
-    with zipfile.ZipFile(archive) as zipped:
-        return name in zipped.namelist()
-
-
-def rerun_budget_only(workspace, labels, statuses, config, metadata, log_name):
-    """Rerun once, uncached, the targets that failed only a time budget. A second
-    overrun fails; real failures are never retried."""
-    failed = [label for label in labels if statuses.get(label) != 'PASSED']
-    budget = sorted(workspace.budget_only(failed, statuses))
-    if not budget:
-        return statuses, {}
-    again = workspace.test(budget, config, metadata, f'{log_name}-budget-rerun',
-                           extra=['--nocache_test_results'])['statuses']
-    reruns = {label: again.get(label, 'NO_STATUS') for label in budget}
-    return {**statuses, **reruns}, reruns
+    if archive.is_file():
+        with zipfile.ZipFile(archive) as zipped:
+            if 'budget-warnings.json' in zipped.namelist():
+                return json.loads(zipped.read('budget-warnings.json'))
+    return []
 
 
 def canonical_label(label):
@@ -571,23 +560,31 @@ class Workspace:
                  capture=False, check=False)
         return bep_run(bep.read_text() if bep.exists() else '')
 
-    def budget_only(self, labels, statuses):
-        """Failed labels to rerun once: a Bazel TIMEOUT, or the runner's budget marker
-        in every shard that did not pass. A shard that passed left inventory.json."""
-        marker = module_from('gate_run_for_bazel_gate', self.root / 'tools/ci/gate_run.py').BUDGET_MARKER
-        found = set()
+    def budget_warnings(self, labels):
+        """Collect per-node warning evidence from the selected test outputs."""
+        warnings = []
         for label in labels:
-            if statuses.get(label) == 'TIMEOUT':
-                found.add(label)
-                continue
             package, _, name = label.removeprefix('//').partition(':')
             logs = self.root / 'bazel-testlogs' / package / name
             runs = sorted(logs.glob('shard_*_of_*/test.outputs')) or [logs / 'test.outputs']
-            marked = [has_output(run, marker) for run in runs]
-            if any(marked) and all(mark or has_output(run, 'inventory.json')
-                                   for mark, run in zip(marked, runs)):
-                found.add(label)
-        return found
+            try:
+                for run in runs:
+                    rows = output_warnings(run)
+                    if not isinstance(rows, list):
+                        raise ValueError('warning artifact must be a list')
+                    for row in rows:
+                        if not isinstance(row, dict) or not isinstance(row.get('nodeid'), str) or not row['nodeid']:
+                            raise ValueError('warning node is missing')
+                        seconds, limit = row.get('seconds'), row.get('budget_seconds')
+                        if (any(isinstance(value, bool) or not isinstance(value, (int, float))
+                                or not math.isfinite(value) for value in (seconds, limit))
+                                or limit <= 0 or seconds <= limit):
+                            raise ValueError('warning timing is invalid')
+                        warnings.append({'label': label, 'nodeid': row['nodeid'],
+                                         'seconds': seconds, 'budget_seconds': limit})
+            except (OSError, ValueError, zipfile.BadZipFile) as error:
+                raise GateError(f'cannot read budget warnings for {label} ({type(error).__name__})') from error
+        return warnings
 
     def build(self, targets, config, metadata, log_name):
         """Build targets; True when every one built."""
@@ -668,14 +665,14 @@ def gate_pr(workspace, base, head, metadata):
     # The generated-input checks need no Bazel server: they run beside the tests.
     checks = workspace.start_generated_checks()
     statuses = workspace.test(decision['selected'], CONFIGS['amd64'], metadata, 'pr')['statuses']
-    statuses, reruns = rerun_budget_only(workspace, decision['selected'], statuses, CONFIGS['amd64'],
-                                         metadata, 'pr')
+    warnings = workspace.budget_warnings(decision['selected'])
     tested_seconds = time.monotonic() - started
     verdict, failed = verdict_of(decision['selected'], statuses)
     inputs = workspace.inputs_check(checks) + workspace.budget_check(base) + graph_impact['errors']
     if not workspace.build(decision['build'], CONFIGS['amd64'], metadata, 'pr'):
         inputs.append('bazel build of impacted targets failed: ' + ' '.join(decision['build']))
-    return {**decision, 'verdict': verdict, 'failed': failed, 'inputs': inputs, 'budget_reruns': reruns,
+    return {**decision, 'verdict': verdict, 'failed': failed,
+            'inputs': inputs, 'budget_warnings': warnings,
             'graph_impact': graph_impact,
             'changed': sorted(changed | deleted),
             'durations': {'selection': round(selected_seconds, 1),
@@ -710,17 +707,20 @@ def gate_main(workspace, base, head, metadata):
         begun = time.monotonic()
         targets, excluded = runnable[architecture]
         run = workspace.test(targets, config, metadata, f'main-{architecture}')
-        run['statuses'], reruns = rerun_budget_only(workspace, targets, run['statuses'], config, metadata,
-                                                   f'main-{architecture}')
+        warnings = workspace.budget_warnings(targets)
         architectures[architecture] = {
             **architecture_result(targets, run, selection['selected']), 'invocation': run['invocation'],
             'tests': len(targets), 'excluded': {tag: len(labels) for tag, labels in excluded.items()},
-            'excluded_tests': excluded, 'budget_reruns': reruns,
+            'excluded_tests': excluded, 'budget_warnings': warnings,
             'seconds': round(time.monotonic() - begun, 1)}
     return {'selection': selection['selection'], 'reason': selection['reason'],
             'selected': selection['selected'], 'tests': len(population),
             'hosted': sorted(workspace.hosted_tests()),
-            'architectures': architectures, 'inputs': workspace.inputs_check() + graph_impact['errors'],
+            'architectures': architectures,
+            'budget_warnings': [{**warning, 'architecture': arch}
+                                for arch, record in architectures.items()
+                                for warning in record['budget_warnings']],
+            'inputs': workspace.inputs_check() + graph_impact['errors'],
             'graph_impact': graph_impact,
             'changed': sorted(changed | deleted),
             'durations': {'total': round(time.monotonic() - started, 1)}}
@@ -777,7 +777,7 @@ def main(argv=None, workspace=None):
         result['graph_impact'] = report
         print(report['summary'], flush=True)
     write_result(result, output)
-    print(json.dumps({key: result.get(key) for key in ['selection', 'error', 'verdict', 'inputs']}))
+    print(json.dumps({key: result.get(key) for key in ['selection', 'error', 'verdict', 'inputs', 'budget_warnings']}))
     return 0 if passed(result) else 1
 
 

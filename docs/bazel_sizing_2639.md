@@ -5,6 +5,11 @@ It does not fix timing-dependent tests. The 15 baseline assertion-failing
 targets **passed when not starved** in calibration; their flake-fix issues
 #2640 through #2650 remain open work.
 
+Per-test budget overruns now produce warnings and never trigger a rerun
+(#2676). The failure counts below retain the calibration's historical verdicts;
+passing tests with those timings now remain passing. Hard Bazel `TIMEOUT`
+results still fail, and the static budget-growth check still rejects increases.
+
 ## Calibration
 
 Baseline [553ca9c3](https://app.buildbuddy.io/invocation/553ca9c3-e7ec-4764-910f-39e1d4d9b17f)

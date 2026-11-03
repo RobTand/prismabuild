@@ -185,6 +185,7 @@ def post_merge_record(result, prs, seconds):
             'selected': len(result.get('selected', [])), 'tests': result.get('tests'),
             'failures': failures, 'missed': missed, 'errors': errors,
             'excluded': {arch: info.get('excluded', {}) for arch, info in architectures.items()},
+            'budget_warnings': result.get('budget_warnings', []),
             'seconds': round(seconds, 1), 'error': result.get('error'), 'inputs': result.get('inputs')}
 
 
@@ -211,6 +212,10 @@ def explain(result, prs):
                 if arch == 'arm64':
                     caught = 'arm64 runs only after merge'
                 lines.append(f'FAILED on {arch}: {label} ({caught})')
+    for warning in result.get('budget_warnings', []):
+        architecture = f" on {warning['architecture']}" if warning.get('architecture') else ''
+        lines.append(f"BUDGET_WARNING{architecture}: {warning['label']} {warning['nodeid']}: "
+                     f"{warning['seconds']:.3f}s > {warning['budget_seconds']:.3f}s policy")
     return '\n'.join(lines)
 
 

@@ -146,7 +146,6 @@ pb_py_library(
     ],
     deps = [
         ":ci/bazel_imports",
-        ":ci/gate_run",
         ":ci/graph_impact",
     ],
 )
