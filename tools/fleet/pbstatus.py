@@ -66,6 +66,7 @@ from prismabuild import (  # noqa: E402
     _bounded_reader as _reader, action_client, core as pb, pool, slurm_lane as sl,
 )
 from prismabuild import action_edges  # noqa: E402
+from prismabuild.public_evidence import public_evidence_view  # noqa: E402
 
 #: Where the fleet keeps the queue both transports file their endings in.  The
 #: same spelling ``pbrun`` and ``pool_reset`` use.
@@ -1193,6 +1194,29 @@ def read_resident_sets(queue_root, *, now=None):
     return {"sets": sets, "capacity": capacity, "complete": not unreadable, "unreadable": unreadable}
 
 
+def _public_ending_adapter(ending: Mapping[str, object]) -> dict[str, object]:
+    """Copy a census row for the shared public view.
+
+    Keep private values for the shared view to omit. Use only root markers
+    to identify a retained older generation. Do not read its lineage details.
+    """
+    statuses = {
+        "executed": "succeeded", "cache_hit": "succeeded",
+        "failed": "failed", "refused": "failed", "withdrawn": "withdrawn",
+        "waiting": "pending", "running": "running", "cancelled": "cancelled",
+        "interrupted": "interrupted", "timed_out": "timed_out",
+        "superseded": "unknown",
+    }
+    adapted = dict(ending)
+    status = ending.get("status")
+    if ending.get("current") is False and isinstance(ending.get("superseded_by"), dict):
+        status = "superseded"
+    adapted["status"] = statuses.get(status, "unknown") if type(status) is str else "unknown"
+    if "timing_finished_unix" in ending:
+        adapted["finished_at"] = ending["timing_finished_unix"]
+    return adapted
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Show the fleet's nodes, its jobs, and how work ended.",
@@ -1596,7 +1620,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "pool": pool_summary,
             "nodes": nodes,
             "jobs": jobs,
-            "endings": endings,
+            "endings": [public_evidence_view(_public_ending_adapter(ending))
+                        for ending in endings],
             "rollout": rollout,
             "canary": canary,
             "scheduler": notes,

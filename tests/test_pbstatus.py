@@ -431,7 +431,12 @@ def _pool_ending(fleet: dict, key: str) -> None:
 def test_endings_name_their_transport_and_their_slurm_state(fleet, capsys):
     _slurm_ending(fleet, "c3" * 32, status="failed", state="TIMEOUT")
     _pool_ending(fleet, "d4" * 32)
-    endings = _run_json(fleet, capsys)["endings"]
+    projected = _run_json(fleet, capsys)["endings"]
+    assert projected == [
+        _public_ending("c3" * 32, "failed", finished_at=2000.0),
+        _public_ending("d4" * 32, "succeeded", 0, 1000.0),
+    ]
+    endings = fleet_census.endings(fleet["queue"])
     # Newest first by the time the work finished: the SLURM record's end time
     # is 2000, the pull queue's is 1000.
     assert [row["transport"] for row in endings] == ["slurm", "pool"]
@@ -464,7 +469,9 @@ def test_a_withdrawal_is_an_ending_and_is_listed_from_withdrawn(fleet, capsys):
     that directory too or a cancelled job vanishes from it."""
 
     _slurm_ending(fleet, "f6" * 32, status="withdrawn", state="CANCELLED")
-    ending = _run_json(fleet, capsys)["endings"][0]
+    projected = _run_json(fleet, capsys)["endings"][0]
+    assert projected == _public_ending("f6" * 32, "withdrawn", 1, 2000.0)
+    ending = fleet_census.endings(fleet["queue"])[0]
     assert ending["status"] == "withdrawn"
     assert ending["transport"] == "slurm"
     assert ending["slurm_state"] == "CANCELLED"
@@ -487,8 +494,9 @@ def test_an_ending_names_the_actions_own_status_in_its_own_column(fleet, capsys)
         retry_safe=False, detail={"returncode": 1, "action_returncode": 7},
     )
     ending = _run_json(fleet, capsys)["endings"][0]
-    assert ending["returncode"] == 1
-    assert ending["action_returncode"] == 7
+    assert ending["evidence"]["returncode"] == 1
+    assert "action_returncode" not in ending["evidence"]
+    assert fleet_census.endings(fleet["queue"])[0]["action_returncode"] == 7
 
     out = _run(fleet, capsys)
     assert "ACTION RC" in out
@@ -497,7 +505,9 @@ def test_an_ending_names_the_actions_own_status_in_its_own_column(fleet, capsys)
 
 def test_a_receipt_puts_the_ending_under_done(fleet, capsys):
     _slurm_ending(fleet, "e5" * 32, status="executed", state="COMPLETED")
-    ending = _run_json(fleet, capsys)["endings"][0]
+    projected = _run_json(fleet, capsys)["endings"][0]
+    assert projected == _public_ending("e5" * 32, "succeeded", 0, 2000.0)
+    ending = fleet_census.endings(fleet["queue"])[0]
     assert ending["status"] == "executed"
     assert ending["receipt_published"] is True
     assert ending["path"].endswith(f"/{pool.record_store.DONE}/{'e5' * 32}.json")
@@ -525,9 +535,11 @@ def test_a_record_that_cannot_be_parsed_is_a_row_not_a_silence(fleet, capsys):
     path = _truncated_ending(fleet, key)
     endings = _run_json(fleet, capsys, "--recent", "1", expected_code=3)["endings"]
     assert len(endings) == 1
-    assert endings[0]["status"] == "unreadable"
-    assert endings[0]["unreadable"] == "not valid JSON"
-    assert endings[0]["path"] == str(path)
+    assert endings[0] == _public_ending(key, "unknown")
+    raw = fleet_census.endings(fleet["queue"], limit=1)[0]
+    assert raw["status"] == "unreadable"
+    assert raw["unreadable"] == "not valid JSON"
+    assert raw["path"] == str(path)
 
     out = _run(fleet, capsys, "--recent", "1", expected_code=3).split("== endings")[1]
     assert "unreadable" in out
@@ -570,12 +582,13 @@ def test_an_unreadable_record_says_which_way_it_is_unreadable(fleet, capsys):
     unreadable.chmod(0o000)
     try:
         endings = _run_json(fleet, capsys, expected_code=3)["endings"]
-        assert [row["status"] for row in endings] == ["unreadable"]
-        assert endings[0]["unreadable"] == "permission denied"
+        assert endings == [_public_ending("d4" * 32, "unknown")]
+        assert fleet_census.endings(fleet["queue"])[0]["unreadable"] == "permission denied"
 
         _truncated_ending(fleet, "e5" * 32)
-        reasons = {row["unreadable"]
-                   for row in _run_json(fleet, capsys, expected_code=3)["endings"]}
+        projected = _run_json(fleet, capsys, expected_code=3)["endings"]
+        assert all(row["evidence"]["status"] == "unknown" for row in projected)
+        reasons = {row["unreadable"] for row in fleet_census.endings(fleet["queue"])}
         assert reasons == {"permission denied", "not valid JSON"}
     finally:
         unreadable.chmod(0o644)
@@ -584,7 +597,8 @@ def test_an_unreadable_record_says_which_way_it_is_unreadable(fleet, capsys):
 def test_a_readable_ending_carries_no_unreadable_note(fleet, capsys):
     _pool_ending(fleet, "d4" * 32)
     ending = _run_json(fleet, capsys)["endings"][0]
-    assert ending["unreadable"] is None
+    assert ending == _public_ending("d4" * 32, "succeeded", 0, 1000.0)
+    assert fleet_census.endings(fleet["queue"])[0]["unreadable"] is None
     assert "unreadable" not in _run(fleet, capsys).split("== endings")[1]
 
 
@@ -600,6 +614,219 @@ def test_the_tool_never_creates_the_queue_directories(fleet, capsys):
     # `slurm_lane._queue_dir` makes the directory it is asked for; a status
     # screen must not, or looking at an empty fleet invents its queue.
     assert not fleet["queue"].exists()
+
+
+# --------------------------------------------------------------------------
+# Structured endings
+# --------------------------------------------------------------------------
+
+_PUBLIC_SCHEMA = "prismabuild.public_evidence.v1"
+_PRIVATE_SENTINEL = "PRIVATE_ENDING_CAPABILITY_CONTROL_ARGV"
+
+
+def _public_ending(key, status, returncode=None, finished_at=None):
+    evidence = {"action_key": key, "status": status}
+    if returncode is not None:
+        evidence["returncode"] = returncode
+    if finished_at is not None:
+        evidence["finished_at"] = finished_at
+    return {"schema": _PUBLIC_SCHEMA, "evidence": evidence}
+
+
+@pytest.fixture()
+def structured_endings(fleet):
+    """Write private records with both transport schemas."""
+    secret = {"capability": {"claim": {"control": _PRIVATE_SENTINEL}},
+              "argv": ["runner", "--token", _PRIVATE_SENTINEL]}
+    expected = []
+    for index, (status, public_status, code) in enumerate([
+        ("executed", "succeeded", 0), ("failed", "failed", 7),
+        ("cancelled", "cancelled", -15),
+        ("recovery-unavailable", "unknown", 1),
+        ("superseded", "unknown", 9),
+    ], start=1):
+        key = f"{index:064x}"
+        finished = 1000.0 + index
+        path = sl.publish_outcome(
+            queue_root=fleet["queue"], action_key=key, published_unix=1.0,
+            published_by="test-host", status=status, attempts=1,
+            max_attempts=1, retry_safe=False,
+            detail={"returncode": code, "profile": secret},
+            addressing={"finished_unix": finished,
+                        "resource_scope_cleanup": secret,
+                        "container_cleanup": secret, "preempted_by": secret})
+        assert path is not None
+        expected.insert(0, _public_ending(key, public_status, code, finished))
+    # Keep both generations in their original slots, as an old queue can do.
+    key = "ab" * 32
+    directory = fleet["queue"] / pool.record_store.DONE
+    directory.mkdir(parents=True, exist_ok=True)
+    old_path = directory / f"{key}.json"
+    old_path.write_text(json.dumps({
+        "schema": pool.POOL_OUTCOME_SCHEMA_V1, "action_key": key,
+        "status": "executed", "published_unix": 1.0,
+        "finished_unix": 2000.0, "detail": {"returncode": 0, "profile": secret},
+        "resource_scope_cleanup": secret,
+    }, sort_keys=True), encoding="utf-8")
+    new_path = sl.publish_outcome(
+        queue_root=fleet["queue"], action_key=key, published_unix=2.0,
+        published_by="test-host", status="failed", attempts=1,
+        max_attempts=1, retry_safe=False, detail={"returncode": 8},
+        addressing={"finished_unix": 2001.0})
+    assert new_path is not None
+    assert old_path.exists()
+    expected[:0] = [_public_ending(key, "failed", 8, 2001.0),
+                    _public_ending(key, "unknown", 0, 2000.0)]
+    # A current success can carry history without becoming superseded.
+    key = "cd" * 32
+    path = directory / f"{key}.json"
+    path.write_text(json.dumps({
+        "schema": pool.POOL_OUTCOME_SCHEMA_V1, "action_key": key,
+        "status": "executed", "published_unix": 3.0,
+        "finished_unix": 3000.0, "detail": {"returncode": 0, "profile": secret},
+        "supersedes_terminal": {"status": "failed", "state": "failed",
+                                "detail": secret},
+    }, sort_keys=True), encoding="utf-8")
+    expected.insert(0, _public_ending(key, "succeeded", 0, 3000.0))
+    return expected
+
+
+def test_json_endings_are_public_evidence_envelopes_in_source_order(
+    fleet, capsys, structured_endings,
+):
+    rows = fleet_census.endings(fleet["queue"])
+    assert [row["action_key"] for row in rows] == [
+        row["evidence"]["action_key"] for row in structured_endings]
+    assert _run_json(fleet, capsys)["endings"] == structured_endings
+
+
+@pytest.mark.parametrize("status,expected", [
+    ("executed", "succeeded"), ("cache_hit", "succeeded"),
+    ("failed", "failed"), ("refused", "failed"), ("withdrawn", "withdrawn"),
+    ("waiting", "pending"), ("running", "running"),
+    ("cancelled", "cancelled"), ("interrupted", "interrupted"),
+    ("timed_out", "timed_out"), ("superseded", "unknown"),
+    ("recovery-unavailable", "unknown"), ("unreadable", "unknown"),
+    (None, "unknown"), ([], "unknown"), ({}, "unknown"),
+    ("succeeded", "unknown"), ("other", "unknown"),
+])
+def test_json_endings_map_statuses_through_the_public_table(
+    fleet, capsys, monkeypatch, status, expected,
+):
+    row = {"action_key": "aa" * 32, "returncode": 0}
+    if status is not None:
+        row["status"] = status
+    monkeypatch.setattr(fleet_census, "endings", lambda *a, **k: [row])
+    assert _run_json(fleet, capsys)["endings"] == [
+        _public_ending("aa" * 32, expected, 0)]
+
+
+@pytest.mark.parametrize("markers,expected", [
+    ({"status": "superseded"}, "unknown"),
+    ({"current": False, "superseded_by": {"path": _PRIVATE_SENTINEL}}, "unknown"),
+    ({"status": "failed", "current": False, "superseded_by": {}}, "unknown"),
+    ({"current": True, "superseded": {"path": _PRIVATE_SENTINEL}}, "succeeded"),
+    ({"supersedes_terminal": {"status": "failed"}}, "succeeded"),
+    ({"current": None, "superseded_by": {}}, "succeeded"),
+    ({"current_unresolved": _PRIVATE_SENTINEL}, "succeeded"),
+    ({"terminal_conflict": True}, "succeeded"),
+    ({"current": False, "superseded_by": []}, "succeeded"),
+    ({"current": 0, "superseded_by": {}}, "succeeded"),
+    ({"superseded": {"path": _PRIVATE_SENTINEL, "record": {}}}, "succeeded"),
+])
+def test_json_endings_recognize_superseded_only_from_root_markers(
+    fleet, capsys, monkeypatch, markers, expected,
+):
+    row = {"action_key": "aa" * 32, "status": "executed", "returncode": 0,
+           **markers}
+    monkeypatch.setattr(fleet_census, "endings", lambda *a, **k: [row])
+    assert _run_json(fleet, capsys)["endings"] == [
+        _public_ending("aa" * 32, expected, 0)]
+
+
+def test_json_endings_carry_no_private_sentinel(fleet, capsys, structured_endings):
+    rows = fleet_census.endings(fleet["queue"])
+    assert _PRIVATE_SENTINEL in json.dumps(rows)
+    endings = _run_json(fleet, capsys)["endings"]
+    assert _PRIVATE_SENTINEL not in json.dumps(endings)
+    assert endings == structured_endings
+
+
+def test_json_export_leaves_source_rows_and_records_unchanged(
+    fleet, capsys, structured_endings, monkeypatch, tmp_path,
+):
+    import copy
+    import hashlib
+    from prismabuild import core as pb
+    from verified_action_support import _standard_action, _publish_result
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _standard_action(checkout, command=["/bin/echo", "synthetic"])
+    cas, receipt = _publish_result(tmp_path, action, b"synthetic result\n")
+    canonical = pb._canonical_file_bytes(receipt)
+    digest = hashlib.sha256(canonical).hexdigest()
+    files = {path: path.read_bytes() for path in tmp_path.rglob("*.json")}
+    rows = fleet_census.endings(fleet["queue"])
+    before = copy.deepcopy(rows)
+    monkeypatch.setattr(fleet_census, "endings", lambda *a, **k: rows)
+    # Reuse observations to compare all other JSON keys without clock changes.
+    observations = {}
+    bounded = pbstatus.bounded
+
+    def cached(section, call, **kwargs):
+        if section not in observations:
+            observations[section] = bounded(section, call, **kwargs)
+        return observations[section]
+
+    monkeypatch.setattr(pbstatus, "bounded", cached)
+    payload = _run_json(fleet, capsys)
+    assert payload["endings"] == structured_endings
+    from pbstatus import _public_ending_adapter
+    monkeypatch.setattr(pbstatus, "_public_ending_adapter", lambda row: row)
+    monkeypatch.setattr(pbstatus, "public_evidence_view", lambda row: row)
+    legacy = _run_json(fleet, capsys)
+    assert legacy.pop("endings") == before
+    payload.pop("endings")
+    assert payload == legacy
+    assert rows == before
+    assert {path: path.read_bytes() for path in files} == files
+    assert cas.lookup(action) == receipt
+    assert pb._canonical_file_bytes(cas.lookup(action)) == canonical
+    assert hashlib.sha256(pb._canonical_file_bytes(cas.lookup(action))).hexdigest() == digest
+    assert callable(_public_ending_adapter)
+
+
+def test_public_ending_adapter_is_type_safe_and_does_not_mutate():
+    import copy
+    from pbstatus import _public_ending_adapter
+    from prismabuild.public_evidence import public_evidence_view
+
+    for status in ([], {}, None, 17, True, "executed"):
+        row = {"status": status, "action_key": "ab" * 32, "returncode": -7,
+               "timing_finished_unix": 1234.5, "finished_unix": 9999,
+               "stdout_sha256": "cd" * 32, "stderr_sha256": "ef" * 32,
+               "action_manifest_sha256": "12" * 32,
+               "result": {"sha256": "34" * 32, "bytes": 23},
+               "profile": {"argv": [_PRIVATE_SENTINEL]}}
+        before = copy.deepcopy(row)
+        adapted = _public_ending_adapter(row)
+        assert adapted is not row
+        assert adapted == {**row, "status": "succeeded" if status == "executed" else "unknown",
+                           "finished_at": 1234.5}
+        assert row == before
+        assert public_evidence_view(adapted) == {
+            "schema": _PUBLIC_SCHEMA, "evidence": {
+                "status": "succeeded" if status == "executed" else "unknown",
+                "action_key": "ab" * 32, "returncode": -7, "finished_at": 1234.5,
+                "stdout_sha256": "cd" * 32, "stderr_sha256": "ef" * 32,
+                "action_manifest_sha256": "12" * 32,
+                "result": {"sha256": "34" * 32, "bytes": 23}}}
+    assert _public_ending_adapter({}) == {"status": "unknown"}
+    invalid = _public_ending_adapter({"status": [], "returncode": True,
+        "timing_finished_unix": float("nan"), "action_key": "not-a-hash"})
+    assert public_evidence_view(invalid) == {
+        "schema": _PUBLIC_SCHEMA, "evidence": {"status": "unknown"}}
 
 
 # --------------------------------------------------------------------------
@@ -747,7 +974,10 @@ def test_a_purged_job_reads_as_unknown_rather_than_none(fleet, capsys) -> None:
     """
 
     _purged_slurm_ending(fleet, "f6" * 32)
-    row = _run_json(fleet, capsys)["endings"][0]
+    projected = _run_json(fleet, capsys)["endings"][0]
+    row = fleet_census.endings(fleet["queue"])[0]
+    assert projected == _public_ending("f6" * 32, "failed",
+                                       finished_at=row["timing_finished_unix"])
     assert row["transport"] == "slurm"
     assert row["host"] is None
     assert row["elapsed_s"] is None
@@ -755,6 +985,6 @@ def test_a_purged_job_reads_as_unknown_rather_than_none(fleet, capsys) -> None:
     # endings table does not offer it as a host.
     assert row["status"] == "failed"
 
-    lines = pbstatus.ending_lines(_run_json(fleet, capsys)["endings"])
+    lines = pbstatus.ending_lines(fleet_census.endings(fleet["queue"]))
     assert "None" not in "\n".join(lines)
     assert pbstatus.UNKNOWN in lines[1]
