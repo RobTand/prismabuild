@@ -11,6 +11,9 @@ prose. Run via published pbtest at -10; JSON evidence outside the checkout.
 Fixtures are independent (tmp_path queue, no cross-worker state).
 """
 from __future__ import annotations
+from short_socket import short_socket_path
+
+from contextlib import ExitStack
 
 import errno
 import json
@@ -1062,24 +1065,31 @@ class _ConnectedBroker:
         self.authority = resource_broker.Authority(
             tmp_path / "broker-state", os.getuid(), self.backend,
             max_memory_bytes=1024 ** 3)
-        self.endpoint = tmp_path / "broker.sock"
-        self.server = resource_broker.Server(
-            str(self.endpoint), resource_broker.Handler)
-        self.server.authority = self.authority
-        self.thread = threading.Thread(
-            target=self.server.serve_forever,
-            kwargs={"poll_interval": 0.01}, daemon=True)
+        with ExitStack() as paths:
+            self.endpoint = paths.enter_context(short_socket_path())
+            self.server = paths.enter_context(resource_broker.Server(
+                str(self.endpoint), resource_broker.Handler))
+            self.server.authority = self.authority
+            self.thread = threading.Thread(
+                target=self.server.serve_forever,
+                kwargs={"poll_interval": 0.01}, daemon=True)
+            self._paths = paths.pop_all()
 
     def __enter__(self):
-        self.thread.start()
+        try:
+            self.thread.start()
+        except BaseException:
+            self._paths.close()
+            raise
         return self
 
     def __exit__(self, *exc):
-        try:
-            self.server.shutdown()
-        finally:
-            self.thread.join(timeout=10)
-            self.server.server_close()
+        with self._paths:
+            try:
+                self.server.shutdown()
+            finally:
+                self.thread.join(timeout=10)
+                self.server.server_close()
         return False
 
 
@@ -1991,57 +2001,57 @@ def test_launch_rpc_carries_identity_env_to_broker(tmp_path) -> None:
 
     import resource_exec
 
-    sock_path = tmp_path / "broker.sock"
-    captured: dict = {}
-    ready = threading.Event()
+    with short_socket_path() as sock_path:
+        captured: dict = {}
+        ready = threading.Event()
 
-    def serve() -> None:
-        server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-        server.bind(str(sock_path))
-        server.listen(1)
-        ready.set()
-        conn, _ = server.accept()
-        with conn:
-            data = bytearray()
-            while b"\n" not in data:
-                chunk = conn.recv(65536)
-                if not chunk:
-                    break
-                data.extend(chunk)
-            captured.update(
-                json.loads(data.split(b"\n", 1)[0].decode()))
-            conn.sendall(b'{"ok": true, "returncode": 0}\n')
-        server.close()
+        def serve() -> None:
+            server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            server.bind(str(sock_path))
+            server.listen(1)
+            ready.set()
+            conn, _ = server.accept()
+            with conn:
+                data = bytearray()
+                while b"\n" not in data:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                captured.update(
+                    json.loads(data.split(b"\n", 1)[0].decode()))
+                conn.sendall(b'{"ok": true, "returncode": 0}\n')
+            server.close()
 
-    thread = threading.Thread(target=serve)
-    thread.start()
-    assert ready.wait(timeout=30)
-    key, nonce = "a" * 64, "b" * 32
-    argv = ["resource_exec", "--socket", str(sock_path),
-            "--action-key", key, "--nonce", nonce,
-            "--token", "c" * 64, "--", "/usr/bin/true"]
-    import sys as _sys
-    old_argv = _sys.argv
-    old_env = dict(os.environ)
-    os.environ["PRISMABUILD_ACTION_NONCE"] = "o" * 32
-    os.environ["PRISMABUILD_ACTION_SCOPE"] = "outer-scope"
-    try:
-        _sys.argv = argv
-        assert resource_exec.main() == 0
-    finally:
-        _sys.argv = old_argv
-        os.environ.clear()
-        os.environ.update(old_env)
-    thread.join(timeout=30)
-    assert captured["op"] == "run"
-    assert captured["nonce"] == nonce
-    env = captured["env"]
-    assert env["PRISMABUILD_ACTION_NONCE"] == nonce
-    assert env["PRISMABUILD_ACTION_SCOPE"].startswith("prismabuild-job")
-    assert env["PRISMABUILD_ACTION_SCOPE"].endswith(".slice")
-    assert "PRISMABUILD_READER_HELPER_ROOT" in env
-    assert not env["PRISMABUILD_READER_HELPER_ROOT"].endswith("/src")
-    assert "token" not in env and "TOKEN" not in " ".join(env)
+        thread = threading.Thread(target=serve)
+        thread.start()
+        assert ready.wait(timeout=30)
+        key, nonce = "a" * 64, "b" * 32
+        argv = ["resource_exec", "--socket", str(sock_path),
+                "--action-key", key, "--nonce", nonce,
+                "--token", "c" * 64, "--", "/usr/bin/true"]
+        import sys as _sys
+        old_argv = _sys.argv
+        old_env = dict(os.environ)
+        os.environ["PRISMABUILD_ACTION_NONCE"] = "o" * 32
+        os.environ["PRISMABUILD_ACTION_SCOPE"] = "outer-scope"
+        try:
+            _sys.argv = argv
+            assert resource_exec.main() == 0
+        finally:
+            _sys.argv = old_argv
+            os.environ.clear()
+            os.environ.update(old_env)
+        thread.join(timeout=30)
+        assert captured["op"] == "run"
+        assert captured["nonce"] == nonce
+        env = captured["env"]
+        assert env["PRISMABUILD_ACTION_NONCE"] == nonce
+        assert env["PRISMABUILD_ACTION_SCOPE"].startswith("prismabuild-job")
+        assert env["PRISMABUILD_ACTION_SCOPE"].endswith(".slice")
+        assert "PRISMABUILD_READER_HELPER_ROOT" in env
+        assert not env["PRISMABUILD_READER_HELPER_ROOT"].endswith("/src")
+        assert "token" not in env and "TOKEN" not in " ".join(env)
 
 
 def test_identity_derivation_failure_clears_stale_outer(

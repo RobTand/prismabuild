@@ -9,6 +9,7 @@ a test), wired to ``Authority.handle`` directly.
 """
 
 from __future__ import annotations
+from short_socket import short_socket_path
 
 from contextlib import contextmanager
 from functools import partial
@@ -1328,7 +1329,7 @@ def _live_owner() -> str:
 
 
 @contextmanager
-def _live_broker(authority, tmp_path: Path):
+def live_broker(authority, tmp_path: Path):
     """Real Authority behind a real Unix-socket broker, driven through the
     real ResourceScope socket client. The privileged peer boundary is
     controlled in-fixture only (see _RootPeerSocket); no live privilege
@@ -1365,25 +1366,25 @@ def _live_broker(authority, tmp_path: Path):
             real, addr = super().get_request()
             return _RootPeerSocket(real), addr
 
-    sock = tmp_path / "resources.sock"
-    server = _RootPeerServer(str(sock), broker_mod.Handler)
-    server.authority = auth
-    thread = threading.Thread(
-        target=server.serve_forever, kwargs={"poll_interval": 0.05},
-        daemon=True)
-    thread.start()
-    try:
-        yield auth, lambda payload: broker_request(
-            dict(payload), socket_path=sock)
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5.0)
+    with short_socket_path() as sock:
+        server = _RootPeerServer(str(sock), broker_mod.Handler)
+        server.authority = auth
+        thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.05},
+            daemon=True)
+        thread.start()
+        try:
+            yield auth, lambda payload: broker_request(
+                dict(payload), socket_path=sock)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5.0)
 
 
-@pytest.fixture()
-def live_broker(authority, tmp_path: Path):
-    with _live_broker(authority, tmp_path) as broker:
+@pytest.fixture(name="live_broker")
+def _live_broker_fixture(authority, tmp_path: Path):
+    with live_broker(authority, tmp_path) as broker:
         yield broker
 
 
@@ -1391,7 +1392,7 @@ def test_live_broker_round_trip_from_deep_scratch(authority, tmp_path):
     deep = tmp_path / ("scratch-" * 5) / ("nested-" * 6) / ("workspace-" * 5)
     deep.mkdir(parents=True)
     assert len(os.fsencode(deep / "resources.sock")) > 107
-    with _live_broker(authority, deep) as (auth, call):
+    with live_broker(authority, deep) as (auth, call):
         response = call({"op": "maintenance_begin", "owner": "upgrade-window",
                          "reason": "deep scratch regression"})
         assert response["ok"] is True and response["draining"] is True

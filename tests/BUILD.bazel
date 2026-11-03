@@ -49838,6 +49838,7 @@ pb_py_library(
         "//tools:fleet/resource_broker",
         "//tools:fleet/worker_loop",
         ":fleet_membership_fixture",
+        ":short_socket",
     ],
 )
 
@@ -124325,6 +124326,7 @@ pb_py_library(
         "//src/prismabuild:stage_release",
         "//tools:fleet/resource_broker",
         "//tools:fleet/resource_exec",
+        ":short_socket",
     ],
 )
 
