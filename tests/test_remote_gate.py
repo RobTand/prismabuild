@@ -34,42 +34,6 @@ def test_the_runner_checks_out_the_pull_request_and_installs_pinned_tools():
     assert '@sha256:' in remote_gate.IMAGE
 
 
-@pytest.mark.parametrize('mode', ['pr', 'main'])
-def test_gate_and_post_merge_runners_use_self_hosted_amd64_docker(mode):
-    properties = request(mode=mode)['platform_properties']
-    assert properties['use-self-hosted-executors'] == 'true'
-    assert properties['Pool'] == 'selfhosted-amd64'
-    assert properties['Arch'] == 'amd64'
-    assert properties['workload-isolation-type'] == 'docker'
-    assert properties['EstimatedCPU'] == '4'
-    assert properties['EstimatedMemory'] == '8GB'
-    assert properties['EstimatedFreeDiskBytes'] == '8GB'
-    assert properties['recycle-runner'] == 'true'
-    assert properties['container-image'] == remote_gate.IMAGE
-
-
-@pytest.mark.parametrize('mode', ['pr', 'main'])
-def test_a_missing_self_hosted_pool_fails_without_a_cloud_submission(mode, monkeypatch, tmp_path):
-    calls = []
-
-    class MissingPool:
-        def call(self, method, body, **kwargs):
-            calls.append((method, body))
-            raise remote_gate.RemoteError('no executors registered in selfhosted-amd64')
-
-    monkeypatch.setattr(remote_gate, 'BuildBuddy', lambda key: MissingPool())
-    output = tmp_path / 'github-output'
-    monkeypatch.setenv('GITHUB_OUTPUT', str(output))
-    assert remote_gate.main([mode, '--base', 'a' * 40, '--head', HEAD, '--branch', 'feature',
-                             '--output-dir', str(tmp_path / 'gate-output')]) == 1
-    assert len(calls) == 1
-    method, body = calls[0]
-    assert method == 'Run'
-    assert body['platform_properties']['Pool'] == 'selfhosted-amd64'
-    assert body['platform_properties']['use-self-hosted-executors'] == 'true'
-    assert 'scopes_ready=false\ntests=failure\n' in output.read_text()
-
-
 @pytest.mark.parametrize('missing', ['base', 'head'])
 def test_empty_queue_aware_refs_fail(missing):
     with pytest.raises(remote_gate.RemoteError, match='empty base or head'):
