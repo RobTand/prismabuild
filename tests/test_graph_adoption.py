@@ -22,7 +22,7 @@ VIEWS = ('//src/prismabuild:operator_view', '//src/prismabuild:public_evidence')
 
 @pytest.fixture
 def adoption_workspace():
-    def build(*, unrelated=False, overflowing=False, partial=False, cycle=False, single_cli=None, outside_view=None):
+    def build(*, unrelated=False, overflowing=False, partial=False, cycle=False, single_cli=None, outside_view=None, outside_only=False):
         cli_sources = {name + '.py' for name in CLIS}
         view_sources = {name + '.py' for name in VIEWS}
         extra = '//src/prismabuild:unrecorded.py'
@@ -48,8 +48,13 @@ def adoption_workspace():
             before_edges.add((ADOPTER_TEST, outsider))
             added_rules.add((outsider, outside_view))
         after_edges = before_edges | added_rules | added_data
+        initial_sources = cli_sources
+        if outside_only:
+            before_edges |= {(ADOPTER_TEST, view) for view in VIEWS}
+            after_edges = before_edges | {(outsider, outside_view)}
+            initial_sources = cli_sources | view_sources
         reached = cli_sources | view_sources | ({extra} if unrelated or overflowing else set())
-        before = impact.measure({ADOPTER_TEST: cli_sources}, before_edges, loc)
+        before = impact.measure({ADOPTER_TEST: initial_sources}, before_edges, loc)
         after = impact.measure({ADOPTER_TEST: reached}, after_edges, loc)
         rules = {ADOPTER_TEST, outsider, *CLIS, *VIEWS}
         typed = lambda edges: {
@@ -188,3 +193,13 @@ def test_each_recorded_pair_refuses_a_delta_over_its_cap(adoption_workspace, cli
     report = adoption_workspace(single_cli=cli, overflowing=True).graph_check('before', 'after')
     assert report['errors']
     assert report['adoption']['applied'] is False
+
+
+@pytest.mark.parametrize('view', VIEWS)
+def test_outsider_only_import_is_rejected_even_without_reach_growth(adoption_workspace, view):
+    workspace = adoption_workspace(outside_view=view, outside_only=True)
+    assert workspace.snapshots['base']['reach'] == workspace.snapshots['head']['reach']
+    report = workspace.graph_check('before', 'after')
+    assert report['errors']
+    assert report['adoption']['applied'] is False
+    assert any('unrecorded rule_to_rule edge' in error for error in report['errors'])
