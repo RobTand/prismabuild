@@ -2054,7 +2054,9 @@ verified source, before creating the scope or persisting private control.
 `Popen`, closes the parent copy immediately after launch, and never adds the
 capability to the proxy argv or environment. The proxy consumes and closes the
 descriptor before broker communication and forwards only the three stdio
-descriptors. Refusal messages never echo broker response bodies.
+descriptors. Refusal messages never echo broker response bodies. Completion
+EOF retains only the fixed historical `BROKER_EOF` diagnostic used by receipt
+reconciliation; other broker errors keep the generic refusal diagnostic.
 
 A verified retained helper without FD support uses the transitional
 `legacy_argv` transport. The private recovery control records

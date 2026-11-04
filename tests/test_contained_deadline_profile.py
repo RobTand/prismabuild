@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -97,6 +98,8 @@ if src and sampler:
 
 class _HardStopScope:
     """Own only the worker returned by Popen and the sampler's declared group."""
+    capability_transport = 'private_fd'
+
     def __init__(self, root, marker):
         self.cgroup_path = root / 'scope'
         self.cgroup_path.mkdir()
@@ -105,8 +108,8 @@ class _HardStopScope:
         self.stops = []
         self.samples = []
 
-    def wrap_argv(self, argv, *, worker_script):
-        return list(argv)
+    def prepared_launch(self, argv, *, worker_script):
+        return nullcontext((list(argv), (), None))
 
     def sample(self):
         record = {'complete': True, 'oom_local': 0, 'sampled_unix': pool._now()}

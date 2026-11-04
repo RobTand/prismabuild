@@ -1,5 +1,6 @@
 """Independent fake-clock probes of the default activity signal boundary."""
 import os
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -24,7 +25,9 @@ def _fake_scope(tmp_path):
         (path / "memory.peak").write_text("2048\n")
     stopped = []
     scope = SimpleNamespace(cgroup_path=root,
-                            wrap_argv=lambda argv, **kwargs: argv,
+                            prepared_launch=lambda argv, *, worker_script: nullcontext(
+                                (argv, (), None)),
+                            capability_transport="private_fd",
                             terminate_owned=stopped.append)
     return scope, shim, container, stopped
 

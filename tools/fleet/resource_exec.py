@@ -21,6 +21,10 @@ import sys
 PRIVATE_CAPABILITY_FD_PROTOCOL = 1
 
 
+class CompletionEOF(OSError):
+    """The broker closed before sending a complete execution result."""
+
+
 def read_capability_fd(descriptor: int) -> str:
     """Consume one atomic 64-byte pipe frame, without waiting for a writer."""
     if type(descriptor) is not int or not 3 <= descriptor <= 2**31 - 1:
@@ -157,7 +161,7 @@ def main() -> int:
             while b'\n' not in data:
                 chunk = client.recv(min(4096, MAX_MESSAGE_BYTES + 1 - len(data)))
                 if not chunk:
-                    raise OSError('resource broker closed without an execution result')
+                    raise CompletionEOF
                 data.extend(chunk)
                 if len(data) > MAX_MESSAGE_BYTES:
                     raise OSError('resource execution response exceeds 64 KiB')
@@ -168,6 +172,10 @@ def main() -> int:
             if type(returncode) is not int or not -64 <= returncode <= 255:
                 raise OSError('resource broker returned an invalid execution status')
             return returncode if returncode >= 0 else 128 - returncode
+    except CompletionEOF:
+        sys.stderr.write('PrismaBuild resource execution refused: resource broker closed '
+                         'without an execution result\n')
+        return 125
     except (OSError, ValueError):
         sys.stderr.write('PrismaBuild resource execution refused\n')
         return 125
