@@ -8,6 +8,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
+import stat
 import sys
 
 import pytest
@@ -139,12 +141,21 @@ def test_executor_commits_selected_record_and_lease_before_launch(runtime, monke
         assert declaration["name"] == "row-temp"
         lease = json.loads(queue.records.lease_path(item["action_key"]).read_text())
         assert lease[FIELD] == evidence
-        assert "--token" in argv
+        assert "--token-fd" in argv
+        assert "--token" not in argv
+        descriptor = int(argv[argv.index("--token-fd") + 1])
+        assert kwargs["pass_fds"] == (descriptor,)
+        assert stat.S_ISFIFO(os.fstat(descriptor).st_mode)
+        assert observed["resource_scope"]["capability_transport"] == "private_fd"
+        assert lease["resource_scope"]["capability_transport"] == "private_fd"
+        assert "b" * 64 not in json.dumps({"argv": argv, "evidence": evidence})
         launched.append(True)
 
     process(monkeypatch, inspect)
     outcome = queue.execute(item, containment=True)
     assert outcome["status"] == "executed" and launched == [True]
+    assert outcome["resource_launch"]["capability_transport"] == "private_fd"
+    assert "b" * 64 not in json.dumps(outcome["resource_launch"])
     assert item[FIELD] == live_record(queue, item)[FIELD]
     assert queue.ledger().held() == {"cpu": 1, "mem_gb": 2, "spool_gb": 2}
     assert "create" in calls

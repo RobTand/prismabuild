@@ -1,0 +1,46 @@
+[
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/action_result.py",
+      "owner": "_native_producer_context",
+      "fields": [
+        "capability_sha256",
+        "capability_transport",
+        "schema"
+      ],
+      "binding": "fields"
+    },
+    "count": 1,
+    "reason": "Pin the exact common V2 capability evidence set used by the verifier; this is a new closed boundary, not an allowance for arbitrary fields."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/action_result.py",
+      "owner": "_native_producer_context",
+      "fields": [
+        "capability_fd",
+        "capability_sha256",
+        "capability_transport",
+        "schema"
+      ]
+    },
+    "count": 1,
+    "reason": "The private_fd branch requires exactly common V2 fields plus capability_fd and rejects all extra fields."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/action_result.py",
+      "owner": "_native_producer_context",
+      "fields": [
+        "capability_sha256",
+        "capability_transport",
+        "schema"
+      ]
+    },
+    "count": 1,
+    "reason": "The explicit verified legacy_argv V2 branch accepts exactly the common fields; historical records retain the prior no-V2 verification recipe."
+  }
+]

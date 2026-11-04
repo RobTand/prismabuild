@@ -114137,6 +114137,39 @@ pb_py_library(
 )
 
 pb_py_test(
+    name = "test_private_launch_capability",
+    path = "tests/test_private_launch_capability.py",
+    library = ":test_private_launch_capability_lib",
+    data = [
+        "//src/prismabuild:files",
+        "//tools:files/fleet",
+    ],
+    timeout = "moderate",
+)
+
+pb_py_library(
+    name = "test_private_launch_capability_lib",
+    srcs = [
+        "test_private_launch_capability.py",
+    ],
+    data = [
+        "//src/prismabuild:files",
+        "//tools:fleet/resource_broker.py",
+        "//tools:prismabuild_worker.py",
+        "test_private_launch_capability.py",
+    ],
+    deps = [
+        "//src/prismabuild:__init__",
+        "//src/prismabuild:resource_scope",
+        "//src/prismabuild:runtime_paths",
+        "//tools:fleet/resource_broker",
+        "//tools:fleet/resource_exec",
+        "//tools:prismabuild_worker",
+        ":short_socket",
+    ],
+)
+
+pb_py_test(
     name = "test_private_machine_records",
     path = "tests/test_private_machine_records.py",
     library = ":test_private_machine_records_lib",

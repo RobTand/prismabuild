@@ -2046,6 +2046,44 @@ receive the same manifest-digest proof before the retained proxy is launched.
 The check is conditional on the receipt listing the member, so pre-split
 generations retain their existing verified import closure without that file.
 Dev stubs and missing shapes keep the current-runtime proxy.
+
+New pool launches negotiate the capability transport from the selected proxy's
+verified source, before creating the scope or persisting private control.
+`PRIVATE_CAPABILITY_FD_PROTOCOL = 1` selects a private pipe containing exactly
+64 lowercase hexadecimal bytes. The pool passes only its read descriptor to
+`Popen`, closes the parent copy immediately after launch, and never adds the
+capability to the proxy argv or environment. The proxy consumes and closes the
+descriptor before broker communication and forwards only the three stdio
+descriptors. Refusal messages never echo broker response bodies. Completion
+EOF retains only the fixed historical `BROKER_EOF` diagnostic used by receipt
+reconciliation; other broker errors keep the generic refusal diagnostic.
+
+A verified retained helper without FD support uses the transitional
+`legacy_argv` transport. The private recovery control records
+`capability_transport: legacy_argv` before `Popen`; an operator warning and
+versioned launch evidence identify that exposure. Legacy-helper launches still
+put the capability in argv and persisted launch detail until drain. Unverified
+roots and malformed or unsupported protocol declarations refuse instead of
+falling back. The current source proxy must support FD transport. No config
+flag enables a silent downgrade.
+
+Future launch detail carries `prismabuild.resource_launch.v2`, the selected
+transport and a SHA-256 commitment to the high-entropy capability. Private-FD
+evidence also records the descriptor number. The verifier joins those exact
+fields to private recovery control and the immutable argv. Unknown schemas,
+missing versioned evidence, extra fields and mismatched commitments refuse.
+Historical records retain their original argv recipe and byte verification;
+exact-attempt recovery still uses the private token and never relaunches it.
+
+Publishing source support does not deploy it. Fleet rollout needs a separate
+authorized runtime publication. Retained submissions pin their worker runtime,
+and re-publication preserves that selection, so converged workers alone do not
+justify removing legacy transport. #2804 requires complete allowlisted drain
+counts and a boundary preventing new pre-FD selections. Qualification tools
+and the GPU scope probe still use the legacy direct `wrap_argv` API; #2799
+tracks them separately. Private same-UID recovery files remain authority, and
+this transport change makes no same-UID isolation claim.
+
 `run_local_action` forwards exactly
 these three from the launcher environment through the residency
 environment contract, so strict readers bind pins to the live claim and

@@ -1,6 +1,7 @@
 """Shared checkpoint I/O must not exhaust the payload's execution budget."""
 import json
 import time
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -47,7 +48,9 @@ def test_checkpoint_delay_preserves_remaining_budget(tmp_path, monkeypatch, stag
     else:
         # The outer PB action supplies real containment. This inner fixture
         # isolates the synchronous sampling call; it creates no broker scope.
-        scope = SimpleNamespace(wrap_argv=lambda argv, *, worker_script=None: argv,
+        scope = SimpleNamespace(prepared_launch=lambda argv, *, worker_script: nullcontext(
+                                    (argv, (), None)),
+                                capability_transport='private_fd',
                                 terminate_owned=lambda reason: None)
         monkeypatch.setattr(queue, '_start_resource_scope', lambda item: scope)
 

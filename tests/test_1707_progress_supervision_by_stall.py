@@ -1,6 +1,7 @@
 """Supervise payloads by progress: stop on a stall, not a wall clock (#1707)."""
 import json
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -301,7 +302,8 @@ def test_d30_ends_default_activity_on_the_fake_clock(tmp_path, monkeypatch):
 
     stopped = []
     scope = SimpleNamespace(
-        wrap_argv=lambda argv, **kwargs: argv,
+        prepared_launch=lambda argv, *, worker_script: nullcontext((argv, (), None)),
+        capability_transport="private_fd",
         terminate_owned=stopped.append)
     with _virtual_execution(tmp_path, _running_until(0.1), policy=None,
                             ceiling=10.0) as child:

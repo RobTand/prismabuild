@@ -36,6 +36,33 @@ def test_scope_identity_separates_attempts(tmp_path, monkeypatch):
     assert argv[argv.index('--token')+1] == 'b'*64
 
 
+def test_historical_scope_argv_recipe_keeps_its_exact_bytes():
+    from prismabuild import resource_scope
+
+    assert resource_scope._wrapped_scope_argv(
+        ['/bin/true'], python='/usr/bin/python3', helper='/sealed/tools/resource_exec.py',
+        socket_path='/run/prismabuild/resources.sock', action_key='a' * 64,
+        nonce='1' * 32, token='b' * 64) == [
+            '/usr/bin/python3', '/sealed/tools/resource_exec.py',
+            '--socket', '/run/prismabuild/resources.sock',
+            '--action-key', 'a' * 64, '--nonce', '1' * 32,
+            '--token', 'b' * 64, '--', '/bin/true']
+
+
+def test_current_proxy_without_private_protocol_cannot_downgrade(tmp_path, monkeypatch):
+    from prismabuild import resource_scope
+
+    current = tmp_path / 'current'
+    helper = current / 'tools/resource_exec.py'
+    helper.parent.mkdir(parents=True)
+    helper.write_text("argument = '--token'\n")
+    monkeypatch.setattr(resource_scope, '__file__', str(current / 'src/prismabuild/resource_scope.py'))
+    scope = ResourceScope('a' * 64, '1' * 32, 1024, tmp_path / 'telemetry.json')
+    with pytest.raises(OSError, match='capability protocol'):
+        scope.select_launch_transport('/worker.py')
+    assert scope.capability_transport is None
+
+
 def test_explicit_gpu_budget_is_bound_to_create_recovery_and_control(tmp_path, monkeypatch):
     import hashlib
     scope=ResourceScope('a'*64,'1'*32,1024**3,tmp_path/'sample.json',

@@ -634,7 +634,7 @@ def test_a_validly_resealed_command_mismatch_reaches_the_binder_and_refuses(
 
 # These are private synthetic native-carrier fixtures, not a fleet qualification.
 # The retained real native producer is exercised separately by the PB action.
-def _native_fixture(base: Path, monkeypatch):
+def _native_fixture(base: Path, monkeypatch, *, capability_transport=None):
     from prismabuild import produced_output, reader_lease
 
     base.mkdir(exist_ok=True)
@@ -685,6 +685,15 @@ def _native_fixture(base: Path, monkeypatch):
         python=sys.executable, helper=generation / "tools/resource_exec.py",
         socket_path=resource_scope.BROKER_SOCKET, action_key=key, nonce=nonce,
         token=native["claim"]["resource_scope"]["token"])
+    if capability_transport is not None:
+        native['claim']['resource_scope']['capability_transport'] = capability_transport
+        native['detail']['resource_launch'] = {
+            'schema': resource_scope.RESOURCE_LAUNCH_SCHEMA_V2,
+            'capability_transport': capability_transport,
+            'capability_sha256': pb.raw_sha256(('b' * 64).encode())}
+        if capability_transport == 'private_fd':
+            native['detail']['argv'][8:10] = ['--token-fd', '7']
+            native['detail']['resource_launch']['capability_fd'] = 7
     queue, record = _finish(base, action, receipt, native=native, worker_script=launcher_file)
     # finish already files this proof through the existing pool writer.
     # Reuse that carrier rather than minting a second fixture representation.
@@ -722,6 +731,89 @@ def test_selected_native_context_is_owned_and_truthfully_bound(tmp_path, monkeyp
     assert "/run/prismabuild/resources.sock" not in json.dumps(ctx)
     ctx["resources"]["cpu"] = 99
     assert _native_read(action, queue, record)["producer_context"]["resources"]["cpu"] == 1
+
+
+@pytest.mark.parametrize('transport', [None, 'private_fd', 'legacy_argv'])
+def test_native_launch_versions_verify_without_rewriting_history(tmp_path, monkeypatch, transport):
+    action, queue, record, _receipt, _proof = _native_fixture(
+        tmp_path, monkeypatch, capability_transport=transport)
+    attempt_path = queue.records.attempt_path(record, 1)
+    ending_path = queue.records.item_path(pool.record_store.DONE, action['action_key'])
+    attempt_bytes, ending_bytes = attempt_path.read_bytes(), ending_path.read_bytes()
+    selected = json.loads(attempt_bytes)['detail']
+    if transport is None:
+        assert 'resource_launch' not in selected
+        assert '--token' in selected['argv']
+    else:
+        assert selected['resource_launch']['capability_transport'] == transport
+        assert selected['resource_launch']['schema'] == 'prismabuild.resource_launch.v2'
+        if transport == 'private_fd':
+            assert 'b' * 64 not in json.dumps(selected)
+            assert selected['argv'][8:10] == ['--token-fd', '7']
+        else:
+            assert selected['argv'][8:10] == ['--token', 'b' * 64]
+    result = _native_read(action, queue, record)
+    assert result['producer_context']['action_key'] == action['action_key']
+    assert 'b' * 64 not in json.dumps(result['producer_context'])
+    assert attempt_path.read_bytes() == attempt_bytes
+    assert ending_path.read_bytes() == ending_bytes
+
+
+@pytest.mark.parametrize('field,value', [
+    ('schema', 'prismabuild.resource_launch.v999'),
+    ('capability_transport', 'legacy_argv'),
+    ('capability_transport', 'unreviewed_transport'),
+    ('capability_sha256', 'c' * 64),
+    ('capability_fd', 0), ('capability_fd', True),
+    ('capability_fd', '7'), ('capability_fd', 8),
+    ('unexpected_token', 'b' * 64),
+    (None, None),
+])
+def test_private_native_launch_evidence_refuses_mismatch_or_downgrade(
+        tmp_path, monkeypatch, field, value):
+    action, queue, record, _receipt, _proof = _native_fixture(
+        tmp_path, monkeypatch, capability_transport='private_fd')
+    path = queue.records.attempt_path(record, 1)
+    attempt = json.loads(path.read_text())
+    if field is None:
+        attempt['detail'].pop('resource_launch')
+    else:
+        attempt['detail']['resource_launch'][field] = value
+    _rewrite_readonly(path, pb._canonical_file_bytes(attempt))
+    with pytest.raises(client.ActionResultError):
+        _native_read(action, queue, record)
+
+
+@pytest.mark.parametrize('position', [1, 3, 5, 7, 9, 13, 15, 18, 20, 22])
+def test_private_launch_still_binds_helper_scope_affinity_and_worker_request(
+        tmp_path, monkeypatch, position):
+    action, queue, record, _receipt, _proof = _native_fixture(
+        tmp_path, monkeypatch, capability_transport='private_fd')
+    path = queue.records.attempt_path(record, 1)
+    attempt = json.loads(path.read_text())
+    attempt['detail']['argv'][position] = 'foreign-value'
+    _rewrite_readonly(path, pb._canonical_file_bytes(attempt))
+    with pytest.raises(client.ActionResultError):
+        _native_read(action, queue, record)
+
+
+@pytest.mark.parametrize('field,value', [
+    ('capability_transport', None), ('capability_transport', 'legacy_argv'),
+    ('token', 'c' * 64),
+])
+def test_private_launch_commitment_joins_the_exact_recovery_control(
+        tmp_path, monkeypatch, field, value):
+    action, queue, record, _receipt, _proof = _native_fixture(
+        tmp_path, monkeypatch, capability_transport='private_fd')
+    path = queue.records.item_path(pool.record_store.DONE, action['action_key'])
+    ending = json.loads(path.read_text())
+    if value is None:
+        ending['resource_scope'].pop(field)
+    else:
+        ending['resource_scope'][field] = value
+    path.write_bytes(pb._canonical_file_bytes(ending))
+    with pytest.raises(client.ActionResultError):
+        _native_read(action, queue, record)
 
 
 @pytest.mark.parametrize("field,value", [
