@@ -379,6 +379,7 @@ baseline as an artifact. A PR may only tighten the baseline. Exceptions such as
 `tests/fixtures/graph_impact_allowlist.json`. Each entry needs a reason, and a PR
 may only remove existing entries. Run graph-only development work on BuildBuddy
 with `--jobs=16`, or through PrismaBuild admission on fleet machines.
+
 ## First adoption of the public evidence views
 
 Rob approved the narrowly recorded #2789 graph exception in
