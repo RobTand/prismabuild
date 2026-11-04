@@ -402,8 +402,9 @@ Any unrecorded typed edge, removed edge, unrecorded consumer, excess delta, or n
 rejects the grant. Only after validation are the recorded added edges excluded
 from structural attribution. All comparisons retain the real graphs and
 metrics, and the gate result records the applied manifest hash. Other checks
-continue to use their existing limits. Without a new recorded import the
-grant is inactive. It does not permit later consumer growth or grant a runtime
+continue to use their existing limits. Any new rule import of either view is checked, including an outsider-only
+import that adds no reach. With no new import of either view, the grant is
+inactive. It does not permit later consumer growth or grant a runtime
 publication. A changed graph population needs a newly reviewed design and
 manifest rather than an automatic refresh.
 

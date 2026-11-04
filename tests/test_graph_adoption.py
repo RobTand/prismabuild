@@ -193,6 +193,7 @@ def test_each_recorded_pair_refuses_a_delta_over_its_cap(adoption_workspace, cli
     report = adoption_workspace(single_cli=cli, overflowing=True).graph_check('before', 'after')
     assert report['errors']
     assert report['adoption']['applied'] is False
+    assert any('recorded reach delta' in error for error in report['errors'])
 
 
 @pytest.mark.parametrize('view', VIEWS)

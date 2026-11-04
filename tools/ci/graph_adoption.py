@@ -46,7 +46,8 @@ def adoption_structural_inputs(before, after, inputs, manifest):
     changes = inputs['edge_diff']
     imports = {tuple(edge) for edge in manifest['imports']}
     added_rules = {tuple(edge) for edge in changes['added']['rule_to_rule']}
-    if not imports.intersection(added_rules):
+    targets = {target for _, target in imports}
+    if not any(target in targets for _, target in added_rules):
         return inputs, decision, []
     errors = []
     importers = {source for source, _ in imports & added_rules}
