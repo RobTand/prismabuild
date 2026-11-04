@@ -730,13 +730,15 @@ class ResourceScope:
     @contextmanager
     def prepared_launch(self, argv: list[str], *, worker_script: str | Path):
         """A pipe exists only across Popen; private recovery keeps its authority."""
+        from .digest_primitives import raw_sha256
+
         if self.capability_transport not in ('private_fd', 'legacy_argv'):
             raise RuntimeError('select the capability transport before scope creation')
         if not isinstance(self.token, str) or re.fullmatch('[a-f0-9]{64}', self.token) is None:
             raise ValueError('invalid resource launch capability')
         evidence = {'schema': RESOURCE_LAUNCH_SCHEMA_V2,
                     'capability_transport': self.capability_transport,
-                    'capability_sha256': hashlib.sha256(self.token.encode()).hexdigest()}
+                    'capability_sha256': raw_sha256(self.token.encode())}
         if self.capability_transport == 'legacy_argv':
             yield self.wrap_argv(argv, worker_script=worker_script), (), evidence
             return
