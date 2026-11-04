@@ -379,3 +379,31 @@ baseline as an artifact. A PR may only tighten the baseline. Exceptions such as
 `tests/fixtures/graph_impact_allowlist.json`. Each entry needs a reason, and a PR
 may only remove existing entries. Run graph-only development work on BuildBuddy
 with `--jobs=16`, or through PrismaBuild admission on fleet machines.
+## First adoption of the public evidence views
+
+Rob approved the narrowly recorded #2789 graph exception in
+https://github.com/RobTand/prismabuild/issues/2789#issuecomment-6620473091.
+The PB adapter reads `tools/ci/public_view_adoption.json`; it does not change
+the shared graph core or its baseline, tolerances, budget, or allowlist.
+
+The manifest records six imports: each of `pbrun`, `pbwait`, and `pbstatus`
+imports both `public_evidence` and `operator_view`. It includes the 1,004
+generated source edges, the exact newly reached consumer identities, and
+per-test source identities and maximum deltas measured against main
+`32f908fefc87bc83f25e5919809dbebdea4e2b18`. Each view gains at most 598
+recorded existing consumers. Each of those test closures gains at most the
+two recorded view sources. `sha256` is the canonical finite JSON payload's
+digest with the `sha256` field omitted; the policy code independently pins it.
+
+The complete six-import transition must appear together. Any unrecorded typed
+edge, removed edge, unrecorded consumer, excess delta, or new/merged SCC
+rejects the grant. Only after validation are the recorded added edges excluded
+from structural attribution. All comparisons retain the real graphs and
+metrics, and the gate result records the applied manifest hash. Other checks
+continue to use their existing limits. Without a new recorded import the
+grant is inactive. It does not permit later consumer growth or grant a runtime
+publication. A changed graph population needs a newly reviewed design and
+manifest rather than an automatic refresh.
+
+The mechanism lands before a separate first-adoption issue. Output-changing
+leaves follow their explicit merge prerequisites, one labelled leaf at a time.

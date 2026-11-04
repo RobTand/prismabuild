@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -95,3 +96,59 @@ def test_partial_import_inventory_is_not_an_adoption_grant(adoption_workspace):
 def test_adoption_does_not_admit_a_cycle(adoption_workspace):
     report = adoption_workspace(cycle=True).graph_check('before', 'after')
     assert any('SCC' in error or 'scc_max' in error for error in report['errors'])
+
+
+@pytest.fixture
+def adoption_policy_modules():
+    policy = gate.module_from('adoption_boundary_policy', ROOT / 'tools/ci/graph_adoption.py')
+    digests = gate.module_from('adoption_boundary_digests', ROOT / 'src/prismabuild/digest_primitives.py')
+    return policy, digests
+
+
+def test_manifest_payload_and_declared_hash_are_both_pinned(adoption_policy_modules, tmp_path):
+    policy, digests = adoption_policy_modules
+    source = ROOT / 'tools/ci/public_view_adoption.json'
+    document = policy.read_first_adoption_manifest(source, digests)
+    assert document['sha256'] == policy.ADOPTION_SHA256
+    assert len(document['imports']) == 6
+    document['source_deltas'][VIEWS[0] + '.py']['max_added_consumers'] += 1
+    path = tmp_path / 'altered.json'
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match='reviewed payload'):
+        policy.read_first_adoption_manifest(path, digests)
+    document['sha256'] = digests.canonical_sha256({k: v for k, v in document.items() if k != 'sha256'})
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match='reviewed pin'):
+        policy.read_first_adoption_manifest(path, digests)
+
+
+def test_manifest_rejects_duplicate_keys_and_symlinks(adoption_policy_modules, tmp_path):
+    policy, digests = adoption_policy_modules
+    duplicate = tmp_path / 'duplicate.json'
+    duplicate.write_text('{"sha256":"a","sha256":"b"}')
+    with pytest.raises(ValueError, match='duplicate key'):
+        policy.read_first_adoption_manifest(duplicate, digests)
+    link = tmp_path / 'link.json'
+    link.symlink_to(ROOT / 'tools/ci/public_view_adoption.json')
+    with pytest.raises(OSError):
+        policy.read_first_adoption_manifest(link, digests)
+
+
+def test_manifest_rejects_oversized_or_missing_files(adoption_policy_modules, tmp_path):
+    policy, digests = adoption_policy_modules
+    oversized = tmp_path / 'oversized.json'
+    oversized.write_bytes(b' ' * (policy.MAX_ADOPTION_BYTES + 1))
+    with pytest.raises(ValueError, match='byte bound'):
+        policy.read_first_adoption_manifest(oversized, digests)
+    with pytest.raises(OSError):
+        policy.read_first_adoption_manifest(tmp_path / 'absent.json', digests)
+
+
+def test_new_consumer_cannot_trade_places_with_recorded_consumers(adoption_workspace):
+    workspace = adoption_workspace()
+    unexpected = '//tests:not_a_recorded_adoption_consumer'
+    for name, graph in workspace.snapshots.items():
+        graph['reach'][unexpected] = graph['reach'][ADOPTER_TEST][:]
+    report = workspace.graph_check('before', 'after')
+    assert report['errors']
+    assert any('recorded reach delta' in error or 'unrecorded consumers' in error for error in report['errors'])
