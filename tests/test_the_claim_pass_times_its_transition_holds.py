@@ -162,16 +162,54 @@ def test_a_pass_that_raises_under_the_lock_still_times_the_hold(
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    key = _publish(queue, 0, ["here"])
+    held = _publish(queue, 0, ["here"])
+    key = _publish(queue, 1, ["here"])
+    rows = {item["action_key"]: item for item in queue.ready_items()}
+    # These rows have aging counts.
+    # Neither row has GPU or publication-canary priority.
+    ready = [rows[held], rows[key]]
+    looked: list[str] = []
+    # Keep the real epoch for claim-path deadlines.
+    clock = SimpleNamespace(value=time.monotonic())
+    scripted_time = SimpleNamespace(
+        **(vars(pool.time) | {"monotonic": lambda: clock.value}))
 
-    def lookup(_key: str):
-        time.sleep(SLOW_S)
+    def lookup(lookup_key: str):
+        looked.append(lookup_key)
+        clock.value += SLOW_S
         raise OSError("the export stopped answering")
 
-    monkeypatch.setattr(queue, "_claim_blocked_fresh", lookup)
-    with pytest.raises(OSError):
-        queue.claim(tags=["here"], owner="worker")
+    holder = subprocess.Popen(
+        [sys.executable, "-c", HOLDER, str(ROOT / "src"), str(queue.root), held],
+        stdout=subprocess.PIPE, stdin=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        with monkeypatch.context() as patch:
+            # Change only pool's namespace. Keep all other time attributes.
+            patch.setattr(pool, "time", scripted_time)
+            patch.setattr(queue, "_claim_blocked_fresh", lookup)
+            with pytest.raises(OSError, match="the export stopped answering"):
+                queue.claim(tags=["here"], owner="worker", ready=ready)
+    finally:
+        holder.stdin.close()
+        holder.wait()
+
+    assert looked == [key]
     holds = queue.last_claim_pass
+    assert holds is not None
     assert holds["transition_holds"] == 1
     assert holds["transition_held_max_key"] == key
-    assert holds["transition_held_max_s"] >= SLOW_S
+    assert holds["transition_held_max_s"] == SLOW_S
+    assert holds["transition_held_s"] == SLOW_S
+
+    filed = _snapshot(queue)
+    assert filed["schema"] == pool.CLAIM_DENIALS_SCHEMA_V1
+    entry = filed["claim_passes"][str(os.getpid())]
+    assert entry["transition_holds"] == 1
+    assert entry["transition_held_max_key"] == key
+    assert entry["transition_held_max_s"] == SLOW_S
+    assert entry["transition_held_s"] == SLOW_S
+    # The raise stops the scan. This refusal proves it visited the held key first.
+    reasons = {value["action_key"]: value["reason"]
+               for value in filed["records"].values()}
+    assert reasons[held] == "transition_busy"
