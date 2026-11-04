@@ -22,7 +22,7 @@ VIEWS = ('//src/prismabuild:operator_view', '//src/prismabuild:public_evidence')
 
 @pytest.fixture
 def adoption_workspace():
-    def build(*, unrelated=False, overflowing=False, partial=False, cycle=False):
+    def build(*, unrelated=False, overflowing=False, partial=False, cycle=False, single_cli=False):
         cli_sources = {name + '.py' for name in CLIS}
         view_sources = {name + '.py' for name in VIEWS}
         extra = '//src/prismabuild:unrecorded.py'
@@ -34,6 +34,8 @@ def adoption_workspace():
             # are added, but their actual closure now exceeds its recorded delta.
             before_edges.add((VIEWS[0], extra))
         added_rules = {(cli, view) for cli in CLIS for view in VIEWS}
+        if single_cli:
+            added_rules = {edge for edge in added_rules if edge[0] == CLIS[0]}
         if partial:
             added_rules.remove((CLIS[0], VIEWS[0]))
         if unrelated:
@@ -152,3 +154,11 @@ def test_new_consumer_cannot_trade_places_with_recorded_consumers(adoption_works
     report = workspace.graph_check('before', 'after')
     assert report['errors']
     assert any('recorded reach delta' in error or 'unrecorded consumers' in error for error in report['errors'])
+
+
+def test_one_recorded_cli_pair_can_adopt_with_its_first_writer(adoption_workspace):
+    workspace = adoption_workspace(single_cli=True)
+    report = workspace.graph_check('before', 'after')
+    assert report['errors'] == []
+    assert report['adoption']['applied'] is True
+    assert len(report['edge_diff']['added']['rule_to_rule']) == 2
