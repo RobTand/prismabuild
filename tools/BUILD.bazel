@@ -141,11 +141,15 @@ pb_py_library(
         "ci/gate_requirements.txt",
         "ci/gate_run.py",
         "ci/gate_select.py",
+        "ci/graph_adoption.py",
         "ci/graph_impact.py",
+        "ci/public_view_adoption.json",
         "ci/remote_gate.py",
     ],
     deps = [
+        "//src/prismabuild:digest_primitives",
         ":ci/bazel_imports",
+        ":ci/graph_adoption",
         ":ci/graph_impact",
     ],
 )
@@ -372,6 +376,13 @@ pb_py_library(
     name = "ci/gate_shadow",
     srcs = [
         "ci/gate_shadow.py",
+    ],
+)
+
+pb_py_library(
+    name = "ci/graph_adoption",
+    srcs = [
+        "ci/graph_adoption.py",
     ],
 )
 

@@ -1,0 +1,53 @@
+[
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/graph_adoption.py",
+      "owner": "adoption_structural_inputs",
+      "unresolved": "{edge for edge in imports if edge[0] in importers}",
+      "binding": "required"
+    },
+    "count": 1,
+    "reason": "#2789 graph policy: exact two-view import endpoints required for each participating CLI, derived from the code-pinned manifest. This symbolic graph-edge set is newly inventoried; no durable record field contract or graph limit changes."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/graph_adoption.py",
+      "owner": "adoption_structural_inputs",
+      "unresolved": "set(before['reach'][test])"
+    },
+    "count": 1,
+    "reason": "#2789 graph policy: existing test source reach is subtracted to measure gained source identities. Pin this new symbolic source-set witness without changing its expression, any wire reader or any budget."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/graph_adoption.py",
+      "owner": "adoption_structural_inputs",
+      "unresolved": "gained"
+    },
+    "count": 2,
+    "reason": "#2789 graph policy: two occurrences validate gained source identities and gained consumer identities against exact manifest memberships. Preserve both symbolic witnesses and multiplicity; neither changes durable record fields or graph limits."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/graph_adoption.py",
+      "owner": "adoption_structural_inputs",
+      "unresolved": "old_components.get(component[0], set())"
+    },
+    "count": 1,
+    "reason": "#2789 graph policy: existing SCC membership bounds reject new or merged components before attribution filtering. Pin the symbolic component-membership witness; SCC limits remain unchanged."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/ci/graph_adoption.py",
+      "owner": "adoption_structural_inputs",
+      "unresolved": "recorded_edges[kind]"
+    },
+    "count": 1,
+    "reason": "#2789 graph policy: newly added typed graph edges are compared with the exact pinned edge inventory. Pin this symbolic allowed-edge witness; it is not an exemption or a broader edge allowance."
+  }
+]

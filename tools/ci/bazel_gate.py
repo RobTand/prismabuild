@@ -37,6 +37,7 @@ FALLBACK = [
     'MODULE.bazel', 'MODULE.bazel.lock', '.bazelrc', '.bazelversion', '.bazelignore', 'BUILD.bazel',
     'tools/bazel/*', '.github/workflows/*', 'tools/ci/bazel_gate.py', 'tools/ci/remote_gate.py',
     'tools/ci/gate_requirements.txt', 'tools/ci/gate_select.py', 'tools/ci/gate_paths.py',
+    'tools/ci/graph_adoption.py', 'tools/ci/public_view_adoption.json',
 ]
 # Files no build or test reads. Only these may change without selecting a target.
 IRRELEVANT = ['.mergify.yml', '.github/*.md', '.github/ISSUE_TEMPLATE/*', '.github/CODEOWNERS']
@@ -508,9 +509,18 @@ class Workspace:
                 baseline = impact.baseline_record(before)
             changed = {test for test, fingerprint in self.graph_contents['head'].items()
                        if fingerprint != self.graph_contents['base'].get(test)}
+            adoption = module_from('graph_adoption_for_gate', ROOT / 'tools/ci/graph_adoption.py')
+            digests = module_from('graph_adoption_digests', ROOT / 'src/prismabuild/digest_primitives.py')
+            try:
+                manifest = adoption.read_first_adoption_manifest(ROOT / 'tools/ci/public_view_adoption.json', digests)
+            except (OSError, ValueError) as error:
+                raise GateError('graph adoption manifest rejected: ' + str(error)) from error
+            comparison, adoption_record, adoption_errors = adoption.adoption_structural_inputs(
+                before, after, self.graph_inputs, manifest)
+            policy_errors += adoption_errors
             errors = impact.compare(before, after, baseline, changed_tests=changed,
                                     allowlist=self.graph_allowlists['head'], record_gains=record_gains,
-                                    **self.graph_inputs)
+                                    **comparison)
             affected = sorted(test for test, files in after['reach'].items()
                               if files != before['reach'].get(test) or test in changed)
             diagrams = {}
@@ -537,6 +547,7 @@ class Workspace:
             return {'summary': impact.summary(before, after, baseline['reach_budget']),
                     'base': graph_metrics(before), 'head': graph_metrics(live),
                     'edge_diff': self.graph_inputs['edge_diff'],
+                    'adoption': adoption_record,
                     'base_package_max_reach': self.graph_inputs['base_package_max_reach'],
                     'fanout_growth': {source: count - before['dependents'].get(source, 0)
                                       for source, count in after['dependents'].items()
