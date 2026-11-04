@@ -507,10 +507,36 @@ def _native_producer_context(queue, record, attempt_record, action, receipt, *,
     worker_args = [worker_python] + _pool.worker_argv(
         worker_script=launcher_path, action_key=key, cas_root=record["cas_root"],
         checkout_root=checkout, recompute=record.get("recompute") is True)
-    expected = _resource_scope._wrapped_scope_argv(
-        _pool._with_cpu_affinity(worker_args, assigned), python=proxy_python,
-        helper=proxy, socket_path=scope["socket_path"], action_key=key,
-        nonce=nonce, token=scope["token"])
+    launch = detail.get('resource_launch')
+    arguments = dict(python=proxy_python, helper=proxy,
+                     socket_path=scope['socket_path'], action_key=key, nonce=nonce)
+    if launch is None:
+        if scope.get('capability_transport') is not None:
+            raise ActionResultError('versioned native launch evidence is missing')
+        expected = _resource_scope._wrapped_scope_argv(
+            _pool._with_cpu_affinity(worker_args, assigned), **arguments, token=scope['token'])
+    else:
+        if (not isinstance(launch, Mapping)
+                or launch.get('schema') != _resource_scope.RESOURCE_LAUNCH_SCHEMA_V2
+                or launch.get('capability_transport') != scope.get('capability_transport')
+                or launch.get('capability_sha256') != pb.raw_sha256(scope['token'].encode())):
+            raise ActionResultError('native launch capability evidence differs from broker control')
+        transport = launch['capability_transport']
+        fields = {'schema', 'capability_transport', 'capability_sha256'}
+        if transport == 'private_fd':
+            if set(launch) != fields | {'capability_fd'}:
+                raise ActionResultError('invalid private native launch evidence')
+            try:
+                expected = _resource_scope._private_scope_argv(
+                    _pool._with_cpu_affinity(worker_args, assigned), **arguments,
+                    token_fd=launch['capability_fd'])
+            except ValueError as exc:
+                raise ActionResultError('invalid private native launch descriptor') from exc
+        elif transport == 'legacy_argv' and set(launch) == fields:
+            expected = _resource_scope._wrapped_scope_argv(
+                _pool._with_cpu_affinity(worker_args, assigned), **arguments, token=scope['token'])
+        else:
+            raise ActionResultError('unsupported native launch capability transport')
     if native_argv != expected:
         raise ActionResultError("immutable native launch argv differs from selected broker control or request")
     runtime_sources = [core, launcher]

@@ -3,6 +3,7 @@ from __future__ import annotations
 from submission_support import patch_store
 
 import os
+import select
 import signal
 import threading
 import json
@@ -150,6 +151,7 @@ def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(
     # real subprocesses below still inherit PrismaBuild's admitted affinity.
     monkeypatch.setattr(pool.os, "sched_getaffinity", lambda pid: set(range(20)))
     gates = {key: os.pipe() for key in (first, second)}
+    ready = {key: os.pipe() for key in (first, second)}
     launched = {}
     started = {key: threading.Event() for key in (first, second)}
     original_popen = pool.subprocess.Popen
@@ -162,16 +164,35 @@ def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(
     monkeypatch.setattr(queue, "_cleanup_action_containers",
                         lambda record: {"complete": True, "used": True, "removed": [], "remaining": []})
 
-    def payload(scope, argv, **kwargs):
+    def payload(scope, argv, *, token_fd, **kwargs):
         read_fd, _ = gates[scope.action_key]
-        program = (f"import os; os.read({read_fd}, 1); "
-                   f"raise SystemExit({1 if scope.action_key == second else 0})")
-        return [sys.executable, "-c", program, scope.action_key]
+        _, ready_fd = ready[scope.action_key]
+        program = f"""import errno, os
+assert os.read({token_fd}, 65) == b'b' * 64
+assert os.read({token_fd}, 1) == b''
+os.close({token_fd})
+try:
+    os.fstat({token_fd})
+except OSError as error:
+    assert error.errno == errno.EBADF
+else:
+    raise AssertionError('capability descriptor is still open')
+os.write({ready_fd}, b'R')
+os.close({ready_fd})
+os.read({read_fd}, 1)
+raise SystemExit({1 if scope.action_key == second else 0})
+"""
+        return [sys.executable, "-c", program, str(token_fd), scope.action_key]
 
     def launch(argv, **kwargs):
         key = argv[-1]
-        process = original_popen(argv, pass_fds=(gates[key][0],), **kwargs)
+        descriptors = kwargs.pop("pass_fds")
+        assert descriptors == (int(argv[-2]),)
+        process = original_popen(
+            argv, pass_fds=(*descriptors, gates[key][0], ready[key][1]), **kwargs)
         launched[key] = process
+        assert select.select([ready[key][0]], [], [], 60)[0]
+        assert os.read(ready[key][0], 1) == b"R"
         started[key].set()
         return process
 
@@ -270,7 +291,7 @@ def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(
         )
     finally:
         release.set()
-        for read_fd, write_fd in gates.values():
+        for read_fd, write_fd in (*gates.values(), *ready.values()):
             os.close(write_fd)
             os.close(read_fd)
         for process in launched.values():

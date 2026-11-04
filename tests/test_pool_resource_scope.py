@@ -1,6 +1,7 @@
 """A pool attempt keeps its tokens until its exact aggregate scope is empty."""
 import json
 import hashlib
+import os
 import socket
 import subprocess
 import sys
@@ -71,7 +72,8 @@ def scoped(tmp_path, monkeypatch, request):
     return queue, item, calls
 
 
-def _process(monkeypatch, queue, item, calls, *, ticks=0, returncode=0):
+def _process(monkeypatch, queue, item, calls, *, ticks=0, returncode=0,
+             transport='private_fd'):
     class Process:
         pid = 999999999
         def __init__(self, argv, **kw):
@@ -80,11 +82,22 @@ def _process(monkeypatch, queue, item, calls, *, ticks=0, returncode=0):
             )
             assert persisted['resource_scope']['token'] == 'b'*64
             assert persisted['resource_scope']['memory_max_bytes'] == 2 * 1024**3
-            assert '--token' in argv
+            assert persisted['resource_scope']['capability_transport'] == transport
+            if transport == 'private_fd':
+                assert '--token' not in argv and 'b' * 64 not in argv
+                self.capability_fd = int(argv[argv.index('--token-fd') + 1])
+                assert kw['pass_fds'] == (self.capability_fd,)
+                assert os.read(self.capability_fd, 65) == b'b' * 64
+            else:
+                assert argv[argv.index('--token') + 1] == 'b' * 64
+                assert 'pass_fds' not in kw
             calls.append('launch')
             self.remaining = ticks
             self.returncode = returncode
         def communicate(self, *, timeout):
+            if transport == 'private_fd':
+                with pytest.raises(OSError):
+                    os.fstat(self.capability_fd)
             if self.remaining:
                 assert timeout <= 2.0, 'scope telemetry must not wait for a 30s heartbeat'
                 self.remaining -= 1
@@ -105,6 +118,77 @@ def test_scope_is_durable_before_launch_and_completion_precedes_release(scoped, 
     assert calls.count('sample') >= 3
     assert calls.index('stop') < calls.index('release') < calls.index('learn')
     assert queue.ledger().held() == {}
+
+
+def test_future_launch_detail_never_persists_the_broker_capability(scoped, monkeypatch):
+    queue, item, calls = scoped
+    _process(monkeypatch, queue, item, calls)
+    outcome = queue.execute(item, containment=True)
+    queue.finish(item['action_key'], status='executed', detail=outcome, claim_snapshot=item)
+    ending = json.loads(queue.records.item_path(
+        pool.record_store.DONE, item['action_key']).read_text())
+    attempt = json.loads(queue.records.attempt_path(ending, 1).read_text())
+    sentinel = 'b' * 64  # Synthetic capability issued by this fixture's broker.
+    assert ending['resource_scope']['token'] == sentinel
+    for detail in (outcome, ending['detail'], attempt['detail']):
+        assert sentinel not in json.dumps(detail)
+        assert '--token' not in detail['argv']
+
+
+def test_verified_legacy_transport_is_durable_warned_and_recoverable(
+        scoped, monkeypatch, tmp_path, capsys):
+    queue, item, calls = scoped
+    helper = tmp_path / 'retained-resource-exec.py'
+    helper.write_text('"""Verified legacy helper protocol fixture."""\n')
+    monkeypatch.setattr(resource_scope.ResourceScope, '_proven_retained_proxy',
+                        lambda scope, worker: helper)
+    _process(monkeypatch, queue, item, calls, transport='legacy_argv')
+    outcome = queue.execute(item, containment=True)
+    assert outcome['status'] == 'executed'
+    assert outcome['resource_launch'] == {
+        'schema': resource_scope.RESOURCE_LAUNCH_SCHEMA_V2,
+        'capability_transport': 'legacy_argv',
+        'capability_sha256': hashlib.sha256(b'b' * 64).hexdigest(),
+    }
+    warning = capsys.readouterr().err
+    assert 'capability_transport=legacy_argv' in warning
+    assert 'b' * 64 not in warning
+    assert 'legacy_argv' in outcome['capability_transport_warning']
+    recovered = queue.scope_for_record(item)
+    assert recovered.capability_transport == 'legacy_argv'
+    assert recovered.token == 'b' * 64
+
+
+@pytest.mark.parametrize('protocol', [
+    'PRIVATE_CAPABILITY_FD_PROTOCOL = 2',
+    'PRIVATE_CAPABILITY_FD_PROTOCOL: int',
+])
+def test_invalid_helper_protocol_refuses_before_scope_or_launch(
+        scoped, monkeypatch, tmp_path, protocol):
+    queue, item, calls = scoped
+    helper = tmp_path / 'retained-resource-exec.py'
+    helper.write_text(protocol + '\n')
+    monkeypatch.setattr(resource_scope.ResourceScope, '_proven_retained_proxy',
+                        lambda scope, worker: helper)
+    _process(monkeypatch, queue, item, calls)
+    with pytest.raises(OSError, match='capability protocol'):
+        queue.execute(item, containment=True)
+    assert 'launch' not in calls and 'create' not in calls
+
+
+def test_private_descriptor_closes_if_popen_refuses(scoped, monkeypatch):
+    queue, item, calls = scoped
+    descriptors = []
+    def refuse(argv, **kwargs):
+        descriptors.extend(kwargs['pass_fds'])
+        assert os.read(descriptors[0], 65) == b'b' * 64
+        raise OSError('synthetic Popen refusal')
+    monkeypatch.setattr(pool.subprocess, 'Popen', refuse)
+    with pytest.raises(OSError, match='synthetic Popen refusal'):
+        queue.execute(item, containment=True)
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
 
 
 def test_mutable_queue_cannot_raise_sealed_memory_limit(scoped, monkeypatch):
