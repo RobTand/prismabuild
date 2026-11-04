@@ -396,8 +396,9 @@ recorded existing consumers. Each of those test closures gains at most the
 two recorded view sources. `sha256` is the canonical finite JSON payload's
 digest with the `sha256` field omitted; the policy code independently pins it.
 
-The complete six-import transition must appear together. Any unrecorded typed
-edge, removed edge, unrecorded consumer, excess delta, or new/merged SCC
+Each adopting CLI must add its complete two-import pair atomically with its
+first writer. The three CLIs can adopt in separate prerequisite-ordered PRs.
+Any unrecorded typed edge, removed edge, unrecorded consumer, excess delta, or new/merged SCC
 rejects the grant. Only after validation are the recorded added edges excluded
 from structural attribution. All comparisons retain the real graphs and
 metrics, and the gate result records the applied manifest hash. Other checks
@@ -406,5 +407,8 @@ grant is inactive. It does not permit later consumer growth or grant a runtime
 publication. A changed graph population needs a newly reviewed design and
 manifest rather than an automatic refresh.
 
-The mechanism lands before a separate first-adoption issue. Output-changing
-leaves follow their explicit merge prerequisites, one labelled leaf at a time.
+The mechanism lands before the first writer leaves in #2718, #2717 and #2702.
+Each first writer carries its real-use import pair; there is no preparatory
+unused-import leaf. Every PR owns its graph proof through its Graph impact job.
+Output leaves follow their explicit merge prerequisites, one labelled leaf at a
+time, only after every prerequisite merges to main.

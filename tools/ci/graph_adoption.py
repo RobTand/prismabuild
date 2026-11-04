@@ -38,7 +38,7 @@ def read_first_adoption_manifest(path, digests):
 def adoption_structural_inputs(before, after, inputs, manifest):
     """Return comparison inputs and an auditable grant decision; never mutate.
 
-    Every other policy still receives the real graph. Reject partial adoption,
+    Every other policy still receives the real graph. Reject incomplete importer pairs,
     unrecorded typed edges, removals, unrecorded consumers, excessive source or
     test deltas, and new/merged SCCs before excluding attribution edges.
     """
@@ -49,8 +49,10 @@ def adoption_structural_inputs(before, after, inputs, manifest):
     if not imports.intersection(added_rules):
         return inputs, decision, []
     errors = []
-    if not imports <= added_rules:
-        errors.append('graph adoption requires the complete recorded import inventory')
+    importers = {source for source, _ in imports & added_rules}
+    required = {edge for edge in imports if edge[0] in importers}
+    if not required <= added_rules:
+        errors.append('graph adoption requires both recorded imports for each adopting CLI')
     recorded_edges = {kind: set(map(tuple, edges)) for kind, edges in manifest['added_edges'].items()}
     for kind in ('rule_to_rule', 'rule_to_source'):
         unrecorded = set(map(tuple, changes['added'][kind])) - recorded_edges[kind]
