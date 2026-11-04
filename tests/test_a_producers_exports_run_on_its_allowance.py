@@ -188,7 +188,18 @@ def _running(spool, monkeypatch, *, psi: float, cpu_per_s: float = PRODUCER_CPU_
     adaptive_cpu.write_json(base / "jobs.json", {owner: dict(
         current, sampled_unix=meta["admitted_unix"], wall_seconds=10.,
         cpu_seconds=10. * cpu_per_s)})
-    return cpu_sampler
+
+    def sample_running():
+        sample = cpu_sampler()
+        # The synthetic worker keeps reporting while claims run. Preserve the
+        # requested age, including the deliberately stale telemetry control.
+        current["sampled_unix"] = sample["sampled_unix"] - telemetry_age_s
+        current["wall_seconds"] += sample["interval_s"]
+        current["cpu_seconds"] += sample["interval_s"] * cpu_per_s
+        adaptive_cpu.write_json(base / "telemetry" / f"{owner}.json", current)
+        return sample
+
+    return sample_running
 
 
 def _export(spool, batch: str) -> str:
