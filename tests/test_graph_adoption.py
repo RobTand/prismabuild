@@ -58,7 +58,7 @@ def adoption_workspace():
         workspace.graph_baselines = {name: {'graph_impact': impact.baseline_record(before)}
                                      for name in ('base', 'head')}
         workspace.graph_allowlists = {'base': {}, 'head': {}}
-        workspace.graph_imports = {'base': {}, 'head': {}}
+        workspace.graph_imports = {name: gate.bazel_imports({}, {}) for name in ('base', 'head')}
         workspace.graph_owners = {'base': {}, 'head': {}}
         workspace.explain = lambda target: 'synthetic graph contract'
         return workspace
