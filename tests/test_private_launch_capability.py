@@ -9,6 +9,7 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -75,17 +76,50 @@ def test_prepared_private_pipe_closes_when_process_creation_fails(tmp_path):
     assert closed.value.errno == errno.EBADF
 
 
-@pytest.mark.parametrize('approved', [True, False])
-def test_private_proxy_forwards_only_stdio_and_never_exposes_its_capability(tmp_path, approved):
+@pytest.mark.parametrize('reply', ['approved', 'refused', 'completion-eof'])
+def test_private_proxy_forwards_only_stdio_and_never_exposes_its_capability(tmp_path, reply):
     sentinel = 'b' * 64
     with short_socket_path() as endpoint, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(str(endpoint))
         server.listen(1)
-        server.settimeout(10)
         scope = _private_scope(tmp_path, socket_path=endpoint)
+        ready, release, expired = threading.Event(), threading.Event(), threading.Event()
+        children, connections = [], []
+        custody = threading.Lock()
+
+        def stop_wire():
+            ready.set()
+            release.set()
+            with custody:
+                for child in children:
+                    if child.poll() is None:
+                        child.kill()
+                for endpoint in [server, *connections]:
+                    try:
+                        endpoint.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+
+        def expire_wire():
+            expired.set()
+            stop_wire()
+
+        def launch(argv, **kwargs):
+            with custody:
+                assert not expired.is_set(), 'wire proof exceeded its failure backstop'
+                child = subprocess.Popen(argv, **kwargs)
+                children.append(child)
+                return child
+
+        # One generous deadlock backstop bounds the entire wire exchange. The
+        # listener readiness, parent FD closure and process exit govern order.
+        backstop = threading.Timer(60, expire_wire)
 
         def broker_round_trip():
+            ready.set()
             connection, _ = server.accept()
+            with custody:
+                connections.append(connection)
             with connection:
                 message, ancillary, flags, _ = connection.recvmsg(65536, socket.CMSG_SPACE(12))
                 assert not flags & socket.MSG_CTRUNC
@@ -99,12 +133,17 @@ def test_private_proxy_forwards_only_stdio_and_never_exposes_its_capability(tmp_
                     assert len(received) == 3
                     assert sentinel not in json.dumps(request['argv'])
                     assert all(sentinel not in value for value in request['env'].values())
-                    if approved:
-                        payload = subprocess.run(
+                    release.wait()
+                    assert not expired.is_set(), 'wire proof exceeded its failure backstop'
+                    if reply == 'completion-eof':
+                        connection.sendall(sentinel.encode())
+                        return
+                    if reply == 'approved':
+                        payload = launch(
                             request['argv'], env=request['env'], cwd=request['cwd'],
                             stdin=received[0], stdout=received[1], stderr=received[2],
-                            close_fds=True, timeout=10)
-                        answer = {'ok': True, 'returncode': payload.returncode}
+                            close_fds=True)
+                        answer = {'ok': True, 'returncode': payload.wait()}
                     else:
                         answer = {'ok': False, 'error': sentinel}
                     connection.sendall(json.dumps(answer).encode() + b'\n')
@@ -113,29 +152,44 @@ def test_private_proxy_forwards_only_stdio_and_never_exposes_its_capability(tmp_
                         os.close(descriptor)
 
         with ThreadPoolExecutor(max_workers=1) as executor:
-            response = executor.submit(broker_round_trip)
-            with scope.prepared_launch(['/bin/true'], worker_script='/worker.py') as launch:
-                argv, descriptors, evidence = launch
-                descriptor, = descriptors
-                program = (
-                    'import json,os,sys\n'
-                    'try:\n os.fstat(int(sys.argv[1])); inherited=True\n'
-                    'except OSError:\n inherited=False\n'
-                    'print(json.dumps({"private_fd_open":inherited,'
-                    '"capability_in_env":any("b"*64 in value for value in os.environ.values())}))\n')
-                argv[-1:] = [sys.executable, '-c', program, str(descriptor)]
-                process = subprocess.Popen(
-                    argv, pass_fds=descriptors, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            with pytest.raises(OSError):
-                os.fstat(descriptor)
-            output, error = process.communicate(timeout=15)
-            response.result(timeout=10)
+            backstop.start()
+            try:
+                response = executor.submit(broker_round_trip)
+                ready.wait()
+                with scope.prepared_launch(['/bin/true'], worker_script='/worker.py') as prepared:
+                    argv, descriptors, evidence = prepared
+                    descriptor, = descriptors
+                    program = (
+                        'import json,os,sys\n'
+                        'try:\n os.fstat(int(sys.argv[1])); inherited=True\n'
+                        'except OSError:\n inherited=False\n'
+                        'print(json.dumps({"private_fd_open":inherited,'
+                        '"capability_in_env":any("b"*64 in value for value in os.environ.values())}))\n')
+                    argv[-1:] = [sys.executable, '-c', program, str(descriptor)]
+                    process = launch(
+                        argv, pass_fds=descriptors, stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                with pytest.raises(OSError):
+                    os.fstat(descriptor)
+                release.set()
+                output, error = process.communicate()
+                response.result()
+                assert not expired.is_set(), 'wire proof exceeded its failure backstop'
+            finally:
+                backstop.cancel()
+                stop_wire()
+                backstop.join()
+                for child in children:
+                    child.wait()
     assert sentinel not in json.dumps(evidence) + output + error
-    assert process.returncode == (0 if approved else 125)
-    if approved:
+    assert process.returncode == (0 if reply == 'approved' else 125)
+    if reply == 'approved':
         assert json.loads(output) == {'private_fd_open': False, 'capability_in_env': False}
         assert error == ''
+    elif reply == 'completion-eof':
+        assert output == ''
+        assert error == ('PrismaBuild resource execution refused: resource broker closed '
+                         'without an execution result\n')
     else:
         assert output == '' and 'resource execution refused' in error
 
