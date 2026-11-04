@@ -623,6 +623,9 @@ control = Connection(int(sys.argv[6]))
 os.statvfs = lambda path: os.statvfs_result(tuple(json.loads(sys.argv[7])))
 clock = [0.0]
 _bounded_reader.time = SimpleNamespace(monotonic=lambda: clock[0])
+# Keep independent pin retirement from bypassing this inventory-wait proof.
+# The parent still exercises real inventory and pending-directory cleanup.
+cache._remove_idle_bundle_flight = lambda root, address: None
 run, lock = subprocess.run, cache._bundle_cache_lock
 def observed(args, **kwargs):
     if "pack-objects" in args:
