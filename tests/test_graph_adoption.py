@@ -22,7 +22,7 @@ VIEWS = ('//src/prismabuild:operator_view', '//src/prismabuild:public_evidence')
 
 @pytest.fixture
 def adoption_workspace():
-    def build(*, unrelated=False, overflowing=False, partial=False, cycle=False, single_cli=None):
+    def build(*, unrelated=False, overflowing=False, partial=False, cycle=False, single_cli=None, outside_view=None):
         cli_sources = {name + '.py' for name in CLIS}
         view_sources = {name + '.py' for name in VIEWS}
         extra = '//src/prismabuild:unrecorded.py'
@@ -43,11 +43,15 @@ def adoption_workspace():
         if cycle:
             before_edges.add((VIEWS[0], CLIS[0]))
         added_data = {(ADOPTER_TEST, source) for source in view_sources}
+        outsider = '//tools:fleet/not_a_recorded_adopter'
+        if outside_view is not None:
+            before_edges.add((ADOPTER_TEST, outsider))
+            added_rules.add((outsider, outside_view))
         after_edges = before_edges | added_rules | added_data
         reached = cli_sources | view_sources | ({extra} if unrelated or overflowing else set())
         before = impact.measure({ADOPTER_TEST: cli_sources}, before_edges, loc)
         after = impact.measure({ADOPTER_TEST: reached}, after_edges, loc)
-        rules = {ADOPTER_TEST, *CLIS, *VIEWS}
+        rules = {ADOPTER_TEST, outsider, *CLIS, *VIEWS}
         typed = lambda edges: {
             'rule_to_rule': {(a, b) for a, b in edges if a in rules and b in rules},
             'rule_to_source': {(a, b) for a, b in edges if a in rules and b in loc},
@@ -168,4 +172,19 @@ def test_one_recorded_cli_pair_can_adopt_with_its_first_writer(adoption_workspac
 def test_one_cli_cannot_adopt_an_incomplete_pair(adoption_workspace):
     report = adoption_workspace(single_cli=CLIS[0], partial=True).graph_check('before', 'after')
     assert report['errors']
-    assert any('both recorded imports' in error for error in report['errors'])
+    assert report['adoption']['applied'] is False
+
+
+@pytest.mark.parametrize('view', VIEWS)
+def test_a_nonparticipating_module_cannot_import_either_view(adoption_workspace, view):
+    report = adoption_workspace(single_cli=CLIS[0], outside_view=view).graph_check('before', 'after')
+    assert report['errors']
+    assert report['adoption']['applied'] is False
+    assert any('unrecorded rule_to_rule edge' in error for error in report['errors'])
+
+
+@pytest.mark.parametrize('cli', CLIS)
+def test_each_recorded_pair_refuses_a_delta_over_its_cap(adoption_workspace, cli):
+    report = adoption_workspace(single_cli=cli, overflowing=True).graph_check('before', 'after')
+    assert report['errors']
+    assert report['adoption']['applied'] is False
