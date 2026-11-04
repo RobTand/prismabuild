@@ -6,7 +6,6 @@ races or trusting a process name to establish ownership.
 """
 from __future__ import annotations
 
-import ast
 from contextlib import contextmanager
 import hashlib
 import json
@@ -703,6 +702,8 @@ class ResourceScope:
 
     def select_launch_transport(self, worker_script: str | Path) -> None:
         """Choose only within the worker's already-proven runtime closure."""
+        from .generation_receipt import SourceDeclarations
+
         root = Path(__file__).resolve().parents[2]
         helper = self._proven_retained_proxy(worker_script)
         retained = helper is not None and not helper.is_relative_to(root)
@@ -712,20 +713,12 @@ class ResourceScope:
                 helper = root / 'tools/fleet/resource_exec.py'
         source = helper.read_bytes()
         try:
-            tree = ast.parse(source)
-        except (SyntaxError, ValueError) as exc:
+            protocol = SourceDeclarations.capture(source).protocol('PRIVATE_CAPABILITY_FD_PROTOCOL')
+        except ValueError as exc:
             raise OSError('invalid resource proxy capability protocol') from exc
-        protocols = [node.value for node in tree.body if isinstance(node, ast.Assign)
-                     and any(isinstance(name, ast.Name)
-                             and name.id == 'PRIVATE_CAPABILITY_FD_PROTOCOL'
-                             for name in node.targets)]
-        bindings = [node for node in ast.walk(tree) if isinstance(node, ast.Name)
-                    and node.id == 'PRIVATE_CAPABILITY_FD_PROTOCOL'
-                    and isinstance(node.ctx, ast.Store)]
-        if retained and not protocols and not bindings and b'--token-fd' not in source:
+        if retained and protocol is None and b'--token-fd' not in source:
             transport = 'legacy_argv'
-        elif (len(protocols) == len(bindings) == 1 and isinstance(protocols[0], ast.Constant)
-              and type(protocols[0].value) is int and protocols[0].value == 1):
+        elif protocol == 1:
             transport = 'private_fd'
         else:
             raise OSError('unsupported resource proxy capability protocol')

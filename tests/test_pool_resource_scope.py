@@ -161,7 +161,7 @@ def test_verified_legacy_transport_is_durable_warned_and_recoverable(
 
 @pytest.mark.parametrize('protocol', [
     'PRIVATE_CAPABILITY_FD_PROTOCOL = 2',
-    'PRIVATE_CAPABILITY_FD_PROTOCOL: int = 1',
+    'PRIVATE_CAPABILITY_FD_PROTOCOL: int',
 ])
 def test_invalid_helper_protocol_refuses_before_scope_or_launch(
         scoped, monkeypatch, tmp_path, protocol):
@@ -171,7 +171,7 @@ def test_invalid_helper_protocol_refuses_before_scope_or_launch(
     monkeypatch.setattr(resource_scope.ResourceScope, '_proven_retained_proxy',
                         lambda scope, worker: helper)
     _process(monkeypatch, queue, item, calls)
-    with pytest.raises(OSError, match='unsupported.*protocol'):
+    with pytest.raises(OSError, match='capability protocol'):
         queue.execute(item, containment=True)
     assert 'launch' not in calls and 'create' not in calls
 

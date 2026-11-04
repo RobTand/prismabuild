@@ -197,9 +197,11 @@ def test_verified_retained_proxy_selects_its_recorded_transport(tmp_path, monkey
 
 @pytest.mark.parametrize('source', [
     b'PRIVATE_CAPABILITY_FD_PROTOCOL = 2\n',
-    b'PRIVATE_CAPABILITY_FD_PROTOCOL: int = 1\n',
+    b'PRIVATE_CAPABILITY_FD_PROTOCOL: int\n',
     b'PRIVATE_CAPABILITY_FD_PROTOCOL = 1\nPRIVATE_CAPABILITY_FD_PROTOCOL = 1\n',
     b'PRIVATE_CAPABILITY_FD_PROTOCOL = 1 + 0\n',
+    b'def PRIVATE_CAPABILITY_FD_PROTOCOL(): pass\n',
+    b'import sys as PRIVATE_CAPABILITY_FD_PROTOCOL\n',
     b"argument = '--token-fd'\n",
     b'PRIVATE_CAPABILITY_FD_PROTOCOL =\n',
 ])
