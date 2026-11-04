@@ -107,6 +107,21 @@ def test_scope_is_durable_before_launch_and_completion_precedes_release(scoped, 
     assert queue.ledger().held() == {}
 
 
+def test_future_launch_detail_never_persists_the_broker_capability(scoped, monkeypatch):
+    queue, item, calls = scoped
+    _process(monkeypatch, queue, item, calls)
+    outcome = queue.execute(item, containment=True)
+    queue.finish(item['action_key'], status='executed', detail=outcome, claim_snapshot=item)
+    ending = json.loads(queue.records.item_path(
+        pool.record_store.DONE, item['action_key']).read_text())
+    attempt = json.loads(queue.records.attempt_path(ending, 1).read_text())
+    sentinel = 'b' * 64  # Synthetic capability issued by this fixture's broker.
+    assert ending['resource_scope']['token'] == sentinel
+    for detail in (outcome, ending['detail'], attempt['detail']):
+        assert sentinel not in json.dumps(detail)
+        assert '--token' not in detail['argv']
+
+
 def test_mutable_queue_cannot_raise_sealed_memory_limit(scoped, monkeypatch):
     queue, item, calls = scoped
     item['resources']['mem_gb'] = 200
