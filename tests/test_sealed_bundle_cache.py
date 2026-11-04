@@ -60,6 +60,40 @@ def test_repeated_submission_reuses_identical_bundle_and_action(sealing):
     assert len(packs) == 1
 
 
+
+def test_pin_retired_after_open_still_produces_a_valid_uncached_bundle(sealing, monkeypatch):
+    _, cache, packs, seal = sealing
+    native_open = os.open
+    busy = False
+    retired = []
+
+    def retire_before_validation(path, flags, *args, **kwargs):
+        nonlocal busy
+        descriptor = native_open(path, flags, *args, **kwargs)
+        name = Path(path).name if isinstance(path, (str, Path)) else ''
+        if not busy and not retired and name.startswith('.pin-'):
+            busy = True
+            try:
+                before = os.fstat(descriptor).st_nlink
+                cache_module._remove_idle_bundle_flight(Path(path).parent, name[5:])
+                retired.append((before, os.fstat(descriptor).st_nlink))
+            finally:
+                busy = False
+        return descriptor
+
+    monkeypatch.setattr(os, 'open', retire_before_validation)
+    first, first_bytes = seal()
+    assert retired == [(1, 0)]
+    assert len(packs) == 1
+    assert not list(cache.glob('*/bundle'))
+    assert not list(cache.glob('.pending-*'))
+    monkeypatch.setattr(os, 'open', native_open)
+    monkeypatch.setenv('PRISMABUILD_BUNDLE_CACHE_ROOT', 'off')
+    fresh, fresh_bytes = seal()
+    assert fresh == first and fresh_bytes == first_bytes
+    assert len(packs) == 2
+
+
 def test_cached_bytes_equal_an_independent_fresh_pack(sealing, monkeypatch):
     _, _, packs, seal = sealing
     first, expected = seal(stamp_name="closure", stamp_payload="same input")
