@@ -15024,6 +15024,7 @@ class PoolQueue:
             socket_path=Path(control["socket_path"]),
         )
         scope.unit, scope.token = unit, control["token"]
+        scope.capability_transport = control.get('capability_transport')
         scope.cgroup_path = Path(control["cgroup_path"])
         started = control.get("started_monotonic")
         valid = (not control.get("create_recovered") and type(started) in (int, float) and math.isfinite(started)
@@ -15235,6 +15236,7 @@ class PoolQueue:
             shape_key=cpu_admission.shape_key(item),
             **gpu_kwargs,
         )
+        scope.select_launch_transport(item['worker_script'])
         path = self.records.item_path(CLAIMED, key)
         live = record_store.read_document(path)
         if live is None or not claim_identity.same_claim(live, item):
@@ -23200,13 +23202,6 @@ class PoolQueue:
                     pb.ACTION_KEY_ENV: key, pb.ACTION_NONCE_ENV: scope.nonce,
                     pb.ACTION_SCOPE_ENV: scope.unit})
             item["scratch_declaration_record"] = evidence
-        if scope is not None:
-            # The broker launches taskset inside the aggregate slice. The
-            # stdio proxy itself is not an attributed action process. The
-            # sealed worker_script names the runtime being launched --
-            # retained or current -- so the proxy comes from that same
-            # proven runtime however the argv is prefixed.
-            argv = scope.wrap_argv(argv, worker_script=item["worker_script"])
         # Read immediately before the launch and again at every way out, so
         # the difference is this child's and not the worker loop's history.
         rusage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -23253,21 +23248,31 @@ class PoolQueue:
         # No payload exists during withdrawal, scope preparation or status-file
         # cleanup. Shared I/O there must not spend its execution budget.
         deadline = None if timeout_s is None else clock.monotonic() + timeout_s
-        process = subprocess.Popen(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            # The action's own ending, and a killed run's partial profile,
-            # travel in a file because this process's exit status cannot
-            # carry them.
-            env={**os.environ, pb.ACTION_STATUS_PATH_ENV: str(status_path),
-                 **progress_environment, **self.launch_environment(item)},
-            # The launcher leads its own group so the timeout can signal the
-            # group rather than the single pid.  ``kill()`` on the pid reaches
-            # the launcher only, and leaves the action holding the GPU.
-            start_new_session=True,
-        )
+        launch_evidence = None
+        transport_warning = None
+        with ExitStack() as launch:
+            descriptors = ()
+            if scope is not None:
+                argv, descriptors, launch_evidence = launch.enter_context(
+                    scope.prepared_launch(argv, worker_script=item['worker_script']))
+                if scope.capability_transport == 'legacy_argv':
+                    transport_warning = ('verified legacy helper uses capability_transport=legacy_argv; '
+                                         'broker capability remains in launch argv until retained-runtime drain')
+                    print('PrismaBuild warning: ' + transport_warning, file=sys.stderr, flush=True)
+            process = subprocess.Popen(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                # The action's own ending, and a killed run's partial profile,
+                # travel in a file because this process's exit status cannot
+                # carry them.
+                env={**os.environ, pb.ACTION_STATUS_PATH_ENV: str(status_path),
+                     **progress_environment, **self.launch_environment(item)},
+                # The launcher leads its own group so timeout can stop its children.
+                start_new_session=True,
+                **({'pass_fds': descriptors} if descriptors else {}),
+            )
         # Say which process is the launcher, so a withdrawal ON THIS BOX can
         # signal the action's group at once instead of waiting a heartbeat for
         # the loop below to notice.  The lease's own ``pid`` is this loop, which
@@ -23413,6 +23418,10 @@ class PoolQueue:
                 them agreeing about what a record carries and one not.
                 """
 
+                if launch_evidence is not None:
+                    outcome['resource_launch'] = launch_evidence
+                if transport_warning is not None:
+                    outcome['capability_transport_warning'] = transport_warning
                 stall: dict[str, object] | None = None
                 if watch is not None:
                     ended = clock.monotonic()

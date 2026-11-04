@@ -6,6 +6,8 @@ races or trusting a process name to establish ownership.
 """
 from __future__ import annotations
 
+import ast
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -24,6 +26,7 @@ BROKER_SOCKET = Path('/run/prismabuild/resources.sock')
 CONTAINER_SETTLEMENT_SCHEMA = 'prismabuild.container-settlement.v1'
 SCOPE_RE = re.compile(r'prismabuild-job[a-f0-9]{32}\.slice')
 MAX_MESSAGE_BYTES = 65536
+RESOURCE_LAUNCH_SCHEMA_V2 = 'prismabuild.resource_launch.v2'
 
 
 class ResourceUnavailable(OSError):
@@ -393,7 +396,8 @@ def _checked_control_identity(action_key: str, control: object) -> tuple[str, st
             or control.get("cgroup_path") != "/sys/fs/cgroup/prismabuild.slice/" + unit
             or control.get("socket_path") != str(BROKER_SOCKET)
             or not isinstance(control.get("token"), str)
-            or re.fullmatch(r"[a-f0-9]{64}", control["token"]) is None):
+            or re.fullmatch(r"[a-f0-9]{64}", control["token"]) is None
+            or control.get('capability_transport') not in (None, 'private_fd', 'legacy_argv')):
         raise ValueError("invalid resource scope recovery identity")
     return nonce, unit
 
@@ -404,6 +408,15 @@ def _wrapped_scope_argv(argv: list[str], *, python: str, helper: str | Path,
     """One pure broker proxy launch recipe, shared by launch and provenance."""
     return [python, str(helper), "--socket", str(socket_path), "--action-key",
             action_key, "--nonce", nonce, "--token", token, "--", *argv]
+
+
+def _private_scope_argv(argv: list[str], *, python: str, helper: str | Path,
+                        socket_path: str | Path, action_key: str,
+                        nonce: str, token_fd: int) -> list[str]:
+    if type(token_fd) is not int or not 3 <= token_fd <= 2**31 - 1:
+        raise ValueError('invalid private capability descriptor')
+    return [python, str(helper), '--socket', str(socket_path), '--action-key',
+            action_key, '--nonce', nonce, '--token-fd', str(token_fd), '--', *argv]
 
 
 class ResourceScope:
@@ -442,6 +455,8 @@ class ResourceScope:
         self.unit: str | None = None
         self.cgroup_path: Path | None = None
         self.token: str | None = None
+        self.capability_transport: str | None = None
+        self._launch_helper: Path | None = None
         self._last: dict[str, Any] = {}
         self._reason: str | None = None
         self._process_io: dict[str, Any] | None = None
@@ -494,7 +509,9 @@ class ResourceScope:
                 'scope_id': self.unit, 'cgroup_path': str(self.cgroup_path),
                 'token': self.token, 'socket_path': str(self.socket_path),
                 'memory_max_bytes': self.memory_max_bytes,
-                'gpu_memory_max_bytes': self.gpu_memory_max_bytes}
+                'gpu_memory_max_bytes': self.gpu_memory_max_bytes,
+                **({'capability_transport': self.capability_transport}
+                   if self.capability_transport is not None else {})}
 
     def _sealed_member(self, root: Path, rel: str, receipt) -> Path:
         """One manifest-covered sealed member, or raise ``OSError``.
@@ -653,7 +670,8 @@ class ResourceScope:
         return self._sealed_generation_proxy(root, resolved)
 
     def wrap_argv(self, argv: list[str],
-                  *, worker_script: str | Path | None = None) -> list[str]:
+                  *, worker_script: str | Path | None = None,
+                  token_fd: int | None = None) -> list[str]:
         """Wrap ``argv`` in the stdio proxy of the runtime being launched.
 
         ``worker_script`` is the sealed worker this launch executes, as
@@ -669,15 +687,74 @@ class ResourceScope:
 
         if self.token is None:
             raise RuntimeError('create the resource scope before launching')
-        helper = self._proven_retained_proxy(worker_script)
+        helper = self._launch_helper or self._proven_retained_proxy(worker_script)
         if helper is None:
             root = Path(__file__).resolve().parents[2]
             helper = root / 'tools/resource_exec.py'
             if not helper.is_file():
                 helper = root / 'tools/fleet/resource_exec.py'
+        if token_fd is not None:
+            return _private_scope_argv(
+                argv, python=sys.executable, helper=helper, socket_path=self.socket_path,
+                action_key=self.action_key, nonce=self.nonce, token_fd=token_fd)
         return _wrapped_scope_argv(
             argv, python=sys.executable, helper=helper, socket_path=self.socket_path,
             action_key=self.action_key, nonce=self.nonce, token=self.token)
+
+    def select_launch_transport(self, worker_script: str | Path) -> None:
+        """Choose only within the worker's already-proven runtime closure."""
+        root = Path(__file__).resolve().parents[2]
+        helper = self._proven_retained_proxy(worker_script)
+        retained = helper is not None and not helper.is_relative_to(root)
+        if helper is None:
+            helper = root / 'tools/resource_exec.py'
+            if not helper.is_file():
+                helper = root / 'tools/fleet/resource_exec.py'
+        source = helper.read_bytes()
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError) as exc:
+            raise OSError('invalid resource proxy capability protocol') from exc
+        protocols = [node.value for node in tree.body if isinstance(node, ast.Assign)
+                     and any(isinstance(name, ast.Name)
+                             and name.id == 'PRIVATE_CAPABILITY_FD_PROTOCOL'
+                             for name in node.targets)]
+        bindings = [node for node in ast.walk(tree) if isinstance(node, ast.Name)
+                    and node.id == 'PRIVATE_CAPABILITY_FD_PROTOCOL'
+                    and isinstance(node.ctx, ast.Store)]
+        if retained and not protocols and not bindings and b'--token-fd' not in source:
+            transport = 'legacy_argv'
+        elif (len(protocols) == len(bindings) == 1 and isinstance(protocols[0], ast.Constant)
+              and type(protocols[0].value) is int and protocols[0].value == 1):
+            transport = 'private_fd'
+        else:
+            raise OSError('unsupported resource proxy capability protocol')
+        self._launch_helper, self.capability_transport = helper, transport
+
+    @contextmanager
+    def prepared_launch(self, argv: list[str], *, worker_script: str | Path):
+        """A pipe exists only across Popen; private recovery keeps its authority."""
+        if self.capability_transport not in ('private_fd', 'legacy_argv'):
+            raise RuntimeError('select the capability transport before scope creation')
+        if not isinstance(self.token, str) or re.fullmatch('[a-f0-9]{64}', self.token) is None:
+            raise ValueError('invalid resource launch capability')
+        evidence = {'schema': RESOURCE_LAUNCH_SCHEMA_V2,
+                    'capability_transport': self.capability_transport,
+                    'capability_sha256': hashlib.sha256(self.token.encode()).hexdigest()}
+        if self.capability_transport == 'legacy_argv':
+            yield self.wrap_argv(argv, worker_script=worker_script), (), evidence
+            return
+        reader, writer = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+        try:
+            try:
+                if os.write(writer, self.token.encode()) != 64:
+                    raise OSError('incomplete private capability frame')
+            finally:
+                os.close(writer)
+            evidence['capability_fd'] = reader
+            yield self.wrap_argv(argv, worker_script=worker_script, token_fd=reader), (reader,), evidence
+        finally:
+            os.close(reader)
 
     def container_host_fault(self) -> dict[str, Any] | None:
         """Only the authenticated broker's launch outcome names a host fault."""

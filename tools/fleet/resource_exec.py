@@ -12,10 +12,29 @@ import array
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import socket
+import stat
 import sys
 
+PRIVATE_CAPABILITY_FD_PROTOCOL = 1
+
+
+def read_capability_fd(descriptor: int) -> str:
+    """Consume one atomic 64-byte pipe frame, without waiting for a writer."""
+    if type(descriptor) is not int or not 3 <= descriptor <= 2**31 - 1:
+        raise ValueError('invalid private capability descriptor')
+    try:
+        if not stat.S_ISFIFO(os.fstat(descriptor).st_mode):
+            raise ValueError('invalid private capability descriptor')
+        os.set_blocking(descriptor, False)
+        frame = os.read(descriptor, 65)
+        if re.fullmatch(b'[a-f0-9]{64}', frame) is None:
+            raise ValueError('invalid private capability frame')
+        return frame.decode('ascii')
+    finally:
+        os.close(descriptor)
 
 
 def process_umask() -> int:
@@ -75,13 +94,22 @@ def main() -> int:
     parser.add_argument('--socket', required=True, type=Path, help='Local resource broker Unix socket.')
     parser.add_argument('--action-key', required=True, help='Full action key owning this execution.')
     parser.add_argument('--nonce', required=True, help='Unique 32-hex nonce for this execution attempt.')
-    parser.add_argument('--token', required=True, help='Broker-issued capability for this attempt.')
+    transport = parser.add_mutually_exclusive_group(required=True)
+    transport.add_argument('--token', help='Legacy broker capability transport.')
+    transport.add_argument('--token-fd', type=int, help='Private capability pipe descriptor.')
     parser.add_argument('argv', nargs=argparse.REMAINDER, help='Command and arguments to execute inside the owned scope; precede with --.')
     args = parser.parse_args()
     argv = args.argv[1:] if args.argv[:1] == ['--'] else args.argv
     if not argv:
         parser.error('an executable is required')
-    identity = {'action_key': args.action_key, 'nonce': args.nonce, 'token': args.token}
+    try:
+        token = read_capability_fd(args.token_fd) if args.token_fd is not None else args.token
+        if re.fullmatch('[a-f0-9]{64}', token) is None:
+            raise ValueError('invalid resource launch capability')
+    except (OSError, ValueError):
+        sys.stderr.write('PrismaBuild resource execution refused: invalid capability transport\n')
+        return 125
+    identity = {'action_key': args.action_key, 'nonce': args.nonce, 'token': token}
 
     def terminate(signum, _frame):
         # The actual payload is a broker child, so signal its exact authenticated
@@ -92,8 +120,8 @@ def main() -> int:
             broker_request({'op': 'stop', **identity,
                             'reason': f'launcher received signal {signum}'},
                            socket_path=args.socket)
-        except (OSError, ValueError) as exc:
-            sys.stderr.write(f'PrismaBuild resource stop failed: {exc}\n')
+        except (OSError, ValueError):
+            sys.stderr.write('PrismaBuild resource stop failed\n')
         raise SystemExit(128 + signum)
 
     signal.signal(signal.SIGTERM, terminate)
@@ -135,13 +163,13 @@ def main() -> int:
                     raise OSError('resource execution response exceeds 64 KiB')
             response = json.loads(data.split(b'\n', 1)[0])
             if not isinstance(response, dict) or response.get('ok') is not True:
-                raise OSError(f'resource broker refused execution: {response}')
+                raise OSError('resource broker refused execution')
             returncode = response.get('returncode')
             if type(returncode) is not int or not -64 <= returncode <= 255:
                 raise OSError('resource broker returned an invalid execution status')
             return returncode if returncode >= 0 else 128 - returncode
-    except (OSError, ValueError) as exc:
-        sys.stderr.write(f'PrismaBuild resource execution refused: {exc}\n')
+    except (OSError, ValueError):
+        sys.stderr.write('PrismaBuild resource execution refused\n')
         return 125
 
 
