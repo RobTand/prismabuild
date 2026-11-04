@@ -228,3 +228,25 @@ def test_unverified_retained_proxy_cannot_use_legacy_fallback(tmp_path, monkeypa
     with pytest.raises(OSError):
         scope.select_launch_transport(generation / 'tools/prismabuild_worker.py')
     assert scope.capability_transport is None
+
+
+@pytest.mark.parametrize('fault', ['missing-worker', 'symlink-worker', 'symlink-root'])
+def test_runtime_shaped_workers_cannot_become_development_stubs(tmp_path, monkeypatch, fault):
+    generation, _ = _sealed_proxy_generation(tmp_path, monkeypatch, b"argument = '--token'\n")
+    worker = generation / 'tools/prismabuild_worker.py'
+    if fault == 'symlink-root':
+        alias = generation.parent / 'generation-alias'
+        alias.symlink_to(generation, target_is_directory=True)
+        worker = alias / 'tools/prismabuild_worker.py'
+    else:
+        worker.parent.chmod(0o755)
+        if fault == 'missing-worker':
+            worker.unlink()
+        else:
+            target = worker.with_name('worker-pinned.py')
+            worker.rename(target)
+            worker.symlink_to(target)
+    scope = resource_scope.ResourceScope('a' * 64, '1' * 32, 1024, tmp_path / 'telemetry.json')
+    with pytest.raises(OSError, match='unverified worker runtime'):
+        scope.select_launch_transport(worker)
+    assert scope.capability_transport is None

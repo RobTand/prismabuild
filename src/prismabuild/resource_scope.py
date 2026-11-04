@@ -708,6 +708,9 @@ class ResourceScope:
         helper = self._proven_retained_proxy(worker_script)
         retained = helper is not None and not helper.is_relative_to(root)
         if helper is None:
+            script = Path(worker_script)
+            if script.is_absolute() and script.parts[-2:] == _WORKER_TAIL:
+                raise OSError('unverified worker runtime; refusing capability transport')
             helper = root / 'tools/resource_exec.py'
             if not helper.is_file():
                 helper = root / 'tools/fleet/resource_exec.py'
