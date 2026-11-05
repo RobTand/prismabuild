@@ -9,6 +9,8 @@ exports_files(glob(["**"]))
 py_binary(
     name = "calibrate_tests",
     srcs = ["calibrate_tests.py"],
+    data = ["//tools:ci/gate_env.py"],
+    deps = ["//tools:ci/gate_env"],
 )
 
 filegroup(
@@ -61,4 +63,6 @@ py_library(
         "python_runner.py",
         "runtime.py",
     ],
+    data = ["//tools:ci/gate_env.py"],
+    deps = ["//tools:ci/gate_env"],
 )

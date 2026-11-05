@@ -137,6 +137,7 @@ pb_py_library(
         "ci/bazel_generated.py",
         "ci/bazel_imports.py",
         "ci/bazel_parity.py",
+        "ci/gate_env.py",
         "ci/gate_paths.py",
         "ci/gate_requirements.txt",
         "ci/gate_run.py",
@@ -164,6 +165,10 @@ pb_py_library(
         "//tools/bazel:generate.sh",
         "//tools/bazel:requirements.py",
         "ci/bazel_generated.py",
+        "ci/gate_env.py",
+    ],
+    deps = [
+        ":ci/gate_env",
     ],
 )
 
@@ -279,6 +284,13 @@ pb_py_library(
 )
 
 pb_py_library(
+    name = "ci/gate_env",
+    srcs = [
+        "ci/gate_env.py",
+    ],
+)
+
+pb_py_library(
     name = "ci/gate_partition",
     srcs = [
         "ci/gate_partition.py",
@@ -318,6 +330,13 @@ pb_py_library(
     srcs = [
         "ci/gate_revision.py",
     ],
+    data = [
+        "ci/gate_env.py",
+        "ci/gate_revision.py",
+    ],
+    deps = [
+        ":ci/gate_env",
+    ],
 )
 
 pb_py_library(
@@ -327,7 +346,11 @@ pb_py_library(
     ],
     data = [
         "ci/gate_budget.json",
+        "ci/gate_env.py",
         "ci/gate_run.py",
+    ],
+    deps = [
+        ":ci/gate_env",
     ],
 )
 
@@ -345,6 +368,7 @@ pb_py_library(
         "//tests:proof_execution.json",
         "//tests:receipt_execution.json",
         "ci/gate_durations.json",
+        "ci/gate_env.py",
         "ci/gate_paths.py",
         "ci/gate_quarantine.json",
         "ci/gate_select.py",
@@ -352,6 +376,7 @@ pb_py_library(
     ],
     deps = [
         "//src/prismabuild:digest_primitives",
+        ":ci/gate_env",
         ":ci/gate_paths",
     ],
 )
@@ -363,11 +388,13 @@ pb_py_library(
     ],
     data = [
         "//tests:test_proof_runtime_observation.py",
+        "ci/gate_env.py",
         "ci/gate_partition.py",
         "ci/gate_setup.py",
         "fleet/fleet_boxes.json",
     ],
     deps = [
+        ":ci/gate_env",
         ":ci/gate_partition",
     ],
 )

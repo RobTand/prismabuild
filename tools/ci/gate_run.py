@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import os
@@ -10,6 +11,10 @@ from pathlib import Path
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+
+ENV_SPEC = importlib.util.spec_from_file_location('gate_env', Path(__file__).with_name('gate_env.py'))
+gate_env = importlib.util.module_from_spec(ENV_SPEC)
+ENV_SPEC.loader.exec_module(gate_env)
 
 NO_VERDICT = 75
 
@@ -36,14 +41,14 @@ def _budget_policy(root, base_sha):
     if base_sha:
         # Check the commit separately: an unavailable target is not a bootstrap.
         target = subprocess.run(['git', 'cat-file', '-e', f'{base_sha}^{{commit}}'],
-                                cwd=root, capture_output=True, check=False)
+                                cwd=root, capture_output=True, check=False, env=gate_env.child_environment())
         if target.returncode:
             raise RuntimeError('budget target commit is unavailable: ' + base_sha)
         tree = subprocess.run(['git', 'ls-tree', base_sha, '--', path],
-                              cwd=root, text=True, capture_output=True, check=True)
+                              cwd=root, text=True, capture_output=True, check=True, env=gate_env.child_environment())
         if tree.stdout.strip():
             blob = subprocess.run(['git', 'show', f'{base_sha}:{path}'], cwd=root,
-                                  text=True, capture_output=True, check=True)
+                                  text=True, capture_output=True, check=True, env=gate_env.child_environment())
             baseline = _budget_limits(json.loads(blob.stdout))
     if (current['seconds'] > baseline['seconds'] or
             not current['slow'].keys() <= baseline['slow'].keys() or
@@ -130,11 +135,8 @@ def run_plan(plan: dict, *, root: Path, output: Path, junit: Path,
             raise ValueError('job needs a positive worker count and assigned CPUs')
         workers = min(workers, len(cpus))
         record['workers'] = workers
-        environment = dict(os.environ, PRISMABUILD_TEST_TIMEOUT_S='300',
+        environment = dict(gate_env.child_environment(), PRISMABUILD_TEST_TIMEOUT_S='300',
                            OMP_NUM_THREADS='1', MKL_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1')
-        # setup-python exports loader overrides; proof capture must see the actual
-        # installed interpreter rather than an ambient dynamic-loader override.
-        environment = {name: value for name, value in environment.items() if not name.startswith('LD_')}
         environment['GATE_ASSIGNED_FILES'] = json.dumps(files)
         environment['PYTHONPATH'] = str(Path(__file__).resolve().parent) + os.pathsep + environment.get('PYTHONPATH', '')
         junit.parent.mkdir(parents=True, exist_ok=True)

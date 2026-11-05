@@ -28600,6 +28600,7 @@ pb_py_test(
         "//tools:ci/check_no_secret_leak.py",
         "//tools:ci/gate_budget.json",
         "//tools:ci/gate_durations.json",
+        "//tools:ci/gate_env.py",
         "//tools:ci/gate_paths.py",
         "//tools:ci/gate_quarantine.json",
         "//tools:ci/gate_run.py",
@@ -28645,6 +28646,7 @@ pb_py_library(
         "//tools/bazel:python.bzl",
         "//tools/bazel:requirements.txt",
         "//tools:ci/bazel_gate.py",
+        "//tools:ci/gate_env.py",
         "//tools:ci/gate_requirements.txt",
         "//tools:ci/gate_select.py",
         "//tools:ci/graph_impact.py",
@@ -28657,6 +28659,7 @@ pb_py_library(
     deps = [
         "//src/prismabuild:core",
         "//tools:ci/bazel_gate",
+        "//tools:ci/gate_env",
         "//tools:ci/gate_select",
         "//tools:ci/graph_impact",
         "//tools:fleet/pbrun",
@@ -28696,6 +28699,7 @@ pb_py_library(
         "//tools:ci/gate_select.py",
         "//tools:ci/gate_setup.py",
         "test_bazel_gate_workflow.py",
+        "test_check_no_secret_leak.py",
     ],
     deps = [
         "//tools:ci/gate_run",
@@ -57692,6 +57696,7 @@ pb_py_test(
         "//tools:ci/check_no_secret_leak.py",
         "//tools:ci/gate_budget.json",
         "//tools:ci/gate_durations.json",
+        "//tools:ci/gate_env.py",
         "//tools:ci/gate_paths.py",
         "//tools:ci/gate_quarantine.json",
         "//tools:ci/gate_run.py",
@@ -158378,6 +158383,7 @@ pb_py_test(
     library = ":test_tia_contract_lib",
     deps = [
         "//src/prismabuild:__init__",
+        "//tools:ci/gate_env",
         "//tools:ci/gate_paths",
         "//tools:ci/gate_select",
         "//tools:ci/tia_diff",

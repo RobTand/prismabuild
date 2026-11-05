@@ -626,9 +626,10 @@ def test_a_probe_descendant_does_not_survive_the_deadline(monkeypatch):
     monkeypatch.setattr(ci.subprocess, "Popen", capture_process)
     monkeypatch.setattr(ci, "_read_capped", expire_after_leader_exit)
     try:
-        assert ci._run_bounded(
+        result = ci._run_bounded(
             [sys.executable, "-c", leader, child], env=dict(os.environ),
-            timeout_s=60, limit=4096) is None
+            timeout_s=60, limit=4096)
+        assert result is None
         assert child_fd is not None
         exited = select.poll()
         exited.register(child_fd, select.POLLIN)
@@ -644,8 +645,9 @@ def test_a_probe_descendant_does_not_survive_the_deadline(monkeypatch):
 
 def test_a_real_probe_read_returns_output_under_the_cap():
     argv = ["/usr/bin/python3", "-c", "import sys; sys.stdout.write('ok')"]
-    assert ci._run_bounded(
-        argv, env=dict(os.environ), timeout_s=10.0, limit=4096) == b"ok"
+    result = ci._run_bounded(
+        argv, env=dict(os.environ), timeout_s=10.0, limit=4096)
+    assert result == b"ok"
 
 
 @pytest.mark.skipif(not Path("/var/run/docker.sock").exists(),
@@ -665,8 +667,9 @@ def test_a_real_daemon_listing_parses_or_is_unknown():
 def test_a_real_probe_that_overruns_its_deadline_is_killed():
     argv = ["/usr/bin/python3", "-c", "import time; time.sleep(30)"]
     started = time.monotonic()
-    assert ci._run_bounded(
-        argv, env=dict(os.environ), timeout_s=0.5, limit=4096) is None
+    result = ci._run_bounded(
+        argv, env=dict(os.environ), timeout_s=0.5, limit=4096)
+    assert result is None
     assert time.monotonic() - started < 15.0
 
 

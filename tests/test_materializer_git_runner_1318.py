@@ -22,7 +22,10 @@ def test_materializer_git_delegates_to_the_shared_runner(monkeypatch):
     )
     assert out == "ok\n"
     assert seen["args"] == ("-C", "/r", "status")
-    assert seen["kwargs"] == {"timeout": 120, "env": {"A": "1"}}
+    assert set(seen["kwargs"]) == {"timeout", "env"}
+    assert seen["kwargs"]["timeout"] == 120
+    assert set(seen["kwargs"]["env"]) == {"A"}
+    assert seen["kwargs"]["env"]["A"] == "1"
 
 
 def test_failure_text_keeps_the_where_prefix(monkeypatch):

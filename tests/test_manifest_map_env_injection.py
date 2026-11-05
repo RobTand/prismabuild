@@ -58,7 +58,8 @@ def test_a_declaring_row_with_a_composed_map_is_injected(tmp_path):
 
     env = queue.residency_map_environment(_item(key, cas_root))
 
-    assert env == {pb.RESIDENCY_MAP_ENV: str(queue.records.residency_map_path(key))}
+    assert set(env) == {pb.RESIDENCY_MAP_ENV}
+    assert env[pb.RESIDENCY_MAP_ENV] == str(queue.records.residency_map_path(key))
 
 
 def test_a_declaring_row_without_a_map_launches_byte_identically(tmp_path):
@@ -109,4 +110,5 @@ def test_a_sealed_residency_row_keeps_its_own_path(tmp_path):
         _item(key, cas_root,
               residency={"leads": ["f" * 64], "tier_id": "x"}))
 
-    assert env == {pb.RESIDENCY_MAP_ENV: str(queue.records.residency_map_path(key))}
+    assert set(env) == {pb.RESIDENCY_MAP_ENV}
+    assert env[pb.RESIDENCY_MAP_ENV] == str(queue.records.residency_map_path(key))

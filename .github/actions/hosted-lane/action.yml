@@ -13,10 +13,17 @@ inputs:
   files:
     description: JSON list of repository-relative test files
     required: true
+  buildbuddy-api-key:
+    description: BuildBuddy credential used only by the artifact scanner
+    default: ''
+  mergify-token:
+    description: Mergify credential used only by the artifact scanner
+    default: ''
 runs:
   using: composite
   steps:
-    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+    - id: python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
       with:
         python-version: '3.14'
         cache: pip
@@ -45,8 +52,19 @@ runs:
         python tools/ci/gate_run.py --plan gate-artifacts/plan.json
         --files-from gate-artifacts/assigned.txt --workers 4
         --result gate-artifacts/result.json --junitxml gate-artifacts/junit.xml
+    - id: secret-scan
+      name: Scan artifacts for secrets
+      if: always() && steps.python.outcome == 'success'
+      shell: bash
+      env:
+        BUILDBUDDY_API_KEY: ${{ inputs.buildbuddy-api-key }}
+        MERGIFY_TOKEN: ${{ inputs.mergify-token }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: >-
+        python3 tools/ci/check_no_secret_leak.py gate-artifacts/
+        --env BUILDBUDDY_API_KEY --env MERGIFY_TOKEN --env GITHUB_TOKEN
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-      if: always()
+      if: always() && steps.secret-scan.outcome == 'success'
       with:
         name: hosted-lane-${{ runner.arch }}
         path: gate-artifacts/

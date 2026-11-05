@@ -38,7 +38,8 @@ def test_the_launcher_names_its_queue_for_every_action(tmp_path: Path) -> None:
     # an owner binding its produced output needs the root and reads no map.
     env = queue.launch_environment({"action_key": KEY})
 
-    assert env == {"PRISMABUILD_QUEUE_ROOT": str(tmp_path / "pb-queue")}
+    assert set(env) == {"PRISMABUILD_QUEUE_ROOT"}
+    assert env["PRISMABUILD_QUEUE_ROOT"] == str(tmp_path / "pb-queue")
 
 
 def test_the_published_root_survives_a_relocated_map(

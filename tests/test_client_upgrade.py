@@ -355,7 +355,8 @@ def test_reader_drops_all_credentials_before_loading_shared_runtime(setup, monke
         assert kwargs['extra_groups'] == []
         assert argv[:2] == ['/usr/bin/python3', '-I']
         assert '--export-runtime' in argv and kwargs['cwd'] == '/'
-        assert kwargs['env'] == {'PATH': '/usr/bin:/bin'}
+        assert set(kwargs['env']) == {'PATH'}
+        assert kwargs['env']['PATH'] == '/usr/bin:/bin'
         kwargs['stdout'].write(expected)
         return SimpleNamespace(returncode=0)
 

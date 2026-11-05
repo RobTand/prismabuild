@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Fail CI when a derived Bazel input is stale, naming the files and the one fix."""
+import importlib.util
 from pathlib import Path
 import shlex
 import subprocess
 import sys
+
+ENV_SPEC = importlib.util.spec_from_file_location('gate_env', Path(__file__).with_name('gate_env.py'))
+gate_env = importlib.util.module_from_spec(ENV_SPEC)
+ENV_SPEC.loader.exec_module(gate_env)
 
 ROOT = Path(__file__).resolve().parents[2]
 FIX = 'tools/bazel/generate.sh'
@@ -20,7 +25,8 @@ def commands():
 def check(checks=None, root=ROOT):
     failures = []
     for command in commands() if checks is None else checks:
-        result = subprocess.run(command, cwd=root, capture_output=True, text=True)
+        result = subprocess.run(command, cwd=root, capture_output=True, text=True,
+                                env=gate_env.child_environment())
         if result.returncode:
             failures.append(f'$ {shlex.join(map(str, command))}\n{result.stdout}{result.stderr}')
     if failures:
