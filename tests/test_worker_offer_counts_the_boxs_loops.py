@@ -11,6 +11,7 @@ that outlives what it describes is the bug (#244), not the fix.
 """
 from __future__ import annotations
 
+import errno
 import importlib.util
 from functools import partial
 import json
@@ -19,6 +20,8 @@ import socket
 import sys
 import time
 from unittest import mock
+
+import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
@@ -148,6 +151,70 @@ def test_the_census_and_the_activation_gate_share_one_rule():
     spec.loader.exec_module(census)
 
     assert census.box_capacity.worker_loops is box_capacity.worker_loops
+
+
+def _census_reading(failures: dict[int, BaseException]) -> list[dict[str, object]]:
+    """One activation census of loops 100 and 101, with no real process or /proc read.
+
+    A PID in ``failures`` has its start-time read raise that exception; every
+    other loop started just now.
+    """
+
+    import runtime_process_census as census  # tools/fleet is on sys.path above
+
+    fresh = time.time()
+
+    def start_time(pid: int, *, boot_unix: int, ticks_per_s: int) -> float:
+        if pid in failures:
+            raise failures[pid]
+        return fresh
+
+    with mock.patch.object(census, "_boot_unix", return_value=1_700_000_000), \
+         mock.patch.object(census, "os", mock.Mock(sysconf=mock.Mock(return_value=100))), \
+         mock.patch.object(census.box_capacity, "worker_loops",
+                           return_value=((100, (LOOP,)), (101, (LOOP,)))), \
+         mock.patch.object(census, "_process_start_unix", side_effect=start_time):
+        return census._worker_loops()
+
+
+@pytest.mark.parametrize("failure", [
+    PermissionError(errno.EACCES, "injected"),
+    OSError(errno.EIO, "injected"),
+], ids=["EACCES", "EIO"])
+def test_an_unreadable_start_time_refuses_the_census(failure):
+    # A read that fails for a reason other than "no such process" does not
+    # prove the loop exited.  Dropping it would let the fresh loop alone pass
+    # the count and freshness checks while an unverified old loop still runs.
+    try:
+        _census_reading({100: failure})
+    except OSError as refused:
+        assert refused is failure
+        return
+    raise AssertionError("the census dropped an unreadable loop instead of refusing")
+
+
+@pytest.mark.parametrize("failure", [
+    ValueError("invalid literal for int() with base 10: 'x'"),
+    IndexError("list index out of range"),
+], ids=["ValueError", "IndexError"])
+def test_malformed_start_time_evidence_refuses_the_census(failure):
+    # Unparseable start-time evidence proves nothing about whether the loop
+    # is alive, so it may not be counted as gone.
+    try:
+        _census_reading({100: failure})
+    except (ValueError, IndexError) as refused:
+        assert refused is failure
+        return
+    raise AssertionError(
+        "the census dropped a loop with malformed start-time evidence instead of refusing")
+
+
+def test_a_loop_whose_start_time_is_gone_is_skipped_not_refused():
+    # Positive control: a missing /proc/<pid>/stat proves the process exited
+    # between the census and its start-time read, so that loop is omitted.
+    loops = _census_reading({100: FileNotFoundError(errno.ENOENT, "injected")})
+
+    assert [loop["pid"] for loop in loops] == [101]
 
 
 # --- the offer --------------------------------------------------------------
