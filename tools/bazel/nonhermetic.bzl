@@ -413,10 +413,6 @@ NONHERMETIC = {
         tags = ["hosted-arm64"],
         reason = "movement publication needs 1 GiB free; most of BuildBuddy's arm64 executor hosts keep every writable path on tmpfs, where hosted arm64 runners have ext4, unsized, so statvfs reports 0 bytes free.",
     ),
-    "//tests:test_wire_inventory": struct(
-        tags = ["hosted-arm64"],
-        reason = "its first case builds a module fixture that indexes every source file, in 7 s on a hosted arm64 runner; BuildBuddy's arm64 executors vary 2.5x in speed and took 33-35 s in 2 of 4 runs, past the 30 s its 20 s budget allows.",
-    ),
     "//tests:test_worker_loop_cooperative_shutdown": struct(
         tags = ["runner"],
         reason = "worker_loop's --all-cores sizes CPU slots from the host's sysfs, which on a remote executor exceeds the container's cpuset; a hosted runner owns all its CPUs.",
