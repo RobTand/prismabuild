@@ -48,8 +48,13 @@ def _worker_loops() -> list[dict[str, object]]:
             started = _process_start_unix(
                 pid, boot_unix=boot_unix, ticks_per_s=ticks_per_s
             )
-        except (OSError, ValueError, IndexError):
-            continue  # exited between the census and its start-time read
+        except (FileNotFoundError, ProcessLookupError):
+            # Only proof that the process exited between the census and its
+            # start-time read may omit it.  Any other failure -- EACCES, EIO,
+            # or start-time evidence that does not parse -- leaves a loop
+            # whose age is unknown, and a verdict on the remaining loops
+            # would rest on a partial population; it propagates and refuses.
+            continue
         loops.append({"pid": pid, "started_unix": started, "argv": list(argv)})
     return loops
 
