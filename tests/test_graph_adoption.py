@@ -240,3 +240,38 @@ def test_an_unrecorded_cli_cannot_adopt_an_import_pair(adoption_workspace):
     assert report['errors']
     assert report['adoption']['applied'] is False
     assert any('unrecorded rule_to_rule edge' in error for error in report['errors'])
+
+
+def _direct_grant(policy, *, components_after, removed=()):
+    """Call the adoption policy alone, so only its own guards can reject."""
+    cli, view = CLIS[2], VIEWS[1]
+    manifest = {'sha256': 'direct', 'imports': [[cli, view]],
+                'added_edges': {'rule_to_rule': [[cli, view]], 'rule_to_source': []},
+                'test_deltas': {}, 'source_deltas': {}}
+    inputs = {'edge_diff': {'added': {'rule_to_rule': [[cli, view]], 'rule_to_source': []},
+                            'removed': {'rule_to_rule': [list(edge) for edge in removed],
+                                        'rule_to_source': []}}}
+    six = [f'//big:{n}' for n in range(6)]
+    before = {'reach': {}, 'loc': {}, 'components': [six, ['//p:a', '//p:b'], ['//q:a', '//q:b']]}
+    after = {'reach': {}, 'loc': {}, 'components': components_after(six)}
+    return policy.adoption_structural_inputs(before, after, inputs, manifest)
+
+
+def test_adoption_guard_rejects_an_scc_merge_below_the_existing_maximum(adoption_policy_modules):
+    policy, _ = adoption_policy_modules
+    merged = lambda six: [six, ['//p:a', '//p:b', '//q:a', '//q:b']]
+    _, decision, errors = _direct_grant(policy, components_after=merged)
+    assert decision['applied'] is False
+    assert any('SCC growth or merging' in error for error in errors)
+    unchanged = lambda six: [six, ['//p:a', '//p:b'], ['//q:a', '//q:b']]
+    _, control, control_errors = _direct_grant(policy, components_after=unchanged)
+    assert control_errors == [] and control['applied'] is True
+
+
+def test_adoption_guard_rejects_a_simultaneous_edge_removal(adoption_policy_modules):
+    policy, _ = adoption_policy_modules
+    unchanged = lambda six: [six, ['//p:a', '//p:b'], ['//q:a', '//q:b']]
+    _, decision, errors = _direct_grant(policy, components_after=unchanged,
+                                        removed=[('//x:a', '//x:b')])
+    assert decision['applied'] is False
+    assert any('simultaneous edge removals' in error for error in errors)
