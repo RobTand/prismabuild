@@ -1,0 +1,13 @@
+[
+  {
+    "change": "removed",
+    "row": {
+      "path": "tools/ci/graph_adoption.py",
+      "owner": "adoption_structural_inputs",
+      "unresolved": "{edge for edge in imports if edge[0] in importers}",
+      "binding": "required"
+    },
+    "count": 1,
+    "reason": "#2838 removes the both-recorded-imports requirement from the #2789 adoption grant; the `required` set existed only for that check. Subset admission keeps every other bound (unrecorded edges, removals, recorded reach/consumer identities and caps, SCC, manifest pin). Reviewed by the independent Sol security/policy review of a444cb67c (APPROVE)."
+  }
+]
