@@ -1,6 +1,7 @@
 """The Merge gate workflow keeps the check names and queue contract Mergify and TL3 read."""
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 import re
 import shlex
@@ -105,6 +106,10 @@ def test_the_queue_stays_serial_with_scopes_and_its_tl3_route():
 
 
 def test_every_artifact_upload_requires_a_successful_secret_scan():
+    pin_test = ast.parse((ROOT / 'tests/test_check_no_secret_leak.py').read_text())
+    pins = {node.targets[0].id: node.value for node in pin_test.body if isinstance(node, ast.Assign)}
+    scanner_path = ast.literal_eval(pins['SCANNER'].right)
+    assert re.fullmatch(r'[0-9a-f]{64}', ast.literal_eval(pins['SCANNER_SHA256']))
     groups = [job['steps'] for job in JOBS.values()] + [HOSTED_LANE['runs']['steps']]
     uploads = 0
     for group in groups:
@@ -116,7 +121,7 @@ def test_every_artifact_upload_requires_a_successful_secret_scan():
             assert scan['if'].startswith('always() && ')
             assert scan.get('continue-on-error', False) is False
             assert shlex.split(scan['run']) == [
-                'python3', 'tools/ci/check_no_secret_leak.py', step['with']['path'],
+                'python3', scanner_path, step['with']['path'],
                 '--env', 'BUILDBUDDY_API_KEY', '--env', 'MERGIFY_TOKEN', '--env', 'GITHUB_TOKEN']
             assert set(scan['env']) == {'BUILDBUDDY_API_KEY', 'MERGIFY_TOKEN', 'GITHUB_TOKEN'}
             assert scan['env']['GITHUB_TOKEN'] == '${{ github.token }}'
