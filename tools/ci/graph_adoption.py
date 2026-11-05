@@ -1,4 +1,4 @@
-"""PB #2789's pinned, single-transition exception to structural attribution.
+"""PB #2789's pinned, recorded-import exception to structural attribution.
 
 The shared graph core, actual snapshots and all budgets stay unchanged. Only
 the exact measured added edges lose structural attribution, after every bound
@@ -38,8 +38,8 @@ def read_first_adoption_manifest(path, digests):
 def adoption_structural_inputs(before, after, inputs, manifest):
     """Return comparison inputs and an auditable grant decision; never mutate.
 
-    Every other policy still receives the real graph. Reject incomplete importer pairs,
-    unrecorded typed edges, removals, unrecorded consumers, excessive source or
+    Every other policy still receives the real graph. Admit recorded import subsets;
+    reject unrecorded typed edges, removals, unrecorded consumers, excessive source or
     test deltas, and new/merged SCCs before excluding attribution edges.
     """
     decision = {'manifest_sha256': manifest['sha256'], 'applied': False, 'admitted_edges': 0}
@@ -50,10 +50,6 @@ def adoption_structural_inputs(before, after, inputs, manifest):
     if not any(target in targets for _, target in added_rules):
         return inputs, decision, []
     errors = []
-    importers = {source for source, _ in imports & added_rules}
-    required = {edge for edge in imports if edge[0] in importers}
-    if not required <= added_rules:
-        errors.append('graph adoption requires both recorded imports for each adopting CLI')
     recorded_edges = {kind: set(map(tuple, edges)) for kind, edges in manifest['added_edges'].items()}
     for kind in ('rule_to_rule', 'rule_to_source'):
         unrecorded = set(map(tuple, changes['added'][kind])) - recorded_edges[kind]

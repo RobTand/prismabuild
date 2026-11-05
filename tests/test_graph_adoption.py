@@ -22,7 +22,9 @@ VIEWS = ('//src/prismabuild:operator_view', '//src/prismabuild:public_evidence')
 
 @pytest.fixture
 def adoption_workspace():
-    def build(*, unrelated=False, overflowing=False, partial=False, cycle=False, single_cli=None, outside_view=None, outside_only=False):
+    def build(*, unrelated=False, overflowing=False, partial=False, cycle=False,
+              single_cli=None, outside_view=None, outside_only=False,
+              only_public=False, prior_public=False):
         cli_sources = {name + '.py' for name in CLIS}
         view_sources = {name + '.py' for name in VIEWS}
         extra = '//src/prismabuild:unrecorded.py'
@@ -36,6 +38,11 @@ def adoption_workspace():
         added_rules = {(cli, view) for cli in CLIS for view in VIEWS}
         if single_cli is not None:
             added_rules = {edge for edge in added_rules if edge[0] == single_cli}
+        if only_public:
+            added_rules = {edge for edge in added_rules if edge[1] == VIEWS[1]}
+        if prior_public:
+            before_edges |= {(single_cli, VIEWS[1]), (ADOPTER_TEST, VIEWS[1] + '.py')}
+            added_rules.remove((single_cli, VIEWS[1]))
         if partial:
             added_rules.remove((CLIS[0], VIEWS[0]))
         if unrelated:
@@ -46,9 +53,13 @@ def adoption_workspace():
         outsider = '//tools:fleet/not_a_recorded_adopter'
         if outside_view is not None:
             before_edges.add((ADOPTER_TEST, outsider))
-            added_rules.add((outsider, outside_view))
+            outside_views = (outside_view,) if isinstance(outside_view, str) else outside_view
+            added_rules |= {(outsider, view) for view in outside_views}
+        if only_public:
+            view_sources = {VIEWS[1] + '.py'}
+            added_data = {(ADOPTER_TEST, source) for source in view_sources}
         after_edges = before_edges | added_rules | added_data
-        initial_sources = cli_sources
+        initial_sources = cli_sources | ({VIEWS[1] + '.py'} if prior_public else set())
         if outside_only:
             before_edges |= {(ADOPTER_TEST, view) for view in VIEWS}
             after_edges = before_edges | {(outsider, outside_view)}
@@ -99,9 +110,10 @@ def test_recorded_edge_with_excess_measured_delta_fails(adoption_workspace):
     assert any('recorded reach delta' in error for error in report['errors'])
 
 
-def test_partial_import_inventory_is_not_an_adoption_grant(adoption_workspace):
+def test_partial_import_inventory_is_an_adoption_grant(adoption_workspace):
     report = adoption_workspace(partial=True).graph_check('before', 'after')
-    assert report['errors']
+    assert report['errors'] == []
+    assert report['adoption']['admitted_edges'] == 7
 
 
 def test_adoption_does_not_admit_a_cycle(adoption_workspace):
@@ -174,10 +186,27 @@ def test_one_recorded_cli_pair_can_adopt_with_its_first_writer(adoption_workspac
     assert len(report['edge_diff']['added']['rule_to_rule']) == 2
 
 
-def test_one_cli_cannot_adopt_an_incomplete_pair(adoption_workspace):
-    report = adoption_workspace(single_cli=CLIS[0], partial=True).graph_check('before', 'after')
-    assert report['errors']
-    assert report['adoption']['applied'] is False
+@pytest.mark.parametrize('cli', CLIS)
+def test_one_cli_can_adopt_only_public_evidence(adoption_workspace, cli):
+    workspace = adoption_workspace(single_cli=cli, only_public=True)
+    report = workspace.graph_check('before', 'after')
+    assert report['errors'] == []
+    assert report['adoption']['applied'] is True
+    assert report['adoption']['admitted_edges'] == 2
+    assert report['edge_diff']['added']['rule_to_rule'] == [[cli, VIEWS[1]]]
+    assert report['head']['reach_sizes'][ADOPTER_TEST] == 4
+
+
+@pytest.mark.parametrize('cli', CLIS)
+def test_one_cli_can_later_adopt_its_other_recorded_import(adoption_workspace, cli):
+    workspace = adoption_workspace(single_cli=cli, prior_public=True)
+    assert VIEWS[1] + '.py' in workspace.snapshots['base']['reach'][ADOPTER_TEST]
+    report = workspace.graph_check('before', 'after')
+    assert report['errors'] == []
+    assert report['adoption']['applied'] is True
+    assert report['adoption']['admitted_edges'] == 2
+    assert report['edge_diff']['added']['rule_to_rule'] == [[cli, VIEWS[0]]]
+    assert report['fanout_growth'] == {VIEWS[0] + '.py': 1}
 
 
 @pytest.mark.parametrize('view', VIEWS)
@@ -201,6 +230,13 @@ def test_outsider_only_import_is_rejected_even_without_reach_growth(adoption_wor
     workspace = adoption_workspace(outside_view=view, outside_only=True)
     assert workspace.snapshots['base']['reach'] == workspace.snapshots['head']['reach']
     report = workspace.graph_check('before', 'after')
+    assert report['errors']
+    assert report['adoption']['applied'] is False
+    assert any('unrecorded rule_to_rule edge' in error for error in report['errors'])
+
+
+def test_an_unrecorded_cli_cannot_adopt_an_import_pair(adoption_workspace):
+    report = adoption_workspace(outside_view=VIEWS).graph_check('before', 'after')
     assert report['errors']
     assert report['adoption']['applied'] is False
     assert any('unrecorded rule_to_rule edge' in error for error in report['errors'])
