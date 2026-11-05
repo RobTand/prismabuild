@@ -182,7 +182,12 @@ def classify_files(checkout: Path, files: list[str],
         try:
             text = (checkout / name).read_text(encoding="utf-8",
                                                errors="replace")
-        except OSError:
+        except OSError as error:
+            # An unread file has unknown declarations: refuse it by name
+            # rather than let it fall into the portable cohort unfenced.
+            problems.append(
+                f"{name}: cannot be read ({error.strerror or error}), so "
+                "the file cannot be classified for capabilities")
             continue
         names, problem = _marker_names(text, name)
         if problem is not None:
