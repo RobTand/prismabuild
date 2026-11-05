@@ -160,10 +160,8 @@ def _census_reading(failures: dict[int, BaseException]) -> list[dict[str, object
     other loop started just now.
     """
 
-    spec = importlib.util.spec_from_file_location(
-        "census_reads_start_times", REPOSITORY / "tools/fleet/runtime_process_census.py")
-    census = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(census)
+    import runtime_process_census as census  # tools/fleet is on sys.path above
+
     fresh = time.time()
 
     def start_time(pid: int, *, boot_unix: int, ticks_per_s: int) -> float:
