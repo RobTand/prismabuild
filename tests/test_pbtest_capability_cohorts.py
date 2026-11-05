@@ -446,3 +446,61 @@ def test_allocation_is_deterministic_and_gives_every_cohort_one_shard():
     assert pbtest.allocate_shards(weights, 6) == pbtest.allocate_shards(
         dict(reversed(list(weights.items()))), 6)
     assert pbtest.allocate_shards({}, 3) == {}
+
+
+@pytest.mark.parametrize("code_name", ["EIO", "EACCES"])
+def test_an_unreadable_assigned_file_is_refused_by_name(
+        tmp_path, monkeypatch, code_name):
+    """#2816: a read failure refuses the file; it never runs portable."""
+
+    import errno as errno_module
+    from prismabuild import pbtest_capabilities
+
+    code = getattr(errno_module, code_name)
+    config = {"x86_producer": {"tags": ["x86"], "files": [],
+                               "observations": []}}
+    checkout = tmp_path / "checkout"
+    (checkout / "tests").mkdir(parents=True)
+    target = checkout / "tests" / "test_marked.py"
+    target.write_text(MARKED, encoding="utf-8")
+    real_read_text = Path.read_text
+
+    def failing_read_text(self, *args, **kwargs):
+        if Path(self) == target:
+            raise OSError(code, os.strerror(code), str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", failing_read_text)
+    files = ["tests/test_marked.py"]
+    declared, problems = pbtest_capabilities.classify_files(
+        checkout, files, config)
+    refusals = [p for p in problems
+                if "tests/test_marked.py" in p and "cannot be" in p]
+    assert refusals, "an unreadable marked file must be refused by name"
+    assert len(problems) == 1, problems
+    assert "classified" in refusals[0], refusals
+    assert "tests/test_marked.py" not in declared, declared
+    assert declared == {}, declared
+
+
+def test_readable_files_still_classify_as_before(tmp_path):
+    """#2816 control: readable portable and marked files are unchanged."""
+
+    from prismabuild import pbtest_capabilities
+
+    config = {"x86_producer": {"tags": ["x86"], "files": [],
+                               "observations": []}}
+    checkout = tmp_path / "checkout"
+    (checkout / "tests").mkdir(parents=True)
+    (checkout / "tests" / "test_plain.py").write_text(PLAIN, encoding="utf-8")
+    (checkout / "tests" / "test_marked.py").write_text(
+        MARKED, encoding="utf-8")
+    declared, problems = pbtest_capabilities.classify_files(
+        checkout, ["tests/test_plain.py"], config)
+    assert declared == {}
+    assert problems == []
+    declared, problems = pbtest_capabilities.classify_files(
+        checkout, ["tests/test_plain.py", "tests/test_marked.py"],
+        config)
+    assert declared == {"tests/test_marked.py": ["x86_producer"]}
+    assert problems == []
