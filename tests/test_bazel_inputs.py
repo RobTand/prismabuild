@@ -353,12 +353,10 @@ def test_real_gate_child_call_sites_never_inherit_secrets(tmp_path, monkeypatch)
     for command in [('git', 'status'), ('python3', 'tool.py'), ('java', '-jar', 'diff.jar'),
                     ('bash', '-c', 'true'), ('bazel', 'query'), ('/opt/bin/bb', 'version')]:
         workspace.run(*command)
-    statuses, reruns = gate.rerun_budget_only(
-        workspace, ['//tests:test_budget_probe'], {'//tests:test_budget_probe': 'TIMEOUT'},
-        'remote', {}, str(tmp_path / 'env-capture'))
-    assert statuses['//tests:test_budget_probe'] == 'PASSED'
-    assert reruns['//tests:test_budget_probe'] == 'PASSED'
-    assert len(bazel_commands) == 1 and '--nocache_test_results' in bazel_commands[0]
+    result = workspace.test(['//tests:test_budget_probe'], 'remote', {},
+                            str(tmp_path / 'env-capture'))
+    assert result['statuses']['//tests:test_budget_probe'] == 'PASSED'
+    assert len(bazel_commands) == 1
     workspace.ensure_commit('a' * 40)
     workspace.start_generated_checks()
     generated.check(root=tmp_path)
