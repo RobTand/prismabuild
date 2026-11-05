@@ -138,6 +138,9 @@ def test_tests_read_a_private_copy_of_the_interpreter(tmp_path, monkeypatch, mac
     monkeypatch.delenv('PB_BAZEL_LANE', raising=False)
     monkeypatch.setattr(sys, 'executable', sys.executable)
     monkeypatch.setattr('platform.machine', lambda: machine)
+    secret_names = ('BUILDBUDDY_API_KEY', 'MERGIFY_TOKEN', 'GITHUB_TOKEN', 'OTHER_API_KEY')
+    for name in secret_names:
+        monkeypatch.setenv(name, 'fake-secret-value')
     copies = []
     copyfile = runtime.shutil.copyfile
 
@@ -158,7 +161,10 @@ def test_tests_read_a_private_copy_of_the_interpreter(tmp_path, monkeypatch, mac
     assert not python.samefile(original)
     with original.open('rb') as source, python.open('rb') as private:
         assert hashlib.file_digest(private, 'sha256').digest() == hashlib.file_digest(source, 'sha256').digest()
-    assert subprocess.run([python, '-c', 'import json'], env=environment, check=False).returncode == 0
+    for name in secret_names:
+        assert name not in environment
+    result = subprocess.run([python, '-c', 'import json'], env=environment, check=False)
+    assert result.returncode == 0
 
 
 def test_runner_lane_tests_need_a_git_checkout(tmp_path):
@@ -237,3 +243,220 @@ def test_the_gate_collects_the_warning_the_runner_writes(tmp_path):
                          'tests/test_a.py')
     gate = load('bazel_gate_for_runner', 'tools/ci/bazel_gate.py').Workspace(root=tmp_path)
     assert gate.budget_warnings(['//tests:test_a']) == [{'label': '//tests:test_a', **OVERRUN[0]}]
+
+
+def test_gate_child_environment_builder_keeps_only_allowed_names():
+    builder = load('gate_env_unit', 'tools/ci/gate_env.py')
+    source = {'PATH': '/usr/bin', 'HOME': '/home/ci', 'TMPDIR': '/tmp/ci',
+              'LANG': 'C.UTF-8', 'LC_ALL': 'C', 'PYTHONPATH': '/code/src',
+              'GITHUB_SHA': 'abc', 'PRISMABUILD_TEST_TIMEOUT_S': '300',
+              'GATE_PROFILE_STARTUP': '1', 'UNRELATED': 'private',
+              'LD_PRELOAD': '/untrusted.so', 'BUILDBUDDY_API_KEY': 'fake-secret-value',
+              'MERGIFY_TOKEN': 'fake-secret-value', 'GITHUB_TOKEN': 'fake-secret-value',
+              'GITHUB_OTHER_TOKEN': 'fake-secret-value', 'GATE_API_KEY': 'fake-secret-value',
+              'PRISMABUILD_OTHER_TOKEN': 'fake-secret-value'}
+    environment = builder.child_environment(source)
+    assert set(environment) == {'PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'PYTHONPATH',
+                                'GITHUB_SHA', 'PRISMABUILD_TEST_TIMEOUT_S', 'GATE_PROFILE_STARTUP'}
+    assert environment['PATH'] == '/usr/bin'
+    assert environment['GITHUB_SHA'] == 'abc'
+    assert environment['GATE_PROFILE_STARTUP'] == '1'
+    assert source['UNRELATED'] == 'private'
+    assert not any(name.endswith(('_API_KEY', '_TOKEN')) for name in environment)
+
+
+def test_bazel_test_protocol_keeps_metadata_but_drops_credentials():
+    builder = load('gate_env_protocol', 'tools/ci/gate_env.py')
+    source = {'TEST_TMPDIR': '/test/tmp', 'RUNFILES_DIR': '/runfiles', 'XML_OUTPUT_FILE': '/out.xml',
+              'TEST_OTHER_TOKEN': 'fake-secret-value', 'RUNFILES_API_KEY': 'fake-secret-value',
+              'BUILDBUDDY_API_KEY': 'fake-secret-value'}
+    environment = builder.child_environment(source, bazel_test=True)
+    assert set(environment) == {'TEST_TMPDIR', 'RUNFILES_DIR', 'XML_OUTPUT_FILE'}
+    assert environment['TEST_TMPDIR'] == '/test/tmp'
+    assert environment['RUNFILES_DIR'] == '/runfiles'
+    assert environment['XML_OUTPUT_FILE'] == '/out.xml'
+
+
+def test_real_gate_child_call_sites_never_inherit_secrets(tmp_path, monkeypatch):
+    import ast
+    import inspect
+    from types import SimpleNamespace
+
+    paths = ['tools/ci/bazel_gate.py', 'tools/ci/gate_run.py',
+             'tools/ci/bazel_generated.py', 'tools/ci/gate_select.py',
+             'tools/ci/gate_revision.py', 'tools/ci/gate_setup.py',
+             'tools/bazel/build_files.py', 'tools/ci/bazel_parity.py',
+             'tools/bazel/runtime.py', 'tools/bazel/python_runner.py',
+             'tools/bazel/calibrate_tests.py']
+    modules = [load('secret_probe_' + Path(path).stem, path) for path in paths]
+    (gate, runner, generated, select, revision, setup, build_files, parity,
+     bazel_runtime, bazel_python, calibrate) = modules
+    expected = set()
+    for path in paths:
+        for node in ast.walk(ast.parse((ROOT / path).read_text())):
+            if isinstance(node, ast.Call) and ast.unparse(node.func) in {
+                    'subprocess.run', 'subprocess.Popen', 'subprocess.check_output', 'execute', 'run'}:
+                expected.add((str((ROOT / path).resolve()), node.lineno))
+    observed = set()
+    ambient = {'PATH': '/usr/bin', 'HOME': str(tmp_path), 'GITHUB_SHA': 'abc',
+               'PRISMABUILD_TEST_TIMEOUT_S': '300', 'GATE_PROFILE_STARTUP': '1',
+               'PYTHONPATH': str(ROOT / 'src')}
+    for name in ('BUILDBUDDY_API_KEY', 'MERGIFY_TOKEN', 'GITHUB_TOKEN',
+                 'GITHUB_OTHER_TOKEN', 'PRISMABUILD_OTHER_API_KEY', 'GATE_OTHER_TOKEN', 'TEST_OTHER_TOKEN'):
+        ambient[name] = 'fake-secret-value'
+    monkeypatch.setattr(os, 'environ', ambient)
+    budget = tmp_path / 'tools/ci/gate_budget.json'
+    budget.parent.mkdir(parents=True)
+    budget.write_text('{"seconds":20,"slow":{}}')
+    junit = tmp_path / 'junit.xml'
+    junit.write_text('<testsuite><testcase file="tests/test_one.py" classname="tests.test_one" '
+                     'name="test_one" time="0.01"/></testsuite>')
+
+    bazel_commands = []
+
+    def capture(command, **kwargs):
+        frame = inspect.currentframe().f_back
+        observed.add((str(Path(frame.f_code.co_filename).resolve()), frame.f_lineno))
+        # Assert on names only, even if this regression fails with a real runner env.
+        if 'env' not in kwargs or kwargs['env'] is None:
+            pytest.fail('child inherited the ambient environment: ' + str(command[0]))
+        names = set(kwargs['env'])
+        if Path(str(command[0])).name in {'bazel', 'bb'}:
+            assert kwargs['env']['BUILDBUDDY_API_KEY'] == 'fake-secret-value'
+        else:
+            forbidden = sorted(name for name in names if name.endswith(('_API_KEY', '_TOKEN')))
+            assert not forbidden, 'forbidden child environment names: ' + ', '.join(forbidden)
+            assert kwargs['env']['PATH'].split(os.pathsep)[-1] == '/usr/bin'
+        if command == ['python3', 'test.py']:
+            assert kwargs['env']['TEST_TMPDIR'] == ambient['TEST_TMPDIR']
+            assert kwargs['env']['TEST_UNDECLARED_OUTPUTS_DIR'] == ambient['TEST_UNDECLARED_OUTPUTS_DIR']
+        if command[:2] == ['bazel', 'test']:
+            bazel_commands.append(command)
+            bep = Path(next(arg.split('=', 1)[1] for arg in command
+                            if arg.startswith('--build_event_json_file=')))
+            bep.write_text(json.dumps({'id': {'testSummary': {'label': '//tests:test_budget_probe'}},
+                                       'testSummary': {'overallStatus': 'PASSED'}}) + '\n')
+        stdout = '' if kwargs.get('text') else b''
+        if command[:2] == ['git', 'ls-files']:
+            stdout = b''
+        elif command[:2] == ['git', 'ls-tree']:
+            stdout = 'budget exists'
+        elif command[:2] == ['git', 'show']:
+            stdout = budget.read_text()
+        elif command[:2] == ['git', 'rev-parse']:
+            stdout = 'a' * 40 + '\n'
+        return SimpleNamespace(returncode=0, stdout=stdout, wait=lambda **kwargs: 0)
+
+    monkeypatch.setattr(subprocess, 'run', capture)
+    monkeypatch.setattr(subprocess, 'Popen', capture)
+    workspace = gate.Workspace(ROOT)
+    for command in [('git', 'status'), ('python3', 'tool.py'), ('java', '-jar', 'diff.jar'),
+                    ('bash', '-c', 'true'), ('bazel', 'query'), ('/opt/bin/bb', 'version')]:
+        workspace.run(*command)
+    result = workspace.test(['//tests:test_budget_probe'], 'remote', {},
+                            str(tmp_path / 'env-capture'))
+    assert result['statuses']['//tests:test_budget_probe'] == 'PASSED'
+    assert len(bazel_commands) == 1
+    workspace.ensure_commit('a' * 40)
+    workspace.start_generated_checks()
+    generated.check(root=tmp_path)
+    build_files.repository_files(tmp_path)
+    def capture_output(command, **kwargs):
+        caller = inspect.currentframe().f_back
+        observed.add((str(Path(caller.f_code.co_filename).resolve()), caller.f_lineno))
+        return capture(command, **kwargs).stdout
+    monkeypatch.setattr(subprocess, 'check_output', capture_output)
+    monkeypatch.setattr(parity, 'population', lambda: [])
+    monkeypatch.setattr(parity, 'compare_static', lambda *args: {})
+    assert parity.main(['static']) == 0
+    runner._budget_policy(tmp_path, 'a' * 40)
+    assert runner.run_plan({'selected': [{'path': 'tests/test_one.py'}], 'deselect': []},
+                           root=tmp_path, output=tmp_path / 'result.json', junit=junit,
+                           execute=subprocess.run, affinity={1}) == 0
+    select.changed_files(tmp_path, 'a' * 40, 'b' * 40)
+    revision.gate_revisions(tmp_path, 'selection', 'b' * 40, 'a' * 40)
+    setup.install_bubblewrap(subprocess.run)
+    # Cover apt's recovery calls with an explicit failure, without sleeping.
+    first = True
+    def fail_install_once(command, **kwargs):
+        nonlocal first
+        result = capture(command, **kwargs)
+        # The wrapper is outside production; record the actual execute call too.
+        caller = inspect.currentframe().f_back
+        observed.add((str(Path(caller.f_code.co_filename).resolve()), caller.f_lineno))
+        if first:
+            first = False
+            raise subprocess.CalledProcessError(1, command)
+        return result
+    setup.install_bubblewrap(fail_install_once)
+    monkeypatch.setattr(setup.shutil, 'which', lambda name: '/usr/bin/bwrap')
+    monkeypatch.setattr(setup.os, 'getuid', lambda: 1000)
+    monkeypatch.setattr(setup.os, 'getgid', lambda: 1000)
+    # Avoid machine state: the relocation operates only on private temp paths.
+    original = tmp_path / 'python'
+    original.mkdir()
+    setup.relocate_python(original, tmp_path / 'relocated', subprocess.run)
+    real_stat = Path.stat
+    def different_device(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if path == original:
+            values = list(result)
+            values[2] += 1
+            return os.stat_result(values)
+        return result
+    monkeypatch.setattr(Path, 'stat', different_device)
+    setup.relocate_python(original, tmp_path / 'other-device', subprocess.run)
+    monkeypatch.setattr(Path, 'stat', real_stat)
+    monkeypatch.setattr(setup, 'relocate_python', lambda *args: None)
+    partition = load('secret_probe_partition', 'tools/ci/gate_partition.py')
+    files = sorted(partition.SANDBOX_TEST_FILES | setup.ROOT_OWNED_INTERPRETER_FILES)
+    setup.prepare_assigned_gate(files, execute=subprocess.run)
+    # Exercise runner setup without touching the host's lock or cgroup paths.
+    boxes = tmp_path / 'tools/fleet/fleet_boxes.json'
+    boxes.parent.mkdir(parents=True)
+    boxes.write_text(json.dumps({'action_tmpdir': str(tmp_path / 'runner-scratch')}))
+    monkeypatch.setattr(bazel_runtime, 'open',
+                        lambda *args: open(tmp_path / 'runner.lock', 'w'), raising=False)
+    monkeypatch.setattr(bazel_runtime, 'CGROUP_ROOT', tmp_path / 'cgroup')
+    monkeypatch.setattr(bazel_runtime.shutil, 'which', lambda name: None)
+    real_exists = Path.exists
+    monkeypatch.setattr(Path, 'exists', lambda path: (
+        True if str(path) == '/proc/sys/kernel/apparmor_restrict_unprivileged_userns'
+        else real_exists(path)))
+    bazel_runtime.prepare_runner(tmp_path, run=subprocess.run)
+    monkeypatch.setattr(Path, 'exists', real_exists)
+    # The real private-interpreter preparation feeds the real runner's pytest call.
+    private = tmp_path / 'private'
+    private.mkdir()
+    ambient.update(TEST_TMPDIR=str(private), XML_OUTPUT_FILE=str(junit),
+                   TEST_UNDECLARED_OUTPUTS_DIR=str(tmp_path / 'outputs'))
+    monkeypatch.setattr(sys, 'executable', sys.executable)
+    monkeypatch.setattr(sys, 'argv', ['python_runner.py', 'tests/test_one.py'])
+    monkeypatch.setattr(bazel_python, 'prepare_remote_test', bazel_runtime.prepare_remote_test)
+    assert bazel_python.main() == 0
+    assert not (private / 'python-environment/bin/python').is_symlink()
+    calibration_root = tmp_path / 'calibration'
+    calibration_root.mkdir()
+    samples = iter([(0.0, 0.0, 1), (1.0, 1.0, 2)])
+    monkeypatch.setattr(calibrate, 'cgroup', lambda: calibration_root)
+    monkeypatch.setattr(calibrate, 'sample', lambda root: next(samples))
+    monkeypatch.setattr(sys, 'argv', ['calibrate_tests.py', 'python3', 'test.py'])
+    assert calibrate.main() == 0
+    # Wrapper frames aren't call sites. Every real subprocess site must execute.
+    assert expected <= observed, sorted((Path(path).name, line) for path, line in expected - observed)
+
+
+def test_runner_shell_launcher_uses_the_allowlist(monkeypatch):
+    builder = load('gate_env_launcher', 'tools/ci/gate_env.py')
+    monkeypatch.setattr(os, 'environ', {'PATH': '/usr/bin', 'HOME': '/home/ci',
+                                      'BUILDBUDDY_API_KEY': 'fake-secret-value',
+                                      'GITHUB_TOKEN': 'fake-secret-value'})
+    calls = []
+    def execute(file, argv, env):
+        calls.append(file)
+        assert argv == ['bash', '-c', 'true']
+        assert set(env) == {'PATH', 'HOME'}
+        assert env['PATH'] == '/usr/bin'
+    monkeypatch.setattr(os, 'execvpe', execute)
+    builder.main(['bash', '-c', 'true'])
+    assert calls == ['bash']

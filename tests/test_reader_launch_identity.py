@@ -84,7 +84,11 @@ def test_actual_child_sees_only_the_tuple(tmp_path, monkeypatch) -> None:
     env = pb._residency_environment(_action(), {})
     probe = subprocess.run(
         [sys.executable, "-c",
-         "import json, os; print(json.dumps(dict(os.environ)))"],
+         "import json, os; "
+         "names = ('PRISMABUILD_ACTION_KEY', 'PRISMABUILD_ACTION_NONCE', "
+         "'PRISMABUILD_ACTION_SCOPE', 'PRISMABUILD_READER_HELPER_ROOT'); "
+         "print(json.dumps({name: os.environ.get(name) for name in names})); "
+         "assert not any(name.startswith('PRISMABUILD_BROKER_') for name in os.environ)"],
         capture_output=True, text=True, env=dict(env),
         timeout=60)
     assert probe.returncode == 0
@@ -93,9 +97,6 @@ def test_actual_child_sees_only_the_tuple(tmp_path, monkeypatch) -> None:
     assert seen["PRISMABUILD_ACTION_SCOPE"] == SCOPE
     assert seen["PRISMABUILD_READER_HELPER_ROOT"] == helper
     assert seen["PRISMABUILD_ACTION_KEY"] == KEY
-    assert "PRISMABUILD_BROKER_TOKEN_DO_NOT_FORWARD" not in seen
-    assert "PRISMABUILD_BROKER_SOCKET_PATH" not in seen
-    assert not any(name.startswith("PRISMABUILD_BROKER_") for name in seen)
 
 
 @pytest.mark.parametrize("drop", ["PRISMABUILD_ACTION_NONCE",
@@ -235,7 +236,8 @@ def test_legacy_absence_preserves_behavior(tmp_path, monkeypatch) -> None:
                  "PRISMABUILD_RESIDENCY_MAP"):
         monkeypatch.delenv(name, raising=False)
     env = pb._residency_environment(_action(), {})
-    assert env == {"PRISMABUILD_ACTION_KEY": KEY}
+    assert set(env) == {"PRISMABUILD_ACTION_KEY"}
+    assert env["PRISMABUILD_ACTION_KEY"] == KEY
 
 
 def test_sealed_identity_still_refuses(tmp_path, monkeypatch) -> None:

@@ -1,8 +1,10 @@
 """The Merge gate workflow keeps the check names and queue contract Mergify and TL3 read."""
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 import re
+import shlex
 
 import yaml
 
@@ -68,7 +70,7 @@ def test_scopes_reach_mergify_or_the_gate_fails():
 
 def test_ordinary_pull_requests_test_the_merge_commit_and_drafts_their_head():
     target = next(step for step in steps('bazel') if step.get('id') == 'target')
-    assert 'MERGE: ${{ github.sha }}' in yaml.safe_dump(target) or target['env']['MERGE'] == '${{ github.sha }}'
+    assert target['env']['MERGE'] == '${{ github.sha }}'
     assert 'git rev-parse "$MERGE^1"' in target['run']
     assert 'base="$REFS_BASE" head="$REFS_HEAD"' in target['run']
 
@@ -101,3 +103,50 @@ def test_the_queue_stays_serial_with_scopes_and_its_tl3_route():
     names = [rule['name'] for rule in MERGIFY['pull_request_rules']]
     assert 'Queue TL3-approved PRs' in names
     assert 'direct_merge' not in yaml.safe_dump(MERGIFY)
+
+
+def test_every_artifact_upload_requires_a_successful_secret_scan():
+    pin_test = ast.parse((ROOT / 'tests/test_check_no_secret_leak.py').read_text())
+    pins = {node.targets[0].id: node.value for node in pin_test.body if isinstance(node, ast.Assign)}
+    scanner_path = ast.literal_eval(pins['SCANNER'].right)
+    assert re.fullmatch(r'[0-9a-f]{64}', ast.literal_eval(pins['SCANNER_SHA256']))
+    groups = [job['steps'] for job in JOBS.values()] + [HOSTED_LANE['runs']['steps']]
+    uploads = 0
+    for group in groups:
+        for index, step in enumerate(group):
+            if not step.get('uses', '').startswith('actions/upload-artifact@'):
+                continue
+            uploads += 1
+            scan = group[index - 1]
+            assert scan['if'].startswith('always() && ')
+            assert scan.get('continue-on-error', False) is False
+            assert shlex.split(scan['run']) == [
+                'python3', scanner_path, step['with']['path'],
+                '--env', 'BUILDBUDDY_API_KEY', '--env', 'MERGIFY_TOKEN', '--env', 'GITHUB_TOKEN']
+            assert set(scan['env']) == {'BUILDBUDDY_API_KEY', 'MERGIFY_TOKEN', 'GITHUB_TOKEN'}
+            assert scan['env']['GITHUB_TOKEN'] == '${{ github.token }}'
+            composite = group is HOSTED_LANE['runs']['steps']
+            context = 'inputs' if composite else 'secrets'
+            key = 'buildbuddy-api-key' if composite else 'BUILDBUDDY_API_KEY'
+            token = 'mergify-token' if composite else 'MERGIFY_TOKEN'
+            assert scan['env']['BUILDBUDDY_API_KEY'] == '${{ ' + context + '.' + key + ' }}'
+            assert scan['env']['MERGIFY_TOKEN'] == '${{ ' + context + '.' + token + ' }}'
+            setup = next(row for row in group if row.get('id') == ('python' if composite else 'scan-python'))
+            assert setup['uses'].startswith('actions/setup-python@')
+            assert setup['with']['python-version'] == '3.14'
+            assert f"steps.{setup['id']}.outcome == 'success'" in scan['if']
+            assert f"steps.{scan['id']}.outcome == 'success'" in step['if']
+    assert uploads == 3
+
+
+def test_hosted_lane_credentials_are_scoped_to_the_scanner():
+    for job in ('hosted', 'post-merge-hosted'):
+        lane = next(step for step in steps(job) if step.get('uses') == './.github/actions/hosted-lane')
+        assert lane['with']['buildbuddy-api-key'] == '${{ secrets.BUILDBUDDY_API_KEY }}'
+        assert lane['with']['mergify-token'] == '${{ secrets.MERGIFY_TOKEN }}'
+        assert 'BUILDBUDDY_API_KEY' not in lane.get('env', {})
+        assert 'MERGIFY_TOKEN' not in lane.get('env', {})
+    for step in HOSTED_LANE['runs']['steps']:
+        if step.get('id') != 'secret-scan':
+            assert 'BUILDBUDDY_API_KEY' not in step.get('env', {})
+            assert 'MERGIFY_TOKEN' not in step.get('env', {})

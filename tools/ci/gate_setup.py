@@ -11,6 +11,10 @@ import shutil
 import subprocess
 import sys
 
+ENV_SPEC = importlib.util.spec_from_file_location('gate_env', Path(__file__).with_name('gate_env.py'))
+gate_env = importlib.util.module_from_spec(ENV_SPEC)
+ENV_SPEC.loader.exec_module(gate_env)
+
 NO_VERDICT = 75
 ROOT_OWNED_INTERPRETER_FILES = frozenset({'tests/test_proof_runtime_observation.py'})
 
@@ -21,10 +25,10 @@ def install_bubblewrap(execute):
                '-o', 'Acquire::http::Timeout=10', '-o', 'Acquire::https::Timeout=10']
     install = ['install', '-y', '--no-install-recommends', 'bubblewrap']
     try:
-        execute([*command, *install], check=True, timeout=120)
+        execute([*command, *install], env=gate_env.child_environment(), check=True, timeout=120)
     except subprocess.CalledProcessError:
-        execute([*command, 'update', '-qq'], check=True, timeout=120)
-        execute([*command, *install], check=True, timeout=120)
+        execute([*command, 'update', '-qq'], env=gate_env.child_environment(), check=True, timeout=120)
+        execute([*command, *install], env=gate_env.child_environment(), check=True, timeout=120)
 
 
 def relocate_python(prefix, target, execute):
@@ -38,13 +42,13 @@ def relocate_python(prefix, target, execute):
     print(f'GATE_SETUP_PYTHON: prefix uid={prefix.stat().st_uid}; '
           f'same filesystem={prefix.stat().st_dev == target.parent.stat().st_dev}', flush=True)
     if prefix.stat().st_dev == target.parent.stat().st_dev:
-        execute(['sudo', 'mv', str(prefix), str(target)], check=True)
+        execute(['sudo', 'mv', str(prefix), str(target)], env=gate_env.child_environment(), check=True)
         # pip/pytest entry points retain their original shebang. setup-python's
         # cache-saving post-step can also still use its recorded interpreter.
-        execute(['sudo', 'ln', '-s', str(target), str(prefix)], check=True)
+        execute(['sudo', 'ln', '-s', str(target), str(prefix)], env=gate_env.child_environment(), check=True)
     else:
-        execute(['sudo', 'mkdir', '-p', str(target)], check=True)
-        execute(['sudo', 'cp', '-a', str(prefix) + '/.', str(target) + '/'], check=True)
+        execute(['sudo', 'mkdir', '-p', str(target)], env=gate_env.child_environment(), check=True)
+        execute(['sudo', 'cp', '-a', str(prefix) + '/.', str(target) + '/'], env=gate_env.child_environment(), check=True)
 
 
 def _export(name, value):
@@ -60,22 +64,22 @@ def prepare_assigned_gate(files, *, sandbox_mode='full', execute=subprocess.run)
     spec.loader.exec_module(partition)
     root = Path(__file__).resolve().parents[2]
     scratch = json.loads((root / 'tools/fleet/fleet_boxes.json').read_text())['action_tmpdir']
-    execute(['sudo', 'install', '-d', '-m', '0700', '-o', str(os.getuid()), '-g', str(os.getgid()), scratch], check=True)
+    execute(['sudo', 'install', '-d', '-m', '0700', '-o', str(os.getuid()), '-g', str(os.getgid()), scratch], env=gate_env.child_environment(), check=True)
     _export('GITHUB_ENV', 'TMPDIR=' + scratch)
     if set(files) & ROOT_OWNED_INTERPRETER_FILES:
         # These controls observe the real executable's owner. No namespace,
         # prefix relocation or recursive ownership rewrite is needed.
         executable = Path(sys.executable).resolve()
         print(f'GATE_SETUP_OWNERSHIP: {executable}; original uid={executable.stat().st_uid}', flush=True)
-        execute(['sudo', 'chown', 'root:root', str(executable)], check=True)
+        execute(['sudo', 'chown', 'root:root', str(executable)], env=gate_env.child_environment(), check=True)
     sandbox = bool(set(files) & partition.SANDBOX_TEST_FILES)
     print(f'GATE_SETUP: sandbox={sandbox}; mode={sandbox_mode}; files={len(files)}', flush=True)
     if not sandbox or sandbox_mode == 'never':
         return
     if not shutil.which('bwrap'):
         install_bubblewrap(execute)
-    execute(['sudo', '-n', 'sysctl', '-w', 'kernel.apparmor_restrict_unprivileged_userns=0'], check=True)
-    execute(['bwrap', '--version'], check=True)
+    execute(['sudo', '-n', 'sysctl', '-w', 'kernel.apparmor_restrict_unprivileged_userns=0'], env=gate_env.child_environment(), check=True)
+    execute(['bwrap', '--version'], env=gate_env.child_environment(), check=True)
     if sandbox_mode == 'namespace':
         return
     original = Path(sys.base_prefix)
@@ -83,15 +87,15 @@ def prepare_assigned_gate(files, *, sandbox_mode='full', execute=subprocess.run)
     relocate_python(original, target, execute)
     # Read-only /usr bindings protect the interpreter inside bwrap; recursive
     # ownership changes add no protection to that namespace contract.
-    execute(['sudo', 'sh', '-c', "printf '%s\\n' /usr/local/pb-gate-python/lib > /etc/ld.so.conf.d/pb-gate-python.conf"], check=True)
-    execute(['sudo', 'ldconfig'], check=True)
+    execute(['sudo', 'sh', '-c', "printf '%s\\n' /usr/local/pb-gate-python/lib > /etc/ld.so.conf.d/pb-gate-python.conf"], env=gate_env.child_environment(), check=True)
+    execute(['sudo', 'ldconfig'], env=gate_env.child_environment(), check=True)
     rewrite = '''import os, sys, sysconfig
 from pathlib import Path
 for config in Path(sysconfig.get_path('stdlib')).glob('_sysconfigdata_*.py'):
     config.write_text(config.read_text().replace(os.environ['GATE_ORIGINAL_PREFIX'], sys.base_prefix))
 '''
-    execute(['sudo', 'env', 'GATE_ORIGINAL_PREFIX=' + str(original), str(target / 'bin/python'), '-c', rewrite], check=True)
-    execute(['env', '-u', 'LD_LIBRARY_PATH', '-u', 'LD_PRELOAD', str(target / 'bin/python'), '--version'], check=True)
+    execute(['sudo', 'env', 'GATE_ORIGINAL_PREFIX=' + str(original), str(target / 'bin/python'), '-c', rewrite], env=gate_env.child_environment(), check=True)
+    execute(['env', '-u', 'LD_LIBRARY_PATH', '-u', 'LD_PRELOAD', str(target / 'bin/python'), '--version'], env=gate_env.child_environment(), check=True)
     _export('GITHUB_PATH', str(target / 'bin'))
 
 

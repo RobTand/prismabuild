@@ -4,12 +4,19 @@ Use only for calibration, with --nocache_test_results. Reads the action's
 cgroup every 100 ms, including short-lived descendants in CPU accounting.
 Writes sizing.json to TEST_UNDECLARED_OUTPUTS_DIR, preserving the test exit.
 """
+import importlib.util
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import time
+
+
+ENV_SPEC = importlib.util.spec_from_file_location(
+    'gate_env', Path(__file__).resolve().parents[1] / 'ci/gate_env.py')
+gate_env = importlib.util.module_from_spec(ENV_SPEC)
+ENV_SPEC.loader.exec_module(gate_env)
 
 
 def cgroup():
@@ -34,7 +41,7 @@ def main():
                 ('cpu.max', 'cpu.weight', 'memory.max', 'cpuset.cpus.effective') if (root / name).exists()}
     previous = first = sample(root)
     burst, processes, samples = 0.0, 0, 0
-    child = subprocess.Popen(sys.argv[1:])
+    child = subprocess.Popen(sys.argv[1:], env=gate_env.child_environment(bazel_test=True))
     while True:
         try:
             status = child.wait(timeout=0.1)

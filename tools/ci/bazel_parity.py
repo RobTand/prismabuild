@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -147,7 +148,7 @@ def main(argv=None):
     try:
         if args.command == 'static':
             lines = subprocess.check_output([*args.bazel.split(), 'query', 'tests(//...)',
-                                             '--output=streamed_jsonproto'], cwd=ROOT, text=True).splitlines()
+                                             '--output=streamed_jsonproto'], cwd=ROOT, text=True, env=dict(os.environ)).splitlines()
             summary = compare_static(population(), bazel_tests(lines))
         else:
             summary = compare_receipts(hosted_nodes(args.hosted_junit), bazel_nodes(args.bazel_testlogs))

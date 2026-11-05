@@ -2,12 +2,17 @@
 """Resolve the exact checkout and selection base for hosted gate jobs."""
 from __future__ import annotations
 
+import importlib.util
 import argparse
 import json
 from pathlib import Path
 import re
 import subprocess
 import sys
+
+ENV_SPEC = importlib.util.spec_from_file_location('gate_env', Path(__file__).with_name('gate_env.py'))
+gate_env = importlib.util.module_from_spec(ENV_SPEC)
+ENV_SPEC.loader.exec_module(gate_env)
 
 
 def gate_revisions(root: Path, mode: str, base: str, head: str) -> dict:
@@ -19,7 +24,7 @@ def gate_revisions(root: Path, mode: str, base: str, head: str) -> dict:
 
     def git(*arguments):
         return subprocess.run(['git', *arguments], cwd=root, text=True,
-                              capture_output=True, check=True).stdout.strip()
+                              capture_output=True, check=True, env=gate_env.child_environment()).stdout.strip()
 
     if git('rev-parse', 'HEAD') != head.lower():
         raise ValueError('gate checkout does not match its requested head')
