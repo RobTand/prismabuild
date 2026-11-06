@@ -19925,7 +19925,12 @@ destructive operations; replacement, rename, mount and owner ambiguity refuse.
 Private owner-only permissions and filesystem identity are rechecked on
 registration replay and every cleanup guard; chmod to a writable foreign-user
 namespace is not accepted merely because inode/creation identity still matches.
-Content symlinks are unlinked without following them. These checks do not
+Content symlinks are unlinked without following them. A payload directory its
+owner left without rwx (PB's own suite seals 0555 runtime-generation fixtures)
+is given owner rwx through an O_PATH descriptor checked against the no-follow
+stat, device and mount before it is opened; before this, EACCES on such a tree
+retained a completed or withdrawn claim and its capacity on every retry.
+These checks do not
 provide an adversarial same-UID filesystem sandbox: the admitted producer may
 not mutate PB's state or private namespace control, and the owning UID remains
 the existing PB trust boundary.
