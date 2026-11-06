@@ -37,29 +37,7 @@ from test_slurm_lane import fleet, _submissions  # noqa: E402,F401
 __all__ = ["fleet"]
 
 
-from pbrun_detach_support import (_checkout, _queue)
-
-
-def _run_pbrun(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, work: Path,
-    *options: str, command=("/bin/bash", "-lc", "printf ok"),
-) -> int:
-    patch_store(monkeypatch, client=pbrun, root=tmp_path)
-    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
-    monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
-    monkeypatch.setattr(sys, "argv", [
-        "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", *options,
-        "--", *command,
-    ])
-    return pbrun.main()
-
-
-def _one_json_line(captured) -> dict:
-    """The single object on stdout.  Prose goes to stderr; this is the contract."""
-
-    lines = [line for line in captured.out.splitlines() if line.strip()]
-    assert len(lines) == 1, f"stdout carried {len(lines)} lines: {lines!r}"
-    return json.loads(lines[0])
+from pbrun_detach_support import (_checkout, _one_json_line, _queue, _run_pbrun)
 
 
 # --------------------------------------------------------------------------

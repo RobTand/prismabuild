@@ -4632,9 +4632,14 @@ interpreter-naming item.
 
 **Claim and submission.** The claim checks the item's path on its own box
 before spending an attempt (`interpreter_not_present` names the path;
-another box may still take the row). `pbrun` refuses at submission when no
-recorded worker reports the path — the refusal names it — and `pbtest` asks
-the same question once for the whole suite before sealing any shard.
+another box may still take the row). `pbrun` refuses at submission when
+every recorded capable worker names the path absent — the refusal names
+it — and `pbtest` asks the same question once for the whole suite before
+sealing any shard. An unknown path (no capable worker has answered yet, as
+on every first submission) publishes with a notice (#1266). Every
+submit-time placement notice and verdict, including the progress-contract
+census, then reads the intent without the interpreter requirement, so
+they cannot disagree about which boxes could run it (#1595, #2846).
 `publish` validates the path (absolute, non-empty), adds the capability tag
 with it, and refuses the tag without a path; every check precedes the first
 side effect. An item naming no interpreter is byte-identical to before.
