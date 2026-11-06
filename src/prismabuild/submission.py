@@ -5442,79 +5442,9 @@ display: DisplaySink = discard_display) -> None:
         intent["requires_files"] = [dict(entry) for entry in params["requires_files"]]
         intent["tags"] = pool.normalize_placement_tags(
             [*tags, contracts.DEPENDENCY_DIGEST_TAG])
-    # Say how wide this action is before saying it was queued.  A pin is a
-    # consequence of the checkout path, and nothing used to report it, so a
-    # submitter narrowed the fleet to one box without being told.
-    notice = pin_notice(
-        queue,
-        intent,
-        cwd=cwd,
-        hostname=socket.gethostname(),
-        here=args.here,
-        portable_checkout=portable_checkout,
-    )
-    if notice:
-        emit_display(display, notice, channel="stderr", flush=True)
-
-    # An offer can be fresh but stamped ahead of this submitter. Keep that
-    # discrepancy visible, including an offer too far ahead to use at all.
-    for host, skew in queue.offer_clock_skews().items():
-        disposition = "tolerated" if skew <= pool.OFFER_FUTURE_TOLERANCE_S else "ignored"
-        emit_display(display,
-            f"pbrun: {host} offer announced {skew:.3f}s in the future "
-            f"(clock skew; {disposition}, limit {pool.OFFER_FUTURE_TOLERANCE_S:g}s)",
-            channel="stderr", flush=True,
-        )
-
-    # Before the placement verdicts, not after.  ``intent`` now requires
-    # ``PROGRESS_TAG``, so on a fleet that offers none the generic "no recorded
-    # worker can run this action" would fire first and name a tag the operator
-    # never typed.  Asked of the boxes eligible on every OTHER tag, which is
-    # also the honest question: of the boxes that could run this work, which
-    # can keep its stall policy?
-    progress_tags = contracts.declared_contract_tags(contracts.Publication(
-        progress=progress_policy,
-        awaited_batch=progress_policy is not None
-            and getattr(args, "awaited_batch", None) is not None))
-    progress_notice = progress_contract_notice(
-        queue,
-        {**intent, "tags": [
-            t for t in tags
-            if t not in progress_tags
-        ]},
-        policy=progress_policy,
-        requested_timeout_s=args.timeout_s,
-        awaited_batch=getattr(args, "awaited_batch", None),
-    )
-    if progress_notice:
-        emit_display(display, progress_notice, channel="stderr", flush=True)
-
-    image_notice = container_image_notice(queue, intent)
-    if image_notice:
-        emit_display(display, image_notice, channel="stderr", flush=True)
-
-    # Refuse work the RECORDED fleet cannot run, at the one moment the caller
-    # is still watching.  A required tag no box has offered is not a slow
-    # submission: the item matches no worker's placement filter, so it sits in
-    # `ready` -- counted, reported as pending -- while every idle worker polls
-    # past it until `--wait-s` expires a day later.
-    #
-    # Capability and liveness are deliberately different reads of the SAME
-    # matcher.  Worker offers expire for claiming and fleet-width diagnostics,
-    # but the latest record from each host remains evidence of what that box
-    # can fit.  dl380g10 and gx10-6b77 have both spent longer than the 120 s TTL
-    # inside work; while they were between announcements a fresh nonmatching
-    # offer made ``placeable`` answer False and pbrun rejected a caller willing
-    # to wait two hours.  An unbounded age reads retained capability and lets
-    # ``--wait-s`` own an offline/busy box.  ``None`` still means no worker has
-    # ever announced and stays a warning, so a fleet whose loops predate the
-    # registry can submit unchecked.
-    #
-    # Images are one more term in the same matcher, and they make the refusal
-    # sharper rather than a new kind of check: a declared reference no
-    # recorded eligible offer positively reports is exactly as unplaceable as
-    # a tag no box offers, and it fails here instead of in the container
-    # (#714).
+    # Every notice and verdict below reads ``probe_intent``.  A notice asked
+    # of ``intent`` kept an unknown interpreter, matched no offer, and
+    # refused cyclic progress fleet-wide or went silent (#2846, as #1595).
     # The interpreter's own verdict first (#1266 review): absent raises below
     # with the path named; unknown publishes with a notice and probes the
     # rest of the intent WITHOUT the interpreter requirement, because the
@@ -5571,6 +5501,79 @@ display: DisplaySink = discard_display) -> None:
                 if name != "requires_files"}
             probe_intent["tags"] = [tag for tag in probe_intent.get("tags") or []
                                     if tag != contracts.DEPENDENCY_DIGEST_TAG]
+    # Say how wide this action is before saying it was queued.  A pin is a
+    # consequence of the checkout path, and nothing used to report it, so a
+    # submitter narrowed the fleet to one box without being told.
+    notice = pin_notice(
+        queue,
+        probe_intent,
+        cwd=cwd,
+        hostname=socket.gethostname(),
+        here=args.here,
+        portable_checkout=portable_checkout,
+    )
+    if notice:
+        emit_display(display, notice, channel="stderr", flush=True)
+
+    # An offer can be fresh but stamped ahead of this submitter. Keep that
+    # discrepancy visible, including an offer too far ahead to use at all.
+    for host, skew in queue.offer_clock_skews().items():
+        disposition = "tolerated" if skew <= pool.OFFER_FUTURE_TOLERANCE_S else "ignored"
+        emit_display(display,
+            f"pbrun: {host} offer announced {skew:.3f}s in the future "
+            f"(clock skew; {disposition}, limit {pool.OFFER_FUTURE_TOLERANCE_S:g}s)",
+            channel="stderr", flush=True,
+        )
+
+    # Before the placement verdicts, not after.  ``intent`` now requires
+    # ``PROGRESS_TAG``, so on a fleet that offers none the generic "no recorded
+    # worker can run this action" would fire first and name a tag the operator
+    # never typed.  Asked of the boxes eligible on every OTHER tag, which is
+    # also the honest question: of the boxes that could run this work, which
+    # can keep its stall policy?
+    progress_tags = contracts.declared_contract_tags(contracts.Publication(
+        progress=progress_policy,
+        awaited_batch=progress_policy is not None
+            and getattr(args, "awaited_batch", None) is not None))
+    progress_notice = progress_contract_notice(
+        queue,
+        {**probe_intent, "tags": [
+            t for t in probe_intent["tags"]
+            if t not in progress_tags
+        ]},
+        policy=progress_policy,
+        requested_timeout_s=args.timeout_s,
+        awaited_batch=getattr(args, "awaited_batch", None),
+    )
+    if progress_notice:
+        emit_display(display, progress_notice, channel="stderr", flush=True)
+
+    image_notice = container_image_notice(queue, probe_intent)
+    if image_notice:
+        emit_display(display, image_notice, channel="stderr", flush=True)
+
+    # Refuse work the RECORDED fleet cannot run, at the one moment the caller
+    # is still watching.  A required tag no box has offered is not a slow
+    # submission: the item matches no worker's placement filter, so it sits in
+    # `ready` -- counted, reported as pending -- while every idle worker polls
+    # past it until `--wait-s` expires a day later.
+    #
+    # Capability and liveness are deliberately different reads of the SAME
+    # matcher.  Worker offers expire for claiming and fleet-width diagnostics,
+    # but the latest record from each host remains evidence of what that box
+    # can fit.  dl380g10 and gx10-6b77 have both spent longer than the 120 s TTL
+    # inside work; while they were between announcements a fresh nonmatching
+    # offer made ``placeable`` answer False and pbrun rejected a caller willing
+    # to wait two hours.  An unbounded age reads retained capability and lets
+    # ``--wait-s`` own an offline/busy box.  ``None`` still means no worker has
+    # ever announced and stays a warning, so a fleet whose loops predate the
+    # registry can submit unchecked.
+    #
+    # Images are one more term in the same matcher, and they make the refusal
+    # sharper rather than a new kind of check: a declared reference no
+    # recorded eligible offer positively reports is exactly as unplaceable as
+    # a tag no box offers, and it fails here instead of in the container
+    # (#714).
     live_verdict = queue.placeable(probe_intent)
     capability_verdict = queue.placeable(
         probe_intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
@@ -5684,12 +5687,12 @@ display: DisplaySink = discard_display) -> None:
         )
 
     ceiling_notice = timeout_ceiling_notice(
-        queue, intent, requested=args.timeout_s if progress_policy is None else None)
+        queue, probe_intent, requested=args.timeout_s if progress_policy is None else None)
     if ceiling_notice:
         emit_display(display, ceiling_notice, channel="stderr", flush=True)
     if progress_policy is None:
         emit_display(display, stall_watch_notice(
-            queue, intent, stall_s=args.stall_s, requested_timeout_s=args.timeout_s),
+            queue, probe_intent, stall_s=args.stall_s, requested_timeout_s=args.timeout_s),
             channel="stderr", flush=True)
 
 
