@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -176,15 +177,67 @@ def test_two_targets_with_one_name_refuse_generation():
         build_files.render_package('tests', [('x_lib', 'pb_py_library', {}), ('x_lib', 'pb_py_library', {})])
 
 
+def checkout(root, files, tracked):
+    """A Git checkout holding these files, with only the tracked ones in the index."""
+    subprocess.run(['git', 'init', '-q', str(root)], check=True)
+    for path, text in files.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text)
+    if tracked:
+        subprocess.run(['git', 'add', '--', *tracked], cwd=root, check=True)
+
+
+HANDWRITTEN_BUILD = build_files.HANDWRITTEN[0] + 'BUILD.bazel'
+GENERATED = {'tests': build_files.HEADER + 'tests\n', '': build_files.HEADER + 'root\n'}
+
+
+def check(root, monkeypatch):
+    monkeypatch.setattr(build_files, 'generate', lambda root: dict(GENERATED))
+    with pytest.raises(SystemExit) as stopped:
+        build_files.main(['--check', '--root', str(root)])
+    return str(stopped.value)
+
+
 def test_check_names_each_stale_build_file_and_the_fix(tmp_path, monkeypatch, capsys):
-    (tmp_path / 'tests').mkdir()
-    (tmp_path / 'tests/BUILD.bazel').write_text('old\n')
+    checkout(tmp_path, {'tests/BUILD.bazel': 'old\n'}, ['tests/BUILD.bazel'])
     monkeypatch.setattr(build_files, 'generate', lambda root: {'tests': 'new\n', '': 'root\n'})
     with pytest.raises(SystemExit) as stopped:
         build_files.main(['--check', '--root', str(tmp_path)])
     assert 'BUILD.bazel' in str(stopped.value) and 'tests/BUILD.bazel' in str(stopped.value)
     assert 'tools/bazel/generate.sh' in str(stopped.value)
     assert (tmp_path / 'tests/BUILD.bazel').read_text() == 'old\n'
+
+
+def test_check_passes_when_every_generated_file_is_tracked_and_current(tmp_path, monkeypatch):
+    files = {'tests/BUILD.bazel': GENERATED['tests'], 'BUILD.bazel': GENERATED[''],
+             HANDWRITTEN_BUILD: 'handwritten\n', 'vendor/BUILD.bazel': 'handwritten elsewhere\n'}
+    checkout(tmp_path, files, ['tests/BUILD.bazel', 'BUILD.bazel', HANDWRITTEN_BUILD])
+    monkeypatch.setattr(build_files, 'generate', lambda root: dict(GENERATED))
+    assert build_files.main(['--check', '--root', str(tmp_path)]) == 0
+
+
+def test_check_fails_on_a_committed_build_file_the_generator_no_longer_writes(tmp_path, monkeypatch):
+    files = {'tests/BUILD.bazel': GENERATED['tests'], 'BUILD.bazel': GENERATED[''],
+             'tests/retired/BUILD.bazel': build_files.HEADER + 'retired\n'}
+    checkout(tmp_path, files, list(files))
+    message = check(tmp_path, monkeypatch)
+    assert 'no longer generated: tests/retired/BUILD.bazel' in message and build_files.FIX in message
+
+
+def test_check_fails_on_a_current_generated_build_file_git_does_not_track(tmp_path, monkeypatch):
+    checkout(tmp_path, {'tests/BUILD.bazel': GENERATED['tests'], 'BUILD.bazel': GENERATED['']}, ['BUILD.bazel'])
+    message = check(tmp_path, monkeypatch)
+    assert 'not tracked by git: tests/BUILD.bazel' in message and 'stale' not in message
+
+
+def test_generation_removes_build_files_it_no_longer_writes(tmp_path, monkeypatch):
+    files = {'tests/retired/BUILD.bazel': build_files.HEADER + 'retired\n', HANDWRITTEN_BUILD: 'handwritten\n'}
+    checkout(tmp_path, files, list(files))
+    monkeypatch.setattr(build_files, 'generate', lambda root: dict(GENERATED))
+    assert build_files.main(['--root', str(tmp_path)]) == 0
+    assert not (tmp_path / 'tests/retired/BUILD.bazel').exists()
+    assert (tmp_path / HANDWRITTEN_BUILD).read_text() == 'handwritten\n'
+    assert (tmp_path / 'tests/BUILD.bazel').read_text() == GENERATED['tests']
 
 
 def test_committed_build_files_carry_the_generated_header():
