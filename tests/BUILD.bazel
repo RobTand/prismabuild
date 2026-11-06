@@ -1370,9 +1370,15 @@ pb_py_library(
     srcs = [
         "pbrun_detach_support.py",
     ],
+    data = [
+        "pbrun_detach_support.py",
+    ],
     deps = [
         "//src/prismabuild:__init__",
         "//src/prismabuild:_gang_cycle",
+        "//src/prismabuild:d38_gate_cycle",
+        "//tools:fleet/pbrun",
+        ":submission_support",
     ],
 )
 
@@ -116724,6 +116730,7 @@ pb_py_test(
         "//src/prismabuild:runtime_paths.py",
         "//src/prismabuild:runtime_publication.py",
         "//src/prismabuild:scratch_lifetime.py",
+        "//src/prismabuild:slurm_lane.py",
         "//src/prismabuild:stage_marks.py",
         "//src/prismabuild:stage_move.py",
         "//src/prismabuild:stage_release.py",
@@ -116743,6 +116750,7 @@ pb_py_test(
         "//tools:fleet/resource_broker.py",
         "//tools:fleet/resource_exec.py",
         "//tools:fleet/resource_payload.py",
+        "//tools:fleet/slurm_job.py",
         "//tools:fleet/stage_release.py",
         "//tools:prismabuild_worker.py",
     ],
@@ -116760,7 +116768,7 @@ pb_py_library(
         "//src/prismabuild:capability_eligibility",
         "//src/prismabuild:contracts",
         "//src/prismabuild:core",
-        ":test_pbrun_detach_lib",
+        ":pbrun_detach_support",
     ],
 )
 

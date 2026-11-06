@@ -23,7 +23,7 @@ from prismabuild import capability_eligibility, contracts
 from prismabuild import core as pb
 from prismabuild import pool
 
-from test_pbrun_detach import _checkout, _one_json_line, _run_pbrun
+from pbrun_detach_support import _checkout, _one_json_line, _run_pbrun
 
 PYTHON = sys.executable
 CYCLE = ("--progress-cycle", "--progress", "encode=200", "--progress", "publish=5")
