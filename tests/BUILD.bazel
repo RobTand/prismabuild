@@ -91521,6 +91521,7 @@ pb_py_library(
         "//src/prismabuild:capability_eligibility",
         "//src/prismabuild:contracts",
         "//src/prismabuild:dependency_digest",
+        "//src/prismabuild:pbtest_capabilities",
         ":pbtest_shard_output",
         ":test_pbtest_seals_its_shard_deadline_lib",
     ],

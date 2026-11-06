@@ -105,12 +105,15 @@ def parse_config(data: object) -> dict:
                 raise ValueError(
                     f"capability {name!r} dependencies must be a nonempty "
                     "list of entries")
+            for entry in dependencies:
+                if not isinstance(entry, dict):
+                    raise ValueError(
+                        f"capability {name!r} dependency entry is invalid: "
+                        "must be a JSON object")
             files = dependency_digest.validate_requirements(
-                [entry for entry in dependencies
-                 if isinstance(entry, dict) and "kind" not in entry])
+                [entry for entry in dependencies if "kind" not in entry])
             observations = dependency_digest.validate_observations(
-                [entry for entry in dependencies
-                 if isinstance(entry, dict) and "kind" in entry],
+                [entry for entry in dependencies if "kind" in entry],
                 files=files)
         parsed[name] = {"tags": sorted(set(tags or ())),
                         "files": files, "observations": observations}

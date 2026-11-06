@@ -170,6 +170,65 @@ def _requires(command):
     return json.loads(flags[flags.index("--requires-files") + 1])
 
 
+@pytest.mark.parametrize("bad", [None, "/fleet/dependency", 17, []])
+def test_a_non_object_dependency_entry_is_refused(bad):
+    from prismabuild.pbtest_capabilities import parse_config
+
+    with pytest.raises(
+            ValueError,
+            match=r"capability 'producer'.*dependency entry.*invalid"):
+        parse_config({
+            "schema": "prismabuild.pbtest_capabilities.v1",
+            "capabilities": {"producer": {
+                "tags": ["x86"],
+                "dependencies": [
+                    {"path": "/fleet/tool", "sha256": "a" * 64}, bad],
+            }},
+        })
+        raise AssertionError("parse_config did not raise")
+
+
+def test_a_mixed_dependency_config_keeps_its_normalized_output():
+    from prismabuild.pbtest_capabilities import parse_config
+
+    interpreter = {"path": "/fleet/python", "sha256": "a" * 64}
+    tool = {"path": "/fleet/tool", "sha256": "b" * 64}
+    observation = {
+        "kind": "installed_distribution",
+        "interpreter_path": "/fleet/python",
+        "module": "example",
+        "module_sha256": "c" * 64,
+        "distribution": "example-dist",
+        "include_prefixes": ["example/"],
+        "include_suffixes": [".py"],
+        "sha256": "d" * 64,
+    }
+    parsed = parse_config({
+        "schema": "prismabuild.pbtest_capabilities.v1",
+        "capabilities": {"producer": {
+            "tags": ["x86", "cpu", "x86"],
+            "dependencies": [observation, tool, interpreter, tool],
+        }},
+    })
+    assert parsed == {"producer": {
+        "tags": ["cpu", "x86"],
+        "files": [interpreter, tool],
+        "observations": [observation],
+    }}
+
+
+def test_a_tags_only_config_has_no_files_or_observations():
+    from prismabuild.pbtest_capabilities import parse_config
+
+    parsed = parse_config({
+        "schema": "prismabuild.pbtest_capabilities.v1",
+        "capabilities": {"producer": {"tags": ["x86"]}},
+    })
+    assert parsed == {"producer": {
+        "tags": ["x86"], "files": [], "observations": [],
+    }}
+
+
 def test_a_declared_file_without_a_config_is_refused_by_name(
         tmp_path, monkeypatch, capsys):
     checkout = _checkout(tmp_path)
