@@ -14,7 +14,8 @@ same evidence (tools/ci/gate_select.py, tools/ci/gate_paths.py) into targets:
   tagged with its lane or owning issue, and keeps its node-level deselects.
 
 Run tools/bazel/generate.sh after adding a module, test or fixture. --check
-fails, naming each stale file, when a committed BUILD.bazel differs.
+fails, naming each file, when a generated BUILD.bazel differs, is missing, is
+no longer generated, or is not tracked by git.
 """
 from __future__ import annotations
 
@@ -75,15 +76,22 @@ def import_from_path(name, path):
     return module
 
 
+def run_git_in(root, *arguments, check=True):
+    return subprocess.run(['git', *arguments], cwd=root, capture_output=True, check=check,
+                          env=import_from_path('build_gate_env',
+                              Path(__file__).resolve().parents[1] / 'ci/gate_env.py').child_environment()).stdout.decode()
+
+
+def listed_paths(root, *flags):
+    return {path for path in run_git_in(root, 'ls-files', '-z', *flags).split('\0') if path}
+
+
 def repository_files(root):
     """Tracked and untracked, unignored files: a new test counts before `git add`."""
-    output = subprocess.run(['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
-                            cwd=root, capture_output=True, check=True,
-                            env=import_from_path('build_gate_env',
-                                Path(__file__).resolve().parents[1] / 'ci/gate_env.py').child_environment()).stdout.decode()
     # BUILD files define the graph; no test reads them, and leaving them out
     # keeps generation a fixed point.
-    return sorted(path for path in set(output.split('\0')) if path and not path.startswith(SKIPPED)
+    return sorted(path for path in listed_paths(root, '--cached', '--others', '--exclude-standard')
+                  if not path.startswith(SKIPPED)
                   and PurePosixPath(path).name != 'BUILD.bazel'
                   and (root / path).is_file() and not (root / path).is_symlink())
 
@@ -754,9 +762,33 @@ def main(argv=None):
             stale.append(str(path.relative_to(args.root)))
         else:
             path.write_text(text)
-    if stale:
-        sys.exit('Generated BUILD files are stale: ' + ', '.join(stale) + f'\nFix: {FIX}')
+    expected = {str(PurePosixPath(package, 'BUILD.bazel')) for package in generated}
+    tracked, untracked = (generated_outputs(args.root, expected, *flags)
+                          for flags in (('--cached',), ('--others', '--exclude-standard')))
+    retired = sorted((tracked | untracked) - expected)
+    if not args.check:
+        for path in retired:
+            (args.root / path).unlink(missing_ok=True)
+        return 0
+    problems = [f'{message}: ' + ', '.join(paths) for message, paths in (
+        ('Generated BUILD files are stale', stale),
+        ('Generated BUILD files are no longer generated', retired),
+        ('Generated BUILD files are not tracked by git', sorted(untracked & expected))) if paths]
+    if problems:
+        sys.exit('\n'.join(problems) + f'\nFix: {FIX}, then commit every generated BUILD.bazel it writes or removes')
     return 0
+
+
+def generated_outputs(root, expected, *flags):
+    """BUILD files git lists with these flags that the generator owns: expected or carrying its header."""
+    def owned(path):
+        if path in expected:
+            return True
+        if (root / path).is_file():
+            return (root / path).read_text().startswith(HEADER)
+        return run_git_in(root, 'show', ':' + path, check=False).startswith(HEADER)
+    return {path for path in listed_paths(root, *flags, '--', ':(glob)**/BUILD.bazel')
+            if not path.startswith(HANDWRITTEN + SKIPPED) and owned(path)}
 
 
 if __name__ == '__main__':
