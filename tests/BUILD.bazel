@@ -28464,7 +28464,6 @@ pb_py_library(
         "//:files",
         "//src/prismabuild:BUILD.bazel",
         "//src/prismabuild:files",
-        "//tools/bazel:BUILD.bazel",
         "//tools/bazel:files",
         "//tools:BUILD.bazel",
         "//tools:files",
