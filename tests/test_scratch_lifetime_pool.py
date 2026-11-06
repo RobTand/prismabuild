@@ -3,6 +3,7 @@
 from prismabuild import scratch_lifetime
 import copy
 import json
+import os
 import time
 from pathlib import Path
 
@@ -134,6 +135,75 @@ def test_failed_cleanup_retains_charge_and_recovers_without_reexecuting(
     restarted.finish(item["action_key"], status=outcome["status"], detail=outcome, claim_snapshot=item)
     assert restarted.ledger().held() == {} and not leaf(item).exists()
     assert (Path(variables["CACHE_ROOT"]) / "compiled").read_bytes() == b"persistent"
+
+
+def read_only_payload_tree(item):
+    """What PB's own suite left in a TL3 run_tests scratch on 2026-11-06.
+
+    Immutable runtime-generation fixtures: 0555 directories holding 0444
+    files, plus one directory its owner cannot even read.
+    """
+    tools = leaf(item) / "runtime-generations" / "g" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "ram_promote.py").write_bytes(b"")
+    (tools / "ram_promote.py").chmod(0o444)
+    sealed = leaf(item) / "sealed"
+    sealed.mkdir()
+    (sealed / "RUNTIME_VERSION.json").write_bytes(b"{}")
+    sealed.chmod(0)
+    for directory in (tools, tools.parent, tools.parent.parent):
+        directory.chmod(0o555)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_payload_read_only_directories_do_not_pin_a_completed_claim(lifetime, monkeypatch):
+    queue, item, variables, outcome = launch(lifetime, monkeypatch)
+    read_only_payload_tree(item)
+    result = queue.finish(item["action_key"], status=outcome["status"], detail=outcome,
+                          claim_snapshot=item)
+    assert result == queue.records.item_path(pool.record_store.DONE, item["action_key"]), (
+        live_record(queue, item).get("container_cleanup_pending"))
+    assert not leaf(item).exists() and queue.ledger().held() == {}
+    assert (Path(variables["CACHE_ROOT"]) / "compiled").read_bytes() == b"persistent"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_withdrawn_pending_finish_with_read_only_scratch_converges(lifetime, monkeypatch):
+    """The live shape: executed, scope retired, attempts 0, owner withdraws.
+
+    The pending finish was saved by a runtime whose deletion refused the
+    payload's read-only directories; a restarted worker's reaper must then
+    conclude the withdrawal exactly once and return the capacity.
+    """
+    queue, item, variables, outcome = launch(lifetime, monkeypatch)
+    key = item["action_key"]
+    read_only_payload_tree(item)
+    with monkeypatch.context() as old_runtime:
+        old_runtime.setattr(scratch_lifetime, "_clean_scratch_directory", lambda *a: (
+            _ for _ in ()).throw(PermissionError(13, "Permission denied", "ram_promote.py")))
+        pending = queue.finish(key, status=outcome["status"], detail=outcome, claim_snapshot=item)
+    assert pending == queue.records.item_path(pool.record_store.CLAIMED, key)
+    claim = live_record(queue, item)
+    assert claim["finish_pending"]["status"] == "executed" and claim["attempts"] == 0
+    assert claim["resource_scope_cleanup"]["complete"] is True
+    held = queue.ledger().held()
+    assert held
+    assert queue.withdraw(key, reason="fixture owner withdrawal",
+                          signal_child=False)["status"] == "withdrawn"
+    assert queue.ledger().held() == held
+    restarted = pool.PoolQueue(queue.root)
+    restarted.reap_stale()
+    assert restarted.ledger().held() == {}, live_record(queue, item).get("container_cleanup_pending")
+    assert not leaf(item).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+    ending = pool.record_store.value_or_raise(queue.records.item(pool.record_store.WITHDRAWN, key))
+    assert ending["resource_scope_cleanup"]["complete"] is True
+    assert [o["status"] for o in queue.attempt_outcomes(ending["withdrawn_attempt"])] == ["withdrawn"]
+    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.READY):
+        assert not queue.records.item_path(state, key).exists()
+    restarted.reap_stale()
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.WITHDRAWN, key)) == ending
 
 
 def test_crash_after_cleanup_before_release_replays_durable_owner(lifetime, monkeypatch):

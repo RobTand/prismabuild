@@ -403,6 +403,28 @@ def _check_registered_scratch_directory(declaration: Mapping[str, object], ident
             os.close(fd)
 
 
+def _grant_owner_directory_access(parent: int, name: str, info: os.stat_result) -> None:
+    """Give the owner rwx on one exact payload directory before consuming it.
+
+    A payload may leave its own directories read-only (PB's suite seals 0555
+    runtime-generation fixtures); unlinking inside one then raised EACCES on
+    every retry and pinned a completed claim and its capacity forever. The
+    inode is held through an O_PATH descriptor and checked against the
+    no-follow stat on the same filesystem and mount before its mode changes.
+    """
+    held = os.open(name, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+    try:
+        identity = _directory_identity(held, name)
+        if ((identity["dev"], identity["ino"]) != (info.st_dev, info.st_ino)
+                or identity["dev"] != os.fstat(parent).st_dev
+                or identity["mnt_id"] != _directory_identity(parent, ".")["mnt_id"]):
+            raise scratch_declarations.LocalScratchError("scratch child crosses a filesystem or was replaced")
+        # chmod through the held descriptor's /proc link reaches this inode only.
+        os.chmod(f"/proc/self/fd/{held}", (info.st_mode & 0o7777) | 0o700)
+    finally:
+        os.close(held)
+
+
 def _remove_scratch_contents(fd: int, guard) -> None:
     """Walk only open owned directories; never follow a child symlink/mount."""
     import stat
@@ -412,6 +434,8 @@ def _remove_scratch_contents(fd: int, guard) -> None:
             guard()
             info = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
             if stat.S_ISDIR(info.st_mode):
+                if info.st_mode & 0o700 != 0o700:
+                    _grant_owner_directory_access(fd, entry.name, info)
                 child = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY |
                                 os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
                 try:
