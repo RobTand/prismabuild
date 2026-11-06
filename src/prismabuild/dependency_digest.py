@@ -241,6 +241,21 @@ import json
 import sys
 from pathlib import Path
 
+CHUNK_SIZE = 1024 * 1024
+
+
+def update_file_digest(digest, path):
+    with path.open("rb") as stream:
+        while chunk := stream.read(CHUNK_SIZE):
+            digest.update(chunk)
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    update_file_digest(digest, path)
+    return digest.hexdigest()
+
+
 spec = json.loads(sys.argv[1])
 module = importlib.import_module(spec["module"])
 prefix = Path(sys.prefix).resolve()
@@ -259,13 +274,13 @@ for file in sorted(dist.files, key=str):
         assert path.is_relative_to(prefix), (
             "included file resolves outside the interpreter prefix: "
             + str(path))
-        digest.update(name.encode() + b"\0" + path.read_bytes())
+        digest.update(name.encode() + b"\0")
+        update_file_digest(digest, path)
         included += 1
 print(json.dumps({
-    "executable_sha256": hashlib.sha256(
-        Path(sys.executable).read_bytes()).hexdigest(),
+    "executable_sha256": file_sha256(Path(sys.executable)),
     "module_path": str(origin),
-    "module_sha256": hashlib.sha256(origin.read_bytes()).hexdigest(),
+    "module_sha256": file_sha256(origin),
     "package_payload_sha256": digest.hexdigest(),
     "included_files": included,
 }))
