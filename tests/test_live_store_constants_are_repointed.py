@@ -38,6 +38,20 @@ def test_automatic_duration_history_is_repointed_to_test_scratch(tmp_path: Path)
 
     assert _report_path(tmp_path / "checkout").is_relative_to(tmp_path)
 
+
+def test_the_gate_gpu_lease_directory_is_repointed_to_test_scratch(tmp_path: Path) -> None:
+    """The live lease directory is host state the gate's executor owns (#2626, #2656).
+
+    ``prismabuild.gpu_lease`` resolves ``PRISMABUILD_GPU_LEASE_DIR`` at call
+    time, so the variable reaches modules imported later and child workers,
+    where an attribute repoint would not.
+    """
+    import os
+
+    leases = Path(os.environ["PRISMABUILD_GPU_LEASE_DIR"])
+    assert leases.is_relative_to(tmp_path)
+    assert leases != Path("/run/prismabuild-gpu-lease")
+
 #: Constants that name the mount and must NOT be repointed, with the reason.
 #: The distinction is destination against classifier. A destination is a root
 #: the code reads or writes, and repointing it moves the I/O somewhere safe.

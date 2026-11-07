@@ -545,6 +545,10 @@ LIVE_ENV = (
     # would otherwise sweep-mark the fleet's own directory.
     ("PRISMABUILD_BOX_STATE_ROOT", "box-state"),
     ("PRISMABUILD_SPOOL_OFFER_ROOT", "spool-offer"),
+    # Gate GPU leases (#2626, #2656): host state under /run that the BuildBuddy
+    # executor's tests hold. ``prismabuild.gpu_lease`` resolves this at call
+    # time, so it reaches modules imported later and child workers too.
+    ("PRISMABUILD_GPU_LEASE_DIR", "gpu-lease"),
 )
 
 
