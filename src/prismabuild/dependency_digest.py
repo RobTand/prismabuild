@@ -38,6 +38,9 @@ from pathlib import Path
 #: The one prefix of the evidence line a verifying shard prints.
 EVIDENCE_PREFIX = "pbtest dependency digest: "
 
+#: Limit each installed-distribution probe to this number of seconds.
+DISTRIBUTION_PROBE_TIMEOUT_SECONDS = 120
+
 _HEX64 = frozenset("0123456789abcdef")
 
 
@@ -286,9 +289,17 @@ def observe_distribution(entry: dict) -> dict:
         "include_prefixes": entry["include_prefixes"],
         "include_suffixes": entry["include_suffixes"],
     })
-    completed = subprocess.run(
-        [entry["interpreter_path"], "-c", PROBE_PROGRAM, spec],
-        capture_output=True, text=True)
+    try:
+        completed = subprocess.run(
+            [entry["interpreter_path"], "-c", PROBE_PROGRAM, spec],
+            capture_output=True, text=True,
+            timeout=DISTRIBUTION_PROBE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(
+            f"installed_distribution observation of {entry['module']!r} "
+            f"through {entry['interpreter_path']!r} timed out after "
+            f"{DISTRIBUTION_PROBE_TIMEOUT_SECONDS} seconds; the import "
+            "or probe did not finish") from exc
     if completed.returncode != 0:
         tail = (completed.stderr or completed.stdout or "").strip()
         raise ValueError(
@@ -383,7 +394,10 @@ def verify_sealed(selection: object) -> int:
         spec = validate_sealed(selection["capabilities"])
         evidence = observe_sealed(spec)
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
-        sys.stderr.write(f"pbtest: capability refusal: {exc}\n")
+        detail = str(exc)
+        if isinstance(exc.__cause__, subprocess.TimeoutExpired):
+            detail += f" (capability: {', '.join(spec['names'])})"
+        sys.stderr.write(f"pbtest: capability refusal: {detail}\n")
         return 1
     print(EVIDENCE_PREFIX + _sorted_json_bytes(evidence).decode("utf-8"), flush=True)
     return 0
