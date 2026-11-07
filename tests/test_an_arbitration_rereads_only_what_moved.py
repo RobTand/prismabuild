@@ -39,8 +39,10 @@ import hashlib
 import io
 import os
 from pathlib import Path
+import re
 import sys
 import threading
+from types import SimpleNamespace
 from kept_read_clock import after_paths
 
 import pytest
@@ -302,6 +304,65 @@ def _assert_forest_listings(
     return locked_relists
 
 
+def _after_census(monkeypatch, *roots: Path) -> dict[str, int]:
+    paths = [path for root in roots for path in root.rglob("*")
+             if not re.fullmatch(r"\..+\.[0-9]+(?:\.[0-9a-f]{32})?\.tmp", path.name)]
+    return after_paths(monkeypatch, *roots, *paths, strict=True)
+
+
+@pytest.mark.parametrize("name", [
+    ".record.json.123.tmp",
+    ".record.json.123.0123456789abcdef0123456789abcdef.tmp",
+])
+@pytest.mark.parametrize("newest", ["mtime", "ctime"])
+def test_clock_census_excludes_a_temporary_removed_after_listing(
+        tmp_path, monkeypatch, name, newest):
+    final = tmp_path / "record.json"
+    final.write_text("final")
+    future = 4_000_000_000_000_000_000
+    temporary = tmp_path / name
+    temporary.write_text("temporary")
+    paths = list(tmp_path.rglob("*"))
+    temporary.unlink()
+    monkeypatch.setattr(Path, "rglob", lambda root, pattern: iter(paths))
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        observation = real_stat(path, *args, **kwargs)
+        if path == final:
+            return SimpleNamespace(
+                st_mtime_ns=future if newest == "mtime" else 0,
+                st_ctime_ns=future if newest == "ctime" else 0)
+        return observation
+
+    with monkeypatch.context() as capture:
+        capture.setattr(os, "stat", stat)
+        state = _after_census(capture, tmp_path)
+    assert state["now"] == future + 1
+
+
+@pytest.mark.parametrize("name", [
+    "record.json",
+    ".authoritative",
+    ".record.json.tmp",
+    ".record.json.pid.tmp",
+    "record.json.123.tmp",
+    ".record.json.123.not-a-uuid.tmp",
+    ".record.json.123.0123456789abcdef0123456789abcde.tmp",
+    ".record.json.123.0123456789abcdef0123456789abcdef0.tmp",
+    ".record.json.123.0123456789abcdef0123456789abcdef.tmp.extra",
+])
+def test_clock_census_keeps_authoritative_and_other_hidden_paths_strict(
+        tmp_path, monkeypatch, name):
+    authoritative = tmp_path / name
+    authoritative.write_text("record")
+    paths = list(tmp_path.rglob("*"))
+    authoritative.unlink()
+    monkeypatch.setattr(Path, "rglob", lambda root, pattern: iter(paths))
+    with pytest.raises(FileNotFoundError):
+        _after_census(monkeypatch, tmp_path)
+
+
 @pytest.fixture()
 def world(fleet, monkeypatch: pytest.MonkeyPatch):  # noqa: F811
     queue, stage, _cas = fleet
@@ -320,8 +381,7 @@ def world(fleet, monkeypatch: pytest.MonkeyPatch):  # noqa: F811
     # the test below measures the fallback instead of the index.
     assert _filesystem_type(queue.root) in LOCAL_CLOCK, (
         _filesystem_type(queue.root))
-    after_paths(monkeypatch, queue.root, stage,
-                *queue.root.rglob("*"), *stage.rglob("*"))
+    _after_census(monkeypatch, queue.root, stage)
     return publisher, destinations, consumer, mover, copier
 
 

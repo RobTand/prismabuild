@@ -5,12 +5,15 @@ import os
 import time
 
 
-def after_paths(monkeypatch, *paths) -> dict[str, int]:
+def after_paths(monkeypatch, *paths, strict: bool = False) -> dict[str, int]:
+    """Fence observations, optionally refusing missing paths instead of parents."""
     observations = []
     for path in paths:
         try:
             observation = os.stat(path)
         except FileNotFoundError:
+            if strict:
+                raise
             observation = os.stat(os.path.dirname(os.fspath(path)) or os.curdir)
         observations.append(observation)
     state = {"now": max(max(info.st_mtime_ns, info.st_ctime_ns)
