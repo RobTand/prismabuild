@@ -66,10 +66,16 @@ def test_real_pytest_population_reports_are_separate_and_addopts_cannot_expand_w
     # Capture the submission boundary, then run its actual pytest payload as
     # a child of this admitted test action. No recursive PB submissions.
     real_run = subprocess.run
-    monkeypatch.setattr(pbtest, "discover", lambda *_: [
-        "tests/test_one.py", "tests/test_two.py"])
+    discover = pbtest.discover
+
+    def discover_population(checkout, paths):
+        (checkout / "tests/test_two.py").write_text(
+            "def test_another_one():\n    assert True\n", encoding="utf-8")
+        return discover(checkout, paths)
+
+    monkeypatch.setattr(pbtest, "discover", discover_population)
     code, calls = _dispatch(tmp_path, monkeypatch, [
-        "--shards", "2",
+        "--shards", "2", "--tmpdir", str(tmp_path),
         "--workers-per-shard", "2", "--threads-per-shard", "1",
         "--pytest-args", json.dumps(["--surface-json", "surface.json",
                                      "--dist", "worksteal", "-k", "one"]),
@@ -77,7 +83,6 @@ def test_real_pytest_population_reports_are_separate_and_addopts_cannot_expand_w
     assert code == 0
     monkeypatch.undo()
     checkout = tmp_path / "checkout"
-    (checkout / "tests/test_two.py").write_text("def test_another_one():\n    assert True\n")
     (checkout / "pytest.ini").write_text("[pytest]\naddopts = -n 99\n")
     (checkout / "conftest.py").write_text('''
 import json
@@ -97,6 +102,8 @@ def pytest_sessionfinish(session):
     def execute(command):
         payload, environment = admitted_child(command)
         payload[payload.index("/target/python")] = sys.executable
+        environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+        environment["PYTEST_PLUGINS"] = "xdist.plugin"
         return real_run(payload, cwd=checkout, env=environment,
                         capture_output=True, text=True)
     with ThreadPoolExecutor(max_workers=2) as executor:
