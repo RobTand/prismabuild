@@ -61,6 +61,32 @@ def test_declared_allowances_rejects_an_unusable_export(monkeypatch, raw):
     assert progress.declared_allowances() is None
 
 
+def test_declared_allowances_rejects_an_oversized_integer(monkeypatch):
+    """An integer outside the float range makes the export unknown."""
+
+    monkeypatch.setenv(progress.ACTION_PROGRESS_ALLOWANCES_ENV,
+                       json.dumps({"run": 10**400}))
+    try:
+        assert progress.declared_allowances() is None
+    except OverflowError:
+        assert False, (
+            "an oversized allowance raised OverflowError instead of reading as unknown"
+        )
+
+
+def test_declared_allowances_rejects_an_oversized_integer_in_a_mixed_export(monkeypatch):
+    """An unusable value makes the whole export unknown."""
+
+    monkeypatch.setenv(progress.ACTION_PROGRESS_ALLOWANCES_ENV,
+                       json.dumps({"startup": 60, "run": 10**400}))
+    try:
+        assert progress.declared_allowances() is None
+    except OverflowError:
+        assert False, (
+            "a mixed export with an oversized allowance raised OverflowError instead of reading as unknown"
+        )
+
+
 def _launched_env(tmp_path, policy, timeout_s):
     queue, item = _claimed(tmp_path, mode="report", seconds=0.1,
                            policy=policy)

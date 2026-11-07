@@ -160,10 +160,15 @@ def declared_allowances() -> dict[str, float] | None:
     for name, grace_s in allowances.items():
         if not isinstance(name, str) or not name:
             return None
-        if (isinstance(grace_s, bool) or not isinstance(grace_s, (int, float))
-                or not math.isfinite(grace_s)):
+        if isinstance(grace_s, bool) or not isinstance(grace_s, (int, float)):
             return None
-        checked[name] = float(grace_s)
+        try:
+            value = float(grace_s)
+        except OverflowError:
+            return None
+        if not math.isfinite(value):
+            return None
+        checked[name] = value
     return checked
 
 
