@@ -109,12 +109,15 @@ class SourceDeclarations:
                               and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name)
                              or (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
                                  and node.target.id == name))]
+        # Some binding nodes store names as strings.
         other_bindings = [node for node in ast.walk(self.tree)
                           if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
                               and node.name == name)
                           or (isinstance(node, ast.arg) and node.arg == name)
                           or (isinstance(node, ast.alias) and (node.asname or node.name) == name)
-                          or (isinstance(node, ast.ExceptHandler) and node.name == name)]
+                          or (isinstance(node, ast.ExceptHandler) and node.name == name)
+                          or (isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == name)
+                          or (isinstance(node, ast.MatchMapping) and node.rest == name)]
         if not bindings and not other_bindings:
             return _MISSING_DECLARATION
         if len(bindings) != 1 or len(declarations) != 1 or other_bindings:

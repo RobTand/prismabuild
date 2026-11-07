@@ -86,6 +86,28 @@ def test_ambiguous_or_invalid_protocol_declarations_fail_closed(source):
         SourceDeclarations.capture(source).protocol("P")
 
 
+@pytest.mark.parametrize("tail", [
+    "match 2:\n case P: pass\n",
+    "match [2]:\n case [*P]: pass\n",
+    "match {'k': 2}:\n case {**P}: pass\n",
+])
+def test_match_capture_cannot_rebind_a_protocol(tail):
+    source = ("P = 1\n" + tail).encode()
+    with pytest.raises(ValueError, match="ambiguous capability declaration"):
+        SourceDeclarations.capture(source).protocol("P")
+
+
+@pytest.mark.parametrize("tail", [
+    "match 2:\n case _: pass\n",
+    "match 2:\n case other: pass\n",
+    "match [2]:\n case [*other]: pass\n",
+    "match {'k': 2}:\n case {**other}: pass\n",
+])
+def test_match_without_protocol_capture_preserves_the_declaration(tail):
+    source = ("P = 1\n" + tail).encode()
+    assert SourceDeclarations.capture(source).protocol("P") == 1
+
+
 @pytest.mark.parametrize("source", [b"P = 1\n", b"P: int = 1\n", b"P=1 # a declaration\n"])
 def test_protocol_declarations_are_concrete_module_literals(source):
     assert SourceDeclarations.capture(source).protocol("P") == 1
