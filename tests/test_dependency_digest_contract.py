@@ -255,6 +255,115 @@ def test_a_shadowed_module_on_the_import_path_refuses(
     assert MODULE in err
 
 
+def test_a_hung_distribution_probe_times_out_as_a_named_refusal(
+        producer_env, monkeypatch):
+    import math
+    import subprocess
+    import types
+
+    entry = _descriptor(producer_env["python"])
+    entry["module_sha256"] = _plan_module_entry(producer_env)["sha256"]
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(kwargs)
+        timeout = kwargs.get("timeout")
+        assert (isinstance(timeout, (int, float)) and math.isfinite(timeout)
+                and timeout > 0), (
+            "subprocess.run got no finite positive timeout")
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(dependency_digest, "subprocess", types.SimpleNamespace(
+        run=fake_run,
+        TimeoutExpired=subprocess.TimeoutExpired,
+        SubprocessError=subprocess.SubprocessError))
+    with pytest.raises(ValueError) as raised:
+        dependency_digest.observe_distribution(entry)
+    message = str(raised.value)
+    assert "installed_distribution observation" in message
+    assert MODULE in message
+    assert "timed out" in message
+    assert str(calls[0]["timeout"]) in message
+    assert "seconds" in message
+    assert entry["interpreter_path"] in message
+    assert isinstance(raised.value.__cause__, subprocess.TimeoutExpired)
+    assert len(calls) == 1
+
+
+def test_a_timed_out_probe_refuses_the_shard_before_tests_run(
+        producer_env, producer_files, monkeypatch, capsys):
+    import math
+    import subprocess
+    import types
+
+    entry = _descriptor(producer_env["python"])
+    entry["module_sha256"] = _plan_module_entry(producer_env)["sha256"]
+    sealed = _sealed([*producer_files, _plan_module_entry(producer_env)],
+                     [entry])
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(kwargs)
+        timeout = kwargs.get("timeout")
+        assert (isinstance(timeout, (int, float)) and math.isfinite(timeout)
+                and timeout > 0), (
+            "subprocess.run got no finite positive timeout")
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(dependency_digest, "subprocess", types.SimpleNamespace(
+        run=fake_run,
+        TimeoutExpired=subprocess.TimeoutExpired,
+        SubprocessError=subprocess.SubprocessError))
+    assert dependency_digest.verify_sealed(
+        {"files": [], "roots": [], "capabilities": sealed}) == 1
+    captured = capsys.readouterr()
+    assert calls
+    assert "pbtest: capability refusal:" in captured.err
+    assert "x86_producer" in captured.err
+    assert "timed out" in captured.err
+    assert MODULE in captured.err
+    assert dependency_digest.EVIDENCE_PREFIX not in captured.out
+    assert dependency_digest.EVIDENCE_PREFIX not in captured.err
+    assert "passed" not in captured.err and "tests ran" not in captured.err
+    assert captured.out == ""
+
+
+def test_a_bounded_probe_keeps_the_normal_digest_result(
+        producer_env, monkeypatch):
+    import math
+    import subprocess
+    import types
+
+    entry = _descriptor(producer_env["python"])
+    entry["module_sha256"] = _plan_module_entry(producer_env)["sha256"]
+    real_run = subprocess.run
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(kwargs)
+        timeout = kwargs.get("timeout")
+        assert (isinstance(timeout, (int, float)) and math.isfinite(timeout)
+                and timeout > 0), (
+            "subprocess.run got no finite positive timeout")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(dependency_digest, "subprocess", types.SimpleNamespace(
+        run=fake_run,
+        TimeoutExpired=subprocess.TimeoutExpired,
+        SubprocessError=subprocess.SubprocessError))
+    observed = dependency_digest.observe_distribution(entry)
+    assert len(calls) == 1
+    assert observed["package_payload_sha256"] == _payload_digest()
+    assert observed["module_sha256"] == entry["module_sha256"]
+    assert observed["module_path"] == str(producer_env["module_path"])
+    assert observed["executable_sha256"] == hashlib.sha256(
+        producer_env["python"].read_bytes()).hexdigest()
+    assert observed["included_files"] == len(INCLUDED)
+    assert set(observed) == {
+        "executable_sha256", "module_path", "module_sha256",
+        "package_payload_sha256", "included_files"}
+
+
 def test_a_payload_digest_that_the_distribution_does_not_hash_to_refuses(
         producer_env, producer_files, capsys):
     entry = _descriptor(producer_env["python"], sha256=OTHER)
