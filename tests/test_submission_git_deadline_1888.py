@@ -32,7 +32,7 @@ def test_slow_local_git_reaches_exit(monkeypatch, tmp_path, checkout, verb, boun
         # Model a process exiting after 1,801 seconds without sleeping. The
         # subprocess seam enforces any timeout exactly as subprocess.run does.
         nonlocal now
-        if argv[0] == "git":
+        if argv[0] == "git" or argv[0] == submission.snapshot_git_executable():
             timeout = kwargs.get("timeout")
             assert timeout == (deadline - now if bounded else None)
             elapsed = 1801 if verb in argv and not seen else 1
@@ -64,7 +64,7 @@ def test_caller_deadline_refuses_before_snapshot_publication(monkeypatch, tmp_pa
 
     def deadline_git(argv, **kwargs):
         nonlocal now
-        if argv[0] == "git":
+        if argv[0] == "git" or argv[0] == submission.snapshot_git_executable():
             assert kwargs["timeout"] == 100 - now
             if verb in argv:
                 raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
