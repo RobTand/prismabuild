@@ -183,6 +183,7 @@ def classify_files(checkout: Path, files: list[str],
             text = (checkout / name).read_text(encoding="utf-8",
                                                errors="replace")
         except OSError:
+            problems.append(f"{name}: cannot be read or classified")
             continue
         names, problem = _marker_names(text, name)
         if problem is not None:

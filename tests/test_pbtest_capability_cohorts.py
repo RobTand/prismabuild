@@ -9,6 +9,7 @@ byte-identically to before.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
@@ -168,6 +169,92 @@ def _requires(command):
     if "--requires-files" not in flags:
         return None
     return json.loads(flags[flags.index("--requires-files") + 1])
+
+
+@pytest.mark.parametrize("error_number", [
+    pytest.param(errno.EIO, id="EIO"),
+    pytest.param(errno.EACCES, id="EACCES"),
+])
+def test_an_unreadable_assigned_file_is_refused_and_never_dispatched_as_portable(
+        tmp_path, monkeypatch, capsys, error_number):
+    from prismabuild import pbtest_capabilities
+    from prismabuild.pbtest_capabilities import classify_files
+
+    checkout = tmp_path / "checkout"
+    name = "tests/test_marked.py"
+    marked = checkout / name
+    marked.parent.mkdir(parents=True)
+    marked.write_text(MARKED, encoding="utf-8")
+    config = {"x86_producer": {"tags": ["x86"], "files": [],
+                               "observations": []}}
+    original_read_text = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if path == marked:
+            raise OSError(error_number, os.strerror(error_number))
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    declared, problems = classify_files(checkout, [name], config)
+
+    assert any(problem.startswith(f"{name}:") for problem in problems), (
+        "an unreadable file must be refused by name")
+    assert len(problems) == 1
+    assert ("cannot be read" in problems[0]
+            or "cannot be classified" in problems[0])
+    assert declared == {}
+    cohort_calls = []
+    original_cohorts = pbtest_capabilities.cohorts
+
+    def track_cohorts(*args, **kwargs):
+        result = original_cohorts(*args, **kwargs)
+        cohort_calls.append(result)
+        return result
+
+    monkeypatch.setattr(pbtest_capabilities, "cohorts", track_cohorts)
+    (checkout / "capabilities.json").write_text(json.dumps({
+        "schema": "prismabuild.pbtest_capabilities.v1",
+        "capabilities": {"x86_producer": {"tags": ["x86"]}},
+    }), encoding="utf-8")
+    code, calls = _dispatch(
+        tmp_path, monkeypatch, checkout,
+        ["--tmpdir", str(tmp_path), "--threads-per-shard", "1",
+         "--cpus-per-shard", "1", "--mem-gb", "2"])
+    assert code == 2
+    assert calls == []
+    assert cohort_calls == []
+    assert name in capsys.readouterr().err
+
+
+def test_readable_portable_and_marked_files_keep_their_classification(tmp_path):
+    from prismabuild.pbtest_capabilities import (
+        classify_files, cohorts, shard_selection,
+    )
+
+    checkout = tmp_path / "checkout"
+    (checkout / "tests").mkdir(parents=True)
+    portable = "tests/test_portable.py"
+    marked = "tests/test_marked.py"
+    (checkout / portable).write_text(PLAIN, encoding="utf-8")
+    (checkout / marked).write_text(MARKED, encoding="utf-8")
+    config = {"x86_producer": {"tags": ["x86"], "files": [],
+                               "observations": []}}
+
+    assert classify_files(checkout, [portable], config) == ({}, [])
+    assert classify_files(checkout, [marked], config) == (
+        {marked: ["x86_producer"]}, [])
+    declared, problems = classify_files(checkout, [portable, marked], config)
+    assert problems == []
+    assert declared == {marked: ["x86_producer"]}
+    assert cohorts(declared, [portable, marked]) == [
+        ((), [portable]), (("x86_producer",), [marked]),
+    ]
+    assert shard_selection((), config) == {
+        "names": [], "tags": [], "dependencies": [],
+    }
+    assert shard_selection(("x86_producer",), config) == {
+        "names": ["x86_producer"], "tags": ["x86"], "dependencies": [],
+    }
 
 
 def test_a_declared_file_without_a_config_is_refused_by_name(
